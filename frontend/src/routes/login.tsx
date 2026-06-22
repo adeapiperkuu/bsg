@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { defaultRouteForRole } from "@/lib/api";
+import { DEV_LOGIN_ACCOUNTS, isDevLoginEnabled } from "@/lib/dev-login";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,23 +15,16 @@ export const Route = createFileRoute("/login")({
 function LoginPage() {
   const navigate = useNavigate();
   const login = useAuthStore((s) => s.login);
-  const user = useAuthStore((s) => s.user);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  if (user) {
-    void navigate({ to: defaultRouteForRole(user.role), replace: true });
-    return null;
-  }
-
-  const onSubmit = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const signIn = async (nextEmail: string, nextPassword: string) => {
     setSubmitting(true);
     setError(null);
     try {
-      await login(email, password);
+      await login(nextEmail, nextPassword);
       const me = useAuthStore.getState().user;
       if (me) await navigate({ to: defaultRouteForRole(me.role), replace: true });
     } catch (err) {
@@ -38,6 +32,17 @@ function LoginPage() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const onSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    await signIn(email, password);
+  };
+
+  const onDevLogin = async (account: (typeof DEV_LOGIN_ACCOUNTS)[number]) => {
+    setEmail(account.email);
+    setPassword(account.password);
+    await signIn(account.email, account.password);
   };
 
   return (
@@ -59,6 +64,30 @@ function LoginPage() {
         <Button type="submit" className="w-full" disabled={submitting}>
           {submitting ? "Signing in…" : "Sign in"}
         </Button>
+        {isDevLoginEnabled && (
+          <div className="space-y-3 border-t border-border pt-4">
+            <div>
+              <p className="text-sm font-medium text-foreground">Dev accounts</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Password for all: <span className="font-mono">{DEV_LOGIN_ACCOUNTS[0]?.password}</span>
+              </p>
+            </div>
+            <div className="space-y-2">
+              {DEV_LOGIN_ACCOUNTS.map((account) => (
+                <button
+                  key={account.email}
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => void onDevLogin(account)}
+                  className="flex w-full items-center justify-between rounded-md border border-border bg-muted/40 px-3 py-2 text-left text-sm transition-colors hover:bg-muted disabled:opacity-50"
+                >
+                  <span className="font-medium text-foreground">{account.label}</span>
+                  <span className="font-mono text-xs text-muted-foreground">{account.email}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </form>
     </div>
   );

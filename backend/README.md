@@ -46,6 +46,24 @@ python ../scripts/bootstrap_super_admin.py --email admin@example.com --password 
 
 This creates the Supabase Auth user and matching `public.users` row with `role = super_admin`.
 
+## Dev login accounts
+
+For local development, seed three quick-login users (admin, PM, client):
+
+```powershell
+cd backend
+.venv\Scripts\Activate
+python ../scripts/seed_dev_users.py
+```
+
+| Role | Email | Password |
+|---|---|---|
+| Admin (`super_admin`) | `admin@bsg.dev` | `bsg-dev-2026` |
+| PM (`delivery_manager`) | `pm@bsg.dev` | `bsg-dev-2026` |
+| Client (`client`) | `client@bsg.dev` | `bsg-dev-2026` |
+
+The login page shows these accounts in development mode only.
+
 Disable public sign-up in the Supabase dashboard (Authentication → Providers).
 
 ## RLS note
