@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Response
@@ -65,6 +65,6 @@ async def delete_metric(
     metric = (await session.execute(select(MetricConfiguration).where(MetricConfiguration.id == metric_id))).scalar_one_or_none()
     if metric is None:
         raise ApiError(404, "NOT_FOUND", "Metric configuration was not found.")
-    metric.deleted_at = datetime.now(UTC)
+    metric.deleted_at = datetime.now(timezone.utc)
     await session.commit()
     return Response(status_code=204)

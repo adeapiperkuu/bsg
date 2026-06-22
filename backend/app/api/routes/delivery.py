@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
@@ -105,7 +105,7 @@ async def update_risk_alert(
         raise ApiError(400, "INVALID_STATUS_TRANSITION", "Risk alert is already closed.")
     alert.status = payload.status
     if payload.status == AlertStatus.RESOLVED:
-        alert.resolved_at = datetime.now(UTC)
+        alert.resolved_at = datetime.now(timezone.utc)
         alert.resolved_by = current_user.id
     await session.commit()
     await session.refresh(alert)

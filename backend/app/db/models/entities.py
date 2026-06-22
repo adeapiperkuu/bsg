@@ -1,6 +1,9 @@
 from datetime import date, datetime
 from decimal import Decimal
-from enum import StrEnum
+try:
+    from enum import StrEnum
+except ImportError:
+    from strenum import StrEnum
 from typing import Any
 from uuid import UUID
 

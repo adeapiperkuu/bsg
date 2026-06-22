@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import select
@@ -80,7 +80,7 @@ async def move_to_review(
     communication.status = CommunicationStatus.IN_REVIEW
     communication.body_approved = payload.body_approved
     communication.reviewed_by = current_user.id
-    communication.reviewed_at = datetime.now(UTC)
+    communication.reviewed_at = datetime.now(timezone.utc)
     await session.flush()
     return communication
 
@@ -97,7 +97,7 @@ async def approve(
     communication.body_approved = body_approved
     communication.status = CommunicationStatus.APPROVED
     communication.approved_by = current_user.id
-    communication.approved_at = datetime.now(UTC)
+    communication.approved_at = datetime.now(timezone.utc)
     await session.flush()
     return communication
 
@@ -117,6 +117,6 @@ async def send(session: AsyncSession, communication: ClientCommunication) -> Cli
             {"communication_id": str(communication.id)},
         )
     communication.status = CommunicationStatus.SENT
-    communication.sent_at = datetime.now(UTC)
+    communication.sent_at = datetime.now(timezone.utc)
     await session.flush()
     return communication
