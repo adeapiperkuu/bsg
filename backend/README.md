@@ -16,8 +16,8 @@ FastAPI service scaffold aligned with `docs/08. Backend Architecture.md`.
 ```powershell
 cd backend
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
+.venv\Scripts\Activate
+pip install -r requirements.txt
 copy .env.example .env
 uvicorn app.main:app --reload
 ```
