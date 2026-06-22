@@ -25,7 +25,8 @@ async def create_project(
     session: SessionDep,
     current_user = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
 ) -> DataResponse[ProjectRead]:
-    project = Project(org_id=current_user.org_id, **payload.model_dump())
+    org_id = payload.org_id if current_user.role == AppRole.SUPER_ADMIN and payload.org_id else current_user.org_id
+    project = Project(org_id=org_id, **payload.model_dump(exclude={"org_id"}))
     session.add(project)
     await session.commit()
     await session.refresh(project)

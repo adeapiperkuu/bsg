@@ -21,9 +21,9 @@ def _engine_connect_args(database_url: str) -> dict:
 
 
 engine = create_async_engine(
-    settings.database_url,
+    settings.async_database_url,
     pool_pre_ping=True,
-    connect_args=_engine_connect_args(settings.database_url),
+    connect_args=_engine_connect_args(settings.async_database_url),
 )
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 

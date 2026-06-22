@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import (
     agents,
+    auth,
     communications,
     csat,
     delivery,
@@ -18,6 +19,7 @@ from app.api.routes import (
     users,
 )
 from app.core.config import get_settings
+from app.core.csrf import CsrfMiddleware
 from app.core.exceptions import register_exception_handlers
 from app.db.session import dispose_engine
 
@@ -45,10 +47,12 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(CsrfMiddleware)
     register_exception_handlers(app)
 
     app.include_router(system.router)
     api_prefix = "/api/v1"
+    app.include_router(auth.router, prefix=api_prefix)
     app.include_router(me.router, prefix=api_prefix)
     app.include_router(organisations.router, prefix=api_prefix)
     app.include_router(users.router, prefix=api_prefix)

@@ -4,6 +4,7 @@ import {
   Link,
   createRootRouteWithContext,
   useRouter,
+  useRouterState,
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
@@ -12,6 +13,9 @@ import { type ReactNode } from "react";
 import appCss from "../styles.css?url";
 import { RoleProvider } from "../lib/bsg/role";
 import { Shell } from "../components/bsg/Shell";
+import { AuthProvider } from "../components/AuthProvider";
+
+const PUBLIC_PATHS = ["/login", "/unauthorized"];
 
 function NotFoundComponent() {
   return (
@@ -107,13 +111,21 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isPublic = PUBLIC_PATHS.includes(pathname);
 
   return (
     <QueryClientProvider client={queryClient}>
       <RoleProvider>
-        <Shell>
-          <Outlet />
-        </Shell>
+        <AuthProvider>
+          {isPublic ? (
+            <Outlet />
+          ) : (
+            <Shell>
+              <Outlet />
+            </Shell>
+          )}
+        </AuthProvider>
       </RoleProvider>
     </QueryClientProvider>
   );

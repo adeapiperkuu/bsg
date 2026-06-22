@@ -26,6 +26,29 @@ class OrganisationRead(ORMModel):
     is_active: bool
 
 
+class OrganisationSummary(ORMModel):
+    id: UUID
+    name: str
+    vertical: str
+    region: str
+
+
+class OrganisationCreate(BaseModel):
+    name: str
+    slug: str
+    vertical: str
+    region: str
+    is_active: bool = True
+
+
+class OrganisationUpdate(BaseModel):
+    name: str | None = None
+    slug: str | None = None
+    vertical: str | None = None
+    region: str | None = None
+    is_active: bool | None = None
+
+
 class UserRead(ORMModel):
     id: UUID
     org_id: UUID
@@ -35,8 +58,40 @@ class UserRead(ORMModel):
     is_active: bool
 
 
+class UserCreate(BaseModel):
+    email: str
+    password: str
+    full_name: str | None = None
+    role: AppRole
+    org_id: UUID
+
+
+class UserUpdate(BaseModel):
+    full_name: str | None = None
+    role: AppRole | None = None
+    is_active: bool | None = None
+    org_id: UUID | None = None
+
+
+class MePermissions(BaseModel):
+    can_manage_projects: bool = False
+    can_approve_communications: bool = False
+    can_manage_metric_configurations: bool = False
+    can_view_cross_client_portfolio: bool = False
+    can_manage_users: bool = False
+    can_manage_organisations: bool = False
+
+
+class AuthSessionRead(BaseModel):
+    id: UUID
+    email: str
+    full_name: str | None = None
+    role: AppRole
+
+
 class MeRead(UserRead):
-    permissions: list[str] = Field(default_factory=list)
+    organisation: OrganisationSummary | None = None
+    permissions: MePermissions = Field(default_factory=MePermissions)
 
 
 class ProjectRead(ORMModel):
@@ -62,6 +117,7 @@ class ProjectCreate(BaseModel):
     start_date: date
     target_end_date: date
     daily_target_units: int | None = Field(default=None, ge=0)
+    org_id: UUID | None = None
 
 
 class ProjectUpdate(BaseModel):

@@ -10,11 +10,13 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WorkforceRouteImport } from './routes/workforce'
+import { Route as UnauthorizedRouteImport } from './routes/unauthorized'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as QualityRouteImport } from './routes/quality'
 import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as PmConsoleRouteImport } from './routes/pm-console'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as LeadershipRouteImport } from './routes/leadership'
 import { Route as KnowledgeRouteImport } from './routes/knowledge'
 import { Route as GovernanceRouteImport } from './routes/governance'
@@ -33,6 +35,11 @@ import { Route as ClientAskRouteImport } from './routes/client.ask'
 const WorkforceRoute = WorkforceRouteImport.update({
   id: '/workforce',
   path: '/workforce',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const UnauthorizedRoute = UnauthorizedRouteImport.update({
+  id: '/unauthorized',
+  path: '/unauthorized',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -58,6 +65,11 @@ const ProjectsRoute = ProjectsRouteImport.update({
 const PmConsoleRoute = PmConsoleRouteImport.update({
   id: '/pm-console',
   path: '/pm-console',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LeadershipRoute = LeadershipRouteImport.update({
@@ -142,11 +154,13 @@ export interface FileRoutesByFullPath {
   '/governance': typeof GovernanceRoute
   '/knowledge': typeof KnowledgeRoute
   '/leadership': typeof LeadershipRoute
+  '/login': typeof LoginRoute
   '/pm-console': typeof PmConsoleRoute
   '/projects': typeof ProjectsRoute
   '/quality': typeof QualityRoute
   '/reports': typeof ReportsRoute
   '/settings': typeof SettingsRoute
+  '/unauthorized': typeof UnauthorizedRoute
   '/workforce': typeof WorkforceRoute
   '/client/ask': typeof ClientAskRoute
   '/client/reports': typeof ClientReportsRoute
@@ -164,11 +178,13 @@ export interface FileRoutesByTo {
   '/governance': typeof GovernanceRoute
   '/knowledge': typeof KnowledgeRoute
   '/leadership': typeof LeadershipRoute
+  '/login': typeof LoginRoute
   '/pm-console': typeof PmConsoleRoute
   '/projects': typeof ProjectsRoute
   '/quality': typeof QualityRoute
   '/reports': typeof ReportsRoute
   '/settings': typeof SettingsRoute
+  '/unauthorized': typeof UnauthorizedRoute
   '/workforce': typeof WorkforceRoute
   '/client/ask': typeof ClientAskRoute
   '/client/reports': typeof ClientReportsRoute
@@ -187,11 +203,13 @@ export interface FileRoutesById {
   '/governance': typeof GovernanceRoute
   '/knowledge': typeof KnowledgeRoute
   '/leadership': typeof LeadershipRoute
+  '/login': typeof LoginRoute
   '/pm-console': typeof PmConsoleRoute
   '/projects': typeof ProjectsRoute
   '/quality': typeof QualityRoute
   '/reports': typeof ReportsRoute
   '/settings': typeof SettingsRoute
+  '/unauthorized': typeof UnauthorizedRoute
   '/workforce': typeof WorkforceRoute
   '/client/ask': typeof ClientAskRoute
   '/client/reports': typeof ClientReportsRoute
@@ -211,11 +229,13 @@ export interface FileRouteTypes {
     | '/governance'
     | '/knowledge'
     | '/leadership'
+    | '/login'
     | '/pm-console'
     | '/projects'
     | '/quality'
     | '/reports'
     | '/settings'
+    | '/unauthorized'
     | '/workforce'
     | '/client/ask'
     | '/client/reports'
@@ -233,11 +253,13 @@ export interface FileRouteTypes {
     | '/governance'
     | '/knowledge'
     | '/leadership'
+    | '/login'
     | '/pm-console'
     | '/projects'
     | '/quality'
     | '/reports'
     | '/settings'
+    | '/unauthorized'
     | '/workforce'
     | '/client/ask'
     | '/client/reports'
@@ -255,11 +277,13 @@ export interface FileRouteTypes {
     | '/governance'
     | '/knowledge'
     | '/leadership'
+    | '/login'
     | '/pm-console'
     | '/projects'
     | '/quality'
     | '/reports'
     | '/settings'
+    | '/unauthorized'
     | '/workforce'
     | '/client/ask'
     | '/client/reports'
@@ -278,11 +302,13 @@ export interface RootRouteChildren {
   GovernanceRoute: typeof GovernanceRoute
   KnowledgeRoute: typeof KnowledgeRoute
   LeadershipRoute: typeof LeadershipRoute
+  LoginRoute: typeof LoginRoute
   PmConsoleRoute: typeof PmConsoleRoute
   ProjectsRoute: typeof ProjectsRoute
   QualityRoute: typeof QualityRoute
   ReportsRoute: typeof ReportsRoute
   SettingsRoute: typeof SettingsRoute
+  UnauthorizedRoute: typeof UnauthorizedRoute
   WorkforceRoute: typeof WorkforceRoute
   ClientAskRoute: typeof ClientAskRoute
   ClientReportsRoute: typeof ClientReportsRoute
@@ -297,6 +323,13 @@ declare module '@tanstack/react-router' {
       path: '/workforce'
       fullPath: '/workforce'
       preLoaderRoute: typeof WorkforceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/unauthorized': {
+      id: '/unauthorized'
+      path: '/unauthorized'
+      fullPath: '/unauthorized'
+      preLoaderRoute: typeof UnauthorizedRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings': {
@@ -332,6 +365,13 @@ declare module '@tanstack/react-router' {
       path: '/pm-console'
       fullPath: '/pm-console'
       preLoaderRoute: typeof PmConsoleRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/leadership': {
@@ -446,11 +486,13 @@ const rootRouteChildren: RootRouteChildren = {
   GovernanceRoute: GovernanceRoute,
   KnowledgeRoute: KnowledgeRoute,
   LeadershipRoute: LeadershipRoute,
+  LoginRoute: LoginRoute,
   PmConsoleRoute: PmConsoleRoute,
   ProjectsRoute: ProjectsRoute,
   QualityRoute: QualityRoute,
   ReportsRoute: ReportsRoute,
   SettingsRoute: SettingsRoute,
+  UnauthorizedRoute: UnauthorizedRoute,
   WorkforceRoute: WorkforceRoute,
   ClientAskRoute: ClientAskRoute,
   ClientReportsRoute: ClientReportsRoute,

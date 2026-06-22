@@ -1,14 +1,16 @@
-import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   LayoutDashboard, Activity, ShieldCheck, Users, GitBranch, Briefcase,
   BookOpen, FolderKanban, ListChecks, Settings2, FileText, Folder, BarChart3, Settings,
-  Bell, Sun, Moon, ChevronDown, Search, Building2, Crown, UserCog, Signal,
+  Bell, Sun, Moon, Search, Building2, Crown, Signal, LogOut,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import { useRole, type Role } from "@/lib/bsg/role";
+import { useRole } from "@/lib/bsg/role";
 import { cn } from "@/lib/utils";
 import { notifications } from "@/lib/bsg/data";
 import { StatusPill } from "./widgets";
+import { useAuthStore } from "@/stores/useAuthStore";
+import type { AppRole, MeUser } from "@/types/auth";
 
 type NavItem = { to: string; label: string; icon: React.ComponentType<{ className?: string }> };
 
@@ -25,7 +27,6 @@ const internalNav: { section: string; items: NavItem[] }[] = [
     { to: "/knowledge", label: "Knowledge Agent", icon: BookOpen },
     { to: "/projects", label: "Projects", icon: FolderKanban },
     { to: "/pm-console", label: "PM Console", icon: ListChecks },
-    { to: "/admin", label: "Admin Console", icon: Settings2 },
   ]},
   { section: "Reporting", items: [
     { to: "/reports", label: "Reports", icon: FileText },
@@ -46,33 +47,72 @@ const clientNav: { section: string; items: NavItem[] }[] = [
   ]},
 ];
 
+const leadershipNav: { section: string; items: NavItem[] }[] = [
+  { section: "Portfolio", items: [
+    { to: "/leadership", label: "Leadership Cockpit", icon: Crown },
+  ]},
+];
+
+const adminNav: { section: string; items: NavItem[] }[] = [
+  { section: "Platform", items: [
+    { to: "/admin", label: "Admin Console", icon: Settings2 },
+  ]},
+];
+
+function navForUser(user: MeUser | null) {
+  if (!user) return internalNav;
+  switch (user.role as AppRole) {
+    case "client":
+      return clientNav;
+    case "bsg_leadership":
+      return leadershipNav;
+    case "super_admin":
+      return adminNav;
+    default:
+      return internalNav;
+  }
+}
+
+function roleLabel(role: AppRole): string {
+  switch (role) {
+    case "client":
+      return "Client";
+    case "delivery_manager":
+      return "Delivery Manager";
+    case "bsg_leadership":
+      return "BSG Leadership";
+    case "super_admin":
+      return "Super Admin";
+    default:
+      return role;
+  }
+}
+
+function initials(name: string | null, email: string): string {
+  if (name) {
+    const parts = name.trim().split(/\s+/);
+    return parts.slice(0, 2).map((p) => p[0]?.toUpperCase() ?? "").join("") || email[0]?.toUpperCase() || "?";
+  }
+  return email[0]?.toUpperCase() ?? "?";
+}
+
 export function Shell({ children }: { children: ReactNode }) {
-  const { role, setRole, theme, toggleTheme } = useRole();
+  const { theme, toggleTheme } = useRole();
+  const user = useAuthStore((s) => s.user);
+  const logout = useAuthStore((s) => s.logout);
+  const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
-  const [roleOpen, setRoleOpen] = useState(false);
-  const navigate = useNavigate();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
 
-  const isClient = role === "Client";
-  const isLeadership = role === "BSG Leadership";
-  const nav = isClient ? clientNav : internalNav;
-
-  const onRoleChange = (r: Role) => {
-    setRole(r);
-    setRoleOpen(false);
-    if (r === "Client") navigate({ to: "/client" });
-    else if (r === "BSG Leadership") navigate({ to: "/leadership" });
-    else navigate({ to: "/dashboard" });
-  };
+  const nav = navForUser(user);
 
   const currentTitle =
-    [...internalNav, ...clientNav].flatMap((s) => s.items).find((i) => i.to === pathname)?.label ??
+    [...internalNav, ...clientNav, ...leadershipNav, ...adminNav].flatMap((s) => s.items).find((i) => i.to === pathname)?.label ??
     (pathname === "/leadership" ? "Leadership Cockpit" : pathname === "/client" ? "My Projects" : "BSG Insights Hub");
 
   return (
     <div className="flex min-h-screen w-full bg-background text-foreground">
-      {/* Sidebar */}
       <aside
         className={cn(
           "fixed inset-y-0 left-0 z-30 flex flex-col border-r border-sidebar-border bg-sidebar transition-[width] duration-200",
@@ -133,9 +173,7 @@ export function Shell({ children }: { children: ReactNode }) {
         </button>
       </aside>
 
-      {/* Main area */}
       <div className={cn("flex min-h-screen w-full flex-col transition-[padding] duration-200", collapsed ? "pl-16" : "pl-60")}>
-        {/* Header */}
         <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-border bg-background/95 px-6 backdrop-blur">
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold text-foreground">{currentTitle}</div>
@@ -148,37 +186,10 @@ export function Shell({ children }: { children: ReactNode }) {
             <Search className="h-3.5 w-3.5" /> Search projects, alerts, docs…
           </div>
 
-          {/* Role switcher */}
-          <div className="relative">
-            <button
-              onClick={() => setRoleOpen((o) => !o)}
-              className="flex items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-medium hover:bg-elevated"
-            >
-              {role === "Delivery Manager" ? <UserCog className="h-3.5 w-3.5" /> : role === "Client" ? <Building2 className="h-3.5 w-3.5" /> : <Crown className="h-3.5 w-3.5" />}
-              {role}
-              <ChevronDown className="h-3 w-3 opacity-60" />
-            </button>
-            {roleOpen && (
-              <div className="absolute right-0 top-full z-30 mt-1 w-56 rounded-md border border-border bg-popover p-1 text-sm">
-                {(["Delivery Manager", "Client", "BSG Leadership"] as Role[]).map((r) => (
-                  <button
-                    key={r}
-                    onClick={() => onRoleChange(r)}
-                    className={cn("flex w-full items-center justify-between rounded px-2.5 py-1.5 text-left text-xs hover:bg-elevated", r === role && "text-[color:var(--brand)]")}
-                  >
-                    {r}
-                    {r === role && <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--brand)]" />}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
           <button onClick={toggleTheme} className="grid h-8 w-8 place-items-center rounded-md border border-border bg-card hover:bg-elevated">
             {theme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
           </button>
 
-          {/* Notifications */}
           <div className="relative">
             <button onClick={() => setNotifOpen((o) => !o)} className="relative grid h-8 w-8 place-items-center rounded-md border border-border bg-card hover:bg-elevated">
               <Bell className="h-3.5 w-3.5" />
@@ -202,13 +213,25 @@ export function Shell({ children }: { children: ReactNode }) {
             )}
           </div>
 
-          {/* Avatar */}
           <div className="flex items-center gap-2 rounded-md border border-border bg-card px-2 py-1">
-            <div className="grid h-6 w-6 place-items-center rounded-full bg-[color:var(--brand)]/20 text-[10px] font-semibold text-[color:var(--brand)]">MC</div>
-            <div className="text-xs">
-              <div className="font-medium leading-none">Maya Chen</div>
-              <div className="text-[10px] text-muted-foreground">{isClient ? "Client · Aurora" : isLeadership ? "Leadership" : "Delivery PM"}</div>
+            <div className="grid h-6 w-6 place-items-center rounded-full bg-[color:var(--brand)]/20 text-[10px] font-semibold text-[color:var(--brand)]">
+              {user ? initials(user.full_name, user.email) : "?"}
             </div>
+            <div className="text-xs">
+              <div className="font-medium leading-none">{user?.full_name ?? user?.email ?? "User"}</div>
+              <div className="text-[10px] text-muted-foreground">
+                {user ? roleLabel(user.role) : "—"}
+                {user?.organisation ? ` · ${user.organisation.name}` : ""}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => void logout().then(() => navigate({ to: "/login" }))}
+              title="Sign out"
+              className="ml-1 grid h-7 w-7 place-items-center rounded-md hover:bg-elevated"
+            >
+              <LogOut className="h-3.5 w-3.5 text-muted-foreground" />
+            </button>
           </div>
         </header>
 

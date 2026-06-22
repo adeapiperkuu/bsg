@@ -1,14 +1,82 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
-import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
+import { useEffect, useState } from "react";
+
+import { Card, SectionHeader } from "@/components/bsg/widgets";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { createUser, listOrganisations, listUsers } from "@/lib/api";
+import { useAuthStore } from "@/stores/useAuthStore";
+import type { AppRole, OrganisationRead, UserRead } from "@/types/auth";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/admin")({ component: AdminConsole });
 
-const tabs = ["Users & Roles", "Client Tenants", "Metrics", "Pipeline Health", "Audit Log"] as const;
+const tabs = ["Users & Roles", "Metrics"] as const;
 
 function AdminConsole() {
+  const user = useAuthStore((s) => s.user);
   const [tab, setTab] = useState<(typeof tabs)[number]>("Users & Roles");
+  const [users, setUsers] = useState<UserRead[]>([]);
+  const [orgs, setOrgs] = useState<OrganisationRead[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [form, setForm] = useState({
+    email: "",
+    password: "",
+    full_name: "",
+    role: "delivery_manager" as AppRole,
+    org_id: "",
+  });
+
+  const canManageUsers = user?.permissions.can_manage_users ?? false;
+
+  const load = async () => {
+    if (!canManageUsers) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const [userRows, orgRows] = await Promise.all([listUsers(), listOrganisations()]);
+      setUsers(userRows);
+      setOrgs(orgRows);
+      if (!form.org_id && orgRows[0]) setForm((f) => ({ ...f, org_id: orgRows[0].id }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load admin data.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, [canManageUsers]);
+
+  const onCreateUser = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setError(null);
+    try {
+      await createUser({
+        email: form.email,
+        password: form.password,
+        full_name: form.full_name || undefined,
+        role: form.role,
+        org_id: form.org_id,
+      });
+      setForm((f) => ({ ...f, email: "", password: "", full_name: "" }));
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create user.");
+    }
+  };
+
+  if (!canManageUsers) {
+    return (
+      <div className="rounded-md border border-border bg-card p-6 text-sm text-muted-foreground">
+        Super admin access is required to manage users and platform configuration.
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap gap-1 rounded-md border border-border bg-card p-1 text-xs">
@@ -17,81 +85,89 @@ function AdminConsole() {
         ))}
       </div>
 
-      {tab === "Users & Roles" && (
-        <Card>
-          <SectionHeader title="Users" sub="28 accounts · 4 roles" />
-          <table className="w-full text-xs">
-            <thead className="text-left text-muted-foreground"><tr className="border-b border-border"><th className="py-2 pr-3 font-medium">Name</th><th className="py-2 pr-3 font-medium">Email</th><th className="py-2 pr-3 font-medium">Role</th><th className="py-2 pr-3 font-medium">Last Active</th><th className="py-2 pr-3 font-medium">Status</th></tr></thead>
-            <tbody>
-              {[
-                ["Maya Chen", "maya@bsg.com", "Delivery PM", "2m ago", "Active"],
-                ["Arben K.", "arben@bsg.com", "QA Lead", "12m ago", "Active"],
-                ["Priya R.", "priya@bsg.com", "Workforce Mgr", "1h ago", "Active"],
-                ["Sara L.", "sara@bsg.com", "Governance", "3h ago", "Active"],
-                ["External · Helios PM", "pm@helios.com", "Client", "2d ago", "Active"],
-              ].map((r) => (
-                <tr key={r[1]} className="border-b border-border/50">{r.map((c, i) => <td key={i} className={cn("py-2.5 pr-3", i === 0 && "font-medium")}>{c}</td>)}</tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
-      )}
+      {error && <p className="text-sm text-destructive">{error}</p>}
 
-      {tab === "Client Tenants" && (
-        <Card>
-          <SectionHeader title="Client Tenants" sub="Tenant-isolated workspaces" />
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-            {["Aurora Health", "Helios Bank", "Nimbus AI", "Orion Geo", "Pulse Diagnostics", "Vertex Capital"].map((c) => (
-              <div key={c} className="rounded-md border border-border bg-elevated p-3 text-xs"><div className="font-medium">{c}</div><div className="mt-1 text-[10px] text-muted-foreground">Active · 2 projects · 4 users</div><button className="mt-2 rounded border border-border px-2 py-0.5 text-[10px]">Manage</button></div>
-            ))}
-          </div>
-        </Card>
+      {tab === "Users & Roles" && (
+        <div className="grid gap-5 lg:grid-cols-2">
+          <Card>
+            <SectionHeader title="Users" sub={loading ? "Loading…" : `${users.length} accounts`} />
+            <div className="max-h-80 overflow-auto">
+              <table className="w-full text-xs">
+                <thead className="text-left text-muted-foreground">
+                  <tr className="border-b border-border">
+                    <th className="py-2 pr-3 font-medium">Name</th>
+                    <th className="py-2 pr-3 font-medium">Email</th>
+                    <th className="py-2 pr-3 font-medium">Role</th>
+                    <th className="py-2 pr-3 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {users.map((u) => (
+                    <tr key={u.id} className="border-b border-border/50">
+                      <td className="py-2 pr-3">{u.full_name ?? "—"}</td>
+                      <td className="py-2 pr-3">{u.email}</td>
+                      <td className="py-2 pr-3">{u.role}</td>
+                      <td className="py-2 pr-3">{u.is_active ? "Active" : "Inactive"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          <Card>
+            <SectionHeader title="Create user" sub="Provision Supabase Auth + platform profile" />
+            <form onSubmit={onCreateUser} className="space-y-3 text-sm">
+              <div className="space-y-1">
+                <Label htmlFor="email">Email</Label>
+                <Input id="email" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="password">Password</Label>
+                <Input id="password" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="full_name">Full name</Label>
+                <Input id="full_name" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="role">Role</Label>
+                <select
+                  id="role"
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={form.role}
+                  onChange={(e) => setForm({ ...form, role: e.target.value as AppRole })}
+                >
+                  <option value="client">client</option>
+                  <option value="delivery_manager">delivery_manager</option>
+                  <option value="bsg_leadership">bsg_leadership</option>
+                  <option value="super_admin">super_admin</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="org_id">Organisation</Label>
+                <select
+                  id="org_id"
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={form.org_id}
+                  onChange={(e) => setForm({ ...form, org_id: e.target.value })}
+                  required
+                >
+                  {orgs.map((o) => (
+                    <option key={o.id} value={o.id}>{o.name}</option>
+                  ))}
+                </select>
+              </div>
+              <Button type="submit">Create user</Button>
+            </form>
+          </Card>
+        </div>
       )}
 
       {tab === "Metrics" && (
         <Card>
-          <SectionHeader title="Metric Configuration" sub="Thresholds for AI agents" />
-          <ul className="space-y-2 text-xs">
-            {[
-              { m: "IAA drift threshold (Krippendorff α)", v: "0.85" },
-              { m: "Schedule confidence at-risk cutoff", v: "75%" },
-              { m: "Utilization alert (per team)", v: "85%" },
-              { m: "Rework rate warning", v: "8%" },
-            ].map((r) => (
-              <li key={r.m} className="flex items-center justify-between rounded border border-border bg-elevated px-3 py-2"><span>{r.m}</span><span className="flex items-center gap-2"><input defaultValue={r.v} className="w-20 rounded border border-border bg-card px-2 py-0.5 text-xs" /><label className="inline-flex items-center gap-1"><input type="checkbox" defaultChecked className="accent-[color:var(--brand)]" /><span className="text-[10px]">Enabled</span></label></span></li>
-            ))}
-          </ul>
-        </Card>
-      )}
-
-      {tab === "Pipeline Health" && (
-        <Card>
-          <SectionHeader title="System Pipeline Health" />
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-            {[
-              { p: "Ingestion", s: "On Track" },
-              { p: "AI Inference", s: "On Track" },
-              { p: "Quality Eval", s: "At Risk" },
-              { p: "Report Generation", s: "On Track" },
-              { p: "Webhook Delivery", s: "On Track" },
-              { p: "Data Warehouse Sync", s: "On Track" },
-              { p: "Audit Stream", s: "On Track" },
-              { p: "Notification Bus", s: "On Track" },
-            ].map((r) => (
-              <div key={r.p} className="rounded border border-border bg-elevated p-3 text-xs"><div className="font-medium">{r.p}</div><div className="mt-1 flex items-center justify-between"><span className="text-[10px] text-muted-foreground">Last 24h</span><StatusPill status={r.s} /></div></div>
-            ))}
-          </div>
-        </Card>
-      )}
-
-      {tab === "Audit Log" && (
-        <Card>
-          <SectionHeader title="Audit Log" sub="Last 50 events" />
-          <ul className="space-y-1 text-xs">
-            {Array.from({ length: 12 }).map((_, i) => (
-              <li key={i} className="flex items-center justify-between rounded border border-border bg-elevated px-2.5 py-1.5"><span><span className="font-medium">maya@bsg.com</span> · approved AI draft · Aurora W{24 - i}</span><span className="text-[10px] text-muted-foreground">{i * 14}m ago</span></li>
-            ))}
-          </ul>
+          <SectionHeader title="Metric configuration" sub="Use API /metric-configurations for CRUD" />
+          <p className="text-sm text-muted-foreground">Metric configuration UI can be extended here. Super admins manage metrics via the API in this MVP.</p>
         </Card>
       )}
     </div>

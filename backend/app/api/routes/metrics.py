@@ -15,14 +15,15 @@ router = APIRouter(tags=["metrics"])
 
 
 @router.get("/metric-configurations", response_model=ListResponse[MetricConfigurationRead])
-async def list_metrics(session: SessionDep, _: UserDep) -> ListResponse[MetricConfigurationRead]:
-    rows = (
-        await session.execute(
-            select(MetricConfiguration)
-            .where(MetricConfiguration.deleted_at.is_(None))
-            .order_by(MetricConfiguration.display_order, MetricConfiguration.metric_key)
-        )
-    ).scalars()
+async def list_metrics(session: SessionDep, current_user: UserDep) -> ListResponse[MetricConfigurationRead]:
+    query = (
+        select(MetricConfiguration)
+        .where(MetricConfiguration.deleted_at.is_(None))
+        .order_by(MetricConfiguration.display_order, MetricConfiguration.metric_key)
+    )
+    if current_user.role == AppRole.CLIENT:
+        query = query.where(MetricConfiguration.is_client_visible.is_(True))
+    rows = (await session.execute(query)).scalars()
     return ListResponse(data=[MetricConfigurationRead.model_validate(row) for row in rows], pagination=Pagination(limit=100))
 
 

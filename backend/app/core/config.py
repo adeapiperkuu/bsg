@@ -2,7 +2,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -18,6 +17,8 @@ class Settings(BaseSettings):
     environment: Literal["dev", "staging", "prod"] = "dev"
     allowed_origins: str = "http://localhost:5173"
     supabase_jwt_secret: str | None = None
+    auth_cookie_secure: bool = False
+    auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
     llm_api_key: str | None = None
     llm_base_url: str | None = None
     llm_model: str | None = None
@@ -39,7 +40,23 @@ class Settings(BaseSettings):
 
     @property
     def jwt_secret(self) -> str:
-        return self.supabase_jwt_secret or self.secret_key
+        if self.supabase_jwt_secret and not self.supabase_jwt_secret.startswith(("http://", "https://")):
+            return self.supabase_jwt_secret
+        if self.environment == "dev":
+            return self.secret_key
+        msg = "SUPABASE_JWT_SECRET must be set to the Supabase JWT secret in non-dev environments."
+        raise ValueError(msg)
+
+    @property
+    def jwt_uses_jwks(self) -> bool:
+        return bool(self.supabase_jwt_secret and self.supabase_jwt_secret.startswith(("http://", "https://")))
+
+    @property
+    def async_database_url(self) -> str:
+        url = self.database_url
+        if url.startswith("postgresql://"):
+            return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return url
 
 
 @lru_cache
