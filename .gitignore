@@ -31,6 +31,9 @@ dist-ssr
 *.sln
 *.sw?
 
+# Python
+__pycache__/
+
 # Environment variables
 .env
 .env.local
@@ -38,5 +41,6 @@ dist-ssr
 .env.production    
 .env.example
 
+# Frontend
 node_modules
 .tanstack/
