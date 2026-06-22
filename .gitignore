@@ -44,3 +44,13 @@ __pycache__/
 # Frontend
 node_modules
 .tanstack/
+
+# Backend
+.venv/
+__pycache__/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.env.development
+.env.production
+.env.example
