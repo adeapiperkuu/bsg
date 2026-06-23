@@ -18,7 +18,7 @@ from app.db.models import (
     RiskAlert,
     ThroughputSnapshot,
 )
-from app.services.scoping import get_visible_project
+from app.services.scoping import get_visible_project, scoped_project_query
 
 
 def _enum_value(value: Any) -> str:
@@ -186,3 +186,34 @@ async def get_dashboard_data(
         "quality_snapshot": await _latest_quality_snapshot(session, project.id),
     }
     return build_dashboard_response(raw_data)
+
+
+async def get_portfolio_data(
+    *,
+    session: AsyncSession,
+    current_user: CurrentUser,
+    as_of_date: date | None = None,
+) -> dict[str, Any]:
+    """Return delivery dashboard summaries for every visible project in one payload."""
+    project_rows = (
+        await session.execute(scoped_project_query(current_user).order_by(Project.name.asc()))
+    ).scalars()
+    projects = list(project_rows)
+    portfolio_projects: list[dict[str, Any]] = []
+    all_milestones: list[dict[str, Any]] = []
+
+    for project in projects:
+        raw_data = {
+            "as_of_date": as_of_date or date.today(),
+            "project": _project_payload(project),
+            "milestones": await _list_milestones(session, project.id),
+            "throughput_snapshots": await _list_throughput(session, project.id),
+            "risks": await _list_open_risks(session, project.id),
+            "bottlenecks": await _list_open_bottlenecks(session, project.id),
+            "quality_snapshot": await _latest_quality_snapshot(session, project.id),
+        }
+        dashboard = build_dashboard_response(raw_data)
+        portfolio_projects.append({"project_id": project.id, "dashboard": dashboard})
+        all_milestones.extend(dashboard["milestones"])
+
+    return {"projects": portfolio_projects, "milestones": all_milestones}

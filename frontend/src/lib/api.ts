@@ -176,6 +176,18 @@ export async function fetchDeliveryDashboard(
   return apiFetch<DeliveryDashboardResponse>(`/delivery/dashboard/${projectId}`);
 }
 
+export type DeliveryPortfolioResponse = {
+  projects: Array<{
+    project_id: string;
+    dashboard: DeliveryDashboardResponse;
+  }>;
+  milestones: Array<Record<string, unknown>>;
+};
+
+export async function fetchDeliveryPortfolio(): Promise<DeliveryPortfolioResponse> {
+  return apiFetch<DeliveryPortfolioResponse>("/delivery/portfolio");
+}
+
 export type ThroughputSnapshotRead = {
   id: string;
   project_id: string;

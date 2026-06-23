@@ -1,14 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
 import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
 import {
   createProject,
-  listProjects,
   type ProjectCreatePayload,
   type ProjectRead,
   type ProjectStatus,
   updateProject,
 } from "@/lib/api";
+import { projectsQueryOptions, useProjectsQuery } from "@/lib/queries/delivery";
 import { Search } from "lucide-react";
 
 export const Route = createFileRoute("/projects")({ component: ProjectsPage });
@@ -30,9 +31,11 @@ function statusLabel(status: string): string {
 }
 
 function ProjectsPage() {
-  const [projects, setProjects] = useState<ProjectRead[]>([]);
+  const queryClient = useQueryClient();
+  const projectsQuery = useProjectsQuery();
+  const projects = projectsQuery.data ?? [];
+  const loading = projectsQuery.isLoading;
   const [query, setQuery] = useState("");
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editingProject, setEditingProject] = useState<ProjectRead | null>(null);
@@ -56,20 +59,9 @@ function ProjectsPage() {
     );
   }, [projects, query]);
 
-  const loadProjects = () => {
-    setLoading(true);
-    setError(null);
-    listProjects()
-      .then(setProjects)
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : "Projects failed to load.");
-      })
-      .finally(() => setLoading(false));
+  const refreshProjects = () => {
+    void queryClient.invalidateQueries({ queryKey: projectsQueryOptions.queryKey });
   };
-
-  useEffect(() => {
-    loadProjects();
-  }, []);
 
   const submitCreate = (event: React.FormEvent) => {
     event.preventDefault();
@@ -80,8 +72,8 @@ function ProjectsPage() {
       daily_target_units: createForm.daily_target_units || null,
       description: createForm.description || null,
     })
-      .then((project) => {
-        setProjects((current) => [project, ...current]);
+      .then(() => {
+        refreshProjects();
         setCreateForm({
           name: "",
           description: "",
@@ -112,10 +104,8 @@ function ProjectsPage() {
       actual_end_date: editingProject.actual_end_date,
       daily_target_units: editingProject.daily_target_units,
     })
-      .then((updated) => {
-        setProjects((current) =>
-          current.map((project) => (project.id === updated.id ? updated : project)),
-        );
+      .then(() => {
+        refreshProjects();
         setEditingProject(null);
       })
       .catch((err: unknown) => {
@@ -138,7 +128,7 @@ function ProjectsPage() {
             />
           </div>
           <button
-            onClick={loadProjects}
+            onClick={refreshProjects}
             className="rounded border border-border px-3 py-1.5 text-xs hover:bg-elevated"
           >
             Refresh

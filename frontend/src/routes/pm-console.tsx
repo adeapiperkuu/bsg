@@ -1,7 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
 import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
-import { listProjects, type ProjectRead } from "@/lib/api";
+import { useProjectsQuery } from "@/lib/queries/delivery";
 
 export const Route = createFileRoute("/pm-console")({ component: PmConsole });
 
@@ -14,19 +13,8 @@ function openDelivery(projectId: string): void {
 }
 
 function PmConsole() {
-  const [projects, setProjects] = useState<ProjectRead[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setLoading(true);
-    listProjects()
-      .then(setProjects)
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : "Projects failed to load.");
-      })
-      .finally(() => setLoading(false));
-  }, []);
+  const { data: projects = [], isLoading: loading, error } = useProjectsQuery();
+  const errorMessage = error instanceof Error ? error.message : null;
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
@@ -34,8 +22,8 @@ function PmConsole() {
         <SectionHeader title="My Projects" sub="Loaded from backend Projects API" />
         {loading ? (
           <p className="text-sm text-muted-foreground">Loading projects...</p>
-        ) : error ? (
-          <p className="text-sm text-[color:var(--danger)]">{error}</p>
+        ) : errorMessage ? (
+          <p className="text-sm text-[color:var(--danger)]">{errorMessage}</p>
         ) : projects.length === 0 ? (
           <p className="text-sm text-muted-foreground">No projects assigned to this user.</p>
         ) : (

@@ -8,7 +8,7 @@ import {
   CartesianGrid,
   Tooltip,
 } from "recharts";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Card,
   SectionHeader,
@@ -19,17 +19,17 @@ import {
 } from "@/components/bsg/widgets";
 import {
   type DeliveryDashboardResponse,
-  fetchDeliveryDashboard,
-  listOrganisations,
-  listProjectDeliveryConfidence,
-  listProjectMilestones,
-  listProjectRiskAlerts,
-  listProjectThroughput,
-  listProjects,
   type ProjectRead,
   type ThroughputSnapshotRead,
 } from "@/lib/api";
-import type { OrganisationRead } from "@/types/auth";
+import {
+  useDeliveryDashboardQuery,
+  useDeliveryPortfolioQuery,
+  useOrganisationsQuery,
+  useProjectDeliveryConfidenceQuery,
+  useProjectThroughputQuery,
+  useProjectsQuery,
+} from "@/lib/queries/delivery";
 
 export const Route = createFileRoute("/delivery")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -166,7 +166,7 @@ function buildRecommendations(dashboard: DeliveryDashboardResponse) {
 }
 
 function buildConfidenceChart(
-  points: Awaited<ReturnType<typeof listProjectDeliveryConfidence>>,
+  points: Array<{ created_at: string; score_pct: string; forecast_completion_date: string | null }>,
 ) {
   const sorted = [...points].sort(
     (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
@@ -249,20 +249,34 @@ function buildAgentAnswer(
 function DeliveryPage() {
   const navigate = useNavigate({ from: "/delivery" });
   const { projectId: urlProjectId } = Route.useSearch();
+  const syncedProjectIdRef = useRef<string | null>(null);
 
-  const [projects, setProjects] = useState<ProjectRead[]>([]);
-  const [organisations, setOrganisations] = useState<OrganisationRead[]>([]);
-  const [dashboards, setDashboards] = useState<Record<string, DeliveryDashboardResponse>>({});
-  const [confidenceHistory, setConfidenceHistory] = useState<
-    Awaited<ReturnType<typeof listProjectDeliveryConfidence>>
-  >([]);
-  const [throughputSnapshots, setThroughputSnapshots] = useState<ThroughputSnapshotRead[]>([]);
-  const [portfolioMilestones, setPortfolioMilestones] = useState<
-    Array<Record<string, unknown>>
-  >([]);
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const projectsQuery = useProjectsQuery();
+  const organisationsQuery = useOrganisationsQuery();
+  const portfolioQuery = useDeliveryPortfolioQuery();
+
+  const projects = projectsQuery.data ?? [];
+  const organisations = organisationsQuery.data ?? [];
+
+  const resolvedProjectId = useMemo(() => {
+    if (projects.length === 0) return null;
+    if (urlProjectId && projects.some((project) => project.id === urlProjectId)) {
+      return urlProjectId;
+    }
+    return projects[0]?.id ?? null;
+  }, [projects, urlProjectId]);
+
+  useEffect(() => {
+    if (!resolvedProjectId || resolvedProjectId === urlProjectId) return;
+    if (syncedProjectIdRef.current === resolvedProjectId) return;
+    syncedProjectIdRef.current = resolvedProjectId;
+    navigate({ search: { projectId: resolvedProjectId }, replace: true });
+  }, [resolvedProjectId, urlProjectId, navigate]);
+
+  const selectedDashboardQuery = useDeliveryDashboardQuery(resolvedProjectId);
+  const confidenceQuery = useProjectDeliveryConfidenceQuery(resolvedProjectId);
+  const throughputQuery = useProjectThroughputQuery(resolvedProjectId);
+
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
 
@@ -271,107 +285,34 @@ function DeliveryPage() {
     [organisations],
   );
 
-  const selectedProject = projects.find((project) => project.id === selectedProjectId);
-  const selectedDashboard = selectedProjectId ? dashboards[selectedProjectId] : undefined;
+  const portfolioDashboards = useMemo(() => {
+    if (!portfolioQuery.data) return {};
+    return Object.fromEntries(
+      portfolioQuery.data.projects.map((entry) => [entry.project_id, entry.dashboard]),
+    );
+  }, [portfolioQuery.data]);
 
-  useEffect(() => {
-    let isMounted = true;
-    setLoading(true);
-    setErrorMessage(null);
-
-    Promise.all([listProjects(), listOrganisations()])
-      .then(async ([loadedProjects, loadedOrganisations]) => {
-        if (!isMounted) return;
-
-        setProjects(loadedProjects);
-        setOrganisations(loadedOrganisations);
-
-        if (loadedProjects.length === 0) {
-          setLoading(false);
-          return;
-        }
-
-        const initialProject =
-          loadedProjects.find((project) => project.id === urlProjectId) ?? loadedProjects[0];
-
-        setSelectedProjectId(initialProject.id);
-        if (initialProject.id !== urlProjectId) {
-          navigate({ search: { projectId: initialProject.id }, replace: true });
-        }
-
-        const dashboardEntries = await Promise.all(
-          loadedProjects.map(async (project) => {
-            const dashboard = await fetchDeliveryDashboard(project.id);
-            return [project.id, dashboard] as const;
-          }),
-        );
-
-        if (!isMounted) return;
-
-        setDashboards(Object.fromEntries(dashboardEntries));
-
-        const milestoneGroups = await Promise.all(
-          loadedProjects.map((project) => listProjectMilestones(project.id)),
-        );
-
-        if (!isMounted) return;
-
-        setPortfolioMilestones(milestoneGroups.flat().map((milestone) => ({ ...milestone })));
-        setLoading(false);
-      })
-      .catch((error: unknown) => {
-        if (!isMounted) return;
-        setErrorMessage(error instanceof Error ? error.message : "Delivery data failed to load.");
-        setLoading(false);
-      });
-
-    return () => {
-      isMounted = false;
+  const dashboards = useMemo(() => {
+    if (!resolvedProjectId || !selectedDashboardQuery.data) {
+      return portfolioDashboards;
+    }
+    return {
+      ...portfolioDashboards,
+      [resolvedProjectId]: selectedDashboardQuery.data,
     };
-  }, []);
+  }, [portfolioDashboards, resolvedProjectId, selectedDashboardQuery.data]);
 
-  useEffect(() => {
-    if (!selectedProjectId) return;
+  const selectedProject = projects.find((project) => project.id === resolvedProjectId);
+  const selectedDashboard = resolvedProjectId ? dashboards[resolvedProjectId] : undefined;
+  const throughputSnapshots = throughputQuery.data ?? [];
+  const portfolioMilestones = portfolioQuery.data?.milestones ?? [];
 
-    let isMounted = true;
-
-    listProjectDeliveryConfidence(selectedProjectId)
-      .then((points) => {
-        if (isMounted) setConfidenceHistory(points);
-      })
-      .catch(() => {
-        if (isMounted) setConfidenceHistory([]);
-      });
-
-    listProjectThroughput(selectedProjectId)
-      .then((snapshots) => {
-        if (isMounted) setThroughputSnapshots(snapshots);
-      })
-      .catch(() => {
-        if (isMounted) setThroughputSnapshots([]);
-      });
-
-    listProjectRiskAlerts(selectedProjectId).catch(() => undefined);
-
-    return () => {
-      isMounted = false;
-    };
-  }, [selectedProjectId]);
-
-  useEffect(() => {
-    if (!selectedDashboard || !selectedProject) return;
-    const initialText =
-      selectedDashboard.daily_summary ??
-      buildAgentAnswer(
-        "portfolio status",
-        selectedProject,
-        selectedDashboard,
-        Object.values(dashboards).filter((dashboard) => dashboard.traffic_light !== "green")
-          .length,
-        throughputSnapshots,
-      );
-    setMessages([{ role: "ai", text: initialText }]);
-  }, [selectedDashboard, selectedProject, dashboards, throughputSnapshots]);
+  const loading =
+    projectsQuery.isLoading || organisationsQuery.isLoading || portfolioQuery.isLoading;
+  const errorMessage =
+    (projectsQuery.error instanceof Error ? projectsQuery.error.message : null) ??
+    (organisationsQuery.error instanceof Error ? organisationsQuery.error.message : null) ??
+    (portfolioQuery.error instanceof Error ? portfolioQuery.error.message : null);
 
   const portfolioKpis = useMemo(() => {
     const dashboardList = Object.values(dashboards);
@@ -407,7 +348,7 @@ function DeliveryPage() {
 
   const rootCauses = selectedDashboard ? buildRootCauses(selectedDashboard) : [];
   const recommendations = selectedDashboard ? buildRecommendations(selectedDashboard) : [];
-  const confidenceChart = buildConfidenceChart(confidenceHistory);
+  const confidenceChart = buildConfidenceChart(confidenceQuery.data ?? []);
   const evidenceAttachments = selectedDashboard
     ? [
         ...selectedDashboard.risks.map((risk) => String(risk.title ?? "")),
@@ -415,8 +356,29 @@ function DeliveryPage() {
       ].filter(Boolean)
     : [];
 
+  const atRiskCount = portfolioKpis.atRiskProjects;
+
+  useEffect(() => {
+    if (!selectedDashboard || !selectedProject) return;
+    const initialText =
+      selectedDashboard.daily_summary ??
+      buildAgentAnswer(
+        "portfolio status",
+        selectedProject,
+        selectedDashboard,
+        atRiskCount,
+        throughputSnapshots,
+      );
+    setMessages([{ role: "ai", text: initialText }]);
+  }, [
+    selectedProject?.id,
+    selectedDashboard?.daily_summary,
+    selectedDashboard?.confidence,
+    selectedDashboard?.traffic_light,
+    atRiskCount,
+  ]);
+
   const selectProject = (projectId: string) => {
-    setSelectedProjectId(projectId);
     navigate({ search: { projectId } });
   };
 
@@ -463,7 +425,7 @@ function DeliveryPage() {
         <div className="flex items-center justify-end gap-2">
           <span className="text-xs text-muted-foreground">Project focus</span>
           <select
-            value={selectedProjectId ?? ""}
+            value={resolvedProjectId ?? ""}
             onChange={(event) => selectProject(event.target.value)}
             disabled={loading || projects.length === 0}
             className="rounded border border-border bg-card px-2.5 py-1.5 text-xs outline-none"
