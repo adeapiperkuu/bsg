@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { Mail, Pencil, Plus, RefreshCw, Search, Users, X } from "lucide-react";
+import { Mail, Pencil, Plus, RefreshCw, Search, Users } from "lucide-react";
 
 import { Card, SectionHeader } from "@/components/bsg/widgets";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,8 @@ export const Route = createFileRoute("/admin")({ component: AdminConsole });
 
 const USERS_PER_PAGE = 12;
 const roles: AppRole[] = ["client", "delivery_manager", "bsg_leadership", "super_admin"];
+type StatusFilter = "all" | "active" | "inactive";
+type RoleFilter = "all" | AppRole;
 const editControlClass =
   "h-10 rounded-md border border-input bg-background px-3 text-sm shadow-none transition-colors focus:outline-none focus:ring-1 focus:ring-ring";
 const toolbarIconButtonClass =
@@ -50,7 +52,9 @@ function AdminConsole() {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [userSearch, setUserSearch] = useState("");
-  const [searchOpen, setSearchOpen] = useState(false);
+  const [roleFilter, setRoleFilter] = useState<RoleFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [organisationFilter, setOrganisationFilter] = useState<string>("all");
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<UserRead | null>(null);
@@ -74,18 +78,25 @@ function AdminConsole() {
   const canManageUsers = user?.permissions.can_manage_users ?? false;
   const filteredUsers = useMemo(() => {
     const query = userSearch.trim().toLowerCase();
-    const filtered = !query
-      ? users
-      : users.filter((row) =>
-          [row.email, row.full_name ?? "", row.role, row.is_active ? "active" : "inactive"]
-            .some((value) => value.toLowerCase().includes(query)),
+    const filtered = users.filter((row) => {
+      if (query) {
+        const matchesSearch = [row.email, row.full_name ?? ""].some((value) =>
+          value.toLowerCase().includes(query),
         );
+        if (!matchesSearch) return false;
+      }
+      if (roleFilter !== "all" && row.role !== roleFilter) return false;
+      if (statusFilter === "active" && !row.is_active) return false;
+      if (statusFilter === "inactive" && row.is_active) return false;
+      if (organisationFilter !== "all" && row.org_id !== organisationFilter) return false;
+      return true;
+    });
     return [...filtered].sort((a, b) => {
       const nameA = a.full_name?.trim() || a.email;
       const nameB = b.full_name?.trim() || b.email;
       return nameA.localeCompare(nameB, undefined, { sensitivity: "base" });
     });
-  }, [users, userSearch]);
+  }, [users, userSearch, roleFilter, statusFilter, organisationFilter]);
   const totalPages = Math.max(1, Math.ceil(filteredUsers.length / USERS_PER_PAGE));
   const currentPage = Math.min(page, totalPages);
   const pageStart = (currentPage - 1) * USERS_PER_PAGE;
@@ -115,7 +126,14 @@ function AdminConsole() {
 
   useEffect(() => {
     setPage(1);
-  }, [userSearch]);
+  }, [userSearch, roleFilter, statusFilter, organisationFilter]);
+
+  const clearFilters = () => {
+    setUserSearch("");
+    setRoleFilter("all");
+    setStatusFilter("all");
+    setOrganisationFilter("all");
+  };
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -243,65 +261,73 @@ function AdminConsole() {
                       : `Showing ${pageUsers.length ? pageStart + 1 : 0}-${Math.min(pageStart + pageUsers.length, filteredUsers.length)} of ${filteredUsers.length} users`}
                   </p>
                 </div>
-                <div className="flex w-full items-center gap-2 sm:w-auto">
-                    <div
-                      className={cn(
-                        "grid overflow-hidden transition-[width,opacity,transform] duration-200 ease-out",
-                        searchOpen
-                          ? "w-full translate-x-0 opacity-100 sm:w-[min(400px,calc(100vw-9rem))]"
-                          : "w-0 translate-x-2 opacity-0",
-                      )}
-                    >
-                      <div className="relative min-w-0">
-                        <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[color:var(--brand)]" />
-                        <Input
-                          autoFocus
-                          aria-label="Search users"
-                          className="h-10 rounded-full border-[color:var(--brand)]/25 bg-[color:var(--brand)]/5 pl-10 pr-10 text-[color:var(--brand)] shadow-none placeholder:text-[color:var(--brand)]/55 focus-visible:border-[color:var(--brand)] focus-visible:ring-2 focus-visible:ring-[color:var(--brand)]/20"
-                          placeholder="Search users"
-                          value={userSearch}
-                          onChange={(e) => setUserSearch(e.target.value)}
-                          tabIndex={searchOpen ? 0 : -1}
-                        />
-                        <button
-                          type="button"
-                          className="absolute right-2.5 top-1/2 grid h-6 w-6 -translate-y-1/2 place-items-center rounded-full text-[color:var(--brand)]/80 transition-colors hover:bg-[color:var(--brand)]/10 hover:text-[color:var(--brand)]"
-                          onClick={() => {
-                            setUserSearch("");
-                            setSearchOpen(false);
-                          }}
-                          aria-label="Close search"
-                          title="Close search"
-                          tabIndex={searchOpen ? 0 : -1}
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                    {!searchOpen && (
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        className={cn(toolbarIconButtonClass, "shrink-0")}
-                        onClick={() => setSearchOpen(true)}
-                        aria-label="Open search"
-                        title="Open search"
-                      >
-                        <Search className="h-4 w-4" />
-                      </Button>
-                    )}
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      className={cn(toolbarIconButtonClass, "shrink-0")}
-                      onClick={() => void load()}
-                      disabled={loading}
-                      aria-label="Refresh users"
-                      title="Refresh users"
-                    >
-                      <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
-                    </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className={cn(toolbarIconButtonClass, "shrink-0")}
+                  onClick={() => void load()}
+                  disabled={loading}
+                  aria-label="Refresh users"
+                  title="Refresh users"
+                >
+                  <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+                </Button>
+              </div>
+              <div className="flex flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center">
+                <div className="relative min-w-0 flex-1 lg:min-w-[220px] lg:max-w-sm">
+                  <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[color:var(--brand)]" />
+                  <Input
+                    aria-label="Search users"
+                    className="h-10 rounded-full border-[color:var(--brand)]/25 bg-[color:var(--brand)]/5 pl-10 text-[color:var(--brand)] shadow-none placeholder:text-[color:var(--brand)]/55 focus-visible:border-[color:var(--brand)] focus-visible:ring-2 focus-visible:ring-[color:var(--brand)]/20"
+                    placeholder="Search by name or email"
+                    value={userSearch}
+                    onChange={(e) => setUserSearch(e.target.value)}
+                  />
                 </div>
+                <select
+                  aria-label="Filter by role"
+                  className={cn(editControlClass, "w-full lg:w-auto lg:min-w-[160px]")}
+                  value={roleFilter}
+                  onChange={(e) => setRoleFilter(e.target.value as RoleFilter)}
+                >
+                  <option value="all">All Roles</option>
+                  {roles.map((role) => (
+                    <option key={role} value={role}>
+                      {formatRole(role)}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  aria-label="Filter by status"
+                  className={cn(editControlClass, "w-full lg:w-auto lg:min-w-[140px]")}
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+                >
+                  <option value="all">Status</option>
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </select>
+                <select
+                  aria-label="Filter by organisation"
+                  className={cn(editControlClass, "w-full lg:w-auto lg:min-w-[180px]")}
+                  value={organisationFilter}
+                  onChange={(e) => setOrganisationFilter(e.target.value)}
+                >
+                  <option value="all">All Organisations</option>
+                  {orgs.map((org) => (
+                    <option key={org.id} value={org.id}>
+                      {org.name}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-10 w-full lg:w-auto"
+                  onClick={clearFilters}
+                >
+                  Clear Filters
+                </Button>
               </div>
             </div>
 
