@@ -74,11 +74,17 @@ function AdminConsole() {
   const canManageUsers = user?.permissions.can_manage_users ?? false;
   const filteredUsers = useMemo(() => {
     const query = userSearch.trim().toLowerCase();
-    if (!query) return users;
-    return users.filter((row) =>
-      [row.email, row.full_name ?? "", row.role, row.is_active ? "active" : "inactive"]
-        .some((value) => value.toLowerCase().includes(query)),
-    );
+    const filtered = !query
+      ? users
+      : users.filter((row) =>
+          [row.email, row.full_name ?? "", row.role, row.is_active ? "active" : "inactive"]
+            .some((value) => value.toLowerCase().includes(query)),
+        );
+    return [...filtered].sort((a, b) => {
+      const nameA = a.full_name?.trim() || a.email;
+      const nameB = b.full_name?.trim() || b.email;
+      return nameA.localeCompare(nameB, undefined, { sensitivity: "base" });
+    });
   }, [users, userSearch]);
   const totalPages = Math.max(1, Math.ceil(filteredUsers.length / USERS_PER_PAGE));
   const currentPage = Math.min(page, totalPages);
