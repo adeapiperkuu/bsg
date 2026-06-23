@@ -21,7 +21,7 @@ function Status() {
       <Card>
         <SectionHeader title="Confidence Trend" sub="12 weeks" />
         <ResponsiveContainer width="100%" height={220}>
-          <LineChart data={trend}><CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" /><XAxis dataKey="week" {...axis} /><YAxis {...axis} domain={[70, 100]} /><Tooltip contentStyle={tip} /><Line dataKey="confidence" stroke="#00c9a7" strokeWidth={2} /></LineChart>
+          <LineChart data={trend}><CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" /><XAxis dataKey="week" {...axis} /><YAxis {...axis} domain={[70, 100]} /><Tooltip contentStyle={tip} /><Line dataKey="confidence" stroke="#0D1240" strokeWidth={2} /></LineChart>
         </ResponsiveContainer>
       </Card>
 

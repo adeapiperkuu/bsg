@@ -54,7 +54,7 @@ function WorkforcePage() {
               <YAxis {...axis} domain={[0, 100]} />
               <Tooltip contentStyle={tip} />
               <ReferenceLine y={85} stroke="#ef4444" strokeDasharray="4 4" />
-              <Bar dataKey="value" fill="#00c9a7" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="value" fill="#0D1240" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </Card>

@@ -77,7 +77,6 @@ async def refresh_session(
 @router.post("/auth/logout", status_code=204)
 async def logout(
     request: Request,
-    response: Response,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     current_user: CurrentUser | None = Depends(get_optional_current_user),
     settings: Settings = Depends(get_settings),
@@ -88,6 +87,7 @@ async def logout(
             await SupabaseAuthService(settings).logout(token)
         except ApiError:
             pass
-    clear_auth_cookies(response, settings)
     _ = current_user
-    return Response(status_code=204)
+    response = Response(status_code=204)
+    clear_auth_cookies(response, settings)
+    return response

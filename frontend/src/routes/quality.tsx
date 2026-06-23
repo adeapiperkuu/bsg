@@ -27,7 +27,7 @@ function QualityPage() {
             <YAxis yAxisId="r" orientation="right" {...axis} domain={[0.75, 0.95]} />
             <Tooltip contentStyle={tip} />
             <Legend wrapperStyle={{ fontSize: 11, color: "#8b92a5" }} />
-            <Line yAxisId="l" dataKey="goldAccuracy" stroke="#00c9a7" strokeWidth={2} name="Gold Accuracy %" />
+            <Line yAxisId="l" dataKey="goldAccuracy" stroke="#0D1240" strokeWidth={2} name="Gold Accuracy %" />
             <Line yAxisId="r" dataKey="iaa" stroke="#3b82f6" strokeWidth={2} name="IAA" />
           </LineChart>
         </ResponsiveContainer>
@@ -42,7 +42,7 @@ function QualityPage() {
               <XAxis type="number" {...axis} />
               <YAxis dataKey="cat" type="category" {...axis} width={140} />
               <Tooltip contentStyle={tip} />
-              <Bar dataKey="count" fill="#00c9a7" radius={[0, 4, 4, 0]} />
+              <Bar dataKey="count" fill="#0D1240" radius={[0, 4, 4, 0]} />
             </BarChart>
           </ResponsiveContainer>
           <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
@@ -90,7 +90,7 @@ function QualityPage() {
                   <td className="py-2.5 pr-3">{t.gold}%</td>
                   <td className="py-2.5 pr-3">{t.iaa}</td>
                   <td className="py-2.5 pr-3">{t.rework}%</td>
-                  <td className="py-2.5 pr-3"><svg width="60" height="16" viewBox="0 0 60 16"><polyline points="0,12 10,9 20,11 30,7 40,8 50,5 60,6" fill="none" stroke="#00c9a7" strokeWidth="1.5" /></svg></td>
+                  <td className="py-2.5 pr-3"><svg width="60" height="16" viewBox="0 0 60 16"><polyline points="0,12 10,9 20,11 30,7 40,8 50,5 60,6" fill="none" stroke="#0D1240" strokeWidth="1.5" /></svg></td>
                   <td className="py-2.5 pr-3"><StatusPill status={t.status} /></td>
                 </tr>
               ))}

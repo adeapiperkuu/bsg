@@ -100,6 +100,23 @@ export async function createUser(payload: {
   return body.data;
 }
 
+export async function updateUser(
+  userId: string,
+  payload: {
+    full_name?: string | null;
+    role?: AppRole;
+    org_id?: string;
+    is_active?: boolean;
+    password?: string;
+  },
+): Promise<UserRead> {
+  const body = await apiFetch<{ data: UserRead }>(`/users/${userId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
 export async function deleteUser(userId: string): Promise<void> {
   await apiFetch<void>(`/users/${userId}`, { method: "DELETE" });
 }

@@ -7,7 +7,7 @@ import { Star } from "lucide-react";
 export const Route = createFileRoute("/client-intelligence")({ component: ClientIntelPage });
 
 function Sparkline() {
-  return <svg width="64" height="18" viewBox="0 0 64 18"><polyline points="0,12 10,9 20,11 30,7 40,8 50,5 60,6" fill="none" stroke="#00c9a7" strokeWidth="1.5" /></svg>;
+  return <svg width="64" height="18" viewBox="0 0 64 18"><polyline points="0,12 10,9 20,11 30,7 40,8 50,5 60,6" fill="none" stroke="#0D1240" strokeWidth="1.5" /></svg>;
 }
 
 function ClientIntelPage() {
