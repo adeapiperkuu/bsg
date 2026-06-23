@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useRole } from "@/lib/bsg/role";
+import { roleLabel } from "@/lib/roleLabels";
 import { cn } from "@/lib/utils";
 import { notifications } from "@/lib/bsg/data";
 import { StatusPill } from "./widgets";
@@ -79,21 +80,6 @@ function navForUser(user: MeUser | null) {
       return adminNav;
     default:
       return internalNav;
-  }
-}
-
-function roleLabel(role: AppRole): string {
-  switch (role) {
-    case "client":
-      return "Client";
-    case "delivery_manager":
-      return "Delivery Manager";
-    case "bsg_leadership":
-      return "BSG Leadership";
-    case "super_admin":
-      return "Super Admin";
-    default:
-      return role;
   }
 }
 

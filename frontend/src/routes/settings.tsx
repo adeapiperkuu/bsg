@@ -1,14 +1,26 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { Card, SectionHeader } from "@/components/bsg/widgets";
+import { roleLabel } from "@/lib/roleLabels";
 import { cn } from "@/lib/utils";
+import { useAuthStore } from "@/stores/useAuthStore";
 
 export const Route = createFileRoute("/settings")({ component: SettingsPage });
 
 const tabs = ["Profile", "Notifications", "Layout", "Integrations"] as const;
 
+const inputClass = "mt-1 w-full rounded border border-border bg-elevated px-2.5 py-1.5";
+
 function SettingsPage() {
   const [tab, setTab] = useState<(typeof tabs)[number]>("Profile");
+  const user = useAuthStore((s) => s.user);
+
+  if (!user) {
+    return (
+      <div className="text-sm text-muted-foreground">Loading profile…</div>
+    );
+  }
+
   return (
     <div className="space-y-5">
       <div className="flex gap-1 rounded-md border border-border bg-card p-1 text-xs">
@@ -19,10 +31,24 @@ function SettingsPage() {
         <Card>
           <SectionHeader title="User Profile" />
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 text-xs">
-            <label><span className="text-muted-foreground">Full name</span><input defaultValue="Maya Chen" className="mt-1 w-full rounded border border-border bg-elevated px-2.5 py-1.5" /></label>
-            <label><span className="text-muted-foreground">Email</span><input defaultValue="maya@bsg.com" className="mt-1 w-full rounded border border-border bg-elevated px-2.5 py-1.5" /></label>
-            <label><span className="text-muted-foreground">Role</span><input disabled defaultValue="Delivery PM" className="mt-1 w-full rounded border border-border bg-elevated px-2.5 py-1.5 text-muted-foreground" /></label>
-            <label><span className="text-muted-foreground">Time zone</span><select className="mt-1 w-full rounded border border-border bg-elevated px-2.5 py-1.5"><option>GMT</option><option>IST</option><option>CET</option></select></label>
+            <label>
+              <span className="text-muted-foreground">Full name</span>
+              <input readOnly value={user.full_name ?? ""} className={inputClass} />
+            </label>
+            <label>
+              <span className="text-muted-foreground">Email</span>
+              <input readOnly value={user.email} className={inputClass} />
+            </label>
+            <label>
+              <span className="text-muted-foreground">Role</span>
+              <input disabled value={roleLabel(user.role)} className={cn(inputClass, "text-muted-foreground")} />
+            </label>
+            {user.organisation && (
+              <label>
+                <span className="text-muted-foreground">Organisation</span>
+                <input readOnly value={user.organisation.name} className={inputClass} />
+              </label>
+            )}
           </div>
         </Card>
       )}
