@@ -1,18 +1,20 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Response
-from sqlalchemy import select
 
-from app.api.deps import SessionDep
+from app.api.deps import SessionDep, UserDep
 from app.core.security import CurrentUser, require_role
 from app.db.models import AppRole, Organisation
 from app.schemas.common import DataResponse, ListResponse, Pagination
 from app.schemas.domain import OrganisationCreate, OrganisationRead, OrganisationUpdate
 from app.services.organisations import (
     assert_can_manage_organisations,
+    assert_can_read_organisations,
     create_organisation,
     deactivate_organisation,
     get_organisation_or_404,
+    get_visible_organisation,
+    scoped_organisation_query,
     update_organisation,
 )
 
@@ -22,11 +24,12 @@ router = APIRouter(tags=["organisations"])
 @router.get("/organisations", response_model=ListResponse[OrganisationRead])
 async def list_organisations(
     session: SessionDep,
-    _current_user: CurrentUser = Depends(require_role(AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+    current_user: UserDep,
 ) -> ListResponse[OrganisationRead]:
+    assert_can_read_organisations(current_user)
     rows = (
         await session.execute(
-            select(Organisation).where(Organisation.deleted_at.is_(None)).order_by(Organisation.name)
+            scoped_organisation_query(current_user).order_by(Organisation.name),
         )
     ).scalars()
     return ListResponse(data=[OrganisationRead.model_validate(row) for row in rows], pagination=Pagination(limit=100))
@@ -36,9 +39,10 @@ async def list_organisations(
 async def get_organisation(
     org_id: UUID,
     session: SessionDep,
-    _current_user: CurrentUser = Depends(require_role(AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+    current_user: UserDep,
 ) -> DataResponse[OrganisationRead]:
-    org = await get_organisation_or_404(session, org_id)
+    assert_can_read_organisations(current_user)
+    org = await get_visible_organisation(session, org_id, current_user)
     return DataResponse(data=OrganisationRead.model_validate(org))
 
 

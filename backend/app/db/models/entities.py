@@ -146,6 +146,21 @@ class Project(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     daily_target_units: Mapped[int | None] = mapped_column(Integer)
 
 
+class ProjectAssignment(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "project_assignments"
+    __table_args__ = (
+        UniqueConstraint("user_id", "project_id", name="project_assignments_user_project_key"),
+        Index("project_assignments_user_id_idx", "user_id"),
+        Index("project_assignments_project_id_idx", "project_id"),
+        Index("project_assignments_org_id_idx", "org_id"),
+    )
+
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+
+
 class Milestone(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     __tablename__ = "milestones"
     __table_args__ = (
