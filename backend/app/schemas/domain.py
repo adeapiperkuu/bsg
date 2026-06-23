@@ -71,6 +71,7 @@ class UserUpdate(BaseModel):
     role: AppRole | None = None
     is_active: bool | None = None
     org_id: UUID | None = None
+    password: str | None = Field(default=None, min_length=8)
 
 
 class MePermissions(BaseModel):

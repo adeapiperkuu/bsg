@@ -16,6 +16,8 @@ import { Shell } from "../components/bsg/Shell";
 import { AuthProvider } from "../components/AuthProvider";
 
 const PUBLIC_PATHS = ["/login", "/unauthorized"];
+const FAVICON_HREF =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f172a'/%3E%3Cpath d='M9 9h9a5 5 0 0 1 0 10h-5v4H9V9Zm4 4v2h5a1 1 0 0 0 0-2h-5Zm0 6h5a5 5 0 0 1 3.9 1.9L24 23h-5l-1.2-1.2A3 3 0 0 0 15.7 21H13v-2Z' fill='%23f8fafc'/%3E%3C/svg%3E";
 
 function NotFoundComponent() {
   return (
@@ -83,6 +85,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "description", content: "AI-powered operational intelligence platform for Borek Solutions Group." },
     ],
     links: [
+      { rel: "icon", href: FAVICON_HREF },
       { rel: "stylesheet", href: appCss },
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
       { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },

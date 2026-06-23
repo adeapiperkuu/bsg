@@ -77,7 +77,7 @@ function Dashboard() {
               <YAxis yAxisId="l" {...axisProps} domain={[80, 100]} />
               <YAxis yAxisId="r" orientation="right" {...axisProps} domain={[0.75, 0.95]} />
               <Tooltip contentStyle={tooltipStyle} />
-              <Line yAxisId="l" dataKey="goldAccuracy" stroke="#00c9a7" strokeWidth={2} dot={false} name="Gold Acc %" />
+              <Line yAxisId="l" dataKey="goldAccuracy" stroke="#0D1240" strokeWidth={2} dot={false} name="Gold Acc %" />
               <Line yAxisId="r" dataKey="iaa" stroke="#3b82f6" strokeWidth={2} dot={false} name="IAA" />
             </LineChart>
           </ResponsiveContainer>
@@ -93,7 +93,7 @@ function Dashboard() {
               <YAxis dataKey="team" type="category" {...axisProps} width={110} />
               <Tooltip contentStyle={tooltipStyle} />
               <ReferenceLine x={85} stroke="#ef4444" strokeDasharray="4 4" />
-              <Bar dataKey="value" fill="#00c9a7" radius={[0, 4, 4, 0]} />
+              <Bar dataKey="value" fill="#0D1240" radius={[0, 4, 4, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </Card>

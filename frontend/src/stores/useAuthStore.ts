@@ -8,33 +8,52 @@ type AuthState = {
   isLoading: boolean;
   isAuthenticated: boolean;
   bootstrap: () => Promise<void>;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<MeUser>;
   logout: () => Promise<void>;
   setUser: (user: MeUser | null) => void;
 };
 
-export const useAuthStore = create<AuthState>((set, get) => ({
+let sessionRequestId = 0;
+
+export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   isLoading: true,
   isAuthenticated: false,
 
   bootstrap: async () => {
     if (typeof window === "undefined") return;
+    const requestId = ++sessionRequestId;
     set({ isLoading: true });
     try {
       const user = await fetchMe();
+      if (requestId !== sessionRequestId) return;
       set({ user, isAuthenticated: true, isLoading: false });
     } catch {
+      if (requestId !== sessionRequestId) return;
       set({ user: null, isAuthenticated: false, isLoading: false });
     }
   },
 
   login: async (email, password) => {
-    await apiLogin(email, password);
-    await get().bootstrap();
+    const requestId = ++sessionRequestId;
+    set({ isLoading: true });
+    try {
+      await apiLogin(email, password);
+      const user = await fetchMe();
+      if (requestId === sessionRequestId) {
+        set({ user, isAuthenticated: true, isLoading: false });
+      }
+      return user;
+    } catch (err) {
+      if (requestId === sessionRequestId) {
+        set({ isLoading: false });
+      }
+      throw err;
+    }
   },
 
   logout: async () => {
+    ++sessionRequestId;
     try {
       await apiLogout();
     } finally {

@@ -91,8 +91,8 @@ function DeliveryPage() {
               <XAxis dataKey="week" {...axis} />
               <YAxis {...axis} domain={[50, 100]} />
               <Tooltip contentStyle={tip} />
-              <Line dataKey="confidence" stroke="#00c9a7" strokeWidth={2} dot={false} name="Confidence" />
-              <Line dataKey="forecast" stroke="#00c9a7" strokeWidth={2} strokeDasharray="5 5" dot={false} name="Forecast" />
+              <Line dataKey="confidence" stroke="#0D1240" strokeWidth={2} dot={false} name="Confidence" />
+              <Line dataKey="forecast" stroke="#0D1240" strokeWidth={2} strokeDasharray="5 5" dot={false} name="Forecast" />
             </LineChart>
           </ResponsiveContainer>
         </Card>

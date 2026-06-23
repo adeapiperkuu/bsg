@@ -23,8 +23,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    if (isAuthenticated && pathname === "/login") {
-      void navigate({ to: defaultRouteForRole(user!.role), replace: true });
+    if (isAuthenticated && user && pathname === "/login") {
+      void navigate({ to: defaultRouteForRole(user.role), replace: true });
       return;
     }
 

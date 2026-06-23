@@ -29,14 +29,14 @@ function Leadership() {
         <Card>
           <SectionHeader title="Revenue & Margin" sub="Trailing 12 months" />
           <ResponsiveContainer width="100%" height={240}>
-            <LineChart data={revenue}><CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" /><XAxis dataKey="month" {...axis} /><YAxis yAxisId="l" {...axis} /><YAxis yAxisId="r" orientation="right" {...axis} /><Tooltip contentStyle={tip} /><Legend wrapperStyle={{ fontSize: 11 }} /><Line yAxisId="l" dataKey="revenue" stroke="#00c9a7" strokeWidth={2} name="Revenue ($K)" /><Line yAxisId="r" dataKey="margin" stroke="#3b82f6" strokeWidth={2} name="Margin %" /></LineChart>
+            <LineChart data={revenue}><CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" /><XAxis dataKey="month" {...axis} /><YAxis yAxisId="l" {...axis} /><YAxis yAxisId="r" orientation="right" {...axis} /><Tooltip contentStyle={tip} /><Legend wrapperStyle={{ fontSize: 11 }} /><Line yAxisId="l" dataKey="revenue" stroke="#0D1240" strokeWidth={2} name="Revenue ($K)" /><Line yAxisId="r" dataKey="margin" stroke="#3b82f6" strokeWidth={2} name="Margin %" /></LineChart>
           </ResponsiveContainer>
         </Card>
 
         <Card>
           <SectionHeader title="Cross-Site Performance" sub="India vs Kosovo" />
           <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={sites}><CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" /><XAxis dataKey="site" {...axis} interval={0} angle={-10} textAnchor="end" height={60} /><YAxis {...axis} /><Tooltip contentStyle={tip} /><Bar dataKey="revenue" fill="#00c9a7" radius={[4, 4, 0, 0]} name="Revenue ($K)" /></BarChart>
+            <BarChart data={sites}><CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" /><XAxis dataKey="site" {...axis} interval={0} angle={-10} textAnchor="end" height={60} /><YAxis {...axis} /><Tooltip contentStyle={tip} /><Bar dataKey="revenue" fill="#0D1240" radius={[4, 4, 0, 0]} name="Revenue ($K)" /></BarChart>
           </ResponsiveContainer>
         </Card>
       </div>

@@ -34,7 +34,7 @@ function AnalyticsPage() {
             <LineChart data={confidenceForecast}>
               <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" />
               <XAxis dataKey="week" {...axis} /><YAxis {...axis} domain={[50, 100]} /><Tooltip contentStyle={tip} />
-              <Line dataKey="confidence" stroke="#00c9a7" strokeWidth={2} dot={false} />
+              <Line dataKey="confidence" stroke="#0D1240" strokeWidth={2} dot={false} />
             </LineChart>
           </ResponsiveContainer>
         </Card>
@@ -46,7 +46,7 @@ function AnalyticsPage() {
               <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" />
               <XAxis dataKey="region" {...axis} interval={0} angle={-15} textAnchor="end" height={60} />
               <YAxis {...axis} /><Tooltip contentStyle={tip} />
-              <Bar dataKey="units" fill="#00c9a7" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="units" fill="#0D1240" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </Card>
