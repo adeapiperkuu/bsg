@@ -65,6 +65,7 @@ const leadershipNav: { section: string; items: NavItem[] }[] = [
 const adminNav: { section: string; items: NavItem[] }[] = [
   { section: "Platform", items: [
     { to: "/admin", label: "Admin Console", icon: Settings2 },
+    { to: "/admin/users", label: "Users", icon: Users },
   ]},
 ];
 
@@ -147,7 +148,10 @@ export function Shell({ children }: { children: ReactNode }) {
             )}
             <ul className="space-y-0.5">
               {sec.items.map((item) => {
-                const active = pathname === item.to;
+                const active =
+                  item.to === "/admin"
+                    ? pathname === "/admin" || pathname === "/admin/"
+                    : pathname === item.to;
                 const Icon = item.icon;
                 return (
                   <li key={item.to}>
