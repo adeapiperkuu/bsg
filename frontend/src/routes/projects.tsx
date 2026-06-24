@@ -1,15 +1,118 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
 import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
-import { projects } from "@/lib/bsg/data";
-import { LayoutGrid, List, Search } from "lucide-react";
+import {
+  createProject,
+  type ProjectCreatePayload,
+  type ProjectRead,
+  type ProjectStatus,
+  updateProject,
+} from "@/lib/api";
+import { projectsQueryOptions, useProjectsQuery } from "@/lib/queries/delivery";
+import { Search } from "lucide-react";
 
 export const Route = createFileRoute("/projects")({ component: ProjectsPage });
 
+const statusOptions: ProjectStatus[] = ["active", "ramping", "paused", "completed", "cancelled"];
+
+function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function nextMonth(): string {
+  const date = new Date();
+  date.setMonth(date.getMonth() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
+function statusLabel(status: string): string {
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
 function ProjectsPage() {
-  const [view, setView] = useState<"table" | "cards">("table");
-  const [open, setOpen] = useState<string | null>(null);
-  const project = projects.find((p) => p.id === open);
+  const queryClient = useQueryClient();
+  const projectsQuery = useProjectsQuery();
+  const projects = projectsQuery.data ?? [];
+  const loading = projectsQuery.isLoading;
+  const [query, setQuery] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [editingProject, setEditingProject] = useState<ProjectRead | null>(null);
+  const [createForm, setCreateForm] = useState<ProjectCreatePayload>({
+    name: "",
+    description: "",
+    vertical: "",
+    status: "active",
+    start_date: today(),
+    target_end_date: nextMonth(),
+    daily_target_units: null,
+  });
+
+  const filteredProjects = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return projects;
+    return projects.filter((project) =>
+      [project.name, project.description, project.vertical, project.status]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(normalized)),
+    );
+  }, [projects, query]);
+
+  const refreshProjects = () => {
+    void queryClient.invalidateQueries({ queryKey: projectsQueryOptions.queryKey });
+  };
+
+  const submitCreate = (event: React.FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    createProject({
+      ...createForm,
+      daily_target_units: createForm.daily_target_units || null,
+      description: createForm.description || null,
+    })
+      .then(() => {
+        refreshProjects();
+        setCreateForm({
+          name: "",
+          description: "",
+          vertical: "",
+          status: "active",
+          start_date: today(),
+          target_end_date: nextMonth(),
+          daily_target_units: null,
+        });
+      })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : "Project could not be created.");
+      })
+      .finally(() => setSaving(false));
+  };
+
+  const submitEdit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!editingProject) return;
+
+    setSaving(true);
+    setError(null);
+    updateProject(editingProject.id, {
+      name: editingProject.name,
+      description: editingProject.description || null,
+      status: editingProject.status,
+      target_end_date: editingProject.target_end_date,
+      actual_end_date: editingProject.actual_end_date,
+      daily_target_units: editingProject.daily_target_units,
+    })
+      .then(() => {
+        refreshProjects();
+        setEditingProject(null);
+      })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : "Project could not be updated.");
+      })
+      .finally(() => setSaving(false));
+  };
 
   return (
     <div className="space-y-5">
@@ -17,95 +120,237 @@ function ProjectsPage() {
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex flex-1 items-center gap-2 rounded-md border border-border bg-elevated px-2.5 py-1.5 text-xs">
             <Search className="h-3.5 w-3.5 text-muted-foreground" />
-            <input placeholder="Search projects…" className="flex-1 bg-transparent outline-none" />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search projects..."
+              className="flex-1 bg-transparent outline-none"
+            />
           </div>
-          <select className="rounded border border-border bg-card px-2 py-1.5 text-xs"><option>Status: All</option><option>On Track</option><option>At Risk</option><option>Critical</option></select>
-          <select className="rounded border border-border bg-card px-2 py-1.5 text-xs"><option>Client: All</option><option>Aurora Health</option><option>Helios Bank</option></select>
-          <select className="rounded border border-border bg-card px-2 py-1.5 text-xs"><option>Region: All</option><option>India</option><option>Kosovo</option></select>
-          <div className="flex rounded-md border border-border bg-elevated p-0.5">
-            <button onClick={() => setView("table")} className={`rounded p-1 ${view === "table" ? "bg-card" : ""}`}><List className="h-3.5 w-3.5" /></button>
-            <button onClick={() => setView("cards")} className={`rounded p-1 ${view === "cards" ? "bg-card" : ""}`}><LayoutGrid className="h-3.5 w-3.5" /></button>
-          </div>
+          <button
+            onClick={refreshProjects}
+            className="rounded border border-border px-3 py-1.5 text-xs hover:bg-elevated"
+          >
+            Refresh
+          </button>
         </div>
       </Card>
 
-      {view === "table" ? (
+      {error && (
         <Card>
-          <table className="w-full text-xs">
-            <thead className="text-left text-muted-foreground"><tr className="border-b border-border">
-              <th className="py-2 pr-3 font-medium">ID</th>
-              <th className="py-2 pr-3 font-medium">Project</th>
-              <th className="py-2 pr-3 font-medium">Client</th>
-              <th className="py-2 pr-3 font-medium">Region</th>
-              <th className="py-2 pr-3 font-medium">Throughput</th>
-              <th className="py-2 pr-3 font-medium">Confidence</th>
-              <th className="py-2 pr-3 font-medium">Risk</th>
-              <th className="py-2 pr-3 font-medium">Milestone</th>
-            </tr></thead>
-            <tbody>
-              {projects.map((p) => (
-                <tr key={p.id} className="cursor-pointer border-b border-border/50 hover:bg-elevated" onClick={() => setOpen(p.id)}>
-                  <td className="py-2.5 pr-3 text-muted-foreground">{p.id}</td>
-                  <td className="py-2.5 pr-3 font-medium">{p.name}</td>
-                  <td className="py-2.5 pr-3">{p.client}</td>
-                  <td className="py-2.5 pr-3">{p.region}</td>
-                  <td className="py-2.5 pr-3">{p.throughput}/d</td>
-                  <td className="py-2.5 pr-3">{p.confidence}%</td>
-                  <td className="py-2.5 pr-3"><StatusPill status={p.risk} /></td>
-                  <td className="py-2.5 pr-3 text-muted-foreground">{p.milestone}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <p className="text-sm text-[color:var(--danger)]">{error}</p>
         </Card>
-      ) : (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {projects.map((p) => (
-            <Card key={p.id}>
-              <div className="flex items-start justify-between">
-                <div><div className="text-sm font-semibold">{p.name}</div><div className="text-[11px] text-muted-foreground">{p.client} · {p.region}</div></div>
-                <StatusPill status={p.risk} />
-              </div>
-              <dl className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
-                <div><dt className="text-muted-foreground">Throughput</dt><dd className="font-medium">{p.throughput}/d</dd></div>
-                <div><dt className="text-muted-foreground">Confidence</dt><dd className="font-medium">{p.confidence}%</dd></div>
-                <div className="col-span-2"><dt className="text-muted-foreground">Next milestone</dt><dd>{p.milestone}</dd></div>
-              </dl>
-              <button onClick={() => setOpen(p.id)} className="mt-3 w-full rounded border border-border py-1 text-[11px] hover:bg-elevated">View detail</button>
-            </Card>
-          ))}
-        </div>
       )}
 
-      {project && (
-        <div className="fixed inset-0 z-40 flex justify-end bg-background/60 backdrop-blur-sm" onClick={() => setOpen(null)}>
-          <div className="h-full w-full max-w-xl overflow-y-auto border-l border-border bg-card p-6" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-4 flex items-start justify-between">
-              <div><div className="text-lg font-semibold">{project.name}</div><div className="text-xs text-muted-foreground">{project.client} · {project.region} · {project.id}</div></div>
-              <button onClick={() => setOpen(null)} className="rounded border border-border px-2 py-1 text-xs">Close</button>
-            </div>
-            <div className="grid grid-cols-3 gap-3 text-xs">
-              <div className="rounded border border-border bg-elevated p-3"><div className="text-[10px] uppercase text-muted-foreground">Throughput</div><div className="text-base font-semibold">{project.throughput}/d</div></div>
-              <div className="rounded border border-border bg-elevated p-3"><div className="text-[10px] uppercase text-muted-foreground">Confidence</div><div className="text-base font-semibold">{project.confidence}%</div></div>
-              <div className="rounded border border-border bg-elevated p-3"><div className="text-[10px] uppercase text-muted-foreground">Risk</div><div className="mt-1"><StatusPill status={project.risk} /></div></div>
-            </div>
-            <div className="mt-5">
-              <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Milestone timeline</div>
-              <ol className="relative border-l border-border pl-4 text-xs">
-                {["Kickoff", "Schema sign-off", "Batch 12 QA", project.milestone, "Final delivery"].map((m, i) => (
-                  <li key={m} className="mb-3"><span className="absolute -left-1.5 h-3 w-3 rounded-full bg-[color:var(--brand)]" /><div className="font-medium">{m}</div><div className="text-[10px] text-muted-foreground">{i < 3 ? "Completed" : i === 3 ? "In Progress" : "Upcoming"}</div></li>
+      <Card>
+        <SectionHeader title="Create Project" sub="Saved through the backend Projects API" />
+        <form onSubmit={submitCreate} className="grid gap-3 text-xs md:grid-cols-3">
+          <input
+            required
+            value={createForm.name}
+            onChange={(event) => setCreateForm({ ...createForm, name: event.target.value })}
+            placeholder="Project name"
+            className="rounded border border-border bg-card px-2.5 py-1.5 outline-none"
+          />
+          <input
+            required
+            value={createForm.vertical}
+            onChange={(event) => setCreateForm({ ...createForm, vertical: event.target.value })}
+            placeholder="Vertical"
+            className="rounded border border-border bg-card px-2.5 py-1.5 outline-none"
+          />
+          <select
+            value={createForm.status}
+            onChange={(event) =>
+              setCreateForm({ ...createForm, status: event.target.value as ProjectStatus })
+            }
+            className="rounded border border-border bg-card px-2.5 py-1.5 outline-none"
+          >
+            {statusOptions.map((status) => (
+              <option key={status} value={status}>
+                {statusLabel(status)}
+              </option>
+            ))}
+          </select>
+          <input
+            required
+            type="date"
+            value={createForm.start_date}
+            onChange={(event) => setCreateForm({ ...createForm, start_date: event.target.value })}
+            className="rounded border border-border bg-card px-2.5 py-1.5 outline-none"
+          />
+          <input
+            required
+            type="date"
+            value={createForm.target_end_date}
+            onChange={(event) =>
+              setCreateForm({ ...createForm, target_end_date: event.target.value })
+            }
+            className="rounded border border-border bg-card px-2.5 py-1.5 outline-none"
+          />
+          <input
+            type="number"
+            min={0}
+            value={createForm.daily_target_units ?? ""}
+            onChange={(event) =>
+              setCreateForm({
+                ...createForm,
+                daily_target_units: event.target.value ? Number(event.target.value) : null,
+              })
+            }
+            placeholder="Daily target"
+            className="rounded border border-border bg-card px-2.5 py-1.5 outline-none"
+          />
+          <textarea
+            value={createForm.description ?? ""}
+            onChange={(event) => setCreateForm({ ...createForm, description: event.target.value })}
+            placeholder="Description"
+            className="rounded border border-border bg-card px-2.5 py-1.5 outline-none md:col-span-2"
+          />
+          <button
+            disabled={saving}
+            className="rounded bg-[color:var(--brand)] px-3 py-1.5 font-medium text-[color:var(--brand-foreground)] disabled:opacity-60"
+          >
+            {saving ? "Saving..." : "Create"}
+          </button>
+        </form>
+      </Card>
+
+      <Card>
+        <SectionHeader title="Projects" sub="Loaded from GET /projects" />
+        {loading ? (
+          <p className="text-sm text-muted-foreground">Loading projects...</p>
+        ) : filteredProjects.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No projects found.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="text-left text-muted-foreground">
+                <tr className="border-b border-border">
+                  <th className="py-2 pr-3 font-medium">Project</th>
+                  <th className="py-2 pr-3 font-medium">Vertical</th>
+                  <th className="py-2 pr-3 font-medium">Status</th>
+                  <th className="py-2 pr-3 font-medium">Target End</th>
+                  <th className="py-2 pr-3 font-medium">Daily Target</th>
+                  <th className="py-2 pr-3 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredProjects.map((project) => (
+                  <tr key={project.id} className="border-b border-border/50">
+                    <td className="py-2.5 pr-3 font-medium">{project.name}</td>
+                    <td className="py-2.5 pr-3">{project.vertical}</td>
+                    <td className="py-2.5 pr-3">
+                      <StatusPill status={statusLabel(project.status)} />
+                    </td>
+                    <td className="py-2.5 pr-3">{project.target_end_date}</td>
+                    <td className="py-2.5 pr-3">{project.daily_target_units ?? "No data"}</td>
+                    <td className="py-2.5 pr-3">
+                      <button
+                        onClick={() => setEditingProject(project)}
+                        className="rounded border border-border px-2 py-0.5 text-[11px] hover:bg-elevated"
+                      >
+                        Edit
+                      </button>
+                    </td>
+                  </tr>
                 ))}
-              </ol>
-            </div>
-            <div className="mt-5">
-              <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Team roster</div>
-              <ul className="grid grid-cols-2 gap-2 text-xs">
-                {["Maya Chen · PM", "Priya R. · Lead Annotator", "Arben K. · QA", "Dr. R. Iyer · SME"].map((m) => (
-                  <li key={m} className="rounded border border-border bg-elevated px-2.5 py-1.5">{m}</li>
-                ))}
-              </ul>
-            </div>
+              </tbody>
+            </table>
           </div>
+        )}
+      </Card>
+
+      {editingProject && (
+        <div
+          className="fixed inset-0 z-40 flex justify-end bg-background/60 backdrop-blur-sm"
+          onClick={() => setEditingProject(null)}
+        >
+          <form
+            onSubmit={submitEdit}
+            className="h-full w-full max-w-xl overflow-y-auto border-l border-border bg-card p-6"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <SectionHeader title="Edit Project" sub={editingProject.id} />
+            <div className="space-y-3 text-xs">
+              <input
+                value={editingProject.name}
+                onChange={(event) =>
+                  setEditingProject({ ...editingProject, name: event.target.value })
+                }
+                className="w-full rounded border border-border bg-card px-2.5 py-1.5 outline-none"
+              />
+              <textarea
+                value={editingProject.description ?? ""}
+                onChange={(event) =>
+                  setEditingProject({ ...editingProject, description: event.target.value })
+                }
+                className="w-full rounded border border-border bg-card px-2.5 py-1.5 outline-none"
+              />
+              <select
+                value={editingProject.status}
+                onChange={(event) =>
+                  setEditingProject({
+                    ...editingProject,
+                    status: event.target.value as ProjectStatus,
+                  })
+                }
+                className="w-full rounded border border-border bg-card px-2.5 py-1.5 outline-none"
+              >
+                {statusOptions.map((status) => (
+                  <option key={status} value={status}>
+                    {statusLabel(status)}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="date"
+                value={editingProject.target_end_date}
+                onChange={(event) =>
+                  setEditingProject({ ...editingProject, target_end_date: event.target.value })
+                }
+                className="w-full rounded border border-border bg-card px-2.5 py-1.5 outline-none"
+              />
+              <input
+                type="date"
+                value={editingProject.actual_end_date ?? ""}
+                onChange={(event) =>
+                  setEditingProject({
+                    ...editingProject,
+                    actual_end_date: event.target.value || null,
+                  })
+                }
+                className="w-full rounded border border-border bg-card px-2.5 py-1.5 outline-none"
+              />
+              <input
+                type="number"
+                min={0}
+                value={editingProject.daily_target_units ?? ""}
+                onChange={(event) =>
+                  setEditingProject({
+                    ...editingProject,
+                    daily_target_units: event.target.value ? Number(event.target.value) : null,
+                  })
+                }
+                className="w-full rounded border border-border bg-card px-2.5 py-1.5 outline-none"
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingProject(null)}
+                  className="rounded border border-border px-3 py-1.5"
+                >
+                  Cancel
+                </button>
+                <button
+                  disabled={saving}
+                  className="rounded bg-[color:var(--brand)] px-3 py-1.5 font-medium text-[color:var(--brand-foreground)] disabled:opacity-60"
+                >
+                  {saving ? "Saving..." : "Save"}
+                </button>
+              </div>
+            </div>
+          </form>
         </div>
       )}
     </div>

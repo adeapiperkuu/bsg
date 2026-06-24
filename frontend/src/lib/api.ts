@@ -40,7 +40,11 @@ async function parseResponse<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const err = body?.error;
-    throw new ApiError(response.status, err?.code ?? "API_ERROR", err?.message ?? "Request failed.");
+    throw new ApiError(
+      response.status,
+      err?.code ?? "API_ERROR",
+      err?.message ?? "Request failed.",
+    );
   }
   return body as T;
 }
@@ -51,7 +55,11 @@ async function parseApiError(response: Response): Promise<ApiError> {
   return new ApiError(response.status, err?.code ?? "API_ERROR", err?.message ?? "Request failed.");
 }
 
-export async function apiFetch<T>(path: string, init: RequestInit = {}, retried = false): Promise<T> {
+export async function apiFetch<T>(
+  path: string,
+  init: RequestInit = {},
+  retried = false,
+): Promise<T> {
   const headers = new Headers(init.headers);
   const isFormData = typeof FormData !== "undefined" && init.body instanceof FormData;
   if (init.body && !isFormData && !headers.has("Content-Type")) {
@@ -109,6 +117,181 @@ export async function listUsers(): Promise<UserRead[]> {
 
 export async function listOrganisations(): Promise<OrganisationRead[]> {
   const body = await apiFetch<{ data: OrganisationRead[] }>("/organisations");
+  return body.data;
+}
+
+export type ProjectStatus = "active" | "ramping" | "paused" | "completed" | "cancelled";
+
+export type ProjectRead = {
+  id: string;
+  org_id: string;
+  name: string;
+  description: string | null;
+  vertical: string;
+  status: ProjectStatus;
+  start_date: string;
+  target_end_date: string;
+  actual_end_date: string | null;
+  daily_target_units: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProjectCreatePayload = {
+  name: string;
+  description?: string | null;
+  vertical: string;
+  status?: ProjectStatus;
+  start_date: string;
+  target_end_date: string;
+  daily_target_units?: number | null;
+  org_id?: string | null;
+};
+
+export type ProjectUpdatePayload = {
+  name?: string;
+  description?: string | null;
+  status?: ProjectStatus;
+  target_end_date?: string;
+  actual_end_date?: string | null;
+  daily_target_units?: number | null;
+};
+
+export async function listProjects(): Promise<ProjectRead[]> {
+  const body = await apiFetch<{ data: ProjectRead[] }>("/projects?limit=100");
+  return body.data;
+}
+
+export async function getProject(projectId: string): Promise<ProjectRead> {
+  const body = await apiFetch<{ data: ProjectRead }>(`/projects/${projectId}`);
+  return body.data;
+}
+
+export async function createProject(payload: ProjectCreatePayload): Promise<ProjectRead> {
+  const body = await apiFetch<{ data: ProjectRead }>("/projects", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
+export async function updateProject(
+  projectId: string,
+  payload: ProjectUpdatePayload,
+): Promise<ProjectRead> {
+  const body = await apiFetch<{ data: ProjectRead }>(`/projects/${projectId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
+export type DeliveryDashboardResponse = {
+  overview: Record<string, unknown>;
+  milestones: Array<Record<string, unknown>>;
+  confidence: number;
+  risks: Array<Record<string, unknown>>;
+  bottlenecks: Array<Record<string, unknown>>;
+  traffic_light: "green" | "yellow" | "red";
+  daily_summary: string | null;
+};
+
+export async function fetchDeliveryDashboard(
+  projectId: string,
+): Promise<DeliveryDashboardResponse> {
+  return apiFetch<DeliveryDashboardResponse>(`/delivery/dashboard/${projectId}`);
+}
+
+export type DeliveryPortfolioResponse = {
+  projects: Array<{
+    project_id: string;
+    dashboard: DeliveryDashboardResponse;
+  }>;
+  milestones: Array<Record<string, unknown>>;
+};
+
+export async function fetchDeliveryPortfolio(): Promise<DeliveryPortfolioResponse> {
+  return apiFetch<DeliveryPortfolioResponse>("/delivery/portfolio");
+}
+
+export type ThroughputSnapshotRead = {
+  id: string;
+  project_id: string;
+  snapshot_date: string;
+  units_completed: number;
+  units_forecast: number | null;
+  rolling_7day_units: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DeliveryConfidencePoint = {
+  id: string;
+  project_id: string;
+  milestone_id: string;
+  score_pct: string;
+  forecast_completion_date: string | null;
+  status: string;
+  model_version: string;
+  created_at: string;
+};
+
+export type RiskAlertRead = {
+  id: string;
+  project_id: string;
+  milestone_id: string | null;
+  alert_type: string;
+  risk_tier: "low" | "medium" | "high" | "critical";
+  title: string;
+  detail: string;
+  slippage_probability: string | null;
+  contributing_causes: Record<string, number> | null;
+  status: string;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type MilestoneRead = {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string | null;
+  planned_date: string;
+  actual_date: string | null;
+  status: "pending" | "on_track" | "at_risk" | "completed" | "missed";
+};
+
+export async function listProjectThroughput(
+  projectId: string,
+): Promise<ThroughputSnapshotRead[]> {
+  const body = await apiFetch<{ data: ThroughputSnapshotRead[] }>(
+    `/projects/${projectId}/throughput?limit=100`,
+  );
+  return body.data;
+}
+
+export async function listProjectDeliveryConfidence(
+  projectId: string,
+): Promise<DeliveryConfidencePoint[]> {
+  const body = await apiFetch<{ data: DeliveryConfidencePoint[] }>(
+    `/projects/${projectId}/delivery-confidence?limit=100`,
+  );
+  return body.data;
+}
+
+export async function listProjectRiskAlerts(projectId: string): Promise<RiskAlertRead[]> {
+  const body = await apiFetch<{ data: RiskAlertRead[] }>(
+    `/projects/${projectId}/risk-alerts`,
+  );
+  return body.data;
+}
+
+export async function listProjectMilestones(projectId: string): Promise<MilestoneRead[]> {
+  const body = await apiFetch<{ data: MilestoneRead[] }>(
+    `/projects/${projectId}/milestones`,
+  );
   return body.data;
 }
 

@@ -64,6 +64,23 @@ class AlertStatus(StrEnum):
     DISMISSED = "dismissed"
 
 
+class RecommendationSeverity(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class RecommendationStatus(StrEnum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+
+class OwnerType(StrEnum):
+    USER = "user"
+    TEAM = "team"
+
+
 class CommunicationStatus(StrEnum):
     DRAFT = "draft"
     IN_REVIEW = "in_review"
@@ -145,6 +162,17 @@ milestone_status = Enum(MilestoneStatus, name="milestone_status", values_callabl
 risk_tier = Enum(RiskTier, name="risk_tier", values_callable=lambda x: [e.value for e in x])
 alert_type = Enum(AlertType, name="alert_type", values_callable=lambda x: [e.value for e in x])
 alert_status = Enum(AlertStatus, name="alert_status", values_callable=lambda x: [e.value for e in x])
+recommendation_severity = Enum(
+    RecommendationSeverity,
+    name="recommendation_severity",
+    values_callable=lambda x: [e.value for e in x],
+)
+recommendation_status = Enum(
+    RecommendationStatus,
+    name="recommendation_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+owner_type = Enum(OwnerType, name="owner_type", values_callable=lambda x: [e.value for e in x])
 communication_status = Enum(
     CommunicationStatus,
     name="communication_status",
@@ -265,6 +293,21 @@ class Project(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     daily_target_units: Mapped[int | None] = mapped_column(Integer)
 
 
+class ProjectAssignment(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "project_assignments"
+    __table_args__ = (
+        UniqueConstraint("user_id", "project_id", name="project_assignments_user_project_key"),
+        Index("project_assignments_user_id_idx", "user_id"),
+        Index("project_assignments_project_id_idx", "project_id"),
+        Index("project_assignments_org_id_idx", "org_id"),
+    )
+
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+
+
 class Milestone(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     __tablename__ = "milestones"
     __table_args__ = (
@@ -367,6 +410,32 @@ class RiskAlert(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     status: Mapped[AlertStatus] = mapped_column(alert_status, default=AlertStatus.OPEN)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resolved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class MitigationRecommendation(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "mitigation_recommendations"
+    __table_args__ = (
+        Index("mitigation_recommendations_project_id_idx", "project_id"),
+        Index("mitigation_recommendations_org_id_idx", "org_id"),
+        Index("mitigation_recommendations_source_risk_id_idx", "source_risk_id"),
+        Index("mitigation_recommendations_status_idx", "status"),
+    )
+
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    title: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    severity: Mapped[RecommendationSeverity] = mapped_column(recommendation_severity)
+    confidence_score: Mapped[Decimal] = mapped_column(Numeric(4, 3))
+    status: Mapped[RecommendationStatus] = mapped_column(
+        recommendation_status,
+        default=RecommendationStatus.PENDING,
+    )
+    owner_type: Mapped[OwnerType | None] = mapped_column(owner_type)
+    owner_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    source_risk_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("risk_alerts.id", ondelete="SET NULL"),
+    )
 
 
 class Bottleneck(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
