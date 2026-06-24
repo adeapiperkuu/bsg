@@ -30,6 +30,7 @@ import {
   useProjectThroughputQuery,
   useProjectsQuery,
 } from "@/lib/queries/delivery";
+import { MitigationRecommendationsPanel } from "@/features/mitigation-recommendations/components/MitigationRecommendationsPanel";
 
 export const Route = createFileRoute("/delivery")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -95,12 +96,6 @@ function riskLabel(
   return "Medium";
 }
 
-function priorityLabel(tier: string): string {
-  if (tier === "critical" || tier === "high") return "High";
-  if (tier === "medium") return "Medium";
-  return "Low";
-}
-
 function latestThroughputUnits(dashboard: DeliveryDashboardResponse | undefined): number {
   const overview = asRecord(dashboard?.overview);
   const latest = asRecord(overview?.latest_throughput);
@@ -135,34 +130,6 @@ function buildRootCauses(dashboard: DeliveryDashboardResponse) {
     cause: item.cause,
     impact: Math.round((item.impact / total) * 100),
   }));
-}
-
-function buildRecommendations(dashboard: DeliveryDashboardResponse) {
-  const riskItems = dashboard.risks.map((risk) => {
-    const tier = String(risk.risk_tier ?? "medium");
-    const slippage = risk.slippage_probability;
-    const confidence =
-      typeof slippage === "number"
-        ? Math.round(slippage)
-        : typeof slippage === "string"
-          ? Math.round(parseFloat(slippage))
-          : Math.round(dashboard.confidence);
-    return {
-      id: String(risk.id ?? risk.title),
-      title: String(risk.title ?? "Risk mitigation"),
-      priority: priorityLabel(tier),
-      confidence: Number.isFinite(confidence) ? confidence : Math.round(dashboard.confidence),
-    };
-  });
-
-  const bottleneckItems = dashboard.bottlenecks.map((bottleneck) => ({
-    id: String(bottleneck.id ?? bottleneck.title),
-    title: String(bottleneck.title ?? "Resolve bottleneck"),
-    priority: "Medium",
-    confidence: Math.round(dashboard.confidence),
-  }));
-
-  return [...riskItems, ...bottleneckItems].slice(0, 3);
 }
 
 function buildConfidenceChart(
@@ -347,7 +314,6 @@ function DeliveryPage() {
   }, [dashboards, portfolioMilestones]);
 
   const rootCauses = selectedDashboard ? buildRootCauses(selectedDashboard) : [];
-  const recommendations = selectedDashboard ? buildRecommendations(selectedDashboard) : [];
   const confidenceChart = buildConfidenceChart(confidenceQuery.data ?? []);
   const evidenceAttachments = selectedDashboard
     ? [
@@ -515,42 +481,7 @@ function DeliveryPage() {
           )}
         </Card>
 
-        <Card>
-          <SectionHeader title="Mitigation Recommendations" right={<EvidenceBadge />} />
-          {loading ? (
-            <div className="h-16 animate-pulse rounded-md bg-elevated" />
-          ) : recommendations.length > 0 ? (
-            <div className="space-y-2">
-              {recommendations.map((recommendation) => (
-                <div
-                  key={recommendation.id}
-                  className="rounded-md border border-border bg-elevated p-3"
-                >
-                  <div className="flex items-center gap-2">
-                    <StatusPill status={recommendation.priority} />
-                    <AiBadge confidence={recommendation.confidence} />
-                  </div>
-                  <div className="mt-1.5 text-sm">{recommendation.title}</div>
-                  <div className="mt-2 flex items-center justify-between gap-2">
-                    <select className="rounded border border-border bg-card px-2 py-1 text-[11px]">
-                      <option>Owner: Unassigned</option>
-                    </select>
-                    <div className="flex gap-1.5">
-                      <button className="rounded bg-[color:var(--brand)] px-2.5 py-1 text-[11px] font-medium text-[color:var(--brand-foreground)]">
-                        Accept
-                      </button>
-                      <button className="rounded border border-border px-2.5 py-1 text-[11px]">
-                        Reject
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">No mitigation recommendations available.</p>
-          )}
-        </Card>
+        <MitigationRecommendationsPanel projectId={resolvedProjectId} />
 
         <Card>
           <SectionHeader

@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.delivery.audit.audit_logger import AuditLogger
+from app.agents.delivery.services.recommendation_service import sync_recommendations_for_project
 from app.agents.delivery.events.domain_events import (
     ConfidenceSnapshot,
     DeliveryScoredEvent,
@@ -63,6 +64,11 @@ async def handle_delivery_scored(
     milestones_updated = await MilestoneUpdateHandler(session, audit).handle(event)
     confidence_score_id = await ConfidenceScoreHandler(session, audit).handle(event)
     delivery_alert, milestone_alert_ids = await RiskAlertHandler(session, audit).handle(event)
+    await sync_recommendations_for_project(
+        session,
+        project_id=event.project_id,
+        org_id=event.org_id,
+    )
     notifications_sent = await NotificationHandler(session).handle(
         event,
         confidence_score_id=confidence_score_id,

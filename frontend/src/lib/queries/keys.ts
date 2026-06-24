@@ -6,6 +6,8 @@ export const queryKeys = {
   projectDeliveryConfidence: (projectId: string) =>
     ["projects", projectId, "delivery-confidence"] as const,
   projectThroughput: (projectId: string) => ["projects", projectId, "throughput"] as const,
+  projectRecommendations: (projectId: string) =>
+    ["projects", projectId, "recommendations"] as const,
 };
 
 export const STALE_TIME_MS = 5 * 60 * 1000;

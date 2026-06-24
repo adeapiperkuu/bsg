@@ -14,7 +14,7 @@ from app.db.models import (
     ProjectStatus,
     RiskTier,
 )
-from app.schemas.common import EvidenceLinkRead, ORMModel, ensure_month_start
+from app.schemas.common import EvidenceLinkRead, ORMModel, Pagination, ensure_month_start
 
 
 class OrganisationRead(ORMModel):
@@ -215,6 +215,41 @@ class RiskAlertRead(ORMModel):
 
 class RiskAlertUpdate(BaseModel):
     status: AlertStatus
+
+
+class MitigationRecommendationRead(ORMModel):
+    id: UUID
+    project_id: UUID
+    title: str
+    description: str | None
+    severity: str
+    confidence_score: Decimal
+    status: str
+    owner_type: str | None
+    owner_id: UUID | None
+    owner_label: str | None = None
+    source_risk_id: UUID | None
+    source_risk_title: str | None = None
+    source_risk_type: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MitigationRecommendationAssignOwner(BaseModel):
+    owner_type: str | None = None
+    owner_id: UUID | None = None
+
+
+class OwnerOptionRead(BaseModel):
+    owner_type: str
+    owner_id: UUID
+    label: str
+
+
+class ProjectRecommendationsResponse(BaseModel):
+    data: list[MitigationRecommendationRead]
+    assignable_owners: list[OwnerOptionRead]
+    pagination: Pagination
 
 
 class AgentQueryCreate(BaseModel):
