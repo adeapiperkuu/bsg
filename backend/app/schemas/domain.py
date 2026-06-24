@@ -316,3 +316,71 @@ class ClientCsatCreate(BaseModel):
     @classmethod
     def validate_month_start(cls, value: date) -> date:
         return ensure_month_start(value)
+
+
+class KnowledgeFolderRead(ORMModel):
+    id: UUID
+    name: str
+    folder_kind: str
+    display_order: int
+
+
+class KnowledgeDocumentRead(ORMModel):
+    id: UUID
+    folder_id: UUID
+    folder_name: str
+    folder_kind: str
+    title: str
+    source_type: str
+    version: str
+    visibility: str
+    status: str
+    owner_approver: str
+    effective_date: date | None
+    file_name: str
+    file_mime_type: str
+    file_url: str | None = None
+    processing_status: str
+    processing_error: str | None = None
+    indexing_status: str
+    preview: list[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeDocumentUpdate(BaseModel):
+    title: str | None = None
+    folder_kind: str | None = None
+    source_type: str | None = None
+    version: str | None = None
+    visibility: str | None = None
+    status: str | None = None
+    owner_approver: str | None = None
+    effective_date: date | None = None
+
+
+class KnowledgeAskCreate(BaseModel):
+    query_text: str = Field(min_length=1)
+
+
+class KnowledgeCitationRead(BaseModel):
+    document_id: UUID
+    chunk_id: UUID | None = None
+    citation_label: str
+    title: str
+    source_type: str
+    version: str
+    folder_name: str = ""
+    folder_kind: str = ""
+    relevance_score: float = 0.0
+    page_number: int | None = None
+    chunk_index: int | None = None
+
+
+class KnowledgeAskRead(BaseModel):
+    answer_text: str
+    next_step: str = ""
+    confidence_score: float = 0.0
+    citations: list[KnowledgeCitationRead]
+    query_id: UUID | None = None
+    model_used: str | None = None
