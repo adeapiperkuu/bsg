@@ -2,6 +2,7 @@ from time import perf_counter
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.quality_intelligence.query_handler import answer_quality_query
 from app.core.config import get_settings
 from app.core.security import CurrentUser
 from app.db.models import AgentQuery, AgentQueryEvidenceLink
@@ -22,6 +23,9 @@ async def answer_query(
     payload: AgentQueryCreate,
     evidence: list[EvidenceInput],
 ) -> AgentQuery:
+    if payload.agent_name == "quality_intelligence_agent":
+        return await answer_quality_query(session, current_user, payload, evidence)
+
     require_evidence(evidence)
     started = perf_counter()
     settings = get_settings()

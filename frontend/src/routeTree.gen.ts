@@ -28,9 +28,11 @@ import { Route as AnalyticsRouteImport } from './routes/analytics'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ClientIndexRouteImport } from './routes/client.index'
+import { Route as AdminIndexRouteImport } from './routes/admin.index'
 import { Route as ClientStatusRouteImport } from './routes/client.status'
 import { Route as ClientReportsRouteImport } from './routes/client.reports'
 import { Route as ClientAskRouteImport } from './routes/client.ask'
+import { Route as AdminUsersRouteImport } from './routes/admin.users'
 
 const WorkforceRoute = WorkforceRouteImport.update({
   id: '/workforce',
@@ -127,6 +129,11 @@ const ClientIndexRoute = ClientIndexRouteImport.update({
   path: '/client/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminIndexRoute = AdminIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AdminRoute,
+} as any)
 const ClientStatusRoute = ClientStatusRouteImport.update({
   id: '/client/status',
   path: '/client/status',
@@ -142,10 +149,15 @@ const ClientAskRoute = ClientAskRouteImport.update({
   path: '/client/ask',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminUsersRoute = AdminUsersRouteImport.update({
+  id: '/users',
+  path: '/users',
+  getParentRoute: () => AdminRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/admin': typeof AdminRoute
+  '/admin': typeof AdminRouteWithChildren
   '/analytics': typeof AnalyticsRoute
   '/client-intelligence': typeof ClientIntelligenceRoute
   '/dashboard': typeof DashboardRoute
@@ -162,14 +174,15 @@ export interface FileRoutesByFullPath {
   '/settings': typeof SettingsRoute
   '/unauthorized': typeof UnauthorizedRoute
   '/workforce': typeof WorkforceRoute
+  '/admin/users': typeof AdminUsersRoute
   '/client/ask': typeof ClientAskRoute
   '/client/reports': typeof ClientReportsRoute
   '/client/status': typeof ClientStatusRoute
+  '/admin/': typeof AdminIndexRoute
   '/client/': typeof ClientIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/admin': typeof AdminRoute
   '/analytics': typeof AnalyticsRoute
   '/client-intelligence': typeof ClientIntelligenceRoute
   '/dashboard': typeof DashboardRoute
@@ -186,15 +199,17 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsRoute
   '/unauthorized': typeof UnauthorizedRoute
   '/workforce': typeof WorkforceRoute
+  '/admin/users': typeof AdminUsersRoute
   '/client/ask': typeof ClientAskRoute
   '/client/reports': typeof ClientReportsRoute
   '/client/status': typeof ClientStatusRoute
+  '/admin': typeof AdminIndexRoute
   '/client': typeof ClientIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/admin': typeof AdminRoute
+  '/admin': typeof AdminRouteWithChildren
   '/analytics': typeof AnalyticsRoute
   '/client-intelligence': typeof ClientIntelligenceRoute
   '/dashboard': typeof DashboardRoute
@@ -211,9 +226,11 @@ export interface FileRoutesById {
   '/settings': typeof SettingsRoute
   '/unauthorized': typeof UnauthorizedRoute
   '/workforce': typeof WorkforceRoute
+  '/admin/users': typeof AdminUsersRoute
   '/client/ask': typeof ClientAskRoute
   '/client/reports': typeof ClientReportsRoute
   '/client/status': typeof ClientStatusRoute
+  '/admin/': typeof AdminIndexRoute
   '/client/': typeof ClientIndexRoute
 }
 export interface FileRouteTypes {
@@ -237,14 +254,15 @@ export interface FileRouteTypes {
     | '/settings'
     | '/unauthorized'
     | '/workforce'
+    | '/admin/users'
     | '/client/ask'
     | '/client/reports'
     | '/client/status'
+    | '/admin/'
     | '/client/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/admin'
     | '/analytics'
     | '/client-intelligence'
     | '/dashboard'
@@ -261,9 +279,11 @@ export interface FileRouteTypes {
     | '/settings'
     | '/unauthorized'
     | '/workforce'
+    | '/admin/users'
     | '/client/ask'
     | '/client/reports'
     | '/client/status'
+    | '/admin'
     | '/client'
   id:
     | '__root__'
@@ -285,15 +305,17 @@ export interface FileRouteTypes {
     | '/settings'
     | '/unauthorized'
     | '/workforce'
+    | '/admin/users'
     | '/client/ask'
     | '/client/reports'
     | '/client/status'
+    | '/admin/'
     | '/client/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  AdminRoute: typeof AdminRoute
+  AdminRoute: typeof AdminRouteWithChildren
   AnalyticsRoute: typeof AnalyticsRoute
   ClientIntelligenceRoute: typeof ClientIntelligenceRoute
   DashboardRoute: typeof DashboardRoute
@@ -451,6 +473,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ClientIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin/': {
+      id: '/admin/'
+      path: '/'
+      fullPath: '/admin/'
+      preLoaderRoute: typeof AdminIndexRouteImport
+      parentRoute: typeof AdminRoute
+    }
     '/client/status': {
       id: '/client/status'
       path: '/client/status'
@@ -472,12 +501,31 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ClientAskRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin/users': {
+      id: '/admin/users'
+      path: '/users'
+      fullPath: '/admin/users'
+      preLoaderRoute: typeof AdminUsersRouteImport
+      parentRoute: typeof AdminRoute
+    }
   }
 }
 
+interface AdminRouteChildren {
+  AdminUsersRoute: typeof AdminUsersRoute
+  AdminIndexRoute: typeof AdminIndexRoute
+}
+
+const AdminRouteChildren: AdminRouteChildren = {
+  AdminUsersRoute: AdminUsersRoute,
+  AdminIndexRoute: AdminIndexRoute,
+}
+
+const AdminRouteWithChildren = AdminRoute._addFileChildren(AdminRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  AdminRoute: AdminRoute,
+  AdminRoute: AdminRouteWithChildren,
   AnalyticsRoute: AnalyticsRoute,
   ClientIntelligenceRoute: ClientIntelligenceRoute,
   DashboardRoute: DashboardRoute,

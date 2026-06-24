@@ -219,8 +219,21 @@ class QualitySnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     gold_set_accuracy_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     iaa_krippendorff_alpha: Mapped[Decimal | None] = mapped_column(Numeric(4, 3))
     rework_rate_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    evaluated_item_count: Mapped[int | None] = mapped_column(Integer)
     has_drift_alert: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     drift_alert_detail: Mapped[str | None] = mapped_column(Text)
+    root_cause: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    confidence_level: Mapped[str | None] = mapped_column(Text)
+
+
+class QualityErrorCategory(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "quality_error_categories"
+
+    code: Mapped[str] = mapped_column(Text, unique=True)
+    name: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    severity_weight: Mapped[Decimal | None] = mapped_column(Numeric(3, 2))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
 
 
 class QualityErrorEntry(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
@@ -246,6 +259,8 @@ class RiskAlert(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     slippage_probability: Mapped[Decimal | None] = mapped_column(Numeric(4, 3))
     contributing_causes: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     status: Mapped[AlertStatus] = mapped_column(alert_status, default=AlertStatus.OPEN)
+    source_table: Mapped[str | None] = mapped_column(Text, index=True)
+    source_row_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), index=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resolved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
 
@@ -334,6 +349,7 @@ class MetricConfiguration(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete
     is_client_visible: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     display_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     description: Mapped[str | None] = mapped_column(Text)
+    threshold_config: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
 
 class DeliveryConfidenceScore(Base, UuidPrimaryKey, CreatedAt):

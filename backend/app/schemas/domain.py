@@ -1,8 +1,23 @@
+import logging
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
+
+logger = logging.getLogger(__name__)
+
+# Canonical error taxonomy codes (spec §7.3). Names are lowercased for matching.
+CANONICAL_ERROR_CODES: dict[str, str] = {
+    "ERR-01": "boundary precision",
+    "ERR-02": "class confusion",
+    "ERR-03": "missed object",
+    "ERR-04": "guideline ambiguity",
+    "ERR-05": "false positive",
+    "ERR-06": "attribute error",
+    "ERR-07": "tool error",
+    "ERR-OTHER": "other",
+}
 
 from app.db.models import (
     AlertStatus,
@@ -170,6 +185,24 @@ class QualityErrorEntryCreate(BaseModel):
     share_pct: Decimal = Field(ge=0, le=100)
     recommended_action: str | None = None
 
+    @field_validator("error_category", mode="before")
+    @classmethod
+    def normalize_error_category(cls, v: str) -> str:
+        """Accept canonical code (ERR-01) or canonical name (Boundary precision).
+
+        Unknown values pass through with a warning; hard reject deferred to Phase 2.
+        """
+        raw = str(v).strip()
+        upper = raw.upper()
+        if upper in CANONICAL_ERROR_CODES:
+            return upper
+        lower = raw.lower()
+        for code, name in CANONICAL_ERROR_CODES.items():
+            if lower == name:
+                return code
+        logger.warning("Unknown quality error category %r — passing through as free-text.", raw)
+        return raw
+
 
 class QualitySnapshotRead(ORMModel):
     id: UUID
@@ -180,10 +213,21 @@ class QualitySnapshotRead(ORMModel):
     gold_set_accuracy_pct: Decimal | None
     iaa_krippendorff_alpha: Decimal | None
     rework_rate_pct: Decimal | None
+    evaluated_item_count: int | None
     has_drift_alert: bool
     drift_alert_detail: str | None
+    root_cause: dict | None
+    confidence_level: str | None
     created_at: datetime
     updated_at: datetime
+    error_entries: list[QualityErrorEntryRead] = []
+
+
+class QualitySnapshotUpdate(BaseModel):
+    gold_set_accuracy_pct: Decimal | None = Field(default=None, ge=0, le=100)
+    iaa_krippendorff_alpha: Decimal | None = Field(default=None, ge=0, le=1)
+    rework_rate_pct: Decimal | None = Field(default=None, ge=0, le=100)
+    evaluated_item_count: int | None = Field(default=None, ge=0)
 
 
 class QualitySnapshotCreate(BaseModel):
@@ -193,6 +237,7 @@ class QualitySnapshotCreate(BaseModel):
     gold_set_accuracy_pct: Decimal | None = Field(default=None, ge=0, le=100)
     iaa_krippendorff_alpha: Decimal | None = Field(default=None, ge=0, le=1)
     rework_rate_pct: Decimal | None = Field(default=None, ge=0, le=100)
+    evaluated_item_count: int | None = Field(default=None, ge=0)
     error_entries: list[QualityErrorEntryCreate] = []
 
 
@@ -207,6 +252,8 @@ class RiskAlertRead(ORMModel):
     slippage_probability: Decimal | None
     contributing_causes: dict[str, float] | None
     status: AlertStatus
+    source_table: str | None = None
+    source_row_id: UUID | None = None
     resolved_at: datetime | None
     resolved_by: UUID | None
     created_at: datetime
@@ -276,6 +323,7 @@ class MetricConfigurationRead(ORMModel):
     is_client_visible: bool
     display_order: int
     description: str | None
+    threshold_config: dict | None = None
 
 
 class MetricConfigurationCreate(BaseModel):
@@ -291,6 +339,67 @@ class MetricConfigurationUpdate(BaseModel):
     is_client_visible: bool | None = None
     display_order: int | None = None
     description: str | None = None
+    threshold_config: dict | None = None
+
+
+class QualityDashboardKpis(BaseModel):
+    gold_set_accuracy_pct: Decimal | None = None
+    iaa_krippendorff_alpha: Decimal | None = None
+    rework_rate_pct: Decimal | None = None
+    active_drift_alerts: int = 0
+
+
+class QualityTrendPoint(BaseModel):
+    iso_year: int
+    iso_week: int
+    gold_set_accuracy_pct: Decimal | None = None
+    iaa_krippendorff_alpha: Decimal | None = None
+
+
+class QualityErrorBreakdown(BaseModel):
+    error_category: str
+    share_pct: Decimal
+
+
+class QualityTeamScorecard(BaseModel):
+    team_id: UUID
+    team_name: str
+    gold_set_accuracy_pct: Decimal | None = None
+    iaa_krippendorff_alpha: Decimal | None = None
+    rework_rate_pct: Decimal | None = None
+    status: str
+    has_drift_alert: bool = False
+
+
+class QualityDashboardRead(BaseModel):
+    kpis: QualityDashboardKpis
+    trend: list[QualityTrendPoint]
+    error_breakdown: list[QualityErrorBreakdown]
+    team_scorecard: list[QualityTeamScorecard]
+    drift_alerts: list[RiskAlertRead] = []
+    narrative: str | None = None
+    data_gap_teams: list[str] = []
+
+
+class QualityDriftEvent(BaseModel):
+    team: str
+    week: int
+    status: str
+    resolution_summary: str | None = None
+
+
+class QualitySummaryRead(BaseModel):
+    report_type: str = "quality_summary"
+    period: str
+    project_id: UUID
+    overall_status: str
+    gold_set_accuracy_blended: str | None
+    rework_rate: str | None
+    rework_rate_target: str
+    iaa_score: str | None
+    drift_events_this_period: list[QualityDriftEvent] = []
+    client_narrative: str | None
+    confidence: str
 
 
 class NotificationRead(ORMModel):

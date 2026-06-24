@@ -1,6 +1,8 @@
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -21,12 +23,29 @@ from app.api.routes import (
 from app.core.config import get_settings
 from app.core.csrf import CsrfMiddleware
 from app.core.exceptions import register_exception_handlers
-from app.db.session import dispose_engine
+from app.db.session import AsyncSessionLocal, dispose_engine
+from app.services.quality import scan_all_projects
+
+logger = logging.getLogger(__name__)
+
+
+async def _scheduled_quality_scan() -> None:
+    """Scheduler wrapper: opens its own DB session (no FastAPI DI)."""
+    async with AsyncSessionLocal() as session:
+        try:
+            totals = await scan_all_projects(session)
+            logger.info("Scheduled quality scan complete: %s", totals)
+        except Exception:
+            logger.exception("Scheduled quality scan failed")
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(_scheduled_quality_scan, "cron", day_of_week="mon", hour=2)
+    scheduler.start()
     yield
+    scheduler.shutdown()
     await dispose_engine()
 
 

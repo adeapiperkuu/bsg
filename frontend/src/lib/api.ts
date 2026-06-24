@@ -2,6 +2,18 @@ import type { AppRole, AuthSession, MeUser, OrganisationRead, UserRead } from "@
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
+/** Display labels for quality error taxonomy codes (spec §7.3). */
+export const ERROR_CATEGORY_LABELS: Record<string, string> = {
+  "ERR-01": "Boundary precision",
+  "ERR-02": "Class confusion",
+  "ERR-03": "Missed object",
+  "ERR-04": "Guideline ambiguity",
+  "ERR-05": "False positive",
+  "ERR-06": "Attribute error",
+  "ERR-07": "Tool error",
+  "ERR-OTHER": "Other",
+};
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -119,6 +131,86 @@ export async function updateUser(
 
 export async function deleteUser(userId: string): Promise<void> {
   await apiFetch<void>(`/users/${userId}`, { method: "DELETE" });
+}
+
+export async function listProjects(): Promise<ProjectRead[]> {
+  const body = await apiFetch<{ data: ProjectRead[] }>("/projects");
+  return body.data;
+}
+
+export type QualityDashboard = {
+  kpis: {
+    gold_set_accuracy_pct: number | null;
+    iaa_krippendorff_alpha: number | null;
+    rework_rate_pct: number | null;
+    active_drift_alerts: number;
+  };
+  trend: Array<{
+    iso_year: number;
+    iso_week: number;
+    gold_set_accuracy_pct: number | null;
+    iaa_krippendorff_alpha: number | null;
+  }>;
+  error_breakdown: Array<{ error_category: string; share_pct: number }>;
+  team_scorecard: Array<{
+    team_id: string;
+    team_name: string;
+    gold_set_accuracy_pct: number | null;
+    iaa_krippendorff_alpha: number | null;
+    rework_rate_pct: number | null;
+    status: string;
+    has_drift_alert: boolean;
+  }>;
+  drift_alerts: Array<{
+    id: string;
+    title: string;
+    detail: string;
+    risk_tier: string;
+    status: string;
+  }>;
+  narrative: string | null;
+  data_gap_teams: string[];
+};
+
+export type ProjectRead = {
+  id: string;
+  name: string;
+  org_id: string;
+  vertical: string;
+  status: string;
+};
+
+export type AgentQueryRead = {
+  id: string;
+  agent_name: string;
+  project_id: string | null;
+  query_text: string;
+  answer_text: string;
+  model_used: string | null;
+  latency_ms: number | null;
+  created_at: string;
+  evidence_links: Array<{
+    source_table: string;
+    source_row_id: string;
+    description: string;
+  }>;
+};
+
+export async function fetchQualityDashboard(projectId: string): Promise<QualityDashboard> {
+  const body = await apiFetch<{ data: QualityDashboard }>(`/projects/${projectId}/quality-dashboard`);
+  return body.data;
+}
+
+export async function postAgentQuery(payload: {
+  agent_name: string;
+  project_id?: string;
+  query_text: string;
+}): Promise<AgentQueryRead> {
+  const body = await apiFetch<{ data: AgentQueryRead }>("/agent-queries", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
 }
 
 export function defaultRouteForRole(role: AppRole): string {
