@@ -7,9 +7,10 @@ except ImportError:
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, Numeric, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, Numeric, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.types import UserDefinedType
 
 from app.db.models.base import Base, CreatedAt, SoftDelete, UpdatedAt, UuidPrimaryKey
 
@@ -85,6 +86,58 @@ class NotificationType(StrEnum):
     SYSTEM = "system"
 
 
+class KnowledgeFolderKind(StrEnum):
+    SOPS = "sops"
+    GUIDES = "guides"
+    HISTORIES = "histories"
+
+
+class KnowledgeSourceType(StrEnum):
+    SOP = "sop"
+    GUIDE = "guide"
+    TRAINING_DOCUMENT = "training_document"
+    PROJECT_CHARTER = "project_charter"
+    ESCALATION_NOTE = "escalation_note"
+    LESSON_LEARNED = "lesson_learned"
+
+
+class KnowledgeVisibility(StrEnum):
+    INTERNAL_ONLY = "internal_only"
+    LEADERSHIP_ONLY = "leadership_only"
+    CLIENT_SAFE = "client_safe"
+
+
+class KnowledgeDocumentStatus(StrEnum):
+    DRAFT = "draft"
+    APPROVED = "approved"
+    ARCHIVED = "archived"
+
+
+class KnowledgeIndexingStatus(StrEnum):
+    NOT_INDEXED = "not_indexed"
+    INDEXING = "indexing"
+    INDEXED = "indexed"
+    FAILED = "failed"
+
+
+class KnowledgeProcessingStatus(StrEnum):
+    UPLOADED = "uploaded"
+    EXTRACTING = "extracting"
+    EXTRACTED = "extracted"
+    CHUNKING = "chunking"
+    CHUNKED = "chunked"
+    EMBEDDING = "embedding"
+    READY = "ready"
+    FAILED = "failed"
+
+
+class KnowledgeExtractionStatus(StrEnum):
+    PENDING = "pending"
+    EXTRACTING = "extracting"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
 app_role = Enum(AppRole, name="app_role", values_callable=lambda x: [e.value for e in x])
 delivery_site = Enum(DeliverySite, name="delivery_site", values_callable=lambda x: [e.value for e in x])
 project_status = Enum(ProjectStatus, name="project_status", values_callable=lambda x: [e.value for e in x])
@@ -107,6 +160,72 @@ notification_type = Enum(
     name="notification_type",
     values_callable=lambda x: [e.value for e in x],
 )
+knowledge_folder_kind = Enum(
+    KnowledgeFolderKind,
+    name="knowledge_folder_kind",
+    values_callable=lambda x: [e.value for e in x],
+)
+knowledge_source_type = Enum(
+    KnowledgeSourceType,
+    name="knowledge_source_type",
+    values_callable=lambda x: [e.value for e in x],
+)
+knowledge_visibility = Enum(
+    KnowledgeVisibility,
+    name="knowledge_visibility",
+    values_callable=lambda x: [e.value for e in x],
+)
+knowledge_document_status = Enum(
+    KnowledgeDocumentStatus,
+    name="knowledge_document_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+knowledge_indexing_status = Enum(
+    KnowledgeIndexingStatus,
+    name="knowledge_indexing_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+knowledge_processing_status = Enum(
+    KnowledgeProcessingStatus,
+    name="knowledge_processing_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+knowledge_extraction_status = Enum(
+    KnowledgeExtractionStatus,
+    name="knowledge_extraction_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+
+
+class VectorType(UserDefinedType):
+    cache_ok = True
+
+    def __init__(self, dimensions: int) -> None:
+        self.dimensions = dimensions
+
+    def get_col_spec(self, **_: Any) -> str:
+        return f"vector({self.dimensions})"
+
+    def bind_processor(self, dialect):  # type: ignore[no-untyped-def]
+        def process(value: list[float] | None) -> str | None:
+            if value is None:
+                return None
+            return "[" + ",".join(str(float(item)) for item in value) + "]"
+
+        return process
+
+    def result_processor(self, dialect, coltype):  # type: ignore[no-untyped-def]
+        def process(value: Any) -> list[float] | None:
+            if value is None:
+                return None
+            if isinstance(value, list):
+                return [float(item) for item in value]
+            text = str(value).strip().strip("[]")
+            if not text:
+                return []
+            return [float(item) for item in text.split(",")]
+
+        return process
 
 
 class Organisation(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
@@ -360,3 +479,159 @@ class Notification(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     source_row_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class KnowledgeFolder(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "knowledge_folders"
+    __table_args__ = (
+        UniqueConstraint("org_id", "folder_kind", name="knowledge_folders_org_kind_key"),
+        Index("knowledge_folders_org_idx", "org_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    name: Mapped[str] = mapped_column(Text)
+    folder_kind: Mapped[KnowledgeFolderKind] = mapped_column(knowledge_folder_kind)
+    display_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class KnowledgeDocument(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "knowledge_documents"
+    __table_args__ = (
+        Index("knowledge_documents_org_folder_idx", "org_id", "folder_id"),
+        Index("knowledge_documents_retrieval_idx", "org_id", "status", "indexing_status", "visibility"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    folder_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_folders.id", ondelete="RESTRICT"))
+    title: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    source_type: Mapped[KnowledgeSourceType] = mapped_column(knowledge_source_type)
+    document_type: Mapped[str | None] = mapped_column(Text)
+    version: Mapped[str] = mapped_column(Text)
+    visibility: Mapped[KnowledgeVisibility] = mapped_column(knowledge_visibility, default=KnowledgeVisibility.INTERNAL_ONLY)
+    status: Mapped[KnowledgeDocumentStatus] = mapped_column(knowledge_document_status, default=KnowledgeDocumentStatus.DRAFT)
+    project: Mapped[str | None] = mapped_column(Text)
+    department: Mapped[str | None] = mapped_column(Text)
+    owner_approver: Mapped[str] = mapped_column(Text)
+    owner: Mapped[str | None] = mapped_column(Text)
+    approver: Mapped[str | None] = mapped_column(Text)
+    effective_date: Mapped[date | None] = mapped_column(Date)
+    file_name: Mapped[str] = mapped_column(Text)
+    file_mime_type: Mapped[str] = mapped_column(Text)
+    file_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    file_url: Mapped[str | None] = mapped_column(Text)
+    storage_path: Mapped[str | None] = mapped_column(Text)
+    checksum_sha256: Mapped[str | None] = mapped_column(Text)
+    extracted_text: Mapped[str | None] = mapped_column(Text)
+    processing_error: Mapped[str | None] = mapped_column(Text)
+    indexing_status: Mapped[KnowledgeIndexingStatus] = mapped_column(
+        knowledge_indexing_status,
+        default=KnowledgeIndexingStatus.NOT_INDEXED,
+    )
+    processing_status: Mapped[KnowledgeProcessingStatus] = mapped_column(
+        knowledge_processing_status,
+        default=KnowledgeProcessingStatus.UPLOADED,
+    )
+    indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    active_version_id: Mapped[UUID | None] = mapped_column(ForeignKey("knowledge_document_versions.id", ondelete="SET NULL"))
+    uploaded_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    upload_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    approved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class KnowledgeDocumentVersion(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "knowledge_document_versions"
+    __table_args__ = (
+        UniqueConstraint("document_id", "version", name="knowledge_document_versions_document_version_key"),
+        Index("knowledge_document_versions_document_idx", "document_id"),
+        Index("knowledge_document_versions_active_idx", "document_id", "is_active"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    document_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_documents.id", ondelete="CASCADE"))
+    version: Mapped[str] = mapped_column(Text)
+    file_name: Mapped[str] = mapped_column(Text)
+    file_mime_type: Mapped[str] = mapped_column(Text)
+    file_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    file_url: Mapped[str | None] = mapped_column(Text)
+    storage_path: Mapped[str | None] = mapped_column(Text)
+    checksum_sha256: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    uploaded_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class KnowledgeDocumentExtraction(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "knowledge_document_extractions"
+    __table_args__ = (
+        UniqueConstraint("version_id", name="knowledge_document_extractions_version_key"),
+        Index("knowledge_document_extractions_document_idx", "document_id"),
+        Index("knowledge_document_extractions_version_idx", "version_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    document_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_documents.id", ondelete="CASCADE"))
+    version_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_document_versions.id", ondelete="CASCADE"))
+    extracted_text: Mapped[str | None] = mapped_column(Text)
+    extraction_status: Mapped[KnowledgeExtractionStatus] = mapped_column(
+        knowledge_extraction_status,
+        default=KnowledgeExtractionStatus.PENDING,
+    )
+    extraction_error: Mapped[str | None] = mapped_column(Text)
+    extracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class KnowledgeDocumentChunk(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "knowledge_document_chunks"
+    __table_args__ = (
+        UniqueConstraint("version_id", "chunk_index", name="knowledge_document_chunks_version_index_key"),
+        Index("knowledge_document_chunks_document_idx", "document_id"),
+        Index("knowledge_document_chunks_version_idx", "version_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    document_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_documents.id", ondelete="CASCADE"))
+    folder_id: Mapped[UUID | None] = mapped_column(ForeignKey("knowledge_folders.id", ondelete="RESTRICT"))
+    version_id: Mapped[UUID | None] = mapped_column(ForeignKey("knowledge_document_versions.id", ondelete="CASCADE"))
+    chunk_index: Mapped[int] = mapped_column(Integer)
+    heading: Mapped[str | None] = mapped_column(Text)
+    section_title: Mapped[str | None] = mapped_column(Text)
+    page_number: Mapped[int | None] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+    chunk_text: Mapped[str] = mapped_column(Text)
+    token_count: Mapped[int | None] = mapped_column(Integer)
+    visibility: Mapped[KnowledgeVisibility | None] = mapped_column(knowledge_visibility)
+    project: Mapped[str | None] = mapped_column(Text)
+    department: Mapped[str | None] = mapped_column(Text)
+    embedding: Mapped[list[float] | None] = mapped_column(VectorType(1536))
+
+
+class KnowledgeDocumentEmbedding(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "knowledge_document_embeddings"
+    __table_args__ = (
+        UniqueConstraint("chunk_id", "embedding_model", name="knowledge_document_embeddings_chunk_model_key"),
+        Index("knowledge_document_embeddings_document_idx", "document_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    document_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_documents.id", ondelete="CASCADE"))
+    chunk_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_document_chunks.id", ondelete="CASCADE"))
+    embedding_model: Mapped[str] = mapped_column(Text)
+    embedding_dimensions: Mapped[int] = mapped_column(Integer)
+    embedding: Mapped[dict[str, Any]] = mapped_column(JSONB)
+
+
+class KnowledgeEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "knowledge_evidence_links"
+    __table_args__ = (
+        Index("knowledge_evidence_links_query_idx", "agent_query_id"),
+        Index("knowledge_evidence_links_document_idx", "document_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    agent_query_id: Mapped[UUID] = mapped_column(ForeignKey("agent_queries.id", ondelete="CASCADE"))
+    document_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_documents.id", ondelete="RESTRICT"))
+    chunk_id: Mapped[UUID | None] = mapped_column(ForeignKey("knowledge_document_chunks.id", ondelete="SET NULL"))
+    citation_label: Mapped[str] = mapped_column(Text)
+    relevance_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))

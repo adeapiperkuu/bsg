@@ -10,6 +10,7 @@ from app.api.routes import (
     communications,
     csat,
     delivery,
+    knowledge,
     me,
     metrics,
     organisations,
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
         redoc_url="/redoc" if settings.environment != "prod" else None,
     )
 
+    app.add_middleware(CsrfMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_allowed_origins,
@@ -47,7 +49,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.add_middleware(CsrfMiddleware)
     register_exception_handlers(app)
 
     app.include_router(system.router)
@@ -63,6 +64,7 @@ def create_app() -> FastAPI:
     app.include_router(communications.router, prefix=api_prefix)
     app.include_router(metrics.router, prefix=api_prefix)
     app.include_router(csat.router, prefix=api_prefix)
+    app.include_router(knowledge.router, prefix=api_prefix)
     return app
 
 
