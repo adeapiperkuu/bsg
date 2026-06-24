@@ -19,20 +19,34 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import {
   askKnowledgeAgent,
+  compareKnowledgeDocumentVersions,
+  createKnowledgeFolder,
   deleteKnowledgeDocument,
   downloadKnowledgeDocumentFile,
+  listKnowledgeDocumentVersions,
   listKnowledgeDocuments,
+  listKnowledgeFolders,
   reindexKnowledgeDocument,
   updateKnowledgeDocument,
   uploadKnowledgeDocument,
 } from "@/lib/api";
+import { KnowledgeRetrievalPanel } from "@/components/knowledge/KnowledgeRetrievalPanel";
+import { TypewriterText } from "@/components/knowledge/TypewriterText";
+import { TypingIndicator } from "@/components/knowledge/TypingIndicator";
+import { useAuthStore } from "@/stores/useAuthStore";
 import {
   documentFromApi,
   documentToApiPatch,
+  folderKindFromApi,
   isRetrievalReady,
   uploadFormToApi,
   type DocumentStatus,
@@ -40,8 +54,17 @@ import {
   type KnowledgeDocument,
   type SourceType,
   type Visibility,
+  type WorkflowState,
 } from "@/lib/knowledge-mappers";
-import type { KnowledgeCitationApi } from "@/types/knowledge";
+import type {
+  KnowledgeAskResponseApi,
+  KnowledgeCitationApi,
+  KnowledgeDocumentVersionApi,
+  KnowledgeGapApi,
+  KnowledgeRetrievalSettingsApi,
+  KnowledgeStructuredAnswerApi,
+  KnowledgeVersionCompareApi,
+} from "@/types/knowledge";
 import {
   Archive,
   Bot,
@@ -50,13 +73,17 @@ import {
   ChevronRight,
   Download,
   FileText,
+  Filter,
   Folder,
+  GitCompare,
   History,
   Library,
   Loader2,
+  Plus,
   Send,
   RefreshCw,
   Search,
+  Settings2,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -73,8 +100,14 @@ type ChatMessage = {
   text: string;
   next_step?: string;
   confidence_score?: number;
+  confidence_reasons?: string[];
+  structured_answer?: KnowledgeStructuredAnswerApi | null;
+  knowledge_gap?: KnowledgeGapApi | null;
   citations?: KnowledgeCitationApi[];
 };
+type LibraryFolder = { id: string; kind: FolderName; name: string };
+
+const workflowStates: WorkflowState[] = ["Needs review", "Approved", "Expired", "Needs re-index", "Archived"];
 
 const folders: FolderName[] = ["SOPs", "Guides", "Histories"];
 const sourceTypes: SourceType[] = [
@@ -98,15 +131,34 @@ const suggestedQuestions = [
 const initialDocuments: KnowledgeDocument[] = [];
 
 function KnowledgePage() {
+  const user = useAuthStore((s) => s.user);
+  const canManageRetrieval = user?.role === "bsg_leadership" || user?.role === "super_admin";
   const [documents, setDocuments] = useState<KnowledgeDocument[]>(initialDocuments);
+  const [libraryFolders, setLibraryFolders] = useState<LibraryFolder[]>([]);
+  const [loadingFolders, setLoadingFolders] = useState(false);
+  const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
+  const [createFolderName, setCreateFolderName] = useState("");
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [createFolderError, setCreateFolderError] = useState("");
   const [docId, setDocId] = useState<string | null>(null);
+  const [activeChunkId, setActiveChunkId] = useState<string | null>(null);
+  const [documentTab, setDocumentTab] = useState("preview");
   const [loadingDocs, setLoadingDocs] = useState(false);
+  const [docsLoadError, setDocsLoadError] = useState("");
   const [askInput, setAskInput] = useState("");
   const [asking, setAsking] = useState(false);
+  const [animatingMessageIndex, setAnimatingMessageIndex] = useState<number | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [activeSources, setActiveSources] = useState<KnowledgeCitationApi[]>([]);
+  const [lastConfidence, setLastConfidence] = useState<number | null>(null);
+  const [retrievalSettings, setRetrievalSettings] = useState<KnowledgeRetrievalSettingsApi | null>(null);
+  const [showRetrievalPanel, setShowRetrievalPanel] = useState(false);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [isDocumentOpen, setIsDocumentOpen] = useState(false);
+  const [versions, setVersions] = useState<KnowledgeDocumentVersionApi[]>([]);
+  const [versionCompare, setVersionCompare] = useState<KnowledgeVersionCompareApi | null>(null);
+  const [compareLeftId, setCompareLeftId] = useState<string>("");
+  const [compareRightId, setCompareRightId] = useState<string>("");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadState, setUploadState] = useState<UploadState>("idle");
   const [uploadError, setUploadError] = useState("");
@@ -114,6 +166,7 @@ function KnowledgePage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [activeFolder, setActiveFolder] = useState<FolderName | "All">("All");
   const [statusFilter, setStatusFilter] = useState<DocumentStatus | "All">("All");
+  const [workflowFilter, setWorkflowFilter] = useState<WorkflowState | "All">("All");
   const [sortMode, setSortMode] = useState<SortMode>("recent");
   const [healthFilter, setHealthFilter] = useState<HealthFilter>("all");
   const [collapsedFolders, setCollapsedFolders] = useState<Set<FolderName>>(() => new Set(folders));
@@ -144,11 +197,26 @@ function KnowledgePage() {
     { id: "archived" as const, label: "Archived", count: archivedCount },
   ];
 
+  const activeFilterCount = [
+    activeFolder !== "All",
+    statusFilter !== "All",
+    workflowFilter !== "All",
+    sortMode !== "recent",
+  ].filter(Boolean).length;
+
+  const clearLibraryFilters = () => {
+    setActiveFolder("All");
+    setStatusFilter("All");
+    setWorkflowFilter("All");
+    setSortMode("recent");
+  };
+
   const filteredDocuments = useMemo(() => {
     const query = searchTerm.trim().toLowerCase();
     const filtered = documents.filter((item) => {
       const matchesFolder = activeFolder === "All" || item.folder === activeFolder;
       const matchesStatus = statusFilter === "All" || item.status === statusFilter;
+      const matchesWorkflow = workflowFilter === "All" || item.workflowState === workflowFilter;
       const matchesHealth =
         healthFilter === "all" ||
         (healthFilter === "ready" && isRetrievalReady(item)) ||
@@ -161,7 +229,7 @@ function KnowledgePage() {
           .join(" ")
           .toLowerCase()
           .includes(query);
-      return matchesFolder && matchesStatus && matchesHealth && matchesSearch;
+      return matchesFolder && matchesStatus && matchesWorkflow && matchesHealth && matchesSearch;
     });
 
     const statusRank: Record<DocumentStatus, number> = { Approved: 0, Draft: 1, Archived: 2 };
@@ -179,31 +247,55 @@ function KnowledgePage() {
       const rightTime = Date.parse(right.effectiveDate || "") || 0;
       return rightTime - leftTime || left.title.localeCompare(right.title);
     });
-  }, [activeFolder, documents, healthFilter, searchTerm, sortMode, statusFilter]);
+  }, [activeFolder, documents, healthFilter, searchTerm, sortMode, statusFilter, workflowFilter]);
 
   const groupedDocuments = useMemo(
     () =>
-      folders
-        .filter((folder) => activeFolder === "All" || folder === activeFolder)
+      libraryFolders
+        .filter((folder) => activeFolder === "All" || folder.kind === activeFolder)
         .map((folder) => ({
-          folder,
-          items: filteredDocuments.filter((item) => item.folder === folder),
-          total: documents.filter((item) => item.folder === folder).length,
+          folder: folder.kind,
+          folderName: folder.name,
+          items: filteredDocuments.filter((item) => item.folder === folder.kind),
+          total: documents.filter((item) => item.folder === folder.kind).length,
         })),
-    [activeFolder, documents, filteredDocuments],
+    [activeFolder, documents, filteredDocuments, libraryFolders],
   );
+
+  const loadLibraryFolders = async () => {
+    setLoadingFolders(true);
+    try {
+      const rows = await listKnowledgeFolders();
+      setLibraryFolders(
+        rows.map((row) => ({
+          id: row.id,
+          kind: folderKindFromApi(row.folder_kind),
+          name: row.name,
+        })),
+      );
+    } catch {
+      setLibraryFolders([]);
+    } finally {
+      setLoadingFolders(false);
+    }
+  };
 
   useEffect(() => {
     const load = async () => {
       setLoadingDocs(true);
+      setDocsLoadError("");
       try {
-        const rows = await listKnowledgeDocuments();
+        const [rows] = await Promise.all([
+          listKnowledgeDocuments(),
+          loadLibraryFolders(),
+        ]);
         const mapped = rows.map(documentFromApi);
         setDocuments(mapped);
-        setDocId(mapped[0]?.id ?? null);
-      } catch {
+        setDocId((current) => (current && mapped.some((item) => item.id === current) ? current : mapped[0]?.id ?? null));
+      } catch (err) {
         setDocuments([]);
         setDocId(null);
+        setDocsLoadError(err instanceof Error ? err.message : "Could not load knowledge documents.");
       } finally {
         setLoadingDocs(false);
       }
@@ -212,8 +304,29 @@ function KnowledgePage() {
   }, []);
 
   useEffect(() => {
+    if (!selectedDoc || !isDocumentOpen) return;
+    void listKnowledgeDocumentVersions(selectedDoc.id)
+      .then(setVersions)
+      .catch(() => setVersions([]));
+    setVersionCompare(null);
+    setCompareLeftId("");
+    setCompareRightId("");
+  }, [isDocumentOpen, selectedDoc?.id]);
+
+  const scrollChatToEnd = () => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [asking, messages.length]);
+  };
+
+  useEffect(() => {
+    scrollChatToEnd();
+  }, [asking, messages.length, animatingMessageIndex]);
+
+  useEffect(() => {
+    if (!isDocumentOpen || !activeChunkId || documentTab !== "chunks") return;
+    window.setTimeout(() => {
+      document.getElementById(`chunk-${activeChunkId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 120);
+  }, [activeChunkId, documentTab, isDocumentOpen]);
 
   const setField = <Key extends keyof typeof form>(key: Key, value: (typeof form)[Key]) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -386,42 +499,61 @@ function KnowledgePage() {
 
   const submitAsk = async () => {
     const question = askInput.trim();
-    if (!question || asking) return;
+    if (!question || asking || animatingMessageIndex !== null) return;
     setMessages((current) => [...current, { role: "user", text: question }]);
     setAskInput("");
     setAsking(true);
     try {
-      const response = await askKnowledgeAgent(question);
+      const response = await askKnowledgeAgent(question, {
+        includeHistories: retrievalSettings?.include_histories ?? true,
+        maxSources: retrievalSettings?.max_sources ?? 5,
+        minRelevanceScore: retrievalSettings?.min_confidence ?? 0.25,
+        project: retrievalSettings?.project ?? undefined,
+        department: retrievalSettings?.department ?? undefined,
+      });
       const agentMsg: ChatMessage = {
         role: "agent",
         text: response.answer_text,
         next_step: response.next_step,
         confidence_score: response.confidence_score,
+        confidence_reasons: response.confidence_reasons,
+        structured_answer: response.structured_answer,
+        knowledge_gap: response.knowledge_gap,
         citations: response.citations,
       };
-      setMessages((current) => [...current, agentMsg]);
+      setMessages((current) => {
+        const next = [...current, agentMsg];
+        setAnimatingMessageIndex(next.length - 1);
+        return next;
+      });
       setActiveSources(response.citations);
-      if (response.citations[0]) setDocId(response.citations[0].document_id);
+      setLastConfidence(response.confidence_score);
+      if (response.citations[0]) {
+        openDocumentWithChunk(response.citations[0].document_id, response.citations[0].chunk_id, false);
+      }
     } catch {
       const fallback = "I could not find this information in the uploaded knowledge base.";
-      const fallbackCitations: KnowledgeCitationApi[] = approvedIndexedDocs.slice(0, 2).map((item) => ({
-        document_id: item.id,
-        chunk_id: null,
-        citation_label: `${item.sourceType}: ${item.title} ${item.version}`,
-        title: item.title,
-        source_type: item.sourceType,
-        version: item.version,
-        folder_name: item.folder,
-        folder_kind: "",
-        relevance_score: 0,
-        page_number: null,
-        chunk_index: null,
-      }));
-      setMessages((current) => [
-        ...current,
-        { role: "agent", text: fallback, citations: fallbackCitations },
-      ]);
-      setActiveSources(fallbackCitations);
+      setMessages((current) => {
+        const next = [
+          ...current,
+          {
+            role: "agent" as const,
+            text: fallback,
+            confidence_score: 0,
+            confidence_reasons: ["The knowledge service could not complete the request."],
+            knowledge_gap: {
+              message: fallback,
+              suggested_title: question.slice(0, 80),
+              suggested_source_type: "sop",
+              suggested_folder_kind: "sops",
+            },
+          },
+        ];
+        setAnimatingMessageIndex(next.length - 1);
+        return next;
+      });
+      setActiveSources([]);
+      setLastConfidence(0);
     } finally {
       setAsking(false);
     }
@@ -451,8 +583,75 @@ function KnowledgePage() {
   };
 
   const openDocument = (id: string) => {
+    openDocumentWithChunk(id, null, true);
+  };
+
+  const openDocumentWithChunk = (id: string, chunkId: string | null, openDialog = true) => {
     setDocId(id);
-    setIsDocumentOpen(true);
+    setActiveChunkId(chunkId);
+    setDocumentTab(chunkId ? "chunks" : "preview");
+    if (openDialog) setIsDocumentOpen(true);
+  };
+
+  const prefillUploadFromGap = (gap: KnowledgeGapApi) => {
+    const folderMap: Record<string, FolderName> = { sops: "SOPs", guides: "Guides", histories: "Histories" };
+    const sourceMap: Record<string, SourceType> = {
+      sop: "SOP",
+      guide: "Guide",
+      training_document: "Training Document",
+      project_charter: "Project Charter",
+      escalation_note: "Escalation Note",
+      lesson_learned: "Lesson Learned",
+    };
+    setForm((current) => ({
+      ...current,
+      title: gap.suggested_title ?? current.title,
+      folder: folderMap[gap.suggested_folder_kind ?? "sops"] ?? "SOPs",
+      sourceType: sourceMap[gap.suggested_source_type ?? "sop"] ?? "SOP",
+      status: "Draft",
+    }));
+    setIsUploadOpen(true);
+  };
+
+  const openCreateFolder = () => {
+    setCreateFolderName("");
+    setCreateFolderError("");
+    setIsCreateFolderOpen(true);
+  };
+
+  const submitCreateFolder = async (event: FormEvent) => {
+    event.preventDefault();
+    const name = createFolderName.trim();
+    if (!name || creatingFolder) return;
+    setCreatingFolder(true);
+    setCreateFolderError("");
+    try {
+      const created = await createKnowledgeFolder({ name });
+      await loadLibraryFolders();
+      const createdKind = folderKindFromApi(created.folder_kind);
+      setCollapsedFolders((current) => {
+        const next = new Set(current);
+        next.delete(createdKind);
+        return next;
+      });
+      setActiveFolder(createdKind);
+      setCreateFolderName("");
+      setIsCreateFolderOpen(false);
+    } catch (err) {
+      setCreateFolderError(err instanceof Error ? err.message : "Could not create folder.");
+    } finally {
+      setCreatingFolder(false);
+    }
+  };
+
+  const runVersionCompare = async () => {
+    if (!selectedDoc || !compareLeftId || !compareRightId || compareLeftId === compareRightId) return;
+    try {
+      const result = await compareKnowledgeDocumentVersions(selectedDoc.id, compareLeftId, compareRightId);
+      setVersionCompare(result);
+    } catch {
+      setVersionCompare(null);
+    }
   };
 
   return (
@@ -507,7 +706,7 @@ function KnowledgePage() {
                     <button
                       key={`${src.document_id}-${idx}`}
                       type="button"
-                      onClick={() => openDocument(src.document_id)}
+                      onClick={() => openDocumentWithChunk(src.document_id, src.chunk_id, true)}
                       className="w-full rounded-md border border-border/70 bg-secondary/40 p-3 text-left transition-colors hover:bg-secondary/80"
                     >
                       <div className="mb-1 flex items-start justify-between gap-2">
@@ -539,7 +738,32 @@ function KnowledgePage() {
           </Card>
 
         <Card className="flex min-h-0 flex-1 flex-col border-transparent bg-card/80">
-          <SectionHeader title="Knowledge Library" sub={loadingDocs ? "Loading documents..." : `${documents.length} governed documents`} />
+          <SectionHeader
+            title="Knowledge Library"
+            sub={
+              loadingDocs || loadingFolders
+                ? "Loading library..."
+                : `${documents.length} governed documents`
+            }
+            right={
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1 px-2.5 text-[10px] shadow-none"
+                onClick={openCreateFolder}
+              >
+                <Plus className="h-3 w-3" />
+                Create
+              </Button>
+            }
+          />
+
+          {docsLoadError && (
+            <div className="rounded-md border border-[color:var(--danger)]/30 bg-[color:var(--danger)]/8 px-3 py-2 text-xs text-[color:var(--danger)]">
+              {docsLoadError}
+            </div>
+          )}
 
           <div className="space-y-3">
             <div className="flex flex-wrap gap-1.5">
@@ -559,51 +783,92 @@ function KnowledgePage() {
                 </button>
               ))}
             </div>
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input
-                value={searchTerm}
-                onChange={(event) => setSearchTerm(event.target.value)}
-                placeholder="Search title, owner, type, or version"
-                className="h-9 pl-9 text-xs shadow-none"
-              />
+            <div className="flex gap-2">
+              <div className="relative min-w-0 flex-1">
+                <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  value={searchTerm}
+                  onChange={(event) => setSearchTerm(event.target.value)}
+                  placeholder="Search title, owner, type, or version"
+                  className="h-9 pl-9 text-xs shadow-none"
+                />
+              </div>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-9 shrink-0 gap-1.5 px-3 text-xs shadow-none"
+                  >
+                    <Filter className="h-3.5 w-3.5" />
+                    Filters
+                    {activeFilterCount > 0 && (
+                      <span className="rounded-full bg-[color:var(--brand)]/15 px-1.5 text-[10px] font-semibold text-[color:var(--brand)]">
+                        {activeFilterCount}
+                      </span>
+                    )}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-72 space-y-3 p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-foreground">Library filters</span>
+                    {activeFilterCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={clearLibraryFilters}
+                        className="text-[10px] text-muted-foreground hover:text-foreground"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                  <Field label="Folder">
+                    <Select value={activeFolder} onValueChange={(value) => setActiveFolder(value as FolderName | "All")}>
+                      <SelectTrigger className="h-8 text-xs shadow-none"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="All">All folders</SelectItem>
+                        {folders.map((folder) => (
+                          <SelectItem key={folder} value={folder}>{folder}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="Status">
+                    <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as DocumentStatus | "All")}>
+                      <SelectTrigger className="h-8 text-xs shadow-none"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="All">All statuses</SelectItem>
+                        {statuses.map((status) => (
+                          <SelectItem key={status} value={status}>{status}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="Workflow">
+                    <Select value={workflowFilter} onValueChange={(value) => setWorkflowFilter(value as WorkflowState | "All")}>
+                      <SelectTrigger className="h-8 text-xs shadow-none"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="All">All workflow states</SelectItem>
+                        {workflowStates.map((state) => (
+                          <SelectItem key={state} value={state}>{state}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="Sort by">
+                    <Select value={sortMode} onValueChange={(value) => setSortMode(value as SortMode)}>
+                      <SelectTrigger className="h-8 text-xs shadow-none"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="recent">Recently effective</SelectItem>
+                        <SelectItem value="title">Title A-Z</SelectItem>
+                        <SelectItem value="approved">Approved first</SelectItem>
+                        <SelectItem value="indexed">Ready first</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                </PopoverContent>
+              </Popover>
             </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <Select value={activeFolder} onValueChange={(value) => setActiveFolder(value as FolderName | "All")}>
-                <SelectTrigger className="h-9 text-xs shadow-none">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="All">All folders</SelectItem>
-                  {folders.map((folder) => (
-                    <SelectItem key={folder} value={folder}>{folder}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as DocumentStatus | "All")}>
-                <SelectTrigger className="h-9 text-xs shadow-none">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="All">All statuses</SelectItem>
-                  {statuses.map((status) => (
-                    <SelectItem key={status} value={status}>{status}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <Select value={sortMode} onValueChange={(value) => setSortMode(value as SortMode)}>
-              <SelectTrigger className="h-9 text-xs shadow-none">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="recent">Recently effective</SelectItem>
-                <SelectItem value="title">Title A-Z</SelectItem>
-                <SelectItem value="approved">Approved first</SelectItem>
-                <SelectItem value="indexed">Ready first</SelectItem>
-              </SelectContent>
-            </Select>
           </div>
 
           <div className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
@@ -628,7 +893,7 @@ function KnowledgePage() {
                       <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
                     )}
                     {folderIcon(group.folder)}
-                    {group.folder}
+                    {group.folderName}
                   </div>
                   <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">
                     {group.items.length} of {group.total}
@@ -667,8 +932,15 @@ function KnowledgePage() {
                               {item.fileType}
                             </span>
                           </div>
-                          <div className="mt-2 flex flex-wrap gap-1">
+                          <div className="mt-2 flex flex-wrap items-center gap-1">
+                            <DocBadge label={item.workflowState} />
                             <DocBadge label={item.status} />
+                            {item.qualityScore && <QualityScoreBadge score={item.qualityScore} />}
+                            {item.semanticRelevance != null && item.semanticRelevance > 0 && (
+                              <span className="rounded bg-[color:var(--brand)]/10 px-1.5 py-0.5 text-[9px] font-medium text-[color:var(--brand)]">
+                                {Math.round(item.semanticRelevance * 100)}% match
+                              </span>
+                            )}
                             {item.indexing && <DocBadge label={item.processingLabel} tone="info" />}
                             {item.processingStatus === "ready" && <DocBadge label="Ready" tone="success" />}
                             {item.processingStatus === "failed" && <DocBadge label="Failed" tone="danger" />}
@@ -690,9 +962,21 @@ function KnowledgePage() {
               </section>
               );
             })}
-            {filteredDocuments.length === 0 && (
+            {filteredDocuments.length === 0 && libraryFolders.length === 0 && !loadingDocs && !loadingFolders && !docsLoadError && (
+              <div className="rounded-md border border-dashed border-border/70 bg-secondary/30 p-6 text-center text-xs text-muted-foreground">
+                No folders yet. Use <span className="font-medium text-foreground">Create</span> to add your first folder.
+              </div>
+            )}
+            {filteredDocuments.length === 0 && libraryFolders.length > 0 && (
               <div className="rounded-md bg-secondary/50 p-6 text-center text-xs text-muted-foreground">
-                No documents match the current filters.
+                {documents.length === 0 && !loadingDocs && !docsLoadError ? (
+                  <span>
+                    No documents are visible for {user?.organisation?.name ?? "your organisation"}.
+                    {user?.role === "client" ? " Client accounts cannot access the knowledge library API." : " Try the PM dev account (pm@bsg.dev) or upload a new document."}
+                  </span>
+                ) : (
+                  "No documents match the current filters."
+                )}
               </div>
             )}
           </div>
@@ -718,17 +1002,26 @@ function KnowledgePage() {
                   <span className="rounded-full bg-[color:var(--success)]/10 px-2.5 py-1 text-[10px] font-medium text-[color:var(--success)]">
                     {approvedIndexedDocs.length} sources ready
                   </span>
-                  <AiBadge confidence={92} />
+                  <AiBadge confidence={lastConfidence != null ? Math.round(lastConfidence * 100) : 0} />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 gap-1.5 px-2 text-xs text-muted-foreground"
+                    onClick={() => setShowRetrievalPanel((v) => !v)}
+                  >
+                    <Settings2 className="h-3.5 w-3.5" />
+                    Retrieval
+                  </Button>
                 </div>
               </div>
             </div>
 
-            <div className="px-5 pt-4">
-              <div className="flex items-start gap-2 rounded-md bg-secondary/60 p-3 text-xs leading-5 text-muted-foreground">
-                <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                <span>Draft, archived, failed, and still-processing documents are excluded from answers.</span>
+            {showRetrievalPanel && (
+              <div className="px-5 pt-3">
+                <KnowledgeRetrievalPanel canManage={canManageRetrieval} onChange={setRetrievalSettings} />
               </div>
-            </div>
+            )}
 
             <div className="px-5 pt-3">
               <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Suggested questions</div>
@@ -747,7 +1040,11 @@ function KnowledgePage() {
             </div>
 
             <div className="mx-5 mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto rounded-md bg-secondary/35 p-4 text-xs">
-              {messages.map((message, index) => (
+              {messages.map((message, index) => {
+                const isAnimating = message.role === "agent" && index === animatingMessageIndex;
+                const showAgentDetails = message.role === "agent" && !isAnimating;
+
+                return (
                 <div
                   key={`${message.role}-${index}`}
                   className={cn(
@@ -772,20 +1069,69 @@ function KnowledgePage() {
                   >
                     <div className={cn("mb-1 flex items-center justify-between gap-2 text-[10px] font-semibold uppercase tracking-wider", message.role === "user" ? "text-white/70" : "text-muted-foreground")}>
                       <span>{message.role === "user" ? "You" : "Knowledge Agent"}</span>
-                      {message.role === "agent" && message.confidence_score !== undefined && message.confidence_score > 0 && (
+                      {showAgentDetails && message.confidence_score !== undefined && message.confidence_score > 0 && (
                         <span className="rounded-sm bg-[color:var(--success)]/15 px-1.5 py-0.5 text-[color:var(--success)] normal-case">
                           {Math.round(message.confidence_score * 100)}% confidence
                         </span>
                       )}
                     </div>
-                    <p className="leading-5">{message.text}</p>
-                    {message.role === "agent" && message.next_step && (
+                    {isAnimating ? (
+                      <TypewriterText
+                        text={message.text}
+                        className="leading-5"
+                        onProgress={scrollChatToEnd}
+                        onComplete={() => setAnimatingMessageIndex(null)}
+                      />
+                    ) : (
+                      <p className="leading-5">{message.text}</p>
+                    )}
+                    {showAgentDetails && message.confidence_reasons && message.confidence_reasons.length > 0 && (
+                      <div className="mt-2.5 rounded-sm border border-border/60 bg-secondary/40 px-2.5 py-2">
+                        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Why this confidence</div>
+                        <ul className="space-y-0.5 text-[11px] leading-4 text-muted-foreground">
+                          {message.confidence_reasons.map((reason) => (
+                            <li key={reason}>• {reason}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {showAgentDetails && message.structured_answer && (
+                      <div className="mt-2.5 space-y-2 rounded-sm border border-border/60 bg-secondary/30 p-2.5">
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Operational answer</div>
+                        {message.structured_answer.policy && <StructuredField label="Policy" value={message.structured_answer.policy} />}
+                        {message.structured_answer.steps && <StructuredField label="Steps" value={message.structured_answer.steps} />}
+                        {message.structured_answer.owner && <StructuredField label="Owner" value={message.structured_answer.owner} />}
+                        {message.structured_answer.evidence && <StructuredField label="Evidence" value={message.structured_answer.evidence} />}
+                        {message.structured_answer.next_action && <StructuredField label="Next action" value={message.structured_answer.next_action} />}
+                      </div>
+                    )}
+                    {showAgentDetails && message.knowledge_gap && (
+                      <div className="mt-2.5 rounded-sm border border-[color:var(--warning)]/30 bg-[color:var(--warning)]/8 p-2.5">
+                        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--warning)]">Missing knowledge</div>
+                        <p className="text-[11px] leading-4 text-foreground">{message.knowledge_gap.message}</p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <Button type="button" size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => prefillUploadFromGap(message.knowledge_gap!)}>
+                            Upload related document
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 text-[10px]"
+                            onClick={() => setWorkflowFilter("Needs review")}
+                          >
+                            Review pending documents
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                    {showAgentDetails && message.next_step && (
                       <div className="mt-2.5 rounded-sm border border-[color:var(--brand)]/20 bg-[color:var(--brand)]/5 px-2.5 py-2">
                         <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--brand)]/70">Recommended next step</div>
                         <p className="text-[11px] leading-4 text-foreground">{message.next_step}</p>
                       </div>
                     )}
-                    {message.role === "agent" && message.citations && message.citations.length > 0 && (
+                    {showAgentDetails && message.citations && message.citations.length > 0 && (
                       <div className="mt-2.5 border-t border-border/50 pt-2">
                         <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Sources</div>
                         <div className="flex flex-wrap gap-1.5">
@@ -793,7 +1139,7 @@ function KnowledgePage() {
                             <button
                               key={`${item.document_id}-${item.citation_label}`}
                               type="button"
-                              onClick={() => openDocument(item.document_id)}
+                              onClick={() => openDocumentWithChunk(item.document_id, item.chunk_id, true)}
                               className="rounded-md border border-border/70 bg-secondary/50 px-2 py-1 text-[10px] text-foreground hover:bg-secondary"
                             >
                               {item.title}
@@ -807,14 +1153,16 @@ function KnowledgePage() {
                     )}
                   </div>
                 </div>
-              ))}
+                );
+              })}
               {asking && (
                 <div className="flex gap-3">
                   <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-card text-muted-foreground">
                     <Bot className="h-3.5 w-3.5" />
                   </div>
                   <div className="rounded-md bg-card px-3 py-3 text-xs text-muted-foreground">
-                    Searching approved knowledge sources...
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Knowledge Agent</div>
+                    <TypingIndicator />
                   </div>
                 </div>
               )}
@@ -825,6 +1173,7 @@ function KnowledgePage() {
               <input
                 placeholder="Ask about an SOP, guide, or historical issue..."
                 value={askInput}
+                disabled={asking || animatingMessageIndex !== null}
                 onChange={(event) => setAskInput(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
@@ -836,11 +1185,11 @@ function KnowledgePage() {
               />
               <Button
                 type="submit"
-                disabled={asking}
+                disabled={asking || animatingMessageIndex !== null}
                 className="h-10 gap-2 bg-[color:var(--brand)] px-4 text-xs text-[color:var(--brand-foreground)]"
               >
                 <Send className="h-3.5 w-3.5" />
-                {asking ? "Asking" : "Ask"}
+                {asking ? "Asking" : animatingMessageIndex !== null ? "Replying" : "Ask"}
               </Button>
             </form>
           </Card>
@@ -874,7 +1223,7 @@ function KnowledgePage() {
                     <button
                       key={`${src.document_id}-${idx}`}
                       type="button"
-                      onClick={() => openDocument(src.document_id)}
+                      onClick={() => openDocumentWithChunk(src.document_id, src.chunk_id, true)}
                       className="w-full rounded-md border border-border/70 bg-secondary/40 p-3 text-left hover:bg-secondary/80 transition-colors"
                     >
                       <div className="mb-1 flex items-start justify-between gap-2">
@@ -890,6 +1239,9 @@ function KnowledgePage() {
                         {src.folder_name ? ` · ${src.folder_name}` : ""}
                         {src.page_number ? ` · p. ${src.page_number}` : ""}
                       </div>
+                      {src.chunk_preview && (
+                        <p className="mb-2 line-clamp-3 text-[10px] leading-4 text-muted-foreground">{src.chunk_preview}</p>
+                      )}
                       {pct > 0 && (
                         <div className="h-1 w-full overflow-hidden rounded-full bg-border/60">
                           <div
@@ -920,18 +1272,20 @@ function KnowledgePage() {
                       {selectedDoc.folder} | {selectedDoc.fileName}
                     </DialogDescription>
                   </div>
+                  <DocBadge label={selectedDoc.workflowState} />
                   <DocBadge label={selectedDoc.status} />
                 </div>
               </DialogHeader>
 
               <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[1fr_18rem]">
                 <div className="min-h-0 rounded-md bg-secondary/50 p-4">
-                  <Tabs defaultValue="preview" className="flex h-full min-h-0 flex-col">
+                  <Tabs value={documentTab} onValueChange={setDocumentTab} className="flex h-full min-h-0 flex-col">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <TabsList className="h-8 bg-card/70">
                         <TabsTrigger value="preview" className="px-2.5 py-1 text-xs data-[state=active]:shadow-none">Preview</TabsTrigger>
                         <TabsTrigger value="metadata" className="px-2.5 py-1 text-xs data-[state=active]:shadow-none">Metadata</TabsTrigger>
                         <TabsTrigger value="chunks" className="px-2.5 py-1 text-xs data-[state=active]:shadow-none">Chunks</TabsTrigger>
+                        <TabsTrigger value="versions" className="px-2.5 py-1 text-xs data-[state=active]:shadow-none">Versions</TabsTrigger>
                         <TabsTrigger value="evidence" className="px-2.5 py-1 text-xs data-[state=active]:shadow-none">Evidence</TabsTrigger>
                       </TabsList>
                       <div className="flex flex-wrap items-center gap-1.5">
@@ -958,28 +1312,129 @@ function KnowledgePage() {
                       <div className="grid gap-2 text-xs sm:grid-cols-2">
                         <InfoTile label="Source type" value={selectedDoc.sourceType} />
                         <InfoTile label="Visibility" value={selectedDoc.visibility} />
+                        <InfoTile label="Workflow" value={selectedDoc.workflowState} />
                         <InfoTile label="Status" value={selectedDoc.status} />
                         <InfoTile label="Version" value={selectedDoc.version} />
                         <InfoTile label="Owner/Approver" value={selectedDoc.owner} />
                         <InfoTile label="Effective date" value={selectedDoc.effectiveDate || "Not set"} />
+                        <InfoTile label="Approved by" value={selectedDoc.approvedByName || "Not approved"} />
+                        <InfoTile label="Chunks" value={String(selectedDoc.chunkCount)} />
+                        <InfoTile label="Citations" value={String(selectedDoc.citationCount)} />
                       </div>
+                      {selectedDoc.qualityScore && (
+                        <div className="mt-4 rounded-md border border-border/70 bg-card/60 p-3">
+                          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Document quality</div>
+                          <QualityScoreBadge score={selectedDoc.qualityScore} detailed />
+                        </div>
+                      )}
                     </TabsContent>
 
                     <TabsContent value="chunks" className="mt-4 min-h-0 flex-1 overflow-y-auto pr-2">
                       <div className="space-y-2 text-xs">
-                        {selectedDoc.preview.map((paragraph, index) => (
+                        {selectedDoc.chunks.length === 0 && selectedDoc.preview.map((paragraph, index) => (
                           <div key={`${selectedDoc.id}-chunk-${index}`} className="rounded-md border border-border/70 bg-card/60 p-3">
                             <div className="mb-1 font-medium text-muted-foreground">Chunk {index + 1}</div>
                             <FormattedPreview text={paragraph} compact />
                           </div>
                         ))}
+                        {selectedDoc.chunks.map((chunk) => (
+                          <div
+                            key={chunk.id}
+                            id={`chunk-${chunk.id}`}
+                            className={cn(
+                              "rounded-md border bg-card/60 p-3",
+                              activeChunkId === chunk.id
+                                ? "border-[color:var(--brand)] ring-2 ring-[color:var(--brand)]/20"
+                                : "border-border/70",
+                            )}
+                          >
+                            <div className="mb-1 flex items-center justify-between gap-2 font-medium text-muted-foreground">
+                              <span>
+                                Chunk {chunk.chunkIndex + 1}
+                                {chunk.sectionTitle ? ` · ${chunk.sectionTitle}` : ""}
+                                {chunk.pageNumber ? ` · p. ${chunk.pageNumber}` : ""}
+                              </span>
+                              {activeChunkId === chunk.id && (
+                                <span className="rounded bg-[color:var(--brand)]/10 px-1.5 py-0.5 text-[10px] text-[color:var(--brand)]">Cited</span>
+                              )}
+                            </div>
+                            <FormattedPreview text={chunk.chunkText} compact />
+                          </div>
+                        ))}
+                      </div>
+                    </TabsContent>
+
+                    <TabsContent value="versions" className="mt-4 min-h-0 flex-1 overflow-y-auto pr-2">
+                      <div className="space-y-3 text-xs">
+                        {versions.map((version) => (
+                          <div key={version.id} className="rounded-md border border-border/70 bg-card/60 p-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="font-semibold text-foreground">{version.version}</div>
+                              {version.is_active && <DocBadge label="Active" tone="success" />}
+                            </div>
+                            <div className="mt-1 text-muted-foreground">
+                              Uploaded {new Date(version.uploaded_at).toLocaleString()}
+                              {version.uploaded_by_name ? ` by ${version.uploaded_by_name}` : ""}
+                            </div>
+                            <div className="mt-1 text-muted-foreground">
+                              {version.chunk_count} chunks
+                              {version.approved_by_name ? ` · Approved by ${version.approved_by_name}` : ""}
+                            </div>
+                          </div>
+                        ))}
+                        {versions.length >= 2 && (
+                          <div className="rounded-md border border-dashed border-border/70 bg-card/40 p-3">
+                            <div className="mb-2 flex items-center gap-2 font-semibold text-foreground">
+                              <GitCompare className="h-3.5 w-3.5" />
+                              Compare versions
+                            </div>
+                            <div className="grid gap-2 sm:grid-cols-2">
+                              <Select value={compareLeftId} onValueChange={setCompareLeftId}>
+                                <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Left version" /></SelectTrigger>
+                                <SelectContent>
+                                  {versions.map((v) => <SelectItem key={v.id} value={v.id}>{v.version}</SelectItem>)}
+                                </SelectContent>
+                              </Select>
+                              <Select value={compareRightId} onValueChange={setCompareRightId}>
+                                <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Right version" /></SelectTrigger>
+                                <SelectContent>
+                                  {versions.map((v) => <SelectItem key={v.id} value={v.id}>{v.version}</SelectItem>)}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <Button type="button" size="sm" className="mt-2 h-8 text-xs" onClick={() => void runVersionCompare()}>
+                              Compare
+                            </Button>
+                            {versionCompare && (
+                              <div className="mt-3 space-y-2 rounded-md bg-secondary/50 p-3">
+                                <div className="font-medium text-foreground">
+                                  {versionCompare.left_version} vs {versionCompare.right_version}
+                                </div>
+                                <p className="text-muted-foreground">{versionCompare.summary}</p>
+                                {versionCompare.added_sections.length > 0 && (
+                                  <div>
+                                    <div className="font-medium text-foreground">What changed</div>
+                                    <ul className="mt-1 list-disc pl-4 text-muted-foreground">
+                                      {versionCompare.added_sections.map((line) => <li key={line}>{line}</li>)}
+                                    </ul>
+                                  </div>
+                                )}
+                                {(versionCompare.left_approved_by || versionCompare.right_approved_by) && (
+                                  <div className="text-muted-foreground">
+                                    Approved by: {versionCompare.right_approved_by || versionCompare.left_approved_by || "Unknown"}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </TabsContent>
 
                     <TabsContent value="evidence" className="mt-4 min-h-0 flex-1 overflow-y-auto pr-2">
                       <div className="rounded-md border border-border/70 bg-card/60 p-4 text-xs leading-5 text-muted-foreground">
                         {isRetrievalReady(selectedDoc)
-                          ? "This document is eligible for Ask Knowledge Agent answers. Citations will point to matching ready chunks when this source is retrieved."
+                          ? `This document has been cited ${selectedDoc.citationCount} time(s) and is eligible for Ask Knowledge Agent answers.`
                           : "This document is visible for review, but it will not be used as answer evidence until it is approved and ready."}
                       </div>
                     </TabsContent>
@@ -1065,6 +1520,54 @@ function KnowledgePage() {
               </div>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={isCreateFolderOpen}
+        onOpenChange={(open) => {
+          setIsCreateFolderOpen(open);
+          if (!open) {
+            setCreateFolderName("");
+            setCreateFolderError("");
+          }
+        }}
+      >
+        <DialogContent className="max-w-sm gap-6 border border-border p-6 shadow-none sm:rounded-lg">
+          <DialogHeader className="space-y-0">
+            <DialogTitle className="text-base font-semibold">Create folder</DialogTitle>
+          </DialogHeader>
+          <form className="space-y-6" onSubmit={(event) => void submitCreateFolder(event)}>
+            <Field label="Choose the folder name" className="space-y-2.5">
+              <Input
+                value={createFolderName}
+                onChange={(event) => setCreateFolderName(event.target.value)}
+                placeholder="e.g. SOPs, Guides, Histories"
+                className="h-10 text-sm shadow-none"
+                autoFocus
+              />
+            </Field>
+            {createFolderError && (
+              <p className="text-xs text-[color:var(--danger)]">{createFolderError}</p>
+            )}
+            <DialogFooter className="gap-2 pt-2 sm:justify-end sm:space-x-0">
+              <Button
+                type="button"
+                variant="outline"
+                className="shadow-none"
+                onClick={() => setIsCreateFolderOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={creatingFolder || !createFolderName.trim()}
+                className="bg-[color:var(--brand)] text-[color:var(--brand-foreground)] shadow-none"
+              >
+                {creatingFolder ? "Saving..." : "Confirm"}
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
 
@@ -1172,6 +1675,47 @@ function KnowledgePage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function StructuredField({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</div>
+      <p className="mt-0.5 text-[11px] leading-4 text-foreground whitespace-pre-wrap">{value}</p>
+    </div>
+  );
+}
+
+function QualityScoreBadge({
+  score,
+  detailed = false,
+}: {
+  score: { score: number; max_score: number; criteria: Array<{ key: string; label: string; passed: boolean }> };
+  detailed?: boolean;
+}) {
+  const pct = Math.round((score.score / Math.max(score.max_score, 1)) * 100);
+  return (
+    <div className="inline-flex flex-col gap-1">
+      <span className="inline-flex items-center gap-1 rounded bg-secondary px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground">
+        Quality {score.score}/{score.max_score} ({pct}%)
+      </span>
+      {detailed && (
+        <div className="flex flex-wrap gap-1">
+          {score.criteria.map((item) => (
+            <span
+              key={item.key}
+              className={cn(
+                "rounded px-1.5 py-0.5 text-[9px]",
+                item.passed ? "bg-[color:var(--success)]/10 text-[color:var(--success)]" : "bg-secondary text-muted-foreground",
+              )}
+            >
+              {item.label}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

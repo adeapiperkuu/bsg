@@ -1,5 +1,13 @@
 import type { AppRole, AuthSession, MeUser, OrganisationRead, UserRead } from "@/types/auth";
-import type { KnowledgeAskResponseApi, KnowledgeDocumentApi } from "@/types/knowledge";
+import type {
+  KnowledgeDocumentApi,
+  KnowledgeAskResponseApi,
+  KnowledgeDocumentFilters,
+  KnowledgeDocumentVersionApi,
+  KnowledgeFolderApi,
+  KnowledgeRetrievalSettingsApi,
+  KnowledgeVersionCompareApi,
+} from "@/types/knowledge";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
@@ -162,8 +170,31 @@ export function canAccessPath(role: AppRole, path: string): boolean {
   return !path.startsWith("/client") && !path.startsWith("/admin");
 }
 
-export async function listKnowledgeDocuments(): Promise<KnowledgeDocumentApi[]> {
-  const body = await apiFetch<{ data: KnowledgeDocumentApi[] }>("/knowledge/documents");
+export async function listKnowledgeDocuments(filters: KnowledgeDocumentFilters = {}): Promise<KnowledgeDocumentApi[]> {
+  const params = new URLSearchParams();
+  if (filters.sourceType) params.set("source_type", filters.sourceType);
+  if (filters.owner) params.set("owner", filters.owner);
+  if (filters.visibility) params.set("visibility", filters.visibility);
+  if (filters.ready !== undefined) params.set("ready", String(filters.ready));
+  if (filters.workflowState) params.set("workflow_state", filters.workflowState);
+  if (filters.effectiveDateFrom) params.set("effective_date_from", filters.effectiveDateFrom);
+  if (filters.effectiveDateTo) params.set("effective_date_to", filters.effectiveDateTo);
+  if (filters.semanticQuery) params.set("semantic_query", filters.semanticQuery);
+  const query = params.toString();
+  const body = await apiFetch<{ data: KnowledgeDocumentApi[] }>(`/knowledge/documents${query ? `?${query}` : ""}`);
+  return body.data;
+}
+
+export async function listKnowledgeFolders(): Promise<KnowledgeFolderApi[]> {
+  const body = await apiFetch<{ data: KnowledgeFolderApi[] }>("/knowledge/folders");
+  return body.data;
+}
+
+export async function createKnowledgeFolder(payload: { name: string }): Promise<KnowledgeFolderApi> {
+  const body = await apiFetch<{ data: KnowledgeFolderApi }>("/knowledge/folders", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
   return body.data;
 }
 
@@ -205,10 +236,25 @@ export async function downloadKnowledgeDocumentFile(documentId: string): Promise
   return { blob: await response.blob(), fileName };
 }
 
-export async function askKnowledgeAgent(queryText: string): Promise<KnowledgeAskResponseApi> {
+export type KnowledgeAskOptions = {
+  includeHistories?: boolean;
+  maxSources?: number;
+  minRelevanceScore?: number;
+  project?: string;
+  department?: string;
+};
+
+export async function askKnowledgeAgent(queryText: string, options: KnowledgeAskOptions = {}): Promise<KnowledgeAskResponseApi> {
   const body = await apiFetch<{ data: KnowledgeAskResponseApi }>("/knowledge/ask", {
     method: "POST",
-    body: JSON.stringify({ query_text: queryText }),
+    body: JSON.stringify({
+      query_text: queryText,
+      include_histories: options.includeHistories ?? true,
+      max_sources: options.maxSources ?? 5,
+      min_relevance_score: options.minRelevanceScore ?? 0.25,
+      project: options.project || null,
+      department: options.department || null,
+    }),
   });
   return body.data;
 }
@@ -225,6 +271,41 @@ export async function uploadKnowledgeDocument(
   const body = await apiFetch<{ data: KnowledgeDocumentApi }>("/knowledge/documents", {
     method: "POST",
     body: formData,
+  });
+  return body.data;
+}
+
+export async function listKnowledgeDocumentVersions(documentId: string): Promise<KnowledgeDocumentVersionApi[]> {
+  const body = await apiFetch<{ data: KnowledgeDocumentVersionApi[] }>(`/knowledge/documents/${documentId}/versions`);
+  return body.data;
+}
+
+export async function compareKnowledgeDocumentVersions(
+  documentId: string,
+  leftVersionId: string,
+  rightVersionId: string,
+): Promise<KnowledgeVersionCompareApi> {
+  const params = new URLSearchParams({
+    left_version_id: leftVersionId,
+    right_version_id: rightVersionId,
+  });
+  const body = await apiFetch<{ data: KnowledgeVersionCompareApi }>(
+    `/knowledge/documents/${documentId}/versions/compare?${params}`,
+  );
+  return body.data;
+}
+
+export async function getKnowledgeRetrievalSettings(): Promise<KnowledgeRetrievalSettingsApi> {
+  const body = await apiFetch<{ data: KnowledgeRetrievalSettingsApi }>("/knowledge/retrieval-settings");
+  return body.data;
+}
+
+export async function updateKnowledgeRetrievalSettings(
+  payload: Partial<KnowledgeRetrievalSettingsApi>,
+): Promise<KnowledgeRetrievalSettingsApi> {
+  const body = await apiFetch<{ data: KnowledgeRetrievalSettingsApi }>("/knowledge/retrieval-settings", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
   });
   return body.data;
 }
