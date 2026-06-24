@@ -351,3 +351,169 @@ class ClientCsatCreate(BaseModel):
     @classmethod
     def validate_month_start(cls, value: date) -> date:
         return ensure_month_start(value)
+
+
+class KnowledgeFolderRead(ORMModel):
+    id: UUID
+    name: str
+    folder_kind: str
+    display_order: int
+
+
+class KnowledgeFolderCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class KnowledgeQualityCriterion(BaseModel):
+    key: str
+    label: str
+    passed: bool
+
+
+class KnowledgeQualityScore(BaseModel):
+    score: int
+    max_score: int = 6
+    criteria: list[KnowledgeQualityCriterion]
+
+
+class KnowledgeChunkRead(BaseModel):
+    id: UUID
+    chunk_index: int
+    section_title: str | None = None
+    page_number: int | None = None
+    chunk_text: str
+    token_count: int | None = None
+
+
+class KnowledgeDocumentRead(ORMModel):
+    id: UUID
+    folder_id: UUID
+    folder_name: str
+    folder_kind: str
+    title: str
+    source_type: str
+    version: str
+    visibility: str
+    status: str
+    owner_approver: str
+    effective_date: date | None
+    file_name: str
+    file_mime_type: str
+    file_url: str | None = None
+    processing_status: str
+    processing_error: str | None = None
+    indexing_status: str
+    preview: list[str]
+    workflow_state: str = "needs_review"
+    quality_score: KnowledgeQualityScore | None = None
+    chunk_count: int = 0
+    citation_count: int = 0
+    approved_by_name: str | None = None
+    approved_at: datetime | None = None
+    chunks: list[KnowledgeChunkRead] = []
+    semantic_relevance: float | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeDocumentUpdate(BaseModel):
+    title: str | None = None
+    folder_kind: str | None = None
+    source_type: str | None = None
+    version: str | None = None
+    visibility: str | None = None
+    status: str | None = None
+    owner_approver: str | None = None
+    effective_date: date | None = None
+
+
+class KnowledgeAskCreate(BaseModel):
+    query_text: str = Field(min_length=1)
+    include_histories: bool = True
+    max_sources: int = Field(default=5, ge=1, le=10)
+    min_relevance_score: float = Field(default=0.25, ge=0.0, le=1.0)
+    project: str | None = None
+    department: str | None = None
+
+
+class KnowledgeCitationRead(BaseModel):
+    document_id: UUID
+    chunk_id: UUID | None = None
+    citation_label: str
+    title: str
+    source_type: str
+    version: str
+    folder_name: str = ""
+    folder_kind: str = ""
+    relevance_score: float = 0.0
+    page_number: int | None = None
+    chunk_index: int | None = None
+    chunk_preview: str = ""
+    section_title: str | None = None
+
+
+class KnowledgeStructuredAnswer(BaseModel):
+    policy: str = ""
+    steps: str = ""
+    owner: str = ""
+    evidence: str = ""
+    next_action: str = ""
+
+
+class KnowledgeGapRead(BaseModel):
+    message: str
+    suggested_title: str | None = None
+    suggested_source_type: str | None = None
+    suggested_folder_kind: str | None = None
+
+
+class KnowledgeAskRead(BaseModel):
+    answer_text: str
+    next_step: str = ""
+    confidence_score: float = 0.0
+    confidence_reasons: list[str] = []
+    structured_answer: KnowledgeStructuredAnswer | None = None
+    knowledge_gap: KnowledgeGapRead | None = None
+    citations: list[KnowledgeCitationRead]
+    query_id: UUID | None = None
+    model_used: str | None = None
+
+
+class KnowledgeDocumentVersionRead(BaseModel):
+    id: UUID
+    version: str
+    is_active: bool
+    uploaded_at: datetime
+    uploaded_by_name: str | None = None
+    approved_by_name: str | None = None
+    approved_at: datetime | None = None
+    checksum_sha256: str | None = None
+    chunk_count: int = 0
+
+
+class KnowledgeVersionCompareRead(BaseModel):
+    left_version: str
+    right_version: str
+    left_approved_by: str | None = None
+    right_approved_by: str | None = None
+    summary: str
+    added_sections: list[str] = []
+    removed_sections: list[str] = []
+
+
+class KnowledgeRetrievalSettingsRead(BaseModel):
+    only_approved: bool = True
+    include_histories: bool = True
+    min_confidence: float = 0.25
+    max_sources: int = 5
+    project: str | None = None
+    department: str | None = None
+
+
+class KnowledgeRetrievalSettingsUpdate(BaseModel):
+    only_approved: bool | None = None
+    include_histories: bool | None = None
+    min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_sources: int | None = Field(default=None, ge=1, le=10)
+    project: str | None = None
+    department: str | None = None
