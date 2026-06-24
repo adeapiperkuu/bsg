@@ -1,11 +1,14 @@
 import type {
+  KnowledgeChunkApi,
   KnowledgeDocumentApi,
   KnowledgeFolderKind,
   KnowledgeIndexingStatusApi,
   KnowledgeProcessingStatusApi,
+  KnowledgeQualityScoreApi,
   KnowledgeSourceTypeApi,
   KnowledgeStatusApi,
   KnowledgeVisibilityApi,
+  KnowledgeWorkflowState,
 } from "@/types/knowledge";
 
 export type FolderName = "SOPs" | "Guides" | "Histories";
@@ -18,6 +21,16 @@ export type SourceType =
   | "Lesson Learned";
 export type Visibility = "Internal-only" | "Leadership-only" | "Client-safe";
 export type DocumentStatus = "Draft" | "Approved" | "Archived";
+export type WorkflowState = "Needs review" | "Approved" | "Expired" | "Needs re-index" | "Archived";
+
+export type KnowledgeChunk = {
+  id: string;
+  chunkIndex: number;
+  sectionTitle: string | null;
+  pageNumber: number | null;
+  chunkText: string;
+  tokenCount: number | null;
+};
 
 export type KnowledgeDocument = {
   id: string;
@@ -27,6 +40,7 @@ export type KnowledgeDocument = {
   version: string;
   visibility: Visibility;
   status: DocumentStatus;
+  workflowState: WorkflowState;
   owner: string;
   effectiveDate: string;
   fileName: string;
@@ -38,6 +52,13 @@ export type KnowledgeDocument = {
   processingLabel: string;
   processingError?: string | null;
   preview: string[];
+  qualityScore: KnowledgeQualityScoreApi | null;
+  chunkCount: number;
+  citationCount: number;
+  approvedByName: string | null;
+  approvedAt: string | null;
+  chunks: KnowledgeChunk[];
+  semanticRelevance: number | null;
 };
 
 const folderToApi: Record<FolderName, KnowledgeFolderKind> = {
@@ -88,14 +109,41 @@ const statusToApi: Record<DocumentStatus, KnowledgeStatusApi> = {
   Archived: "archived",
 };
 
+const workflowFromApi: Record<KnowledgeWorkflowState, WorkflowState> = {
+  needs_review: "Needs review",
+  approved: "Approved",
+  expired: "Expired",
+  needs_reindex: "Needs re-index",
+  archived: "Archived",
+};
+
+function chunkFromApi(chunk: KnowledgeChunkApi): KnowledgeChunk {
+  return {
+    id: chunk.id,
+    chunkIndex: chunk.chunk_index,
+    sectionTitle: chunk.section_title,
+    pageNumber: chunk.page_number,
+    chunkText: chunk.chunk_text,
+    tokenCount: chunk.token_count,
+  };
+}
+
 const statusFromApi: Record<KnowledgeStatusApi, DocumentStatus> = {
   draft: "Draft",
   approved: "Approved",
   archived: "Archived",
 };
 
+export function workflowStateLabel(state: WorkflowState): string {
+  return state;
+}
+
 export function folderNameToApi(folder: FolderName): KnowledgeFolderKind {
   return folderToApi[folder];
+}
+
+export function folderKindFromApi(kind: KnowledgeFolderKind): FolderName {
+  return folderFromApi[kind];
 }
 
 export function documentToApiPatch(patch: Partial<KnowledgeDocument>) {
@@ -125,6 +173,7 @@ export function documentFromApi(row: KnowledgeDocumentApi): KnowledgeDocument {
     version: row.version,
     visibility: visibilityFromApi[row.visibility],
     status: statusFromApi[row.status],
+    workflowState: workflowFromApi[row.workflow_state] ?? "Needs review",
     owner: row.owner_approver,
     effectiveDate: row.effective_date ?? "",
     fileName: row.file_name,
@@ -135,7 +184,14 @@ export function documentFromApi(row: KnowledgeDocumentApi): KnowledgeDocument {
     processingStatus: row.processing_status,
     processingLabel: processingStatusLabel(row.processing_status),
     processingError: row.processing_error,
-    preview: row.preview,
+    preview: row.preview ?? [],
+    qualityScore: row.quality_score ?? null,
+    chunkCount: row.chunk_count ?? 0,
+    citationCount: row.citation_count ?? 0,
+    approvedByName: row.approved_by_name ?? null,
+    approvedAt: row.approved_at ?? null,
+    chunks: (row.chunks ?? []).map(chunkFromApi),
+    semanticRelevance: row.semantic_relevance ?? null,
   };
 }
 

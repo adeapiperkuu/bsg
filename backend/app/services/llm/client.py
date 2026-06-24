@@ -14,11 +14,20 @@ Rules:
 - Cite which document each key fact comes from, using the [Doc: <title>] format inline.
 - Do not hallucinate, speculate, or infer beyond what the chunks state.
 
+For operational questions, also populate structured fields from the chunks only.
+
 Return ONLY valid JSON in this exact shape (no markdown fences):
 {
   "answer": "<direct answer, citing sources inline as [Doc: title]>",
   "next_step": "<single recommended operational action, or empty string if not applicable>",
-  "confidence": <float 0.0-1.0 reflecting how well the chunks answer the question>
+  "confidence": <float 0.0-1.0 reflecting how well the chunks answer the question>,
+  "structured": {
+    "policy": "<governing policy or rule from chunks, or empty string>",
+    "steps": "<numbered operational steps from chunks, or empty string>",
+    "owner": "<responsible owner/role from chunks, or empty string>",
+    "evidence": "<supporting evidence or document references from chunks, or empty string>",
+    "next_action": "<immediate next action for the operator, or empty string>"
+  }
 }"""
 
 
@@ -28,11 +37,7 @@ class LLMClient:
         query: str,
         chunks: list[dict[str, str]],
     ) -> dict[str, object]:
-        """Generate a cited RAG answer using OpenAI chat completion.
-
-        chunks items have keys: title, source_type, folder, page, text.
-        Returns dict with keys: answer, next_step, confidence.
-        """
+        """Generate a cited RAG answer using OpenAI chat completion."""
         settings = get_settings()
         api_key = settings.openai_api_key or settings.llm_api_key
         if not api_key:
@@ -40,6 +45,7 @@ class LLMClient:
                 "answer": "I could not find this information in the uploaded knowledge base.",
                 "next_step": "",
                 "confidence": 0.0,
+                "structured": {},
             }
 
         context_parts: list[str] = []
@@ -50,7 +56,6 @@ class LLMClient:
                 f"    Content: {chunk['text']}"
             )
         context = "\n\n".join(context_parts)
-
         user_message = f"Question: {query}\n\nDocument chunks:\n{context}"
 
         client_kwargs: dict[str, str] = {"api_key": api_key}
@@ -69,22 +74,24 @@ class LLMClient:
                     {"role": "user", "content": user_message},
                 ],
                 temperature=0.1,
-                max_tokens=800,
+                max_tokens=1000,
                 response_format={"type": "json_object"},
             )
             raw = response.choices[0].message.content or "{}"
             data = json.loads(raw)
+            structured = data.get("structured") if isinstance(data.get("structured"), dict) else {}
             return {
                 "answer": str(data.get("answer", "")),
                 "next_step": str(data.get("next_step", "")),
                 "confidence": max(0.0, min(1.0, float(data.get("confidence", 0.0)))),
+                "structured": structured,
                 "model": model,
             }
         except Exception as exc:
-            # Surface extraction errors as a graceful fallback, not a 500.
             return {
                 "answer": "I could not find this information in the uploaded knowledge base.",
                 "next_step": "",
                 "confidence": 0.0,
+                "structured": {},
                 "error": str(exc),
             }

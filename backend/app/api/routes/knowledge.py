@@ -2,7 +2,7 @@ from datetime import date
 from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import Response
 
 from app.api.deps import SessionDep
@@ -20,18 +20,28 @@ from app.schemas.domain import (
     KnowledgeAskRead,
     KnowledgeDocumentRead,
     KnowledgeDocumentUpdate,
+    KnowledgeDocumentVersionRead,
+    KnowledgeFolderCreate,
     KnowledgeFolderRead,
+    KnowledgeRetrievalSettingsRead,
+    KnowledgeRetrievalSettingsUpdate,
+    KnowledgeVersionCompareRead,
 )
 from app.services.knowledge import (
     ask_knowledge_agent,
+    compare_document_versions,
+    create_knowledge_folder_by_name,
     create_document_from_upload,
     delete_document,
-    ensure_knowledge_folders,
     get_document,
     get_document_file_download,
+    get_retrieval_settings,
+    list_document_versions,
     list_documents,
+    list_knowledge_folders,
     reindex_document,
     update_document,
+    update_retrieval_settings,
 )
 
 router = APIRouter(tags=["knowledge"])
@@ -56,12 +66,11 @@ def _parse_enum(value: str, enum_cls, field_name: str):
 
 
 @router.get("/knowledge/folders", response_model=ListResponse[KnowledgeFolderRead])
-async def list_knowledge_folders(
+async def list_knowledge_folders_route(
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
 ) -> ListResponse[KnowledgeFolderRead]:
-    folders = await ensure_knowledge_folders(session, current_user.org_id)
-    await session.commit()
+    folders = await list_knowledge_folders(session, current_user.org_id)
     return ListResponse(
         data=[
             KnowledgeFolderRead(
@@ -76,12 +85,53 @@ async def list_knowledge_folders(
     )
 
 
+@router.post("/knowledge/folders", response_model=DataResponse[KnowledgeFolderRead])
+async def create_knowledge_folder_route(
+    payload: KnowledgeFolderCreate,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[KnowledgeFolderRead]:
+    folder = await create_knowledge_folder_by_name(
+        session,
+        current_user.org_id,
+        name=payload.name,
+    )
+    await session.commit()
+    return DataResponse(
+        data=KnowledgeFolderRead(
+            id=folder.id,
+            name=folder.name,
+            folder_kind=folder.folder_kind.value,
+            display_order=folder.display_order,
+        )
+    )
+
+
 @router.get("/knowledge/documents", response_model=ListResponse[KnowledgeDocumentRead])
 async def list_knowledge_documents(
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+    source_type: str | None = None,
+    owner: str | None = None,
+    visibility: str | None = None,
+    ready: bool | None = None,
+    workflow_state: str | None = None,
+    effective_date_from: date | None = None,
+    effective_date_to: date | None = None,
+    semantic_query: str | None = None,
 ) -> ListResponse[KnowledgeDocumentRead]:
-    rows = await list_documents(session, current_user)
+    rows = await list_documents(
+        session,
+        current_user,
+        source_type=source_type,
+        owner=owner,
+        visibility=visibility,
+        ready=ready,
+        workflow_state=workflow_state,
+        effective_date_from=effective_date_from,
+        effective_date_to=effective_date_to,
+        semantic_query=semantic_query,
+    )
     await session.commit()
     return ListResponse(data=rows, pagination=Pagination(limit=len(rows)))
 
@@ -205,6 +255,61 @@ async def ask_knowledge(
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
 ) -> DataResponse[KnowledgeAskRead]:
-    row = await ask_knowledge_agent(session, current_user, payload.query_text.strip())
+    org_settings = await get_retrieval_settings(session, current_user.org_id)
+    row = await ask_knowledge_agent(
+        session,
+        current_user,
+        payload.query_text.strip(),
+        include_histories=payload.include_histories if payload.include_histories is not None else org_settings.include_histories,
+        max_sources=payload.max_sources or org_settings.max_sources,
+        min_relevance_score=payload.min_relevance_score if payload.min_relevance_score is not None else org_settings.min_confidence,
+        project=payload.project or org_settings.project,
+        department=payload.department or org_settings.department,
+    )
+    await session.commit()
+    return DataResponse(data=row)
+
+
+@router.get("/knowledge/documents/{document_id}/versions", response_model=ListResponse[KnowledgeDocumentVersionRead])
+async def get_knowledge_document_versions(
+    document_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> ListResponse[KnowledgeDocumentVersionRead]:
+    rows = await list_document_versions(session, current_user, document_id)
+    await session.commit()
+    return ListResponse(data=rows, pagination=Pagination(limit=len(rows)))
+
+
+@router.get("/knowledge/documents/{document_id}/versions/compare", response_model=DataResponse[KnowledgeVersionCompareRead])
+async def compare_knowledge_document_versions(
+    document_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+    left_version_id: UUID = Query(...),
+    right_version_id: UUID = Query(...),
+) -> DataResponse[KnowledgeVersionCompareRead]:
+    row = await compare_document_versions(session, current_user, document_id, left_version_id, right_version_id)
+    await session.commit()
+    return DataResponse(data=row)
+
+
+@router.get("/knowledge/retrieval-settings", response_model=DataResponse[KnowledgeRetrievalSettingsRead])
+async def read_knowledge_retrieval_settings(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[KnowledgeRetrievalSettingsRead]:
+    row = await get_retrieval_settings(session, current_user.org_id)
+    await session.commit()
+    return DataResponse(data=row)
+
+
+@router.patch("/knowledge/retrieval-settings", response_model=DataResponse[KnowledgeRetrievalSettingsRead])
+async def patch_knowledge_retrieval_settings(
+    payload: KnowledgeRetrievalSettingsUpdate,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[KnowledgeRetrievalSettingsRead]:
+    row = await update_retrieval_settings(session, current_user, payload)
     await session.commit()
     return DataResponse(data=row)

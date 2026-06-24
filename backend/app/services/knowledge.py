@@ -1,5 +1,6 @@
 import hashlib
 import csv
+import difflib
 import io
 import mimetypes
 import re
@@ -11,7 +12,7 @@ from uuid import UUID
 
 import httpx
 from openai import AsyncOpenAI
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -33,21 +34,38 @@ from app.db.models.entities import (
     KnowledgeSourceType,
     KnowledgeVisibility,
     AgentQuery,
+    NotificationType,
+    User,
 )
-from sqlalchemy import text
-
-from app.schemas.domain import KnowledgeAskRead, KnowledgeCitationRead, KnowledgeDocumentRead, KnowledgeDocumentUpdate
+from app.schemas.domain import (
+    KnowledgeAskRead,
+    KnowledgeCitationRead,
+    KnowledgeDocumentRead,
+    KnowledgeDocumentUpdate,
+    KnowledgeDocumentVersionRead,
+    KnowledgeGapRead,
+    KnowledgeChunkRead,
+    KnowledgeQualityCriterion,
+    KnowledgeQualityScore,
+    KnowledgeRetrievalSettingsRead,
+    KnowledgeRetrievalSettingsUpdate,
+    KnowledgeStructuredAnswer,
+    KnowledgeVersionCompareRead,
+)
 from app.services.llm.client import LLMClient
+from app.services.notifications import create_notification
 
 FOLDER_SEED = (
     (KnowledgeFolderKind.SOPS, "SOPs", 0),
     (KnowledgeFolderKind.GUIDES, "Guides", 1),
     (KnowledgeFolderKind.HISTORIES, "Histories", 2),
 )
+FOLDER_DEFAULTS = {kind: (name, order) for kind, name, order in FOLDER_SEED}
 
 TEXT_EXTENSIONS = {".txt", ".md"}
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".csv"}
-NO_APPROVED_ANSWER = "I cannot find an approved SOP or historical issue record for this question."
+NO_APPROVED_ANSWER = "I could not find this information in the uploaded knowledge base."
+STRONG_RELEVANCE_THRESHOLD = 0.6
 CHUNK_TARGET_TOKENS = 900
 CHUNK_OVERLAP_TOKENS = 120
 EMBEDDING_BATCH_SIZE = 64
@@ -69,12 +87,21 @@ def can_access_visibility(role: AppRole, visibility: KnowledgeVisibility) -> boo
     return False
 
 
-async def ensure_knowledge_folders(session: AsyncSession, org_id: UUID) -> list[KnowledgeFolder]:
-    existing = list(
-        (await session.execute(select(KnowledgeFolder).where(KnowledgeFolder.org_id == org_id, KnowledgeFolder.deleted_at.is_(None)))).scalars()
+async def list_knowledge_folders(session: AsyncSession, org_id: UUID) -> list[KnowledgeFolder]:
+    rows = list(
+        (
+            await session.execute(
+                select(KnowledgeFolder).where(KnowledgeFolder.org_id == org_id, KnowledgeFolder.deleted_at.is_(None))
+            )
+        ).scalars()
     )
+    return sorted(rows, key=lambda row: (row.display_order, row.name.lower()))
+
+
+async def ensure_knowledge_folders(session: AsyncSession, org_id: UUID) -> list[KnowledgeFolder]:
+    existing = await list_knowledge_folders(session, org_id)
     if existing:
-        return sorted(existing, key=lambda row: row.display_order)
+        return existing
     created: list[KnowledgeFolder] = []
     for kind, name, order in FOLDER_SEED:
         folder = KnowledgeFolder(org_id=org_id, name=name, folder_kind=kind, display_order=order)
@@ -84,31 +111,170 @@ async def ensure_knowledge_folders(session: AsyncSession, org_id: UUID) -> list[
     return created
 
 
-async def get_folder_for_kind(session: AsyncSession, org_id: UUID, folder_kind: KnowledgeFolderKind) -> KnowledgeFolder:
-    folders = await ensure_knowledge_folders(session, org_id)
-    folder = next((item for item in folders if item.folder_kind == folder_kind), None)
-    if folder is None:
-        raise ApiError(404, "NOT_FOUND", "Knowledge folder not found.")
+async def create_knowledge_folder(
+    session: AsyncSession,
+    org_id: UUID,
+    *,
+    folder_kind: KnowledgeFolderKind,
+    name: str,
+) -> KnowledgeFolder:
+    cleaned_name = name.strip()
+    if not cleaned_name:
+        raise ApiError(400, "VALIDATION_ERROR", "Folder name is required.")
+
+    existing = (
+        await session.execute(
+            select(KnowledgeFolder).where(
+                KnowledgeFolder.org_id == org_id,
+                KnowledgeFolder.folder_kind == folder_kind,
+                KnowledgeFolder.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.name = cleaned_name
+        await session.flush()
+        return existing
+
+    default_name, display_order = FOLDER_DEFAULTS[folder_kind]
+    folder = KnowledgeFolder(
+        org_id=org_id,
+        name=cleaned_name or default_name,
+        folder_kind=folder_kind,
+        display_order=display_order,
+    )
+    session.add(folder)
+    await session.flush()
     return folder
 
 
-async def list_documents(session: AsyncSession, current_user: CurrentUser) -> list[KnowledgeDocumentRead]:
-    await ensure_knowledge_folders(session, current_user.org_id)
-    folders = {
-        row.id: row
-        for row in (await session.execute(select(KnowledgeFolder).where(KnowledgeFolder.org_id == current_user.org_id))).scalars()
-    }
+def _infer_folder_kind(name: str, taken: set[KnowledgeFolderKind]) -> KnowledgeFolderKind:
+    lowered = name.lower()
+    if "sop" in lowered and KnowledgeFolderKind.SOPS not in taken:
+        return KnowledgeFolderKind.SOPS
+    if "guide" in lowered and KnowledgeFolderKind.GUIDES not in taken:
+        return KnowledgeFolderKind.GUIDES
+    if "histor" in lowered and KnowledgeFolderKind.HISTORIES not in taken:
+        return KnowledgeFolderKind.HISTORIES
+    for kind in (KnowledgeFolderKind.SOPS, KnowledgeFolderKind.GUIDES, KnowledgeFolderKind.HISTORIES):
+        if kind not in taken:
+            return kind
+    raise ApiError(409, "CONFLICT", "Maximum number of folders reached.")
+
+
+async def create_knowledge_folder_by_name(session: AsyncSession, org_id: UUID, *, name: str) -> KnowledgeFolder:
+    cleaned_name = name.strip()
+    if not cleaned_name:
+        raise ApiError(400, "VALIDATION_ERROR", "Folder name is required.")
+
+    existing = await list_knowledge_folders(session, org_id)
+    if any(row.name.lower() == cleaned_name.lower() for row in existing):
+        raise ApiError(409, "CONFLICT", "A folder with this name already exists.")
+
+    taken = {row.folder_kind for row in existing}
+    if len(taken) >= len(FOLDER_SEED):
+        raise ApiError(409, "CONFLICT", "Maximum number of folders reached.")
+
+    folder_kind = _infer_folder_kind(cleaned_name, taken)
+    return await create_knowledge_folder(session, org_id, folder_kind=folder_kind, name=cleaned_name)
+
+
+async def get_folder_for_kind(session: AsyncSession, org_id: UUID, folder_kind: KnowledgeFolderKind) -> KnowledgeFolder:
+    folder = (
+        await session.execute(
+            select(KnowledgeFolder).where(
+                KnowledgeFolder.org_id == org_id,
+                KnowledgeFolder.folder_kind == folder_kind,
+                KnowledgeFolder.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if folder is not None:
+        return folder
+
+    default_name, display_order = FOLDER_DEFAULTS[folder_kind]
+    folder = KnowledgeFolder(org_id=org_id, name=default_name, folder_kind=folder_kind, display_order=display_order)
+    session.add(folder)
+    await session.flush()
+    return folder
+
+
+async def list_documents(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    *,
+    source_type: str | None = None,
+    owner: str | None = None,
+    visibility: str | None = None,
+    ready: bool | None = None,
+    workflow_state: str | None = None,
+    effective_date_from: date | None = None,
+    effective_date_to: date | None = None,
+    semantic_query: str | None = None,
+) -> list[KnowledgeDocumentRead]:
+    cross_org = current_user.role in {AppRole.SUPER_ADMIN, AppRole.BSG_LEADERSHIP}
+    if not cross_org:
+        await ensure_knowledge_folders(session, current_user.org_id)
+
+    doc_filters = [KnowledgeDocument.deleted_at.is_(None)]
+    if not cross_org:
+        doc_filters.append(KnowledgeDocument.org_id == current_user.org_id)
+
     docs = list(
         (
             await session.execute(
-                select(KnowledgeDocument)
-                .where(KnowledgeDocument.org_id == current_user.org_id, KnowledgeDocument.deleted_at.is_(None))
-                .order_by(KnowledgeDocument.title)
+                select(KnowledgeDocument).where(*doc_filters).order_by(KnowledgeDocument.title)
             )
         ).scalars()
     )
+    if cross_org:
+        for org_id in {doc.org_id for doc in docs}:
+            await ensure_knowledge_folders(session, org_id)
+
+    folder_filters = [KnowledgeFolder.deleted_at.is_(None)]
+    if not cross_org:
+        folder_filters.append(KnowledgeFolder.org_id == current_user.org_id)
+    folders = {
+        row.id: row
+        for row in (await session.execute(select(KnowledgeFolder).where(*folder_filters))).scalars()
+    }
     visible = [doc for doc in docs if can_access_visibility(current_user.role, doc.visibility)]
-    return [await _to_document_read(session, doc, folders[doc.folder_id]) for doc in visible]
+
+    if source_type:
+        visible = [doc for doc in visible if doc.source_type.value == source_type]
+    if owner:
+        owner_q = owner.strip().lower()
+        visible = [doc for doc in visible if owner_q in (doc.owner_approver or "").lower()]
+    if visibility:
+        visible = [doc for doc in visible if doc.visibility.value == visibility]
+    if effective_date_from:
+        visible = [doc for doc in visible if doc.effective_date and doc.effective_date >= effective_date_from]
+    if effective_date_to:
+        visible = [doc for doc in visible if doc.effective_date and doc.effective_date <= effective_date_to]
+
+    reads: list[KnowledgeDocumentRead] = []
+    for doc in visible:
+        folder = folders.get(doc.folder_id)
+        if folder is None:
+            await ensure_knowledge_folders(session, doc.org_id)
+            folder = (
+                await session.execute(select(KnowledgeFolder).where(KnowledgeFolder.id == doc.folder_id))
+            ).scalar_one_or_none()
+        if folder is None:
+            continue
+        read = await _to_document_read(session, doc, folder)
+        if ready is not None:
+            is_ready = _is_retrieval_ready(doc)
+            if ready != is_ready:
+                continue
+        if workflow_state and read.workflow_state != workflow_state:
+            continue
+        reads.append(read)
+
+    if semantic_query and semantic_query.strip():
+        reads = await _rank_documents_semantic(session, semantic_query.strip(), reads)
+
+    return reads
 
 
 async def get_document(session: AsyncSession, current_user: CurrentUser, document_id: UUID) -> KnowledgeDocumentRead:
@@ -165,6 +331,13 @@ async def update_document(
         doc.effective_date = payload.effective_date
     await session.flush()
     folder = (await session.execute(select(KnowledgeFolder).where(KnowledgeFolder.id == doc.folder_id))).scalar_one()
+    await _notify_knowledge_stakeholders(
+        session,
+        doc,
+        title="Knowledge document updated",
+        body=f'"{doc.title}" was updated and may need review or re-approval.',
+        actor_id=current_user.id,
+    )
     return await _to_document_read(session, doc, folder)
 
 
@@ -314,6 +487,14 @@ async def create_document_from_upload(
 
     await _process_document_version(session, doc, version_row, file_bytes)
     folder = (await session.execute(select(KnowledgeFolder).where(KnowledgeFolder.id == doc.folder_id))).scalar_one()
+    event = "uploaded" if existing is None else "updated with a new version"
+    await _notify_knowledge_stakeholders(
+        session,
+        doc,
+        title=f"Knowledge document {event}",
+        body=f'"{doc.title}" ({doc.version}) was {event}. Review approval and indexing status.',
+        actor_id=current_user.id,
+    )
     return await _to_document_read(session, doc, folder)
 
 
@@ -381,8 +562,20 @@ async def reindex_document(session: AsyncSession, current_user: CurrentUser, doc
     return await _to_document_read(session, doc, folder)
 
 
-async def ask_knowledge_agent(session: AsyncSession, current_user: CurrentUser, query_text: str) -> KnowledgeAskRead:
+async def ask_knowledge_agent(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    query_text: str,
+    *,
+    include_histories: bool = True,
+    max_sources: int = 5,
+    min_relevance_score: float = 0.25,
+    project: str | None = None,
+    department: str | None = None,
+) -> KnowledgeAskRead:
     started = datetime.now(UTC)
+    max_sources = max(1, min(max_sources, 10))
+    min_relevance_score = max(0.0, min(min_relevance_score, 1.0))
 
     # ── 1. Resolve approved + indexed documents visible to this role ──────────
     docs = list(
@@ -400,7 +593,7 @@ async def ask_knowledge_agent(session: AsyncSession, current_user: CurrentUser, 
     )
     eligible_docs = [doc for doc in docs if can_access_visibility(current_user.role, doc.visibility)]
     if not eligible_docs:
-        return KnowledgeAskRead(answer_text=NO_APPROVED_ANSWER, citations=[], query_id=None)
+        return _empty_ask_response(query_text, reason="No approved documents are available for your role.")
 
     # ── 2. Load folders for citation metadata ─────────────────────────────────
     folder_ids = {doc.folder_id for doc in eligible_docs}
@@ -410,6 +603,20 @@ async def ask_knowledge_agent(session: AsyncSession, current_user: CurrentUser, 
             await session.execute(select(KnowledgeFolder).where(KnowledgeFolder.id.in_(folder_ids)))
         ).scalars()
     }
+    if not include_histories:
+        eligible_docs = [
+            doc
+            for doc in eligible_docs
+            if folders_map.get(doc.folder_id) and folders_map[doc.folder_id].folder_kind != KnowledgeFolderKind.HISTORIES
+        ]
+    if project:
+        project_query = project.strip().lower()
+        eligible_docs = [doc for doc in eligible_docs if (doc.project or "").lower() == project_query]
+    if department:
+        department_query = department.strip().lower()
+        eligible_docs = [doc for doc in eligible_docs if (doc.department or "").lower() == department_query]
+    if not eligible_docs:
+        return _empty_ask_response(query_text, reason="No documents matched the project or department filters.")
 
     doc_ids = [doc.id for doc in eligible_docs]
     active_version_ids = [doc.active_version_id for doc in eligible_docs if doc.active_version_id]
@@ -424,7 +631,7 @@ async def ask_knowledge_agent(session: AsyncSession, current_user: CurrentUser, 
         has_embeddings = False
 
     # ── 4. Retrieve top-5 chunks via pgvector ANN (or term fallback) ──────────
-    TOP_K = 5
+    TOP_K = max_sources
     matches: list[tuple[KnowledgeDocumentChunk, float]] = []
 
     if has_embeddings:
@@ -464,7 +671,7 @@ async def ask_knowledge_agent(session: AsyncSession, current_user: CurrentUser, 
             matches = [
                 (chunk_by_id[cid], score_map[cid])
                 for cid in chunk_ids
-                if cid in chunk_by_id and score_map[cid] > 0.25
+                if cid in chunk_by_id and score_map[cid] >= min_relevance_score
             ]
 
     if not matches:
@@ -479,10 +686,18 @@ async def ask_knowledge_agent(session: AsyncSession, current_user: CurrentUser, 
                 )
             ).scalars()
         )
-        matches = _rank_chunks_by_terms(query_text, all_chunks)[:TOP_K]
+        matches = [
+            (chunk, score)
+            for chunk, score in _rank_chunks_by_terms(query_text, all_chunks)
+            if score >= min_relevance_score
+        ][:TOP_K]
 
     if not matches:
-        return KnowledgeAskRead(answer_text=NO_APPROVED_ANSWER, citations=[], query_id=None)
+        return _empty_ask_response(
+            query_text,
+            reason="No relevant chunks met the minimum relevance threshold.",
+            eligible_docs=eligible_docs,
+        )
 
     # ── 5. Build context for GPT and call LLMClient ───────────────────────────
     llm = LLMClient()
@@ -505,6 +720,24 @@ async def ask_knowledge_agent(session: AsyncSession, current_user: CurrentUser, 
     next_step = str(llm_result.get("next_step") or "")
     raw_confidence = float(llm_result.get("confidence") or 0.0)
     model_used: str | None = str(llm_result["model"]) if "model" in llm_result else None
+    structured_raw = llm_result.get("structured")
+    structured_answer = None
+    if isinstance(structured_raw, dict):
+        structured_answer = KnowledgeStructuredAnswer(
+            policy=str(structured_raw.get("policy") or ""),
+            steps=str(structured_raw.get("steps") or ""),
+            owner=str(structured_raw.get("owner") or ""),
+            evidence=str(structured_raw.get("evidence") or ""),
+            next_action=str(structured_raw.get("next_action") or next_step),
+        )
+
+    if answer_text.strip() == NO_APPROVED_ANSWER:
+        return _empty_ask_response(
+            query_text,
+            reason="Retrieved chunks did not contain a confident answer.",
+            eligible_docs=eligible_docs,
+            matches=matches,
+        )
 
     # ── 6. Persist AgentQuery ─────────────────────────────────────────────────
     agent_query = AgentQuery(
@@ -520,9 +753,9 @@ async def ask_knowledge_agent(session: AsyncSession, current_user: CurrentUser, 
     session.add(agent_query)
     await session.flush()
 
-    # ── 7. Persist evidence links + build citations ───────────────────────────
+    # ── 7. Persist evidence links + build citations (one per chunk) ───────────
     citations: list[KnowledgeCitationRead] = []
-    seen_docs: set[UUID] = set()
+    cited_docs: set[UUID] = set()
     for chunk, score in matches:
         doc = doc_map[chunk.document_id]
         folder = folders_map.get(doc.folder_id)
@@ -537,36 +770,210 @@ async def ask_knowledge_agent(session: AsyncSession, current_user: CurrentUser, 
                 relevance_score=Decimal(str(round(score, 4))),
             )
         )
-        if doc.id not in seen_docs:
-            seen_docs.add(doc.id)
-            citations.append(
-                KnowledgeCitationRead(
-                    document_id=doc.id,
-                    chunk_id=chunk.id,
-                    citation_label=label,
-                    title=doc.title,
-                    source_type=doc.source_type.value,
-                    version=doc.version,
-                    folder_name=folder.name if folder else "",
-                    folder_kind=folder.folder_kind.value if folder else "",
-                    relevance_score=round(score, 4),
-                    page_number=chunk.page_number,
-                    chunk_index=chunk.chunk_index,
-                )
+        chunk_text = (chunk.chunk_text or chunk.content or "").strip()
+        citations.append(
+            KnowledgeCitationRead(
+                document_id=doc.id,
+                chunk_id=chunk.id,
+                citation_label=label,
+                title=doc.title,
+                source_type=doc.source_type.value,
+                version=doc.version,
+                folder_name=folder.name if folder else "",
+                folder_kind=folder.folder_kind.value if folder else "",
+                relevance_score=round(score, 4),
+                page_number=chunk.page_number,
+                chunk_index=chunk.chunk_index,
+                chunk_preview=chunk_text[:240] + ("..." if len(chunk_text) > 240 else ""),
+                section_title=chunk.section_title,
             )
+        )
+        cited_docs.add(doc.id)
 
-    # Derive a confidence score: blend LLM self-report and retrieval signal
     retrieval_signal = matches[0][1] if matches else 0.0
     confidence_score = round(0.6 * raw_confidence + 0.4 * min(retrieval_signal, 1.0), 4)
+    confidence_reasons = _build_confidence_reasons(matches, eligible_docs, doc_map, query_text)
 
     return KnowledgeAskRead(
         answer_text=answer_text,
         next_step=next_step,
         confidence_score=confidence_score,
+        confidence_reasons=confidence_reasons,
+        structured_answer=structured_answer,
+        knowledge_gap=None,
         citations=citations,
         query_id=agent_query.id,
         model_used=model_used,
     )
+
+
+async def list_document_versions(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    document_id: UUID,
+) -> list[KnowledgeDocumentVersionRead]:
+    doc = await _get_document_or_404(session, current_user.org_id, document_id)
+    if not can_access_visibility(current_user.role, doc.visibility):
+        raise ApiError(403, "FORBIDDEN", "You cannot access this document.")
+    versions = list(
+        (
+            await session.execute(
+                select(KnowledgeDocumentVersion)
+                .where(KnowledgeDocumentVersion.document_id == doc.id)
+                .order_by(KnowledgeDocumentVersion.uploaded_at.desc())
+            )
+        ).scalars()
+    )
+    result: list[KnowledgeDocumentVersionRead] = []
+    for version in versions:
+        chunk_count = int(
+            (
+                await session.execute(
+                    select(func.count(KnowledgeDocumentChunk.id)).where(KnowledgeDocumentChunk.version_id == version.id)
+                )
+            ).scalar_one()
+            or 0
+        )
+        result.append(
+            KnowledgeDocumentVersionRead(
+                id=version.id,
+                version=version.version,
+                is_active=version.is_active,
+                uploaded_at=version.uploaded_at,
+                uploaded_by_name=await _user_display_name(session, version.uploaded_by),
+                approved_by_name=await _user_display_name(session, doc.approved_by) if doc.approved_by else None,
+                approved_at=doc.approved_at if version.is_active else None,
+                checksum_sha256=version.checksum_sha256,
+                chunk_count=chunk_count,
+            )
+        )
+    return result
+
+
+async def compare_document_versions(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    document_id: UUID,
+    left_version_id: UUID,
+    right_version_id: UUID,
+) -> KnowledgeVersionCompareRead:
+    doc = await _get_document_or_404(session, current_user.org_id, document_id)
+    if not can_access_visibility(current_user.role, doc.visibility):
+        raise ApiError(403, "FORBIDDEN", "You cannot access this document.")
+    left = (
+        await session.execute(
+            select(KnowledgeDocumentVersion).where(
+                KnowledgeDocumentVersion.id == left_version_id,
+                KnowledgeDocumentVersion.document_id == doc.id,
+            )
+        )
+    ).scalar_one_or_none()
+    right = (
+        await session.execute(
+            select(KnowledgeDocumentVersion).where(
+                KnowledgeDocumentVersion.id == right_version_id,
+                KnowledgeDocumentVersion.document_id == doc.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if left is None or right is None:
+        raise ApiError(404, "NOT_FOUND", "One or both versions were not found.")
+
+    left_text = await _version_extracted_text(session, left.id)
+    right_text = await _version_extracted_text(session, right.id)
+    left_lines = left_text.splitlines()
+    right_lines = right_text.splitlines()
+    diff = list(difflib.unified_diff(left_lines, right_lines, lineterm=""))
+    added = [line[1:].strip() for line in diff if line.startswith("+") and not line.startswith("+++")]
+    removed = [line[1:].strip() for line in diff if line.startswith("-") and not line.startswith("---")]
+    added_sections = [line for line in added if line][:8]
+    removed_sections = [line for line in removed if line][:8]
+    if not added_sections and not removed_sections:
+        summary = "No substantive text differences detected between versions."
+    else:
+        summary = f"{len(added_sections)} section(s) added or changed, {len(removed_sections)} section(s) removed or replaced."
+
+    return KnowledgeVersionCompareRead(
+        left_version=left.version,
+        right_version=right.version,
+        left_approved_by=await _user_display_name(session, doc.approved_by) if left.is_active and doc.approved_by else None,
+        right_approved_by=await _user_display_name(session, doc.approved_by) if right.is_active and doc.approved_by else None,
+        summary=summary,
+        added_sections=added_sections,
+        removed_sections=removed_sections,
+    )
+
+
+async def get_retrieval_settings(session: AsyncSession, org_id: UUID) -> KnowledgeRetrievalSettingsRead:
+    try:
+        row = (
+            await session.execute(
+                text(
+                    """
+                    SELECT only_approved, include_histories, min_confidence, max_sources, project, department
+                    FROM knowledge_retrieval_settings
+                    WHERE org_id = :org_id
+                    """
+                ),
+                {"org_id": org_id},
+            )
+        ).mappings().first()
+    except Exception:
+        return KnowledgeRetrievalSettingsRead()
+    if row is None:
+        return KnowledgeRetrievalSettingsRead()
+    return KnowledgeRetrievalSettingsRead(
+        only_approved=bool(row["only_approved"]),
+        include_histories=bool(row["include_histories"]),
+        min_confidence=float(row["min_confidence"]),
+        max_sources=int(row["max_sources"]),
+        project=row["project"],
+        department=row["department"],
+    )
+
+
+async def update_retrieval_settings(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    payload: KnowledgeRetrievalSettingsUpdate,
+) -> KnowledgeRetrievalSettingsRead:
+    if current_user.role not in {AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN}:
+        raise ApiError(403, "FORBIDDEN", "Only leadership can update retrieval settings.")
+    current = await get_retrieval_settings(session, current_user.org_id)
+    merged_data = current.model_dump()
+    merged_data.update(payload.model_dump(exclude_unset=True))
+    merged = KnowledgeRetrievalSettingsRead(**merged_data)
+    try:
+        await session.execute(
+            text(
+                """
+                INSERT INTO knowledge_retrieval_settings
+                  (org_id, only_approved, include_histories, min_confidence, max_sources, project, department, updated_at)
+                VALUES
+                  (:org_id, :only_approved, :include_histories, :min_confidence, :max_sources, :project, :department, now())
+                ON CONFLICT (org_id) DO UPDATE SET
+                  only_approved = EXCLUDED.only_approved,
+                  include_histories = EXCLUDED.include_histories,
+                  min_confidence = EXCLUDED.min_confidence,
+                  max_sources = EXCLUDED.max_sources,
+                  project = EXCLUDED.project,
+                  department = EXCLUDED.department,
+                  updated_at = now()
+                """
+            ),
+            {
+                "org_id": current_user.org_id,
+                "only_approved": merged.only_approved,
+                "include_histories": merged.include_histories,
+                "min_confidence": merged.min_confidence,
+                "max_sources": merged.max_sources,
+                "project": merged.project,
+                "department": merged.department,
+            },
+        )
+    except Exception as exc:
+        raise ApiError(503, "SERVICE_UNAVAILABLE", "Retrieval settings storage is not available. Apply the latest database migration.") from exc
+    return merged
 
 
 async def _get_document_or_404(session: AsyncSession, org_id: UUID, document_id: UUID) -> KnowledgeDocument:
@@ -585,24 +992,43 @@ async def _get_document_or_404(session: AsyncSession, org_id: UUID, document_id:
 
 
 async def _to_document_read(session: AsyncSession, doc: KnowledgeDocument, folder: KnowledgeFolder) -> KnowledgeDocumentRead:
-    # Server-managed timestamp columns can be expired after flush/update triggers;
-    # refresh them explicitly so serialization does not attempt async lazy IO.
     await session.refresh(doc, attribute_names=["created_at", "updated_at"])
     chunk_filters = [KnowledgeDocumentChunk.document_id == doc.id]
     if doc.active_version_id:
         chunk_filters.append(KnowledgeDocumentChunk.version_id == doc.active_version_id)
-    chunks = list(
+    all_chunks = list(
         (
             await session.execute(
                 select(KnowledgeDocumentChunk)
                 .where(*chunk_filters)
                 .order_by(KnowledgeDocumentChunk.chunk_index)
-                .limit(6)
             )
         ).scalars()
     )
-    preview = [chunk.chunk_text or chunk.content for chunk in chunks] or [
+    preview = [chunk.chunk_text or chunk.content for chunk in all_chunks[:6]] or [
         f"{doc.title} is stored but has no indexed preview content yet.",
+    ]
+    citation_count = int(
+        (
+            await session.execute(
+                select(func.count(KnowledgeEvidenceLink.id)).where(KnowledgeEvidenceLink.document_id == doc.id)
+            )
+        ).scalar_one()
+        or 0
+    )
+    approved_by_name = await _user_display_name(session, doc.approved_by) if doc.approved_by else None
+    quality = _compute_quality_score(doc, len(all_chunks), citation_count)
+    workflow = _compute_workflow_state(doc)
+    chunk_reads = [
+        KnowledgeChunkRead(
+            id=chunk.id,
+            chunk_index=chunk.chunk_index,
+            section_title=chunk.section_title,
+            page_number=chunk.page_number,
+            chunk_text=(chunk.chunk_text or chunk.content or "").strip(),
+            token_count=chunk.token_count,
+        )
+        for chunk in all_chunks
     ]
     return KnowledgeDocumentRead(
         id=doc.id,
@@ -623,6 +1049,13 @@ async def _to_document_read(session: AsyncSession, doc: KnowledgeDocument, folde
         processing_error=doc.processing_error,
         indexing_status=doc.indexing_status.value,
         preview=preview,
+        workflow_state=workflow,
+        quality_score=quality,
+        chunk_count=len(all_chunks),
+        citation_count=citation_count,
+        approved_by_name=approved_by_name,
+        approved_at=doc.approved_at,
+        chunks=chunk_reads,
         created_at=doc.created_at,
         updated_at=doc.updated_at,
     )
@@ -1119,3 +1552,227 @@ def _rank_chunks_by_terms(query_text: str, chunks: list[KnowledgeDocumentChunk])
 
 def _source_label(source_type: KnowledgeSourceType) -> str:
     return source_type.value.replace("_", " ").title()
+
+
+def _is_retrieval_ready(doc: KnowledgeDocument) -> bool:
+    return (
+        doc.status == KnowledgeDocumentStatus.APPROVED
+        and doc.processing_status == KnowledgeProcessingStatus.READY
+        and doc.indexing_status == KnowledgeIndexingStatus.INDEXED
+    )
+
+
+def _compute_workflow_state(doc: KnowledgeDocument) -> str:
+    today = datetime.now(UTC).date()
+    if doc.status == KnowledgeDocumentStatus.DRAFT:
+        return "needs_review"
+    if doc.status == KnowledgeDocumentStatus.ARCHIVED:
+        return "archived"
+    if doc.effective_date and doc.effective_date < today:
+        return "expired"
+    if (
+        doc.status == KnowledgeDocumentStatus.APPROVED
+        and (
+            doc.indexing_status in {KnowledgeIndexingStatus.NOT_INDEXED, KnowledgeIndexingStatus.FAILED}
+            or doc.processing_status in {KnowledgeProcessingStatus.FAILED, KnowledgeProcessingStatus.UPLOADED}
+            or doc.processing_status != KnowledgeProcessingStatus.READY
+        )
+    ):
+        return "needs_reindex"
+    if _is_retrieval_ready(doc):
+        return "approved"
+    return "needs_review"
+
+
+def _compute_quality_score(doc: KnowledgeDocument, chunk_count: int, citation_count: int) -> KnowledgeQualityScore:
+    criteria = [
+        KnowledgeQualityCriterion(key="approved", label="Approved", passed=doc.status == KnowledgeDocumentStatus.APPROVED),
+        KnowledgeQualityCriterion(key="ready", label="Ready", passed=doc.processing_status == KnowledgeProcessingStatus.READY),
+        KnowledgeQualityCriterion(key="has_owner", label="Has owner", passed=bool((doc.owner_approver or "").strip())),
+        KnowledgeQualityCriterion(
+            key="has_effective_date",
+            label="Has effective date",
+            passed=doc.effective_date is not None,
+        ),
+        KnowledgeQualityCriterion(key="has_chunks", label="Has chunks", passed=chunk_count > 0),
+        KnowledgeQualityCriterion(key="has_citations", label="Has citations", passed=citation_count > 0),
+    ]
+    score = sum(1 for item in criteria if item.passed)
+    return KnowledgeQualityScore(score=score, max_score=len(criteria), criteria=criteria)
+
+
+def _build_confidence_reasons(
+    matches: list[tuple[KnowledgeDocumentChunk, float]],
+    eligible_docs: list[KnowledgeDocument],
+    doc_map: dict[UUID, KnowledgeDocument],
+    query_text: str,
+) -> list[str]:
+    reasons: list[str] = []
+    unique_docs = len({chunk.document_id for chunk, _ in matches})
+    strong = sum(1 for _, score in matches if score >= STRONG_RELEVANCE_THRESHOLD)
+    reasons.append(f"Matched {unique_docs} approved document{'s' if unique_docs != 1 else ''}")
+    if strong > 0:
+        reasons.append(f"{strong} chunk{'s' if strong != 1 else ''} were strongly relevant")
+    else:
+        reasons.append("No chunks exceeded the strong relevance threshold")
+    query_lower = query_text.lower()
+    sop_hint = any(term in query_lower for term in ("sop", "procedure", "policy", "standard"))
+    sop_matched = any(doc_map[chunk.document_id].source_type == KnowledgeSourceType.SOP for chunk, _ in matches)
+    if sop_hint and not sop_matched:
+        reasons.append("No exact SOP match found")
+    elif not eligible_docs:
+        reasons.append("No approved documents were eligible for retrieval")
+    return reasons
+
+
+def _build_knowledge_gap(query_text: str, reason: str | None = None) -> KnowledgeGapRead:
+    cleaned = query_text.strip().rstrip("?.!")
+    lower = cleaned.lower()
+    suggested_source = "sop"
+    suggested_folder = "sops"
+    if any(term in lower for term in ("lesson", "history", "project alpha", "escalation")):
+        suggested_source = "lesson_learned"
+        suggested_folder = "histories"
+    elif any(term in lower for term in ("guide", "onboarding", "training")):
+        suggested_source = "guide"
+        suggested_folder = "guides"
+    title_bits = cleaned[:80] if cleaned else "Operational knowledge"
+    message = reason or f"No approved knowledge found for: {cleaned}."
+    if "sop" in lower or "calibration" in lower or "iaa" in lower:
+        message = f"No approved SOP found for {cleaned.lower()}."
+    return KnowledgeGapRead(
+        message=message,
+        suggested_title=title_bits,
+        suggested_source_type=suggested_source,
+        suggested_folder_kind=suggested_folder,
+    )
+
+
+def _empty_ask_response(
+    query_text: str,
+    *,
+    reason: str,
+    eligible_docs: list[KnowledgeDocument] | None = None,
+    matches: list[tuple[KnowledgeDocumentChunk, float]] | None = None,
+) -> KnowledgeAskRead:
+    gap = _build_knowledge_gap(query_text, reason=reason)
+    confidence_reasons = [reason]
+    if eligible_docs is not None:
+        confidence_reasons.append(f"Only {len(eligible_docs)} approved document(s) were eligible")
+    if matches is not None and not matches:
+        confidence_reasons.append("Retrieved chunks did not meet the relevance threshold")
+    return KnowledgeAskRead(
+        answer_text=NO_APPROVED_ANSWER,
+        next_step="Upload or approve a related document to close this knowledge gap.",
+        confidence_score=0.0,
+        confidence_reasons=confidence_reasons,
+        structured_answer=None,
+        knowledge_gap=gap,
+        citations=[],
+        query_id=None,
+        model_used=None,
+    )
+
+
+async def _user_display_name(session: AsyncSession, user_id: UUID | None) -> str | None:
+    if user_id is None:
+        return None
+    user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if user is None:
+        return None
+    return user.full_name or user.email
+
+
+async def _version_extracted_text(session: AsyncSession, version_id: UUID) -> str:
+    extraction = (
+        await session.execute(
+            select(KnowledgeDocumentExtraction).where(KnowledgeDocumentExtraction.version_id == version_id)
+        )
+    ).scalar_one_or_none()
+    if extraction and extraction.extracted_text:
+        return extraction.extracted_text
+    chunks = list(
+        (
+            await session.execute(
+                select(KnowledgeDocumentChunk)
+                .where(KnowledgeDocumentChunk.version_id == version_id)
+                .order_by(KnowledgeDocumentChunk.chunk_index)
+            )
+        ).scalars()
+    )
+    return "\n\n".join((chunk.chunk_text or chunk.content or "").strip() for chunk in chunks if (chunk.chunk_text or chunk.content))
+
+
+async def _rank_documents_semantic(
+    session: AsyncSession,
+    semantic_query: str,
+    reads: list[KnowledgeDocumentRead],
+) -> list[KnowledgeDocumentRead]:
+    if not reads:
+        return reads
+    try:
+        query_embedding = (await _embed_texts([semantic_query]))[0]
+    except Exception:
+        return reads
+    vec_literal = "[" + ",".join(f"{v:.6f}" for v in query_embedding) + "]"
+    doc_ids = [read.id for read in reads]
+    sql = text(
+        """
+        SELECT c.document_id, MAX(1 - (c.embedding <=> CAST(:vec AS vector))) AS score
+        FROM knowledge_document_chunks c
+        WHERE c.document_id = ANY(:doc_ids)
+          AND c.embedding IS NOT NULL
+        GROUP BY c.document_id
+        ORDER BY score DESC
+        """
+    )
+    rows = (await session.execute(sql, {"vec": vec_literal, "doc_ids": doc_ids})).all()
+    score_map = {row[0]: float(row[1]) for row in rows}
+    ranked = []
+    for read in reads:
+        relevance = score_map.get(read.id, 0.0)
+        ranked.append(read.model_copy(update={"semantic_relevance": round(relevance, 4)}))
+    ranked.sort(key=lambda item: item.semantic_relevance or 0.0, reverse=True)
+    return ranked
+
+
+async def _notify_knowledge_stakeholders(
+    session: AsyncSession,
+    doc: KnowledgeDocument,
+    *,
+    title: str,
+    body: str,
+    actor_id: UUID,
+) -> None:
+    recipients = list(
+        (
+            await session.execute(
+                select(User).where(
+                    User.org_id == doc.org_id,
+                    User.deleted_at.is_(None),
+                    User.role.in_([AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN, AppRole.DELIVERY_MANAGER]),
+                )
+            )
+        ).scalars()
+    )
+    owner_hint = (doc.owner_approver or doc.approver or "").strip().lower()
+    notified: set[UUID] = set()
+    for user in recipients:
+        if user.id == actor_id:
+            continue
+        if owner_hint and owner_hint not in (user.full_name or "").lower() and owner_hint not in user.email.lower():
+            if user.role not in {AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN}:
+                continue
+        if user.id in notified:
+            continue
+        notified.add(user.id)
+        await create_notification(
+            session,
+            user_id=user.id,
+            org_id=doc.org_id,
+            notification_type=NotificationType.SYSTEM,
+            title=title,
+            body=body,
+            source_table="knowledge_documents",
+            source_row_id=doc.id,
+        )
