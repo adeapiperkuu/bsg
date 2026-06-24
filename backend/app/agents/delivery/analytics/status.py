@@ -4,6 +4,8 @@ from collections.abc import Sequence
 from decimal import Decimal
 from typing import Literal
 
+from app.agents.delivery.analytics.confidence import ON_TRACK_THRESHOLD
+
 TrafficLightStatus = Literal["green", "yellow", "red"]
 
 
@@ -13,7 +15,7 @@ def calculate_status(
     risk_score: Decimal,
     open_bottleneck_count: int = 0,
     milestone_status: str | None = None,
-    yellow_confidence_threshold: Decimal = Decimal("80.00"),
+    yellow_confidence_threshold: Decimal = ON_TRACK_THRESHOLD,
     red_confidence_threshold: Decimal = Decimal("50.00"),
     yellow_risk_threshold: Decimal = Decimal("30.00"),
     red_risk_threshold: Decimal = Decimal("85.00"),

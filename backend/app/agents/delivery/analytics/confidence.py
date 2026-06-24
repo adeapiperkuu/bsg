@@ -8,6 +8,7 @@ from typing import Literal
 ConfidenceStatus = Literal["on_track", "at_risk"]
 TrendDirection = Literal["improving", "flat", "declining", "unknown"]
 
+ON_TRACK_THRESHOLD = Decimal("80.00")
 PERCENT = Decimal("100")
 ZERO = Decimal("0")
 
@@ -96,7 +97,7 @@ def calculate_confidence_score(
 def classify_confidence_status(
     score_pct: Decimal,
     *,
-    on_track_threshold: Decimal = Decimal("80.00"),
+    on_track_threshold: Decimal = ON_TRACK_THRESHOLD,
 ) -> ConfidenceStatus:
     """Map a confidence score to the delivery milestone status vocabulary."""
     return "on_track" if score_pct >= on_track_threshold else "at_risk"

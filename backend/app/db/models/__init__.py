@@ -1,3 +1,4 @@
+from app.db.models.audit_log import AuditLog
 from app.db.models.base import Base
 from app.db.models.entities import (
     AgentQuery,
@@ -39,6 +40,7 @@ __all__ = [
     "AlertType",
     "Annotator",
     "AppRole",
+    "AuditLog",
     "Base",
     "Bottleneck",
     "ClientCommunication",

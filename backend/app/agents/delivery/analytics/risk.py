@@ -3,8 +3,11 @@
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
 
+from app.agents.delivery.analytics.confidence import ON_TRACK_THRESHOLD
+
 RiskTier = Literal["low", "medium", "high", "critical"]
 
+WARNING_WINDOW_DAYS = 14
 PERCENT = Decimal("100")
 ZERO = Decimal("0")
 
@@ -22,7 +25,7 @@ def clamp_probability(value: Decimal) -> Decimal:
 def confidence_risk_component(
     confidence_score_pct: Decimal,
     *,
-    on_track_threshold: Decimal = Decimal("80.00"),
+    on_track_threshold: Decimal = ON_TRACK_THRESHOLD,
 ) -> Decimal:
     """Convert confidence shortfall into a risk contribution."""
     if confidence_score_pct >= on_track_threshold:
@@ -46,7 +49,7 @@ def throughput_risk_component(
 def milestone_risk_component(
     *,
     days_until_milestone: int | None,
-    warning_window_days: int = 14,
+    warning_window_days: int = WARNING_WINDOW_DAYS,
 ) -> Decimal:
     """Increase risk as an incomplete milestone approaches or passes its planned date."""
     if days_until_milestone is None:
@@ -91,8 +94,8 @@ def calculate_risk(
     open_bottleneck_count: int = 0,
     has_quality_drift: bool = False,
     rework_rate_pct: Decimal | None = None,
-    on_track_threshold: Decimal = Decimal("80.00"),
-    warning_window_days: int = 14,
+    on_track_threshold: Decimal = ON_TRACK_THRESHOLD,
+    warning_window_days: int = WARNING_WINDOW_DAYS,
 ) -> Decimal:
     """Calculate delivery slippage probability from deterministic risk components."""
     probability = (
@@ -126,8 +129,8 @@ def calculate_slippage_probability(
     open_bottleneck_count: int = 0,
     has_quality_drift: bool = False,
     rework_rate_pct: Decimal | None = None,
-    on_track_threshold: Decimal = Decimal("80.00"),
-    warning_window_days: int = 14,
+    on_track_threshold: Decimal = ON_TRACK_THRESHOLD,
+    warning_window_days: int = WARNING_WINDOW_DAYS,
 ) -> Decimal:
     """Backward-compatible alias for the core risk calculation."""
     return calculate_risk(
@@ -169,7 +172,7 @@ def build_contributing_causes(
     open_bottleneck_count: int = 0,
     has_quality_drift: bool = False,
     rework_rate_pct: Decimal | None = None,
-    on_track_threshold: Decimal = Decimal("80.00"),
+    on_track_threshold: Decimal = ON_TRACK_THRESHOLD,
 ) -> dict[str, float]:
     """Return normalized cause values suitable for structured risk metadata."""
     causes: dict[str, float] = {}
