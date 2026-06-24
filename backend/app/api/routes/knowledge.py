@@ -169,7 +169,8 @@ async def upload_knowledge_document(
     current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
     file: UploadFile = File(...),
     title: str = Form(...),
-    folder_kind: str = Form(...),
+    folder_id: str | None = Form(None),
+    folder_kind: str | None = Form(None),
     source_type: str = Form(...),
     version: str = Form("v1.0"),
     visibility: str = Form("internal_only"),
@@ -192,11 +193,17 @@ async def upload_knowledge_document(
         raise ApiError(400, "VALIDATION_ERROR", "Uploaded file is empty.")
     if not title.strip() or not owner_approver.strip():
         raise ApiError(400, "VALIDATION_ERROR", "Document title and owner/approver are required.")
+    if not folder_id and not folder_kind:
+        raise ApiError(400, "VALIDATION_ERROR", "A target folder is required.")
+
+    resolved_folder_id = UUID(folder_id) if folder_id else None
+    resolved_folder_kind = _parse_enum(folder_kind, KnowledgeFolderKind, "folder") if folder_kind else None
 
     row = await create_document_from_upload(
         session,
         current_user,
-        folder_kind=_parse_enum(folder_kind, KnowledgeFolderKind, "folder"),
+        folder_id=resolved_folder_id,
+        folder_kind=resolved_folder_kind,
         title=title,
         source_type=_parse_enum(source_type, KnowledgeSourceType, "source type"),
         version=version,

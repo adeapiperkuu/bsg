@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
   SelectContent,
@@ -32,6 +33,7 @@ import {
   createKnowledgeFolder,
   deleteKnowledgeDocument,
   downloadKnowledgeDocumentFile,
+  getKnowledgeDocument,
   listKnowledgeDocumentVersions,
   listKnowledgeDocuments,
   listKnowledgeFolders,
@@ -46,11 +48,9 @@ import { useAuthStore } from "@/stores/useAuthStore";
 import {
   documentFromApi,
   documentToApiPatch,
-  folderKindFromApi,
   isRetrievalReady,
   uploadFormToApi,
   type DocumentStatus,
-  type FolderName,
   type KnowledgeDocument,
   type SourceType,
   type Visibility,
@@ -60,6 +60,7 @@ import type {
   KnowledgeAskResponseApi,
   KnowledgeCitationApi,
   KnowledgeDocumentVersionApi,
+  KnowledgeFolderKind,
   KnowledgeGapApi,
   KnowledgeRetrievalSettingsApi,
   KnowledgeStructuredAnswerApi,
@@ -105,11 +106,10 @@ type ChatMessage = {
   knowledge_gap?: KnowledgeGapApi | null;
   citations?: KnowledgeCitationApi[];
 };
-type LibraryFolder = { id: string; kind: FolderName; name: string };
+type LibraryFolder = { id: string; kind: KnowledgeFolderKind; name: string };
 
 const workflowStates: WorkflowState[] = ["Needs review", "Approved", "Expired", "Needs re-index", "Archived"];
 
-const folders: FolderName[] = ["SOPs", "Guides", "Histories"];
 const sourceTypes: SourceType[] = [
   "SOP",
   "Guide",
@@ -135,7 +135,7 @@ function KnowledgePage() {
   const canManageRetrieval = user?.role === "bsg_leadership" || user?.role === "super_admin";
   const [documents, setDocuments] = useState<KnowledgeDocument[]>(initialDocuments);
   const [libraryFolders, setLibraryFolders] = useState<LibraryFolder[]>([]);
-  const [loadingFolders, setLoadingFolders] = useState(false);
+  const [loadingFolders, setLoadingFolders] = useState(true);
   const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
   const [createFolderName, setCreateFolderName] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
@@ -143,7 +143,8 @@ function KnowledgePage() {
   const [docId, setDocId] = useState<string | null>(null);
   const [activeChunkId, setActiveChunkId] = useState<string | null>(null);
   const [documentTab, setDocumentTab] = useState("preview");
-  const [loadingDocs, setLoadingDocs] = useState(false);
+  const [loadingDocs, setLoadingDocs] = useState(true);
+  const [loadingDocDetail, setLoadingDocDetail] = useState(false);
   const [docsLoadError, setDocsLoadError] = useState("");
   const [askInput, setAskInput] = useState("");
   const [asking, setAsking] = useState(false);
@@ -164,18 +165,18 @@ function KnowledgePage() {
   const [uploadError, setUploadError] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
-  const [activeFolder, setActiveFolder] = useState<FolderName | "All">("All");
+  const [activeFolder, setActiveFolder] = useState<string | "All">("All");
   const [statusFilter, setStatusFilter] = useState<DocumentStatus | "All">("All");
   const [workflowFilter, setWorkflowFilter] = useState<WorkflowState | "All">("All");
   const [sortMode, setSortMode] = useState<SortMode>("recent");
   const [healthFilter, setHealthFilter] = useState<HealthFilter>("all");
-  const [collapsedFolders, setCollapsedFolders] = useState<Set<FolderName>>(() => new Set(folders));
-  const [expandedFolders, setExpandedFolders] = useState<Set<FolderName>>(new Set());
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const [form, setForm] = useState({
     title: "",
-    folder: "SOPs" as FolderName,
+    folderId: "",
     sourceType: "SOP" as SourceType,
     version: "v1.0",
     visibility: "Internal-only" as Visibility,
@@ -184,6 +185,7 @@ function KnowledgePage() {
     effectiveDate: new Date().toISOString().slice(0, 10),
   });
 
+  const libraryLoading = loadingDocs || loadingFolders;
   const selectedDoc = documents.find((item) => item.id === docId) ?? null;
   const approvedIndexedDocs = documents.filter(isRetrievalReady);
   const draftCount = documents.filter((item) => item.status === "Draft").length;
@@ -214,7 +216,7 @@ function KnowledgePage() {
   const filteredDocuments = useMemo(() => {
     const query = searchTerm.trim().toLowerCase();
     const filtered = documents.filter((item) => {
-      const matchesFolder = activeFolder === "All" || item.folder === activeFolder;
+      const matchesFolder = activeFolder === "All" || item.folderId === activeFolder;
       const matchesStatus = statusFilter === "All" || item.status === statusFilter;
       const matchesWorkflow = workflowFilter === "All" || item.workflowState === workflowFilter;
       const matchesHealth =
@@ -252,31 +254,32 @@ function KnowledgePage() {
   const groupedDocuments = useMemo(
     () =>
       libraryFolders
-        .filter((folder) => activeFolder === "All" || folder.kind === activeFolder)
+        .filter((folder) => activeFolder === "All" || folder.id === activeFolder)
         .map((folder) => ({
-          folder: folder.kind,
+          id: folder.id,
+          kind: folder.kind,
           folderName: folder.name,
-          items: filteredDocuments.filter((item) => item.folder === folder.kind),
-          total: documents.filter((item) => item.folder === folder.kind).length,
+          items: filteredDocuments.filter((item) => item.folderId === folder.id),
+          total: documents.filter((item) => item.folderId === folder.id).length,
         })),
     [activeFolder, documents, filteredDocuments, libraryFolders],
   );
 
-  const loadLibraryFolders = async () => {
-    setLoadingFolders(true);
+  const loadLibraryFolders = async (options?: { silent?: boolean }) => {
+    if (!options?.silent) setLoadingFolders(true);
     try {
       const rows = await listKnowledgeFolders();
       setLibraryFolders(
         rows.map((row) => ({
           id: row.id,
-          kind: folderKindFromApi(row.folder_kind),
+          kind: row.folder_kind,
           name: row.name,
         })),
       );
     } catch {
       setLibraryFolders([]);
     } finally {
-      setLoadingFolders(false);
+      if (!options?.silent) setLoadingFolders(false);
     }
   };
 
@@ -302,6 +305,31 @@ function KnowledgePage() {
     };
     void load();
   }, []);
+
+  useEffect(() => {
+    if (libraryFolders.length === 0) return;
+    setForm((current) => (current.folderId ? current : { ...current, folderId: libraryFolders[0].id }));
+    setCollapsedFolders((current) => (current.size > 0 ? current : new Set(libraryFolders.map((folder) => folder.id))));
+  }, [libraryFolders]);
+
+  useEffect(() => {
+    if (!selectedDoc || !isDocumentOpen) return;
+    let cancelled = false;
+    setLoadingDocDetail(true);
+    void getKnowledgeDocument(selectedDoc.id)
+      .then((row) => {
+        if (cancelled) return;
+        const mapped = documentFromApi(row);
+        setDocuments((current) => current.map((item) => (item.id === mapped.id ? mapped : item)));
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoadingDocDetail(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isDocumentOpen, selectedDoc?.id]);
 
   useEffect(() => {
     if (!selectedDoc || !isDocumentOpen) return;
@@ -357,7 +385,7 @@ function KnowledgePage() {
     setSelectedFile(null);
     setForm({
       title: "",
-      folder: "SOPs",
+      folderId: libraryFolders[0]?.id ?? "",
       sourceType: "SOP",
       version: "v1.0",
       visibility: "Internal-only",
@@ -369,9 +397,9 @@ function KnowledgePage() {
 
   const handleUpload = async () => {
     const error = validateFile(selectedFile);
-    if (error || !form.title.trim() || !form.owner.trim()) {
+    if (error || !form.title.trim() || !form.owner.trim() || !form.folderId) {
       setUploadState("error");
-      setUploadError(error || "Document title and owner/approver are required.");
+      setUploadError(error || "Document title, folder, and owner/approver are required.");
       return;
     }
 
@@ -400,7 +428,7 @@ function KnowledgePage() {
       setDocId(newDocument.id);
       setCollapsedFolders((current) => {
         const next = new Set(current);
-        next.delete(newDocument.folder);
+        next.delete(newDocument.folderId);
         return next;
       });
       setUploadProgress(100);
@@ -564,20 +592,20 @@ function KnowledgePage() {
     void submitAsk();
   };
 
-  const toggleFolder = (folder: FolderName) => {
+  const toggleFolder = (folderId: string) => {
     setCollapsedFolders((current) => {
       const next = new Set(current);
-      if (next.has(folder)) next.delete(folder);
-      else next.add(folder);
+      if (next.has(folderId)) next.delete(folderId);
+      else next.add(folderId);
       return next;
     });
   };
 
-  const toggleFolderLimit = (folder: FolderName) => {
+  const toggleFolderLimit = (folderId: string) => {
     setExpandedFolders((current) => {
       const next = new Set(current);
-      if (next.has(folder)) next.delete(folder);
-      else next.add(folder);
+      if (next.has(folderId)) next.delete(folderId);
+      else next.add(folderId);
       return next;
     });
   };
@@ -594,7 +622,6 @@ function KnowledgePage() {
   };
 
   const prefillUploadFromGap = (gap: KnowledgeGapApi) => {
-    const folderMap: Record<string, FolderName> = { sops: "SOPs", guides: "Guides", histories: "Histories" };
     const sourceMap: Record<string, SourceType> = {
       sop: "SOP",
       guide: "Guide",
@@ -603,10 +630,12 @@ function KnowledgePage() {
       escalation_note: "Escalation Note",
       lesson_learned: "Lesson Learned",
     };
+    const suggestedFolder =
+      libraryFolders.find((folder) => folder.kind === gap.suggested_folder_kind) ?? libraryFolders[0];
     setForm((current) => ({
       ...current,
       title: gap.suggested_title ?? current.title,
-      folder: folderMap[gap.suggested_folder_kind ?? "sops"] ?? "SOPs",
+      folderId: suggestedFolder?.id ?? current.folderId,
       sourceType: sourceMap[gap.suggested_source_type ?? "sop"] ?? "SOP",
       status: "Draft",
     }));
@@ -627,14 +656,13 @@ function KnowledgePage() {
     setCreateFolderError("");
     try {
       const created = await createKnowledgeFolder({ name });
-      await loadLibraryFolders();
-      const createdKind = folderKindFromApi(created.folder_kind);
+      await loadLibraryFolders({ silent: true });
       setCollapsedFolders((current) => {
         const next = new Set(current);
-        next.delete(createdKind);
+        next.delete(created.id);
         return next;
       });
-      setActiveFolder(createdKind);
+      setActiveFolder(created.id);
       setCreateFolderName("");
       setIsCreateFolderOpen(false);
     } catch (err) {
@@ -741,7 +769,7 @@ function KnowledgePage() {
           <SectionHeader
             title="Knowledge Library"
             sub={
-              loadingDocs || loadingFolders
+              libraryLoading
                 ? "Loading library..."
                 : `${documents.length} governed documents`
             }
@@ -823,12 +851,12 @@ function KnowledgePage() {
                     )}
                   </div>
                   <Field label="Folder">
-                    <Select value={activeFolder} onValueChange={(value) => setActiveFolder(value as FolderName | "All")}>
+                    <Select value={activeFolder} onValueChange={(value) => setActiveFolder(value)}>
                       <SelectTrigger className="h-8 text-xs shadow-none"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="All">All folders</SelectItem>
-                        {folders.map((folder) => (
-                          <SelectItem key={folder} value={folder}>{folder}</SelectItem>
+                        {libraryFolders.map((folder) => (
+                          <SelectItem key={folder.id} value={folder.id}>{folder.name}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -872,17 +900,42 @@ function KnowledgePage() {
           </div>
 
           <div className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+            {libraryLoading ? (
+              <div className="space-y-4" aria-busy="true" aria-label="Loading knowledge library">
+                {[0, 1, 2].map((section) => (
+                  <div key={section} className="space-y-2">
+                    <Skeleton className="h-4 w-28" />
+                    {[0, 1].map((row) => (
+                      <div key={row} className="rounded-md bg-secondary/40 p-3">
+                        <div className="flex items-start gap-3">
+                          <Skeleton className="h-8 w-8 shrink-0 rounded-md" />
+                          <div className="min-w-0 flex-1 space-y-2">
+                            <Skeleton className="h-4 w-3/4" />
+                            <Skeleton className="h-3 w-1/2" />
+                            <div className="flex gap-1.5">
+                              <Skeleton className="h-5 w-16 rounded-full" />
+                              <Skeleton className="h-5 w-14 rounded-full" />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            ) : (
+            <>
             {groupedDocuments.map((group) => {
-              const isCollapsed = collapsedFolders.has(group.folder);
-              const isExpanded = expandedFolders.has(group.folder);
+              const isCollapsed = collapsedFolders.has(group.id);
+              const isExpanded = expandedFolders.has(group.id);
               const visibleItems = isExpanded ? group.items : group.items.slice(0, folderPreviewLimit);
               const hiddenCount = Math.max(group.items.length - visibleItems.length, 0);
 
               return (
-              <section key={group.folder}>
+              <section key={group.id}>
                 <button
                   type="button"
-                  onClick={() => toggleFolder(group.folder)}
+                  onClick={() => toggleFolder(group.id)}
                   className="mb-2 flex w-full items-center justify-between rounded-md px-1 py-1 text-left hover:bg-secondary/60"
                   aria-expanded={!isCollapsed}
                 >
@@ -892,7 +945,7 @@ function KnowledgePage() {
                     ) : (
                       <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
                     )}
-                    {folderIcon(group.folder)}
+                    {folderIcon(group.kind, group.folderName)}
                     {group.folderName}
                   </div>
                   <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">
@@ -952,7 +1005,7 @@ function KnowledgePage() {
                   {group.items.length > folderPreviewLimit && (
                     <button
                       type="button"
-                      onClick={() => toggleFolderLimit(group.folder)}
+                      onClick={() => toggleFolderLimit(group.id)}
                       className="w-full rounded-md border border-dashed border-border/70 px-3 py-2 text-center text-xs font-medium text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
                     >
                       {isExpanded ? "Show less" : `Show all ${group.items.length} documents${hiddenCount ? ` (${hiddenCount} more)` : ""}`}
@@ -962,14 +1015,14 @@ function KnowledgePage() {
               </section>
               );
             })}
-            {filteredDocuments.length === 0 && libraryFolders.length === 0 && !loadingDocs && !loadingFolders && !docsLoadError && (
+            {filteredDocuments.length === 0 && libraryFolders.length === 0 && !docsLoadError && (
               <div className="rounded-md border border-dashed border-border/70 bg-secondary/30 p-6 text-center text-xs text-muted-foreground">
                 No folders yet. Use <span className="font-medium text-foreground">Create</span> to add your first folder.
               </div>
             )}
             {filteredDocuments.length === 0 && libraryFolders.length > 0 && (
               <div className="rounded-md bg-secondary/50 p-6 text-center text-xs text-muted-foreground">
-                {documents.length === 0 && !loadingDocs && !docsLoadError ? (
+                {documents.length === 0 && !docsLoadError ? (
                   <span>
                     No documents are visible for {user?.organisation?.name ?? "your organisation"}.
                     {user?.role === "client" ? " Client accounts cannot access the knowledge library API." : " Try the PM dev account (pm@bsg.dev) or upload a new document."}
@@ -978,6 +1031,8 @@ function KnowledgePage() {
                   "No documents match the current filters."
                 )}
               </div>
+            )}
+            </>
             )}
           </div>
         </Card>
@@ -1330,6 +1385,12 @@ function KnowledgePage() {
                     </TabsContent>
 
                     <TabsContent value="chunks" className="mt-4 min-h-0 flex-1 overflow-y-auto pr-2">
+                      {loadingDocDetail && selectedDoc.chunks.length === 0 ? (
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          Loading chunks...
+                        </div>
+                      ) : (
                       <div className="space-y-2 text-xs">
                         {selectedDoc.chunks.length === 0 && selectedDoc.preview.map((paragraph, index) => (
                           <div key={`${selectedDoc.id}-chunk-${index}`} className="rounded-md border border-border/70 bg-card/60 p-3">
@@ -1362,6 +1423,7 @@ function KnowledgePage() {
                           </div>
                         ))}
                       </div>
+                      )}
                     </TabsContent>
 
                     <TabsContent value="versions" className="mt-4 min-h-0 flex-1 overflow-y-auto pr-2">
@@ -1473,13 +1535,13 @@ function KnowledgePage() {
                     </div>
                     <div className="grid grid-cols-[4.5rem_1fr] items-center gap-2 rounded-md border border-border/70 bg-card/60 px-2 py-1 text-xs">
                       <span className="text-muted-foreground">Folder</span>
-                      <Select value={selectedDoc.folder} onValueChange={(value) => void updateDocument(selectedDoc.id, { folder: value as FolderName })}>
+                      <Select value={selectedDoc.folderId} onValueChange={(value) => void updateDocument(selectedDoc.id, { folderId: value })}>
                         <SelectTrigger className="h-8 border-transparent bg-transparent px-2 text-xs shadow-none hover:bg-secondary/70">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          {folders.map((folder) => (
-                            <SelectItem key={folder} value={folder}>{folder}</SelectItem>
+                          {libraryFolders.map((folder) => (
+                            <SelectItem key={folder.id} value={folder.id}>{folder.name}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
@@ -1611,9 +1673,13 @@ function KnowledgePage() {
                 <Input value={form.title} onChange={(event) => setField("title", event.target.value)} className="h-9 text-xs shadow-none" />
               </Field>
               <Field label="Folder">
-                <Select value={form.folder} onValueChange={(value) => setField("folder", value as FolderName)}>
-                  <SelectTrigger className="h-9 text-xs shadow-none"><SelectValue /></SelectTrigger>
-                  <SelectContent>{folders.map((folder) => <SelectItem key={folder} value={folder}>{folder}</SelectItem>)}</SelectContent>
+                <Select value={form.folderId} onValueChange={(value) => setField("folderId", value)}>
+                  <SelectTrigger className="h-9 text-xs shadow-none"><SelectValue placeholder="Select folder" /></SelectTrigger>
+                  <SelectContent>
+                    {libraryFolders.map((folder) => (
+                      <SelectItem key={folder.id} value={folder.id}>{folder.name}</SelectItem>
+                    ))}
+                  </SelectContent>
                 </Select>
               </Field>
               <Field label="Source type">
@@ -1816,11 +1882,12 @@ function formatPreviewLines(text: string): Array<{ kind: "heading" | "bullet" | 
     });
 }
 
-function folderIcon(folder: FolderName) {
+function folderIcon(kind: KnowledgeFolderKind, name: string) {
   const className = "h-3.5 w-3.5 text-muted-foreground";
-  if (folder === "SOPs") return <Folder className={className} />;
-  if (folder === "Guides") return <Sparkles className={className} />;
-  return <History className={className} />;
+  if (kind === "sops" || name === "SOPs") return <Folder className={className} />;
+  if (kind === "guides" || name === "Guides") return <Sparkles className={className} />;
+  if (kind === "histories" || name === "Histories") return <History className={className} />;
+  return <Folder className={className} />;
 }
 
 function DocBadge({ label, tone }: { label: string; tone?: "success" | "info" | "danger" }) {

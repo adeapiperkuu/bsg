@@ -11,7 +11,7 @@ import type {
   KnowledgeWorkflowState,
 } from "@/types/knowledge";
 
-export type FolderName = "SOPs" | "Guides" | "Histories";
+export type FolderName = string;
 export type SourceType =
   | "SOP"
   | "Guide"
@@ -35,7 +35,9 @@ export type KnowledgeChunk = {
 export type KnowledgeDocument = {
   id: string;
   title: string;
+  folderId: string;
   folder: FolderName;
+  folderKind: KnowledgeFolderKind;
   sourceType: SourceType;
   version: string;
   visibility: Visibility;
@@ -61,16 +63,10 @@ export type KnowledgeDocument = {
   semanticRelevance: number | null;
 };
 
-const folderToApi: Record<FolderName, KnowledgeFolderKind> = {
+const seedFolderToApi: Record<string, KnowledgeFolderKind> = {
   SOPs: "sops",
   Guides: "guides",
   Histories: "histories",
-};
-
-const folderFromApi: Record<KnowledgeFolderKind, FolderName> = {
-  sops: "SOPs",
-  guides: "Guides",
-  histories: "Histories",
 };
 
 const sourceToApi: Record<SourceType, KnowledgeSourceTypeApi> = {
@@ -139,17 +135,21 @@ export function workflowStateLabel(state: WorkflowState): string {
 }
 
 export function folderNameToApi(folder: FolderName): KnowledgeFolderKind {
-  return folderToApi[folder];
+  return seedFolderToApi[folder] ?? "custom";
 }
 
-export function folderKindFromApi(kind: KnowledgeFolderKind): FolderName {
-  return folderFromApi[kind];
+export function folderKindFromApi(kind: KnowledgeFolderKind, name?: string): FolderName {
+  if (kind === "sops") return "SOPs";
+  if (kind === "guides") return "Guides";
+  if (kind === "histories") return "Histories";
+  return name ?? "Folder";
 }
 
 export function documentToApiPatch(patch: Partial<KnowledgeDocument>) {
   return {
     title: patch.title,
-    folder_kind: patch.folder ? folderToApi[patch.folder] : undefined,
+    folder_id: patch.folderId,
+    folder_kind: patch.folderKind ? patch.folderKind : patch.folder ? folderNameToApi(patch.folder) : undefined,
     source_type: patch.sourceType ? sourceToApi[patch.sourceType] : undefined,
     version: patch.version,
     visibility: patch.visibility ? visibilityToApi[patch.visibility] : undefined,
@@ -168,7 +168,9 @@ export function documentFromApi(row: KnowledgeDocumentApi): KnowledgeDocument {
   return {
     id: row.id,
     title: row.title,
-    folder: folderFromApi[row.folder_kind],
+    folderId: row.folder_id,
+    folder: row.folder_name,
+    folderKind: row.folder_kind,
     sourceType: sourceFromApi[row.source_type],
     version: row.version,
     visibility: visibilityFromApi[row.visibility],
@@ -197,7 +199,7 @@ export function documentFromApi(row: KnowledgeDocumentApi): KnowledgeDocument {
 
 export function uploadFormToApi(form: {
   title: string;
-  folder: FolderName;
+  folderId: string;
   sourceType: SourceType;
   version: string;
   visibility: Visibility;
@@ -207,7 +209,7 @@ export function uploadFormToApi(form: {
 }) {
   return {
     title: form.title,
-    folder_kind: folderToApi[form.folder],
+    folder_id: form.folderId,
     source_type: sourceToApi[form.sourceType],
     version: form.version,
     visibility: visibilityToApi[form.visibility],

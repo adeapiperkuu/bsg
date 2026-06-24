@@ -34,7 +34,7 @@ function ReportsPage() {
       </Card>
 
       <Card className="lg:col-span-2">
-        <SectionHeader title={sel.name} sub={`${sel.client} · ${sel.date}`} right={<div className="flex gap-2"><AiBadge confidence={91} /><button className="rounded border border-border px-2.5 py-1 text-[11px]">Edit</button><button className="rounded bg-[color:var(--brand)] px-2.5 py-1 text-[11px] font-medium text-[color:var(--brand-foreground)]">Approve & Send</button></div>} />
+        <SectionHeader title={sel.name} sub={`${sel.client} · ${sel.date}`} right={<div className="flex gap-2"><AiBadge confidence={91} /><button className="rounded border border-[color:var(--info)]/30 bg-[color:var(--info)]/15 px-2.5 py-1 text-[11px] font-medium text-[color:var(--info)]">Edit</button><button className="rounded bg-[color:var(--brand)] px-2.5 py-1 text-[11px] font-medium text-[color:var(--brand-foreground)]">Approve & Send</button></div>} />
         <div className="prose-invert max-w-none space-y-3 rounded-md border border-border bg-elevated p-5 text-sm leading-6">
           <h3 className="text-base font-semibold">Executive Summary</h3>
           <p>This week {sel.client} maintained healthy operational momentum across all active engagements. Schedule confidence improved by 1.4 points over the prior week, and gold-set accuracy held at 94.2%.</p>

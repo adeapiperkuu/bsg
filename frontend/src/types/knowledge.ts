@@ -1,4 +1,4 @@
-export type KnowledgeFolderKind = "sops" | "guides" | "histories";
+export type KnowledgeFolderKind = "sops" | "guides" | "histories" | "custom";
 export type KnowledgeWorkflowState =
   | "needs_review"
   | "approved"

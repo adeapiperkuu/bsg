@@ -14,6 +14,7 @@ import appCss from "../styles.css?url";
 import { RoleProvider } from "../lib/bsg/role";
 import { Shell } from "../components/bsg/Shell";
 import { AuthProvider } from "../components/AuthProvider";
+import { PageTransition } from "../components/PageTransition";
 
 const PUBLIC_PATHS = ["/login", "/unauthorized"];
 const FAVICON_HREF =
@@ -122,7 +123,9 @@ function RootComponent() {
       <RoleProvider>
         <AuthProvider>
           {isPublic ? (
-            <Outlet />
+            <PageTransition>
+              <Outlet />
+            </PageTransition>
           ) : (
             <Shell>
               <Outlet />
