@@ -107,6 +107,7 @@ class KnowledgeFolderKind(StrEnum):
     SOPS = "sops"
     GUIDES = "guides"
     HISTORIES = "histories"
+    CUSTOM = "custom"
 
 
 class KnowledgeSourceType(StrEnum):
@@ -552,10 +553,7 @@ class Notification(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
 
 class KnowledgeFolder(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     __tablename__ = "knowledge_folders"
-    __table_args__ = (
-        UniqueConstraint("org_id", "folder_kind", name="knowledge_folders_org_kind_key"),
-        Index("knowledge_folders_org_idx", "org_id"),
-    )
+    __table_args__ = (Index("knowledge_folders_org_idx", "org_id"),)
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
     name: Mapped[str] = mapped_column(Text)

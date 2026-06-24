@@ -368,6 +368,11 @@ export async function listKnowledgeDocuments(filters: KnowledgeDocumentFilters =
   return body.data;
 }
 
+export async function getKnowledgeDocument(documentId: string): Promise<KnowledgeDocumentApi> {
+  const body = await apiFetch<{ data: KnowledgeDocumentApi }>(`/knowledge/documents/${documentId}`);
+  return body.data;
+}
+
 export async function listKnowledgeFolders(): Promise<KnowledgeFolderApi[]> {
   const body = await apiFetch<{ data: KnowledgeFolderApi[] }>("/knowledge/folders");
   return body.data;

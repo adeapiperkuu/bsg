@@ -122,3 +122,24 @@
   html, body { background-color: var(--color-background); color: var(--color-foreground); font-family: var(--font-sans); }
   body { font-feature-settings: "cv02","cv03","cv04","cv11"; }
 }
+
+@keyframes page-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.page-enter {
+  animation: page-fade-up 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-enter {
+    animation: none;
+  }
+}

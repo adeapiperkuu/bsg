@@ -20,6 +20,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { PageTransition } from "@/components/PageTransition";
 
 type NavItem = { to: string; label: string; icon: React.ComponentType<{ className?: string }> };
 
@@ -298,7 +299,9 @@ export function Shell({ children }: { children: ReactNode }) {
           </DropdownMenu>
         </header>
 
-        <main className="mx-auto w-full max-w-[1440px] flex-1 p-3 sm:p-4 md:p-6">{children}</main>
+        <main className="mx-auto w-full max-w-[1440px] flex-1 p-3 sm:p-4 md:p-6">
+          <PageTransition>{children}</PageTransition>
+        </main>
       </div>
     </div>
   );

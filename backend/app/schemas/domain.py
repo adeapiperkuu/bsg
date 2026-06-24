@@ -418,6 +418,7 @@ class KnowledgeDocumentRead(ORMModel):
 
 class KnowledgeDocumentUpdate(BaseModel):
     title: str | None = None
+    folder_id: UUID | None = None
     folder_kind: str | None = None
     source_type: str | None = None
     version: str | None = None

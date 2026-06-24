@@ -5,6 +5,7 @@ import io
 import mimetypes
 import re
 import math
+from dataclasses import dataclass
 from decimal import Decimal
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -117,49 +118,65 @@ async def create_knowledge_folder(
     *,
     folder_kind: KnowledgeFolderKind,
     name: str,
+    display_order: int | None = None,
 ) -> KnowledgeFolder:
     cleaned_name = name.strip()
     if not cleaned_name:
         raise ApiError(400, "VALIDATION_ERROR", "Folder name is required.")
 
-    existing = (
-        await session.execute(
-            select(KnowledgeFolder).where(
-                KnowledgeFolder.org_id == org_id,
-                KnowledgeFolder.folder_kind == folder_kind,
-                KnowledgeFolder.deleted_at.is_(None),
+    if folder_kind != KnowledgeFolderKind.CUSTOM:
+        existing = (
+            await session.execute(
+                select(KnowledgeFolder).where(
+                    KnowledgeFolder.org_id == org_id,
+                    KnowledgeFolder.folder_kind == folder_kind,
+                    KnowledgeFolder.deleted_at.is_(None),
+                )
             )
-        )
-    ).scalar_one_or_none()
-    if existing is not None:
-        existing.name = cleaned_name
-        await session.flush()
-        return existing
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing.name = cleaned_name
+            await session.flush()
+            return existing
 
-    default_name, display_order = FOLDER_DEFAULTS[folder_kind]
+        default_name, default_order = FOLDER_DEFAULTS[folder_kind]
+        folder = KnowledgeFolder(
+            org_id=org_id,
+            name=cleaned_name or default_name,
+            folder_kind=folder_kind,
+            display_order=default_order if display_order is None else display_order,
+        )
+        session.add(folder)
+        await session.flush()
+        return folder
+
+    existing_folders = await list_knowledge_folders(session, org_id)
+    next_order = display_order
+    if next_order is None:
+        next_order = max((row.display_order for row in existing_folders), default=len(FOLDER_SEED) - 1) + 1
     folder = KnowledgeFolder(
         org_id=org_id,
-        name=cleaned_name or default_name,
-        folder_kind=folder_kind,
-        display_order=display_order,
+        name=cleaned_name,
+        folder_kind=KnowledgeFolderKind.CUSTOM,
+        display_order=next_order,
     )
     session.add(folder)
     await session.flush()
     return folder
 
 
-def _infer_folder_kind(name: str, taken: set[KnowledgeFolderKind]) -> KnowledgeFolderKind:
+def _infer_folder_kind(name: str, taken_seed_kinds: set[KnowledgeFolderKind]) -> KnowledgeFolderKind:
     lowered = name.lower()
-    if "sop" in lowered and KnowledgeFolderKind.SOPS not in taken:
+    if "sop" in lowered and KnowledgeFolderKind.SOPS not in taken_seed_kinds:
         return KnowledgeFolderKind.SOPS
-    if "guide" in lowered and KnowledgeFolderKind.GUIDES not in taken:
+    if "guide" in lowered and KnowledgeFolderKind.GUIDES not in taken_seed_kinds:
         return KnowledgeFolderKind.GUIDES
-    if "histor" in lowered and KnowledgeFolderKind.HISTORIES not in taken:
+    if "histor" in lowered and KnowledgeFolderKind.HISTORIES not in taken_seed_kinds:
         return KnowledgeFolderKind.HISTORIES
     for kind in (KnowledgeFolderKind.SOPS, KnowledgeFolderKind.GUIDES, KnowledgeFolderKind.HISTORIES):
-        if kind not in taken:
+        if kind not in taken_seed_kinds:
             return kind
-    raise ApiError(409, "CONFLICT", "Maximum number of folders reached.")
+    return KnowledgeFolderKind.CUSTOM
 
 
 async def create_knowledge_folder_by_name(session: AsyncSession, org_id: UUID, *, name: str) -> KnowledgeFolder:
@@ -171,12 +188,28 @@ async def create_knowledge_folder_by_name(session: AsyncSession, org_id: UUID, *
     if any(row.name.lower() == cleaned_name.lower() for row in existing):
         raise ApiError(409, "CONFLICT", "A folder with this name already exists.")
 
-    taken = {row.folder_kind for row in existing}
-    if len(taken) >= len(FOLDER_SEED):
-        raise ApiError(409, "CONFLICT", "Maximum number of folders reached.")
-
-    folder_kind = _infer_folder_kind(cleaned_name, taken)
+    taken_seed_kinds = {
+        row.folder_kind
+        for row in existing
+        if row.folder_kind in {KnowledgeFolderKind.SOPS, KnowledgeFolderKind.GUIDES, KnowledgeFolderKind.HISTORIES}
+    }
+    folder_kind = _infer_folder_kind(cleaned_name, taken_seed_kinds)
     return await create_knowledge_folder(session, org_id, folder_kind=folder_kind, name=cleaned_name)
+
+
+async def get_folder_by_id(session: AsyncSession, org_id: UUID, folder_id: UUID) -> KnowledgeFolder:
+    folder = (
+        await session.execute(
+            select(KnowledgeFolder).where(
+                KnowledgeFolder.id == folder_id,
+                KnowledgeFolder.org_id == org_id,
+                KnowledgeFolder.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if folder is None:
+        raise ApiError(404, "NOT_FOUND", "Knowledge folder not found.")
+    return folder
 
 
 async def get_folder_for_kind(session: AsyncSession, org_id: UUID, folder_kind: KnowledgeFolderKind) -> KnowledgeFolder:
@@ -252,6 +285,8 @@ async def list_documents(
     if effective_date_to:
         visible = [doc for doc in visible if doc.effective_date and doc.effective_date <= effective_date_to]
 
+    preload_map = await _batch_document_list_stats(session, visible)
+
     reads: list[KnowledgeDocumentRead] = []
     for doc in visible:
         folder = folders.get(doc.folder_id)
@@ -262,7 +297,10 @@ async def list_documents(
             ).scalar_one_or_none()
         if folder is None:
             continue
-        read = await _to_document_read(session, doc, folder)
+        preload = preload_map.get(doc.id)
+        if preload is None:
+            continue
+        read = _to_document_list_read(doc, folder, preload)
         if ready is not None:
             is_ready = _is_retrieval_ready(doc)
             if ready != is_ready:
@@ -312,7 +350,9 @@ async def update_document(
         raise ApiError(403, "FORBIDDEN", "You cannot update this document.")
     if payload.title is not None:
         doc.title = payload.title.strip()
-    if payload.folder_kind is not None:
+    if payload.folder_id is not None:
+        doc.folder_id = (await get_folder_by_id(session, current_user.org_id, payload.folder_id)).id
+    elif payload.folder_kind is not None:
         doc.folder_id = (await get_folder_for_kind(session, current_user.org_id, KnowledgeFolderKind(payload.folder_kind))).id
     if payload.source_type is not None:
         doc.source_type = KnowledgeSourceType(payload.source_type)
@@ -354,7 +394,8 @@ async def create_document_from_upload(
     session: AsyncSession,
     current_user: CurrentUser,
     *,
-    folder_kind: KnowledgeFolderKind,
+    folder_id: UUID | None = None,
+    folder_kind: KnowledgeFolderKind | None = None,
     title: str,
     source_type: KnowledgeSourceType,
     version: str,
@@ -375,7 +416,11 @@ async def create_document_from_upload(
     if Path(file_name).suffix.lower() not in SUPPORTED_EXTENSIONS:
         raise ApiError(400, "VALIDATION_ERROR", "Unsupported file type. Use PDF, DOCX, TXT, MD, or CSV.")
 
-    folder = await get_folder_for_kind(session, current_user.org_id, folder_kind)
+    folder = (
+        await get_folder_by_id(session, current_user.org_id, folder_id)
+        if folder_id is not None
+        else await get_folder_for_kind(session, current_user.org_id, folder_kind or KnowledgeFolderKind.SOPS)
+    )
     checksum = hashlib.sha256(file_bytes).hexdigest()
     title_clean = title.strip()
     owner_clean = owner_approver.strip()
@@ -991,8 +1036,145 @@ async def _get_document_or_404(session: AsyncSession, org_id: UUID, document_id:
     return doc
 
 
+@dataclass(frozen=True)
+class _DocumentListPreload:
+    chunk_count: int
+    citation_count: int
+    preview: list[str]
+    approved_by_name: str | None
+
+
+def _build_document_read(
+    doc: KnowledgeDocument,
+    folder: KnowledgeFolder,
+    *,
+    chunk_count: int,
+    citation_count: int,
+    preview: list[str],
+    chunks: list[KnowledgeChunkRead],
+    approved_by_name: str | None,
+) -> KnowledgeDocumentRead:
+    return KnowledgeDocumentRead(
+        id=doc.id,
+        folder_id=doc.folder_id,
+        folder_name=folder.name,
+        folder_kind=folder.folder_kind.value,
+        title=doc.title,
+        source_type=doc.source_type.value,
+        version=doc.version,
+        visibility=doc.visibility.value,
+        status=doc.status.value,
+        owner_approver=doc.owner_approver,
+        effective_date=doc.effective_date,
+        file_name=doc.file_name,
+        file_mime_type=doc.file_mime_type,
+        file_url=doc.file_url,
+        processing_status=doc.processing_status.value,
+        processing_error=doc.processing_error,
+        indexing_status=doc.indexing_status.value,
+        preview=preview,
+        workflow_state=_compute_workflow_state(doc),
+        quality_score=_compute_quality_score(doc, chunk_count, citation_count),
+        chunk_count=chunk_count,
+        citation_count=citation_count,
+        approved_by_name=approved_by_name,
+        approved_at=doc.approved_at,
+        chunks=chunks,
+        created_at=doc.created_at,
+        updated_at=doc.updated_at,
+    )
+
+
+def _to_document_list_read(
+    doc: KnowledgeDocument,
+    folder: KnowledgeFolder,
+    preload: _DocumentListPreload,
+) -> KnowledgeDocumentRead:
+    return _build_document_read(
+        doc,
+        folder,
+        chunk_count=preload.chunk_count,
+        citation_count=preload.citation_count,
+        preview=preload.preview,
+        chunks=[],
+        approved_by_name=preload.approved_by_name,
+    )
+
+
+async def _batch_document_list_stats(
+    session: AsyncSession,
+    docs: list[KnowledgeDocument],
+) -> dict[UUID, _DocumentListPreload]:
+    if not docs:
+        return {}
+
+    doc_ids = [doc.id for doc in docs]
+    doc_by_id = {doc.id: doc for doc in docs}
+
+    citation_rows = (
+        await session.execute(
+            select(KnowledgeEvidenceLink.document_id, func.count(KnowledgeEvidenceLink.id))
+            .where(KnowledgeEvidenceLink.document_id.in_(doc_ids))
+            .group_by(KnowledgeEvidenceLink.document_id)
+        )
+    ).all()
+    citation_counts = {row[0]: int(row[1]) for row in citation_rows}
+
+    chunk_count_sql = text(
+        """
+        SELECT c.document_id, COUNT(*)::int
+        FROM knowledge_document_chunks c
+        JOIN knowledge_documents d ON d.id = c.document_id
+        WHERE c.document_id = ANY(:doc_ids)
+          AND (d.active_version_id IS NULL OR c.version_id = d.active_version_id)
+        GROUP BY c.document_id
+        """
+    )
+    chunk_count_rows = (await session.execute(chunk_count_sql, {"doc_ids": doc_ids})).all()
+    chunk_counts = {row[0]: int(row[1]) for row in chunk_count_rows}
+
+    preview_sql = text(
+        """
+        SELECT document_id, chunk_text, content
+        FROM (
+            SELECT c.document_id, c.chunk_text, c.content, c.chunk_index,
+                   ROW_NUMBER() OVER (PARTITION BY c.document_id ORDER BY c.chunk_index) AS rn
+            FROM knowledge_document_chunks c
+            JOIN knowledge_documents d ON d.id = c.document_id
+            WHERE c.document_id = ANY(:doc_ids)
+              AND (d.active_version_id IS NULL OR c.version_id = d.active_version_id)
+        ) sub
+        WHERE rn <= 6
+        ORDER BY document_id, chunk_index
+        """
+    )
+    preview_rows = (await session.execute(preview_sql, {"doc_ids": doc_ids})).all()
+    previews: dict[UUID, list[str]] = {}
+    for doc_id, chunk_text, content in preview_rows:
+        text_value = (chunk_text or content or "").strip()
+        if text_value:
+            previews.setdefault(doc_id, []).append(text_value)
+
+    user_names = await _batch_user_display_names(
+        session,
+        {doc.approved_by for doc in docs if doc.approved_by},
+    )
+
+    return {
+        doc_id: _DocumentListPreload(
+            chunk_count=chunk_counts.get(doc_id, 0),
+            citation_count=citation_counts.get(doc_id, 0),
+            preview=previews.get(doc_id)
+            or [f"{doc_by_id[doc_id].title} is stored but has no indexed preview content yet."],
+            approved_by_name=(
+                user_names.get(doc_by_id[doc_id].approved_by) if doc_by_id[doc_id].approved_by else None
+            ),
+        )
+        for doc_id in doc_by_id
+    }
+
+
 async def _to_document_read(session: AsyncSession, doc: KnowledgeDocument, folder: KnowledgeFolder) -> KnowledgeDocumentRead:
-    await session.refresh(doc, attribute_names=["created_at", "updated_at"])
     chunk_filters = [KnowledgeDocumentChunk.document_id == doc.id]
     if doc.active_version_id:
         chunk_filters.append(KnowledgeDocumentChunk.version_id == doc.active_version_id)
@@ -1017,8 +1199,6 @@ async def _to_document_read(session: AsyncSession, doc: KnowledgeDocument, folde
         or 0
     )
     approved_by_name = await _user_display_name(session, doc.approved_by) if doc.approved_by else None
-    quality = _compute_quality_score(doc, len(all_chunks), citation_count)
-    workflow = _compute_workflow_state(doc)
     chunk_reads = [
         KnowledgeChunkRead(
             id=chunk.id,
@@ -1030,34 +1210,14 @@ async def _to_document_read(session: AsyncSession, doc: KnowledgeDocument, folde
         )
         for chunk in all_chunks
     ]
-    return KnowledgeDocumentRead(
-        id=doc.id,
-        folder_id=doc.folder_id,
-        folder_name=folder.name,
-        folder_kind=folder.folder_kind.value,
-        title=doc.title,
-        source_type=doc.source_type.value,
-        version=doc.version,
-        visibility=doc.visibility.value,
-        status=doc.status.value,
-        owner_approver=doc.owner_approver,
-        effective_date=doc.effective_date,
-        file_name=doc.file_name,
-        file_mime_type=doc.file_mime_type,
-        file_url=doc.file_url,
-        processing_status=doc.processing_status.value,
-        processing_error=doc.processing_error,
-        indexing_status=doc.indexing_status.value,
-        preview=preview,
-        workflow_state=workflow,
-        quality_score=quality,
+    return _build_document_read(
+        doc,
+        folder,
         chunk_count=len(all_chunks),
         citation_count=citation_count,
-        approved_by_name=approved_by_name,
-        approved_at=doc.approved_at,
+        preview=preview,
         chunks=chunk_reads,
-        created_at=doc.created_at,
-        updated_at=doc.updated_at,
+        approved_by_name=approved_by_name,
     )
 
 
@@ -1674,13 +1834,18 @@ def _empty_ask_response(
     )
 
 
+async def _batch_user_display_names(session: AsyncSession, user_ids: set[UUID]) -> dict[UUID, str]:
+    if not user_ids:
+        return {}
+    users = list((await session.execute(select(User).where(User.id.in_(user_ids)))).scalars())
+    return {user.id: user.full_name or user.email for user in users}
+
+
 async def _user_display_name(session: AsyncSession, user_id: UUID | None) -> str | None:
     if user_id is None:
         return None
-    user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
-    if user is None:
-        return None
-    return user.full_name or user.email
+    names = await _batch_user_display_names(session, {user_id})
+    return names.get(user_id)
 
 
 async def _version_extracted_text(session: AsyncSession, version_id: UUID) -> str:
