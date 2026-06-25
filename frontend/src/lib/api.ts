@@ -1,5 +1,7 @@
 import type { AppRole, AuthSession, MeUser, OrganisationRead, UserRead } from "@/types/auth";
 import type {
+  AgentQueryCreate,
+  AgentQueryRead,
   AnnotatorRead,
   CapabilityGapDetectionResponse,
   CapabilityGapRead,
@@ -394,6 +396,14 @@ export async function generateWorkforceRecommendations(
     `/projects/${projectId}/workforce-recommendations/generate`,
     { method: "POST" },
   );
+  return body.data;
+}
+
+export async function createAgentQuery(payload: AgentQueryCreate): Promise<AgentQueryRead> {
+  const body = await apiFetch<{ data: AgentQueryRead }>("/agent-queries", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
   return body.data;
 }
 

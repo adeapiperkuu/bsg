@@ -13,6 +13,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, SectionHeader, KpiCard, AiBadge, StatusPill } from "@/components/bsg/widgets";
 import {
+  createAgentQuery,
   detectProjectCapabilityGaps,
   generateWorkforceRecommendations,
   updateCapabilityGap,
@@ -33,6 +34,7 @@ import {
 import { useAuthStore } from "@/stores/useAuthStore";
 import type { AppRole } from "@/types/auth";
 import type {
+  AgentQueryRead,
   CapabilityGapRead,
   CapabilityGapSeverity,
   CapabilityGapStatus,
@@ -225,6 +227,16 @@ function summarizeCapabilityGaps(gaps: CapabilityGapRead[]) {
 
 const EMPTY_VALUE = "-";
 
+const WORKFORCE_AGENT_NAME = "workforce_capability_agent";
+
+const WORKFORCE_STARTER_QUESTIONS = [
+  "Which teams are overloaded?",
+  "Do we have enough SME coverage?",
+  "What are the biggest capability gaps?",
+  "Which skills are missing for this project?",
+  "Are training gaps creating risk?",
+];
+
 function PlaceholderPanel({ title, reason }: { title: string; reason: string }) {
   return (
     <div className="rounded-md border border-dashed border-border bg-elevated/50 px-4 py-8 text-center">
@@ -358,6 +370,27 @@ function WorkforcePage() {
     } finally {
       setUpdatingGapId(null);
     }
+  };
+
+  const [agentQuestion, setAgentQuestion] = useState("");
+  const [agentAnswer, setAgentAnswer] = useState<AgentQueryRead | null>(null);
+  const agentQueryMutation = useMutation({
+    mutationFn: (question: string) =>
+      createAgentQuery({
+        agent_name: WORKFORCE_AGENT_NAME,
+        project_id: resolvedProjectId,
+        query_text: question,
+      }),
+    onSuccess: (result) => {
+      setAgentAnswer(result);
+    },
+  });
+
+  const submitAgentQuestion = (question: string) => {
+    const trimmed = question.trim();
+    if (!trimmed || !resolvedProjectId) return;
+    setAgentAnswer(null);
+    agentQueryMutation.mutate(trimmed);
   };
 
   const selectedProject = projects.find((project) => project.id === resolvedProjectId);
@@ -1013,8 +1046,121 @@ function WorkforcePage() {
               </>
             )}
           </Card>
+
+          {/* --- Live: Workforce Agent Q&A (Phase 6) --- */}
+          <Card>
+            <SectionHeader
+              title="Ask Workforce Agent"
+              sub="Evidence-backed answers on capacity, skills, and gaps"
+              right={<AiBadge label="AI" />}
+            />
+            {!canReadInternalWorkforce ? (
+              <PlaceholderPanel
+                title="Workforce Agent restricted"
+                reason="The Workforce Agent is available to internal roles only."
+              />
+            ) : (
+              <div className="space-y-3">
+                <div className="flex flex-wrap gap-1.5">
+                  {WORKFORCE_STARTER_QUESTIONS.map((question) => (
+                    <button
+                      key={question}
+                      type="button"
+                      onClick={() => {
+                        setAgentQuestion(question);
+                        submitAgentQuestion(question);
+                      }}
+                      disabled={agentQueryMutation.isPending || !resolvedProjectId}
+                      className="rounded border border-border bg-elevated px-2 py-1 text-[11px] text-muted-foreground hover:bg-card disabled:opacity-50"
+                    >
+                      {question}
+                    </button>
+                  ))}
+                </div>
+                <textarea
+                  value={agentQuestion}
+                  onChange={(event) => setAgentQuestion(event.target.value)}
+                  placeholder="Ask about capacity, SME coverage, utilization, skills, training, or capability gaps..."
+                  rows={3}
+                  className="w-full resize-y rounded border border-border bg-card px-3 py-2 text-xs outline-none placeholder:text-muted-foreground/60"
+                />
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-[11px] text-muted-foreground">
+                    {resolvedProjectId
+                      ? "Scoped to the selected project."
+                      : "Select a project to ask a question."}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => submitAgentQuestion(agentQuestion)}
+                    disabled={
+                      agentQueryMutation.isPending ||
+                      !resolvedProjectId ||
+                      agentQuestion.trim().length === 0
+                    }
+                    className="rounded border border-[color:var(--brand)]/30 bg-[color:var(--brand)]/10 px-3 py-1.5 text-[11px] font-medium text-[color:var(--brand)] hover:bg-[color:var(--brand)]/20 disabled:opacity-50"
+                  >
+                    {agentQueryMutation.isPending ? "Asking..." : "Ask"}
+                  </button>
+                </div>
+                {agentQueryMutation.isError && (
+                  <p className="text-xs text-[color:var(--danger)]">
+                    {agentQueryMutation.error instanceof Error
+                      ? agentQueryMutation.error.message
+                      : "Failed to get an answer."}
+                  </p>
+                )}
+                {agentQueryMutation.isPending && (
+                  <div className="space-y-2">
+                    <div className="h-4 animate-pulse rounded bg-elevated" />
+                    <div className="h-4 w-3/4 animate-pulse rounded bg-elevated" />
+                  </div>
+                )}
+                {agentAnswer && !agentQueryMutation.isPending && (
+                  <WorkforceAgentAnswer answer={agentAnswer} />
+                )}
+              </div>
+            )}
+          </Card>
         </div>
       </div>
+    </div>
+  );
+}
+
+function WorkforceAgentAnswer({ answer }: { answer: AgentQueryRead }) {
+  const evidence = answer.evidence_links ?? [];
+  return (
+    <div className="rounded-md border border-border bg-elevated/50 p-3">
+      <p className="whitespace-pre-wrap text-xs text-foreground">{answer.answer_text}</p>
+      {evidence.length > 0 && (
+        <div className="mt-3 border-t border-border/60 pt-2">
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Evidence ({evidence.length})
+          </div>
+          <ul className="space-y-1">
+            {evidence.map((link, index) => (
+              <li
+                key={link.id ?? `${link.source_table}:${link.source_row_id}:${index}`}
+                className="flex items-center gap-2 text-[11px] text-muted-foreground"
+              >
+                <span className="rounded bg-secondary px-1.5 py-0.5 font-medium text-foreground">
+                  {link.source_table}
+                </span>
+                <span className="truncate font-mono text-[10px]">
+                  {link.source_row_id.slice(0, 8)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {(answer.model_used || answer.latency_ms !== null) && (
+        <div className="mt-2 text-[10px] text-muted-foreground">
+          {answer.model_used ? `Model: ${answer.model_used}` : "Deterministic answer"}
+          {answer.latency_ms !== null ? ` / ${answer.latency_ms} ms` : ""}
+        </div>
+      )}
     </div>
   );
 }

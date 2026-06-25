@@ -204,3 +204,29 @@ export type WorkforceRecommendationGenerateResponse = {
   recommendations_created: number;
   recommendations: WorkforceRecommendationRead[];
 };
+
+export type AgentQueryEvidenceLinkRead = {
+  id: string | null;
+  source_table: string;
+  source_row_id: string;
+  description: string;
+  created_at: string | null;
+};
+
+export type AgentQueryRead = {
+  id: string;
+  agent_name: string;
+  project_id: string | null;
+  query_text: string;
+  answer_text: string;
+  model_used: string | null;
+  latency_ms: number | null;
+  created_at: string;
+  evidence_links: AgentQueryEvidenceLinkRead[];
+};
+
+export type AgentQueryCreate = {
+  agent_name: string;
+  project_id?: string | null;
+  query_text: string;
+};
