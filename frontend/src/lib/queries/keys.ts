@@ -16,6 +16,7 @@ export const queryKeys = {
   projectSkillRequirements: (projectId: string) =>
     ["projects", projectId, "skill-requirements"] as const,
   projectSkillMatrix: (projectId: string) => ["projects", projectId, "skill-matrix"] as const,
+  projectTrainingGaps: (projectId: string) => ["projects", projectId, "training-gaps"] as const,
 };
 
 export const STALE_TIME_MS = 5 * 60 * 1000;

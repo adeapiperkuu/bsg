@@ -18,12 +18,21 @@ import {
   buildLatestTeamUtilization,
   summarizeTeamUtilization,
   useProjectSkillMatrixQuery,
+  useProjectTrainingGapsQuery,
   useProjectUtilizationQuery,
   useProjectWorkforceSummary,
 } from "@/lib/queries/workforce";
 import { useAuthStore } from "@/stores/useAuthStore";
 import type { AppRole } from "@/types/auth";
-import type { DeliverySite, SkillCoverageStatus, SkillMatrixRow, TeamRead } from "@/types/workforce";
+import type {
+  DeliverySite,
+  SkillCoverageStatus,
+  SkillMatrixRow,
+  TeamRead,
+  TrainingGapRow,
+  TrainingGapSummaryRead,
+  TrainingGapType,
+} from "@/types/workforce";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/workforce")({
@@ -67,6 +76,45 @@ const skillMatrixConfidence = (rows: SkillMatrixRow[]) => {
   const highCount = rows.filter((row) => row.coverage_status === "high").length;
   return Math.round((highCount / rows.length) * 100);
 };
+
+const GAP_TYPE_LABELS: Record<TrainingGapType, string> = {
+  mandatory_training_incomplete: "Mandatory incomplete",
+  expired_or_failed_training: "Expired/failed training",
+  expired_certification: "Expired certification",
+  pending_certification_review: "Pending certification review",
+};
+
+const gapTypeLabel = (gapType: TrainingGapType) => GAP_TYPE_LABELS[gapType];
+
+const gapRowSubject = (row: TrainingGapRow) =>
+  row.training_program_name ?? row.certification_name ?? row.skill_name ?? EMPTY_VALUE;
+
+const trainingGapRowKey = (row: TrainingGapRow, index: number) =>
+  [
+    row.gap_type,
+    row.team_id ?? "none",
+    row.training_program_id ?? "none",
+    row.certification_id ?? "none",
+    row.skill_id ?? "none",
+    index,
+  ].join(":");
+
+function summarizeTrainingGapsDelta(summary: TrainingGapSummaryRead | undefined): string {
+  if (!summary || summary.total_training_gaps === 0) return "No open gaps";
+  if (summary.mandatory_training_incomplete > 0) {
+    return `${summary.mandatory_training_incomplete} mandatory incomplete`;
+  }
+  if (summary.expired_or_failed_training > 0) {
+    return `${summary.expired_or_failed_training} expired/failed training`;
+  }
+  if (summary.expired_certifications > 0) {
+    return `${summary.expired_certifications} expired certifications`;
+  }
+  if (summary.pending_certification_reviews > 0) {
+    return `${summary.pending_certification_reviews} pending reviews`;
+  }
+  return "Open gaps detected";
+}
 
 const SITE_LABELS: Record<DeliverySite, string> = {
   india: "India",
@@ -149,6 +197,13 @@ function WorkforcePage() {
     [skillMatrixRows],
   );
 
+  const trainingGapsQuery = useProjectTrainingGapsQuery(resolvedProjectId, canReadInternalWorkforce);
+  const trainingGaps = trainingGapsQuery.data;
+  const trainingGapRows = trainingGaps?.rows ?? [];
+  const trainingGapsLoading = canReadInternalWorkforce && trainingGapsQuery.isLoading;
+  const trainingGapsError =
+    trainingGapsQuery.error instanceof Error ? trainingGapsQuery.error.message : null;
+
   const selectedProject = projects.find((project) => project.id === resolvedProjectId);
 
   const projectsLoading = projectsQuery.isLoading;
@@ -210,6 +265,27 @@ function WorkforcePage() {
         : utilizationStats.total > 0
           ? `${utilizationStats.underutilized} under ${utilizationStats.underutilizedThreshold}%`
           : "No utilization snapshots yet";
+
+  const trainingGapsValue =
+    !canReadInternalWorkforce
+      ? EMPTY_VALUE
+      : trainingGapsLoading
+        ? EMPTY_VALUE
+        : trainingGaps !== undefined
+          ? trainingGaps.total_training_gaps
+          : EMPTY_VALUE;
+  const trainingGapsDelta =
+    !canReadInternalWorkforce
+      ? "Internal only"
+      : trainingGapsLoading
+        ? undefined
+        : summarizeTrainingGapsDelta(trainingGaps);
+  const trainingGapsTone =
+    !canReadInternalWorkforce || trainingGapsLoading
+      ? "default"
+      : (trainingGaps?.total_training_gaps ?? 0) > 0
+        ? "danger"
+        : "success";
 
   return (
     <div className="space-y-5">
@@ -277,9 +353,9 @@ function WorkforcePage() {
             />
             <KpiCard
               label="Training Gaps"
-              value={EMPTY_VALUE}
-              delta="Pending backend"
-              tone="default"
+              value={trainingGapsValue}
+              delta={trainingGapsDelta}
+              tone={trainingGapsTone}
             />
           </div>
 
@@ -583,13 +659,81 @@ function WorkforcePage() {
             )}
           </Card>
 
-          {/* --- Placeholder: training gaps (Phase 4) --- */}
+          {/* --- Live: training gaps (Phase 4) --- */}
           <Card>
-            <SectionHeader title="Training Gaps" />
-            <PlaceholderPanel
-              title="Training tracking not connected yet"
-              reason="Training programs and records are planned for Phase 4."
-            />
+            <SectionHeader title="Training Gaps" sub="Certification and training coverage gaps" />
+            {!canReadInternalWorkforce ? (
+              <PlaceholderPanel
+                title="Training gaps restricted"
+                reason="Internal workforce training and certification gaps are not available to client users."
+              />
+            ) : trainingGapsLoading ? (
+              <div className="space-y-2">
+                <div className="h-8 animate-pulse rounded-md bg-elevated" />
+                <div className="h-10 animate-pulse rounded-md bg-elevated" />
+                <div className="h-10 animate-pulse rounded-md bg-elevated" />
+              </div>
+            ) : trainingGapsError ? (
+              <p className="text-sm text-[color:var(--danger)]">{trainingGapsError}</p>
+            ) : (trainingGaps?.total_training_gaps ?? 0) === 0 ? (
+              <PlaceholderPanel
+                title="No open training gaps"
+                reason="Mandatory training, certifications, and training records are current for project teams."
+              />
+            ) : (
+              <>
+                <div className="mb-4 flex flex-wrap gap-2">
+                  {trainingGaps!.mandatory_training_incomplete > 0 && (
+                    <span className="rounded border border-border bg-elevated px-2 py-1 text-[11px] text-muted-foreground">
+                      {trainingGaps!.mandatory_training_incomplete} mandatory incomplete
+                    </span>
+                  )}
+                  {trainingGaps!.expired_or_failed_training > 0 && (
+                    <span className="rounded border border-border bg-elevated px-2 py-1 text-[11px] text-muted-foreground">
+                      {trainingGaps!.expired_or_failed_training} expired/failed training
+                    </span>
+                  )}
+                  {trainingGaps!.expired_certifications > 0 && (
+                    <span className="rounded border border-border bg-elevated px-2 py-1 text-[11px] text-muted-foreground">
+                      {trainingGaps!.expired_certifications} expired certifications
+                    </span>
+                  )}
+                  {trainingGaps!.pending_certification_reviews > 0 && (
+                    <span className="rounded border border-border bg-elevated px-2 py-1 text-[11px] text-muted-foreground">
+                      {trainingGaps!.pending_certification_reviews} pending reviews
+                    </span>
+                  )}
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead className="text-left text-muted-foreground">
+                      <tr className="border-b border-border">
+                        <th className="py-2 pr-3 font-medium">Team</th>
+                        <th className="py-2 pr-3 font-medium">Gap</th>
+                        <th className="py-2 pr-3 font-medium">Subject</th>
+                        <th className="py-2 pr-3 font-medium">Affected</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {trainingGapRows.map((row, index) => (
+                        <tr key={trainingGapRowKey(row, index)} className="border-b border-border/50">
+                          <td className="py-2.5 pr-3 font-medium">
+                            {row.team_name ?? EMPTY_VALUE}
+                          </td>
+                          <td className="py-2.5 pr-3">
+                            <span className="inline-block rounded bg-[color:var(--danger)]/10 px-2 py-1 text-[11px] font-medium text-[color:var(--danger)]">
+                              {gapTypeLabel(row.gap_type)}
+                            </span>
+                          </td>
+                          <td className="py-2.5 pr-3 text-muted-foreground">{gapRowSubject(row)}</td>
+                          <td className="py-2.5 pr-3">{row.affected_count}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
           </Card>
         </div>
       </div>

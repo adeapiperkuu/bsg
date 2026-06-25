@@ -3,6 +3,7 @@ import { useMemo } from "react";
 
 import {
   getProjectSkillMatrix,
+  getProjectTrainingGaps,
   listProjectSkillRequirements,
   listProjectTeams,
   listProjectUtilization,
@@ -299,6 +300,22 @@ export function useProjectSkillMatrixQuery(
   canReadInternalWorkforce: boolean,
 ) {
   return useQuery(projectSkillMatrixQueryOptions(projectId, canReadInternalWorkforce));
+}
+
+export function projectTrainingGapsQueryOptions(projectId: string | null, enabled: boolean) {
+  return queryOptions({
+    queryKey: queryKeys.projectTrainingGaps(projectId ?? ""),
+    queryFn: () => getProjectTrainingGaps(projectId!),
+    enabled: Boolean(projectId) && enabled,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function useProjectTrainingGapsQuery(
+  projectId: string | null,
+  canReadInternalWorkforce: boolean,
+) {
+  return useQuery(projectTrainingGapsQueryOptions(projectId, canReadInternalWorkforce));
 }
 
 export { UTILIZATION_CAPACITY_THRESHOLD, UTILIZATION_UNDERUTILIZED_THRESHOLD };

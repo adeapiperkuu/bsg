@@ -6,6 +6,7 @@ import type {
   SkillMatrixRead,
   SkillRead,
   TeamRead,
+  TrainingGapSummaryRead,
   UtilizationSnapshotRead,
 } from "@/types/workforce";
 
@@ -338,6 +339,13 @@ export async function listProjectSkillRequirements(
 
 export async function getProjectSkillMatrix(projectId: string): Promise<SkillMatrixRead> {
   const body = await apiFetch<{ data: SkillMatrixRead }>(`/projects/${projectId}/skill-matrix`);
+  return body.data;
+}
+
+export async function getProjectTrainingGaps(projectId: string): Promise<TrainingGapSummaryRead> {
+  const body = await apiFetch<{ data: TrainingGapSummaryRead }>(
+    `/projects/${projectId}/training-gaps`,
+  );
   return body.data;
 }
 

@@ -169,6 +169,28 @@ class SkillCoverageStatus(StrEnum):
     LOW = "low"
 
 
+class CertificationStatus(StrEnum):
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    PENDING_REVIEW = "pending_review"
+    REVOKED = "revoked"
+
+
+class TrainingRecordStatus(StrEnum):
+    NOT_STARTED = "not_started"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    EXPIRED = "expired"
+
+
+class TrainingGapType(StrEnum):
+    MANDATORY_TRAINING_INCOMPLETE = "mandatory_training_incomplete"
+    EXPIRED_OR_FAILED_TRAINING = "expired_or_failed_training"
+    EXPIRED_CERTIFICATION = "expired_certification"
+    PENDING_CERTIFICATION_REVIEW = "pending_certification_review"
+
+
 class KnowledgeExtractionStatus(StrEnum):
     PENDING = "pending"
     EXTRACTING = "extracting"
@@ -456,6 +478,75 @@ class ProjectSkillRequirement(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDe
     required_headcount: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     required_sme_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     priority: Mapped[SkillRequirementPriority] = mapped_column(Text, default=SkillRequirementPriority.MEDIUM)
+
+
+class Certification(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "certifications"
+    __table_args__ = (
+        Index("certifications_org_id_idx", "org_id"),
+        Index("certifications_name_idx", "name"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    name: Mapped[str] = mapped_column(Text)
+    issuing_body: Mapped[str | None] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    validity_months: Mapped[int | None] = mapped_column(Integer)
+    is_required_for_sme: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
+
+class EmployeeCertification(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "employee_certifications"
+    __table_args__ = (
+        Index("employee_certifications_org_id_idx", "org_id"),
+        Index("employee_certifications_annotator_id_idx", "annotator_id"),
+        Index("employee_certifications_certification_id_idx", "certification_id"),
+        Index("employee_certifications_expires_at_idx", "expires_at"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    annotator_id: Mapped[UUID] = mapped_column(ForeignKey("annotators.id", ondelete="CASCADE"))
+    certification_id: Mapped[UUID] = mapped_column(ForeignKey("certifications.id", ondelete="RESTRICT"))
+    issued_at: Mapped[date | None] = mapped_column(Date)
+    expires_at: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[CertificationStatus] = mapped_column(Text, default=CertificationStatus.ACTIVE)
+    evidence_url: Mapped[str | None] = mapped_column(Text)
+
+
+class TrainingProgram(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "training_programs"
+    __table_args__ = (
+        Index("training_programs_org_id_idx", "org_id"),
+        Index("training_programs_skill_id_idx", "skill_id"),
+        Index("training_programs_name_idx", "name"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    skill_id: Mapped[UUID | None] = mapped_column(ForeignKey("skills.id", ondelete="SET NULL"))
+    name: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    required_for_skill_level: Mapped[ProficiencyLevel | None] = mapped_column(Text)
+    is_mandatory: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    knowledge_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="SET NULL"),
+    )
+
+
+class TrainingRecord(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "training_records"
+    __table_args__ = (
+        Index("training_records_org_id_idx", "org_id"),
+        Index("training_records_annotator_id_idx", "annotator_id"),
+        Index("training_records_training_program_id_idx", "training_program_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    annotator_id: Mapped[UUID] = mapped_column(ForeignKey("annotators.id", ondelete="CASCADE"))
+    training_program_id: Mapped[UUID] = mapped_column(ForeignKey("training_programs.id", ondelete="RESTRICT"))
+    status: Mapped[TrainingRecordStatus] = mapped_column(Text, default=TrainingRecordStatus.NOT_STARTED)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    score_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
 
 
 class QualitySnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):

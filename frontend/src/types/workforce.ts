@@ -105,3 +105,32 @@ export type SkillMatrixRead = {
   project_id: string;
   rows: SkillMatrixRow[];
 };
+
+export type TrainingGapType =
+  | "mandatory_training_incomplete"
+  | "expired_or_failed_training"
+  | "expired_certification"
+  | "pending_certification_review";
+
+export type TrainingGapRow = {
+  team_id: string | null;
+  team_name: string | null;
+  skill_id: string | null;
+  skill_name: string | null;
+  training_program_id: string | null;
+  training_program_name: string | null;
+  certification_id: string | null;
+  certification_name: string | null;
+  gap_type: TrainingGapType;
+  affected_count: number;
+};
+
+export type TrainingGapSummaryRead = {
+  project_id: string;
+  total_training_gaps: number;
+  mandatory_training_incomplete: number;
+  expired_or_failed_training: number;
+  expired_certifications: number;
+  pending_certification_reviews: number;
+  rows: TrainingGapRow[];
+};

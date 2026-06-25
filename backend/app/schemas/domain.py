@@ -17,6 +17,9 @@ from app.db.models import (
     RiskTier,
     SkillCoverageStatus,
     SkillRequirementPriority,
+    CertificationStatus,
+    TrainingGapType,
+    TrainingRecordStatus,
 )
 from app.schemas.common import EvidenceLinkRead, ORMModel, Pagination, ensure_month_start
 
@@ -349,6 +352,144 @@ class SkillMatrixRow(BaseModel):
 class SkillMatrixRead(BaseModel):
     project_id: UUID
     rows: list[SkillMatrixRow]
+
+
+class CertificationRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    name: str
+    issuing_body: str | None
+    description: str | None
+    validity_months: int | None
+    is_required_for_sme: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class CertificationCreate(BaseModel):
+    name: str
+    issuing_body: str | None = None
+    description: str | None = None
+    validity_months: int | None = Field(default=None, ge=0)
+    is_required_for_sme: bool = False
+
+
+class CertificationUpdate(BaseModel):
+    name: str | None = None
+    issuing_body: str | None = None
+    description: str | None = None
+    validity_months: int | None = Field(default=None, ge=0)
+    is_required_for_sme: bool | None = None
+
+
+class EmployeeCertificationRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    annotator_id: UUID
+    certification_id: UUID
+    issued_at: date | None
+    expires_at: date | None
+    status: CertificationStatus
+    evidence_url: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class EmployeeCertificationCreate(BaseModel):
+    certification_id: UUID
+    issued_at: date | None = None
+    expires_at: date | None = None
+    status: CertificationStatus = CertificationStatus.ACTIVE
+    evidence_url: str | None = None
+
+
+class EmployeeCertificationUpdate(BaseModel):
+    issued_at: date | None = None
+    expires_at: date | None = None
+    status: CertificationStatus | None = None
+    evidence_url: str | None = None
+
+
+class TrainingProgramRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    skill_id: UUID | None
+    name: str
+    description: str | None
+    required_for_skill_level: ProficiencyLevel | None
+    is_mandatory: bool
+    knowledge_document_id: UUID | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TrainingProgramCreate(BaseModel):
+    name: str
+    skill_id: UUID | None = None
+    description: str | None = None
+    required_for_skill_level: ProficiencyLevel | None = None
+    is_mandatory: bool = False
+    knowledge_document_id: UUID | None = None
+
+
+class TrainingProgramUpdate(BaseModel):
+    name: str | None = None
+    skill_id: UUID | None = None
+    description: str | None = None
+    required_for_skill_level: ProficiencyLevel | None = None
+    is_mandatory: bool | None = None
+    knowledge_document_id: UUID | None = None
+
+
+class TrainingRecordRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    annotator_id: UUID
+    training_program_id: UUID
+    status: TrainingRecordStatus
+    started_at: datetime | None
+    completed_at: datetime | None
+    score_pct: Decimal | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TrainingRecordCreate(BaseModel):
+    training_program_id: UUID
+    status: TrainingRecordStatus = TrainingRecordStatus.NOT_STARTED
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    score_pct: Decimal | None = Field(default=None, ge=0, le=100)
+
+
+class TrainingRecordUpdate(BaseModel):
+    status: TrainingRecordStatus | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    score_pct: Decimal | None = Field(default=None, ge=0, le=100)
+
+
+class TrainingGapRow(BaseModel):
+    team_id: UUID | None
+    team_name: str | None
+    skill_id: UUID | None
+    skill_name: str | None
+    training_program_id: UUID | None
+    training_program_name: str | None
+    certification_id: UUID | None
+    certification_name: str | None
+    gap_type: TrainingGapType
+    affected_count: int
+
+
+class TrainingGapSummaryRead(BaseModel):
+    project_id: UUID
+    total_training_gaps: int
+    mandatory_training_incomplete: int
+    expired_or_failed_training: int
+    expired_certifications: int
+    pending_certification_reviews: int
+    rows: list[TrainingGapRow]
 
 
 class ThroughputSnapshotRead(ORMModel):
