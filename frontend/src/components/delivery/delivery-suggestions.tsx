@@ -1,18 +1,25 @@
 import { DELIVERY_SUGGESTED_PROMPTS } from "@/types/delivery-chat";
 
 type Props = {
+  suggestions?: readonly string[];
+  label?: string;
   disabled?: boolean;
   onSelect: (prompt: string) => void;
 };
 
-export function DeliverySuggestions({ disabled, onSelect }: Props) {
+export function DeliverySuggestions({
+  suggestions = DELIVERY_SUGGESTED_PROMPTS,
+  label = "Suggested prompts",
+  disabled,
+  onSelect,
+}: Props) {
   return (
     <div>
       <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-        Suggested prompts
+        {label}
       </div>
       <div className="flex flex-wrap gap-1.5">
-        {DELIVERY_SUGGESTED_PROMPTS.map((suggestion) => (
+        {suggestions.map((suggestion) => (
           <button
             key={suggestion}
             type="button"

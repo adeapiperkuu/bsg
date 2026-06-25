@@ -20,6 +20,7 @@ export function DeliveryChat({ projectId }: Props) {
     asking,
     animatingMessageIndex,
     isInputDisabled,
+    suggestions,
     sendMessage,
     onAnimationComplete,
     resetConversation,
@@ -106,6 +107,17 @@ export function DeliveryChat({ projectId }: Props) {
 
         <div ref={chatEndRef} aria-hidden="true" />
       </div>
+
+      {suggestions.length > 0 && animatingMessageIndex === null && !asking && (
+        <div className="px-4 pb-3">
+          <DeliverySuggestions
+            suggestions={suggestions}
+            label="Follow-up"
+            disabled={isInputDisabled}
+            onSelect={(prompt) => void sendMessage(prompt)}
+          />
+        </div>
+      )}
 
       <div className="border-t border-border/70 px-4 py-3">
         <DeliveryChatInput

@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { sendDeliveryChatMessage } from "@/lib/api";
 import { sanitizeDeliveryMarkdown } from "@/components/delivery/delivery-markdown";
+import { generateDeliverySuggestions } from "@/types/delivery-chat";
 import type { DeliveryChatMessage } from "@/types/delivery-chat";
 
 function createMessageId(): string {
@@ -17,6 +18,7 @@ export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
   const [asking, setAsking] = useState(false);
   const [animatingMessageIndex, setAnimatingMessageIndex] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
   const conversationIdRef = useRef<string | null>(null);
 
   const resetConversation = useCallback(() => {
@@ -25,6 +27,7 @@ export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
     setInput("");
     setError(null);
     setAnimatingMessageIndex(null);
+    setSuggestions([]);
   }, []);
 
   const sendMessage = useCallback(
@@ -39,6 +42,7 @@ export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
       setInput("");
       setAsking(true);
       setError(null);
+      setSuggestions([]);
 
       try {
         const response = await sendDeliveryChatMessage({
@@ -47,6 +51,7 @@ export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
           conversation_id: conversationIdRef.current,
         });
         conversationIdRef.current = response.conversation_id;
+        setSuggestions(generateDeliverySuggestions(response.answer));
 
         setMessages((current) => {
           const next: DeliveryChatMessage[] = [
@@ -99,6 +104,7 @@ export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
     animatingMessageIndex,
     error,
     isInputDisabled,
+    suggestions,
     sendMessage,
     onAnimationComplete,
     resetConversation,
