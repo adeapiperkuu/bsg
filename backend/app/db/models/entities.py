@@ -149,6 +149,26 @@ class KnowledgeProcessingStatus(StrEnum):
     FAILED = "failed"
 
 
+class ProficiencyLevel(StrEnum):
+    BEGINNER = "beginner"
+    INTERMEDIATE = "intermediate"
+    ADVANCED = "advanced"
+    EXPERT = "expert"
+
+
+class SkillRequirementPriority(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class SkillCoverageStatus(StrEnum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
 class KnowledgeExtractionStatus(StrEnum):
     PENDING = "pending"
     EXTRACTING = "extracting"
@@ -363,6 +383,79 @@ class Annotator(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     site: Mapped[DeliverySite] = mapped_column(delivery_site)
     is_sme_certified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+
+
+class UtilizationSnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "utilization_snapshots"
+    __table_args__ = (
+        Index("utilization_snapshots_org_id_idx", "org_id"),
+        Index("utilization_snapshots_project_id_idx", "project_id"),
+        Index("utilization_snapshots_team_id_idx", "team_id"),
+        Index("utilization_snapshots_annotator_id_idx", "annotator_id"),
+        Index("utilization_snapshots_snapshot_date_idx", "snapshot_date"),
+        Index("utilization_snapshots_project_id_date_idx", "project_id", "snapshot_date"),
+        Index("utilization_snapshots_team_id_date_idx", "team_id", "snapshot_date"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    team_id: Mapped[UUID | None] = mapped_column(ForeignKey("teams.id", ondelete="SET NULL"))
+    annotator_id: Mapped[UUID | None] = mapped_column(ForeignKey("annotators.id", ondelete="SET NULL"))
+    snapshot_date: Mapped[date] = mapped_column(Date)
+    allocated_hours: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    available_hours: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    utilization_pct: Mapped[Decimal] = mapped_column(Numeric(7, 2))
+    billable_hours: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    non_billable_hours: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    notes: Mapped[str | None] = mapped_column(Text)
+
+
+class Skill(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "skills"
+    __table_args__ = (
+        Index("skills_org_id_idx", "org_id"),
+        Index("skills_name_idx", "name"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    name: Mapped[str] = mapped_column(Text)
+    category: Mapped[str | None] = mapped_column(Text)
+    domain: Mapped[str | None] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    is_critical: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
+
+class AnnotatorSkill(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "annotator_skills"
+    __table_args__ = (
+        Index("annotator_skills_org_id_idx", "org_id"),
+        Index("annotator_skills_annotator_id_idx", "annotator_id"),
+        Index("annotator_skills_skill_id_idx", "skill_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    annotator_id: Mapped[UUID] = mapped_column(ForeignKey("annotators.id", ondelete="CASCADE"))
+    skill_id: Mapped[UUID] = mapped_column(ForeignKey("skills.id", ondelete="RESTRICT"))
+    proficiency_level: Mapped[ProficiencyLevel] = mapped_column(Text)
+    verified_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ProjectSkillRequirement(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "project_skill_requirements"
+    __table_args__ = (
+        Index("project_skill_requirements_org_id_idx", "org_id"),
+        Index("project_skill_requirements_project_id_idx", "project_id"),
+        Index("project_skill_requirements_skill_id_idx", "skill_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    skill_id: Mapped[UUID] = mapped_column(ForeignKey("skills.id", ondelete="RESTRICT"))
+    required_proficiency_level: Mapped[ProficiencyLevel] = mapped_column(Text)
+    required_headcount: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    required_sme_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    priority: Mapped[SkillRequirementPriority] = mapped_column(Text, default=SkillRequirementPriority.MEDIUM)
 
 
 class QualitySnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):

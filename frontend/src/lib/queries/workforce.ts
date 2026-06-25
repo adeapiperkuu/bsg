@@ -1,9 +1,15 @@
 import { queryOptions, useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
-import { listProjectTeams, listTeamAnnotators } from "@/lib/api";
+import { listProjectTeams, listProjectUtilization, listTeamAnnotators } from "@/lib/api";
 import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
-import type { AnnotatorRead, DeliverySite, TeamRead } from "@/types/workforce";
+import type {
+  AnnotatorRead,
+  DeliverySite,
+  ProjectUtilizationFilters,
+  TeamRead,
+  UtilizationSnapshotRead,
+} from "@/types/workforce";
 
 export function projectTeamsQueryOptions(projectId: string | null) {
   return queryOptions({
@@ -134,3 +140,113 @@ export function useTeamAnnotatorsQuery(teamId: string | null, enabled = true) {
     ...teamAnnotatorsQueryOptions(teamId ?? "", Boolean(teamId) && enabled),
   });
 }
+
+const UTILIZATION_CAPACITY_THRESHOLD = 85;
+const UTILIZATION_UNDERUTILIZED_THRESHOLD = 60;
+
+export function normalizeUtilizationPct(value: string | number): number {
+  const parsed = typeof value === "number" ? value : Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export type TeamUtilizationPoint = {
+  teamId: string;
+  team: string;
+  site: DeliverySite | null;
+  value: number;
+  snapshotDate: string;
+};
+
+export function buildLatestTeamUtilization(
+  snapshots: UtilizationSnapshotRead[],
+  teams: TeamRead[],
+): TeamUtilizationPoint[] {
+  const teamById = new Map(teams.map((team) => [team.id, team]));
+  const latestByTeam = new Map<string, UtilizationSnapshotRead>();
+
+  for (const snapshot of snapshots) {
+    if (!snapshot.team_id) continue;
+    const existing = latestByTeam.get(snapshot.team_id);
+    if (!existing || snapshot.snapshot_date > existing.snapshot_date) {
+      latestByTeam.set(snapshot.team_id, snapshot);
+    }
+  }
+
+  return [...latestByTeam.entries()]
+    .map(([teamId, snapshot]) => {
+      const team = teamById.get(teamId);
+      return {
+        teamId,
+        team: team?.name ?? `Team ${teamId.slice(0, 8)}`,
+        site: team?.site ?? null,
+        value: Math.round(normalizeUtilizationPct(snapshot.utilization_pct)),
+        snapshotDate: snapshot.snapshot_date,
+      };
+    })
+    .sort((left, right) => right.value - left.value);
+}
+
+export function summarizeTeamUtilization(points: TeamUtilizationPoint[]) {
+  const overloaded = points.filter((point) => point.value >= UTILIZATION_CAPACITY_THRESHOLD).length;
+  const underutilized = points.filter(
+    (point) => point.value < UTILIZATION_UNDERUTILIZED_THRESHOLD,
+  ).length;
+  return {
+    overloaded,
+    underutilized,
+    total: points.length,
+    capacityThreshold: UTILIZATION_CAPACITY_THRESHOLD,
+    underutilizedThreshold: UTILIZATION_UNDERUTILIZED_THRESHOLD,
+  };
+}
+
+export function averageUtilizationBySite(
+  points: TeamUtilizationPoint[],
+): Record<DeliverySite, number | null> {
+  const totals: Record<DeliverySite, { sum: number; count: number }> = {
+    india: { sum: 0, count: 0 },
+    kosovo: { sum: 0, count: 0 },
+  };
+
+  for (const point of points) {
+    if (!point.site) continue;
+    totals[point.site].sum += point.value;
+    totals[point.site].count += 1;
+  }
+
+  return {
+    india: totals.india.count > 0 ? Math.round(totals.india.sum / totals.india.count) : null,
+    kosovo: totals.kosovo.count > 0 ? Math.round(totals.kosovo.sum / totals.kosovo.count) : null,
+  };
+}
+
+export function projectUtilizationQueryOptions(
+  projectId: string | null,
+  enabled: boolean,
+  filters: ProjectUtilizationFilters = {},
+) {
+  const filterKey = {
+    team_id: filters.team_id,
+    annotator_id: filters.annotator_id,
+    from_date: filters.from_date,
+    to_date: filters.to_date,
+    limit: filters.limit,
+  };
+
+  return queryOptions({
+    queryKey: queryKeys.projectUtilization(projectId ?? "", filterKey),
+    queryFn: () => listProjectUtilization(projectId!, filters),
+    enabled: Boolean(projectId) && enabled,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function useProjectUtilizationQuery(
+  projectId: string | null,
+  canReadUtilization: boolean,
+  filters: ProjectUtilizationFilters = {},
+) {
+  return useQuery(projectUtilizationQueryOptions(projectId, canReadUtilization, filters));
+}
+
+export { UTILIZATION_CAPACITY_THRESHOLD, UTILIZATION_UNDERUTILIZED_THRESHOLD };

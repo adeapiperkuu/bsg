@@ -1,5 +1,5 @@
 import type { AppRole, AuthSession, MeUser, OrganisationRead, UserRead } from "@/types/auth";
-import type { AnnotatorRead, TeamRead } from "@/types/workforce";
+import type { AnnotatorRead, ProjectUtilizationFilters, TeamRead, UtilizationSnapshotRead } from "@/types/workforce";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
@@ -294,6 +294,23 @@ export async function listProjectTeams(projectId: string): Promise<TeamRead[]> {
 
 export async function listTeamAnnotators(teamId: string): Promise<AnnotatorRead[]> {
   const body = await apiFetch<{ data: AnnotatorRead[] }>(`/teams/${teamId}/annotators?limit=100`);
+  return body.data;
+}
+
+export async function listProjectUtilization(
+  projectId: string,
+  filters: ProjectUtilizationFilters = {},
+): Promise<UtilizationSnapshotRead[]> {
+  const params = new URLSearchParams();
+  if (filters.team_id) params.set("team_id", filters.team_id);
+  if (filters.annotator_id) params.set("annotator_id", filters.annotator_id);
+  if (filters.from_date) params.set("from_date", filters.from_date);
+  if (filters.to_date) params.set("to_date", filters.to_date);
+  params.set("limit", String(filters.limit ?? 100));
+  const query = params.toString();
+  const body = await apiFetch<{ data: UtilizationSnapshotRead[] }>(
+    `/projects/${projectId}/utilization?${query}`,
+  );
   return body.data;
 }
 

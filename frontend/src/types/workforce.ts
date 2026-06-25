@@ -23,3 +23,28 @@ export type AnnotatorRead = {
   created_at: string;
   updated_at: string;
 };
+
+export type UtilizationSnapshotRead = {
+  id: string;
+  org_id: string;
+  project_id: string;
+  team_id: string | null;
+  annotator_id: string | null;
+  snapshot_date: string;
+  allocated_hours: string | number;
+  available_hours: string | number;
+  utilization_pct: string | number;
+  billable_hours: string | number | null;
+  non_billable_hours: string | number | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProjectUtilizationFilters = {
+  team_id?: string;
+  annotator_id?: string;
+  from_date?: string;
+  to_date?: string;
+  limit?: number;
+};

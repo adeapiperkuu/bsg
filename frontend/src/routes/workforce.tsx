@@ -11,10 +11,18 @@ import {
 } from "recharts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, SectionHeader, KpiCard, AiBadge, StatusPill } from "@/components/bsg/widgets";
-import { skillMatrix, utilization } from "@/lib/bsg/data";
+import { skillMatrix } from "@/lib/bsg/data";
 import { useProjectsQuery } from "@/lib/queries/delivery";
-import { useProjectWorkforceSummary } from "@/lib/queries/workforce";
+import {
+  UTILIZATION_CAPACITY_THRESHOLD,
+  averageUtilizationBySite,
+  buildLatestTeamUtilization,
+  summarizeTeamUtilization,
+  useProjectUtilizationQuery,
+  useProjectWorkforceSummary,
+} from "@/lib/queries/workforce";
 import { useAuthStore } from "@/stores/useAuthStore";
+import type { AppRole } from "@/types/auth";
 import type { DeliverySite, TeamRead } from "@/types/workforce";
 import { cn } from "@/lib/utils";
 
@@ -50,6 +58,19 @@ const SITE_LABELS: Record<DeliverySite, string> = {
   kosovo: "Kosovo",
 };
 
+const ANNOTATOR_READ_ROLES: ReadonlySet<AppRole> = new Set([
+  "delivery_manager",
+  "bsg_leadership",
+  "super_admin",
+]);
+
+function canUserReadAnnotators(role: AppRole | undefined): boolean {
+  if (role === undefined) return false;
+  return ANNOTATOR_READ_ROLES.has(role);
+}
+
+const EMPTY_VALUE = "-";
+
 function PlaceholderPanel({ title, reason }: { title: string; reason: string }) {
   return (
     <div className="rounded-md border border-dashed border-border bg-elevated/50 px-4 py-8 text-center">
@@ -66,7 +87,8 @@ function WorkforcePage() {
   const [view, setView] = useState<"geo" | "matrix">("matrix");
 
   const user = useAuthStore((state) => state.user);
-  const canReadAnnotators = user?.role !== "client";
+  const authLoading = useAuthStore((state) => state.isLoading);
+  const canReadInternalWorkforce = !authLoading && canUserReadAnnotators(user?.role);
 
   const projectsQuery = useProjectsQuery();
   const projects = projectsQuery.data ?? [];
@@ -86,15 +108,31 @@ function WorkforcePage() {
     navigate({ search: { projectId: resolvedProjectId }, replace: true });
   }, [resolvedProjectId, urlProjectId, navigate]);
 
-  const workforceQuery = useProjectWorkforceSummary(resolvedProjectId, canReadAnnotators);
+  const workforceQuery = useProjectWorkforceSummary(resolvedProjectId, canReadInternalWorkforce);
   const { summary, isLoading: workforceLoading, error: workforceError } = workforceQuery;
+
+  const utilizationQuery = useProjectUtilizationQuery(resolvedProjectId, canReadInternalWorkforce);
+  const teamUtilization = useMemo(
+    () => buildLatestTeamUtilization(utilizationQuery.data ?? [], summary.teams),
+    [utilizationQuery.data, summary.teams],
+  );
+  const utilizationStats = useMemo(() => summarizeTeamUtilization(teamUtilization), [teamUtilization]);
+  const utilizationYAxisMax = useMemo(() => {
+    const peak = teamUtilization.reduce((max, point) => Math.max(max, point.value), 0);
+    if (peak <= 100) return 100;
+    return Math.ceil(peak / 10) * 10 + 10;
+  }, [teamUtilization]);
+  const siteUtilization = useMemo(() => averageUtilizationBySite(teamUtilization), [teamUtilization]);
 
   const selectedProject = projects.find((project) => project.id === resolvedProjectId);
 
   const projectsLoading = projectsQuery.isLoading;
+  const utilizationLoading = canReadInternalWorkforce && utilizationQuery.isLoading;
 
   const errorMessage =
-    (projectsQuery.error instanceof Error ? projectsQuery.error.message : null) ?? workforceError;
+    (projectsQuery.error instanceof Error ? projectsQuery.error.message : null) ??
+    workforceError ??
+    (utilizationQuery.error instanceof Error ? utilizationQuery.error.message : null);
 
   const selectProject = (projectId: string) => {
     navigate({ search: { projectId } });
@@ -122,13 +160,31 @@ function WorkforcePage() {
 
   const hasTeams = summary.teams.length > 0;
   const smeCoverageValue =
-    canReadAnnotators && summary.smeCoveragePct !== null ? `${summary.smeCoveragePct}%` : "—";
+    canReadInternalWorkforce && summary.smeCoveragePct !== null
+      ? `${summary.smeCoveragePct}%`
+      : EMPTY_VALUE;
   const smeCoverageDelta =
-    canReadAnnotators && summary.smeCount > 0
+    canReadInternalWorkforce && summary.smeCount > 0
       ? `${summary.smeCount} certified`
-      : canReadAnnotators
+      : canReadInternalWorkforce
         ? "No SMEs yet"
         : "Internal only";
+  const teamsAtCapacityValue =
+    !canReadInternalWorkforce
+      ? EMPTY_VALUE
+      : utilizationLoading
+        ? EMPTY_VALUE
+        : utilizationStats.total > 0
+          ? `${utilizationStats.overloaded} / ${utilizationStats.total}`
+          : EMPTY_VALUE;
+  const teamsAtCapacityDelta =
+    !canReadInternalWorkforce
+      ? "Internal only"
+      : utilizationLoading
+        ? undefined
+        : utilizationStats.total > 0
+          ? `${utilizationStats.underutilized} under ${utilizationStats.underutilizedThreshold}%`
+          : "No utilization snapshots yet";
 
   return (
     <div className="space-y-5">
@@ -136,7 +192,7 @@ function WorkforcePage() {
         <div className="text-xs text-muted-foreground">
           {selectedProject ? (
             <>
-              Project focus · <span className="font-medium text-foreground">{selectedProject.name}</span>
+              Project focus / <span className="font-medium text-foreground">{selectedProject.name}</span>
             </>
           ) : (
             "Project focus"
@@ -164,17 +220,17 @@ function WorkforcePage() {
               label="Active Annotators"
               value={
                 workforceLoading
-                  ? "—"
-                  : canReadAnnotators
+                  ? EMPTY_VALUE
+                  : canReadInternalWorkforce
                     ? summary.activeAnnotatorCount
-                    : "—"
+                    : EMPTY_VALUE
               }
-              delta={canReadAnnotators ? undefined : "Internal only"}
+              delta={canReadInternalWorkforce ? undefined : "Internal only"}
               tone={summary.activeAnnotatorCount > 0 ? "success" : "default"}
             />
             <KpiCard
               label="SME Coverage"
-              value={workforceLoading ? "—" : smeCoverageValue}
+              value={workforceLoading ? EMPTY_VALUE : smeCoverageValue}
               delta={workforceLoading ? undefined : smeCoverageDelta}
               tone={
                 summary.smeCoveragePct !== null && summary.smeCoveragePct < 50
@@ -183,14 +239,20 @@ function WorkforcePage() {
               }
             />
             <KpiCard
-              label="Active Teams"
-              value={workforceLoading ? "—" : summary.activeTeams.length}
-              delta={`${summary.teams.length} total`}
-              tone="default"
+              label="Teams At Capacity"
+              value={teamsAtCapacityValue}
+              delta={teamsAtCapacityDelta}
+              tone={
+                utilizationStats.overloaded > 0
+                  ? "warning"
+                  : utilizationStats.total > 0
+                    ? "success"
+                    : "default"
+              }
             />
             <KpiCard
               label="Training Gaps"
-              value="—"
+              value={EMPTY_VALUE}
               delta="Pending backend"
               tone="default"
             />
@@ -200,7 +262,7 @@ function WorkforcePage() {
           <Card>
             <SectionHeader
               title="Skill Coverage Matrix"
-              sub="Domains × regions"
+              sub="Domains x regions"
               right={<AiBadge confidence={85} />}
             />
             <PlaceholderPanel
@@ -247,25 +309,56 @@ function WorkforcePage() {
             </div>
           </Card>
 
-          {/* --- Placeholder: utilization (Phase 2) --- */}
+          {/* --- Live: utilization snapshots (Phase 2) --- */}
           <Card>
-            <SectionHeader title="Workforce Utilization" sub="By team · 85% capacity threshold" />
-            <PlaceholderPanel
-              title="Utilization data not connected yet"
-              reason="Utilization snapshots are planned for Phase 2."
+            <SectionHeader
+              title="Workforce Utilization"
+              sub={`By team / ${UTILIZATION_CAPACITY_THRESHOLD}% capacity threshold`}
             />
-            <div className="mt-4 opacity-40">
-              <ResponsiveContainer width="100%" height={240}>
-                <BarChart data={utilization}>
-                  <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" />
-                  <XAxis dataKey="team" {...axis} />
-                  <YAxis {...axis} domain={[0, 100]} />
-                  <Tooltip contentStyle={tip} />
-                  <ReferenceLine y={85} stroke="#ef4444" strokeDasharray="4 4" />
-                  <Bar dataKey="value" fill="#0D1240" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+            {!canReadInternalWorkforce ? (
+              <PlaceholderPanel
+                title="Utilization data restricted"
+                reason="Internal workforce utilization is not available to client users."
+              />
+            ) : utilizationLoading ? (
+              <div className="h-60 animate-pulse rounded-md bg-elevated" />
+            ) : teamUtilization.length === 0 ? (
+              <PlaceholderPanel
+                title="No utilization snapshots yet"
+                reason="Add utilization snapshots for project teams to populate this chart."
+              />
+            ) : (
+              <>
+                <ResponsiveContainer width="100%" height={240}>
+                  <BarChart data={teamUtilization}>
+                    <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" />
+                    <XAxis dataKey="team" {...axis} />
+                    <YAxis {...axis} domain={[0, utilizationYAxisMax]} />
+                    <Tooltip contentStyle={tip} />
+                    <ReferenceLine
+                      y={UTILIZATION_CAPACITY_THRESHOLD}
+                      stroke="#ef4444"
+                      strokeDasharray="4 4"
+                    />
+                    <Bar dataKey="value" fill="#0D1240" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+                <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+                  {utilizationStats.overloaded > 0 && (
+                    <span className="text-[color:var(--warning)]">
+                      {utilizationStats.overloaded} team(s) at or above{" "}
+                      {UTILIZATION_CAPACITY_THRESHOLD}%
+                    </span>
+                  )}
+                  {utilizationStats.underutilized > 0 && (
+                    <span>
+                      {utilizationStats.underutilized} team(s) below{" "}
+                      {utilizationStats.underutilizedThreshold}%
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
           </Card>
 
           {/* --- Live: team / annotator summary --- */}
@@ -273,7 +366,7 @@ function WorkforcePage() {
             <SectionHeader
               title="Team Summary"
               sub={
-                canReadAnnotators
+                canReadInternalWorkforce
                   ? "Teams with headcount and SME coverage"
                   : "Team structure (annotator details restricted)"
               }
@@ -306,14 +399,14 @@ function WorkforcePage() {
                         key={team.id}
                         team={team}
                         annotatorCount={
-                          canReadAnnotators
+                          canReadInternalWorkforce
                             ? (summary.annotatorsByTeam.get(team.id) ?? []).filter(
                                 (annotator) => annotator.is_active,
                               ).length
                             : null
                         }
                         smeCount={
-                          canReadAnnotators
+                          canReadInternalWorkforce
                             ? (summary.annotatorsByTeam.get(team.id) ?? []).filter(
                                 (annotator) => annotator.is_active && annotator.is_sme_certified,
                               ).length
@@ -333,7 +426,7 @@ function WorkforcePage() {
           <Card>
             <SectionHeader
               title="By Region"
-              sub="India · Kosovo"
+              sub="India / Kosovo"
               right={
                 <div className="flex items-center gap-1 rounded-md border border-border bg-elevated p-0.5 text-[11px]">
                   <button
@@ -380,16 +473,24 @@ function WorkforcePage() {
                         <div className="flex justify-between">
                           <dt className="text-muted-foreground">Annotators</dt>
                           <dd className="font-medium">
-                            {canReadAnnotators ? stats.annotators : "—"}
+                            {canReadInternalWorkforce ? stats.annotators : EMPTY_VALUE}
                           </dd>
                         </div>
                         <div className="flex justify-between">
                           <dt className="text-muted-foreground">SMEs</dt>
-                          <dd className="font-medium">{canReadAnnotators ? stats.smes : "—"}</dd>
+                          <dd className="font-medium">
+                            {canReadInternalWorkforce ? stats.smes : EMPTY_VALUE}
+                          </dd>
                         </div>
                         <div className="flex justify-between">
                           <dt className="text-muted-foreground">Utilization</dt>
-                          <dd className="font-medium text-muted-foreground">Pending</dd>
+                          <dd className="font-medium">
+                            {!canReadInternalWorkforce
+                              ? EMPTY_VALUE
+                              : siteUtilization[site] !== null
+                                ? `${siteUtilization[site]}%`
+                                : "No data"}
+                          </dd>
                         </div>
                       </dl>
                     </div>
@@ -435,8 +536,8 @@ function TeamSummaryRow({
       <td className="py-2.5 pr-3 font-medium">{team.name}</td>
       <td className="py-2.5 pr-3 text-muted-foreground">{SITE_LABELS[team.site]}</td>
       <td className="py-2.5 pr-3 text-muted-foreground">{team.domain}</td>
-      <td className="py-2.5 pr-3">{annotatorCount ?? "—"}</td>
-      <td className="py-2.5 pr-3">{smeCount ?? "—"}</td>
+      <td className="py-2.5 pr-3">{annotatorCount ?? EMPTY_VALUE}</td>
+      <td className="py-2.5 pr-3">{smeCount ?? EMPTY_VALUE}</td>
       <td className="py-2.5 pr-3">
         <StatusPill status={team.is_active ? "On Track" : "Warning"} />
       </td>

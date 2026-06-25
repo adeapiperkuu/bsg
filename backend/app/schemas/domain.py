@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.db.models import (
     AlertStatus,
@@ -12,8 +12,11 @@ from app.db.models import (
     CommunicationType,
     DeliverySite,
     MilestoneStatus,
+    ProficiencyLevel,
     ProjectStatus,
     RiskTier,
+    SkillCoverageStatus,
+    SkillRequirementPriority,
 )
 from app.schemas.common import EvidenceLinkRead, ORMModel, Pagination, ensure_month_start
 
@@ -192,6 +195,160 @@ class AnnotatorUpdate(BaseModel):
     is_sme_certified: bool | None = None
     is_active: bool | None = None
     team_id: UUID | None = None
+
+
+class UtilizationSnapshotRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    project_id: UUID
+    team_id: UUID | None
+    annotator_id: UUID | None
+    snapshot_date: date
+    allocated_hours: Decimal
+    available_hours: Decimal
+    utilization_pct: Decimal
+    billable_hours: Decimal | None
+    non_billable_hours: Decimal | None
+    notes: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class UtilizationSnapshotCreate(BaseModel):
+    snapshot_date: date
+    team_id: UUID | None = None
+    annotator_id: UUID | None = None
+    allocated_hours: Decimal = Field(ge=0)
+    available_hours: Decimal = Field(ge=0)
+    utilization_pct: Decimal | None = Field(default=None, ge=0)
+    billable_hours: Decimal | None = Field(default=None, ge=0)
+    non_billable_hours: Decimal | None = Field(default=None, ge=0)
+    notes: str | None = None
+
+    @model_validator(mode="after")
+    def annotator_requires_team(self) -> "UtilizationSnapshotCreate":
+        if self.annotator_id is not None and self.team_id is None:
+            raise ValueError("team_id is required when annotator_id is provided.")
+        return self
+
+
+class UtilizationSnapshotUpdate(BaseModel):
+    snapshot_date: date | None = None
+    team_id: UUID | None = None
+    annotator_id: UUID | None = None
+    allocated_hours: Decimal | None = Field(default=None, ge=0)
+    available_hours: Decimal | None = Field(default=None, ge=0)
+    utilization_pct: Decimal | None = Field(default=None, ge=0)
+    billable_hours: Decimal | None = Field(default=None, ge=0)
+    non_billable_hours: Decimal | None = Field(default=None, ge=0)
+    notes: str | None = None
+
+
+class SkillRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    name: str
+    category: str | None
+    domain: str | None
+    description: str | None
+    is_critical: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class SkillCreate(BaseModel):
+    name: str
+    category: str | None = None
+    domain: str | None = None
+    description: str | None = None
+    is_critical: bool = False
+
+
+class SkillUpdate(BaseModel):
+    name: str | None = None
+    category: str | None = None
+    domain: str | None = None
+    description: str | None = None
+    is_critical: bool | None = None
+
+
+class AnnotatorSkillRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    annotator_id: UUID
+    skill_id: UUID
+    proficiency_level: ProficiencyLevel
+    verified_by: UUID | None
+    verified_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AnnotatorSkillCreate(BaseModel):
+    skill_id: UUID
+    proficiency_level: ProficiencyLevel
+    verified_by: UUID | None = None
+    verified_at: datetime | None = None
+
+
+class AnnotatorSkillUpdate(BaseModel):
+    proficiency_level: ProficiencyLevel | None = None
+    verified_by: UUID | None = None
+    verified_at: datetime | None = None
+
+
+class ProjectSkillRequirementRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    project_id: UUID
+    skill_id: UUID
+    required_proficiency_level: ProficiencyLevel
+    required_headcount: int
+    required_sme_count: int
+    priority: SkillRequirementPriority
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProjectSkillRequirementCreate(BaseModel):
+    skill_id: UUID
+    required_proficiency_level: ProficiencyLevel
+    required_headcount: int = Field(default=1, ge=0)
+    required_sme_count: int = Field(default=0, ge=0)
+    priority: SkillRequirementPriority = SkillRequirementPriority.MEDIUM
+
+
+class ProjectSkillRequirementUpdate(BaseModel):
+    required_proficiency_level: ProficiencyLevel | None = None
+    required_headcount: int | None = Field(default=None, ge=0)
+    required_sme_count: int | None = Field(default=None, ge=0)
+    priority: SkillRequirementPriority | None = None
+
+
+class SkillMatrixSiteSummary(BaseModel):
+    site: DeliverySite
+    available_headcount: int
+    available_sme_count: int
+    coverage_status: SkillCoverageStatus
+
+
+class SkillMatrixRow(BaseModel):
+    skill_id: UUID
+    skill_name: str
+    category: str | None
+    domain: str | None
+    required_proficiency_level: ProficiencyLevel
+    required_headcount: int
+    available_headcount: int
+    required_sme_count: int
+    available_sme_count: int
+    coverage_status: SkillCoverageStatus
+    by_site: list[SkillMatrixSiteSummary]
+
+
+class SkillMatrixRead(BaseModel):
+    project_id: UUID
+    rows: list[SkillMatrixRow]
 
 
 class ThroughputSnapshotRead(ORMModel):
