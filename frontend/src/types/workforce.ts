@@ -134,3 +134,73 @@ export type TrainingGapSummaryRead = {
   pending_certification_reviews: number;
   rows: TrainingGapRow[];
 };
+
+export type CapabilityGapType =
+  | "skill_shortage"
+  | "sme_shortage"
+  | "certification_gap"
+  | "training_gap"
+  | "utilization_overload"
+  | "utilization_underload";
+
+export type CapabilityGapSeverity = "low" | "medium" | "high" | "critical";
+
+export type CapabilityGapStatus = "open" | "acknowledged" | "resolved" | "dismissed";
+
+export type CapabilityGapRead = {
+  id: string;
+  org_id: string;
+  project_id: string;
+  team_id: string | null;
+  skill_id: string | null;
+  gap_type: CapabilityGapType;
+  severity: CapabilityGapSeverity;
+  title: string;
+  detail: string;
+  evidence: Record<string, unknown> | null;
+  status: CapabilityGapStatus;
+  detected_at: string;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CapabilityGapUpdatePayload = {
+  status?: CapabilityGapStatus;
+  severity?: CapabilityGapSeverity;
+  title?: string;
+  detail?: string;
+};
+
+export type CapabilityGapDetectionResponse = {
+  project_id: string;
+  detected_count: number;
+  created_count: number;
+  gaps: CapabilityGapRead[];
+  risk_alerts_created: number;
+  recommendations_created: number;
+};
+
+export type WorkforceRecommendationRead = {
+  id: string;
+  project_id: string;
+  title: string;
+  description: string | null;
+  severity: string;
+  confidence_score: string | number;
+  status: string;
+  owner_type: string | null;
+  owner_id: string | null;
+  owner_label: string | null;
+  source_risk_id: string | null;
+  source_risk_title: string | null;
+  source_risk_type: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WorkforceRecommendationGenerateResponse = {
+  project_id: string;
+  recommendations_created: number;
+  recommendations: WorkforceRecommendationRead[];
+};

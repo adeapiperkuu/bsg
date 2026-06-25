@@ -1,6 +1,9 @@
 import type { AppRole, AuthSession, MeUser, OrganisationRead, UserRead } from "@/types/auth";
 import type {
   AnnotatorRead,
+  CapabilityGapDetectionResponse,
+  CapabilityGapRead,
+  CapabilityGapUpdatePayload,
   ProjectUtilizationFilters,
   ProjectSkillRequirementRead,
   SkillMatrixRead,
@@ -8,6 +11,7 @@ import type {
   TeamRead,
   TrainingGapSummaryRead,
   UtilizationSnapshotRead,
+  WorkforceRecommendationGenerateResponse,
 } from "@/types/workforce";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
@@ -345,6 +349,50 @@ export async function getProjectSkillMatrix(projectId: string): Promise<SkillMat
 export async function getProjectTrainingGaps(projectId: string): Promise<TrainingGapSummaryRead> {
   const body = await apiFetch<{ data: TrainingGapSummaryRead }>(
     `/projects/${projectId}/training-gaps`,
+  );
+  return body.data;
+}
+
+export async function listProjectCapabilityGaps(
+  projectId: string,
+): Promise<CapabilityGapRead[]> {
+  const body = await apiFetch<{ data: CapabilityGapRead[] }>(
+    `/projects/${projectId}/capability-gaps?limit=100`,
+  );
+  return body.data;
+}
+
+export async function detectProjectCapabilityGaps(
+  projectId: string,
+): Promise<CapabilityGapDetectionResponse> {
+  const body = await apiFetch<{ data: CapabilityGapDetectionResponse }>(
+    `/projects/${projectId}/capability-gaps/detect`,
+    { method: "POST" },
+  );
+  return body.data;
+}
+
+export async function updateCapabilityGap(
+  gapId: string,
+  payload: CapabilityGapUpdatePayload,
+): Promise<CapabilityGapRead> {
+  const body = await apiFetch<{ data: CapabilityGapRead }>(`/capability-gaps/${gapId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
+export async function deleteCapabilityGap(gapId: string): Promise<void> {
+  await apiFetch<void>(`/capability-gaps/${gapId}`, { method: "DELETE" });
+}
+
+export async function generateWorkforceRecommendations(
+  projectId: string,
+): Promise<WorkforceRecommendationGenerateResponse> {
+  const body = await apiFetch<{ data: WorkforceRecommendationGenerateResponse }>(
+    `/projects/${projectId}/workforce-recommendations/generate`,
+    { method: "POST" },
   );
   return body.data;
 }

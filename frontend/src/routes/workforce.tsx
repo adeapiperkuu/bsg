@@ -9,14 +9,22 @@ import {
   Tooltip,
   ReferenceLine,
 } from "recharts";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, SectionHeader, KpiCard, AiBadge, StatusPill } from "@/components/bsg/widgets";
+import {
+  detectProjectCapabilityGaps,
+  generateWorkforceRecommendations,
+  updateCapabilityGap,
+} from "@/lib/api";
 import { useProjectsQuery } from "@/lib/queries/delivery";
+import { queryKeys } from "@/lib/queries/keys";
 import {
   UTILIZATION_CAPACITY_THRESHOLD,
   averageUtilizationBySite,
   buildLatestTeamUtilization,
   summarizeTeamUtilization,
+  useProjectCapabilityGapsQuery,
   useProjectSkillMatrixQuery,
   useProjectTrainingGapsQuery,
   useProjectUtilizationQuery,
@@ -25,6 +33,10 @@ import {
 import { useAuthStore } from "@/stores/useAuthStore";
 import type { AppRole } from "@/types/auth";
 import type {
+  CapabilityGapRead,
+  CapabilityGapSeverity,
+  CapabilityGapStatus,
+  CapabilityGapType,
   DeliverySite,
   SkillCoverageStatus,
   SkillMatrixRow,
@@ -127,9 +139,88 @@ const ANNOTATOR_READ_ROLES: ReadonlySet<AppRole> = new Set([
   "super_admin",
 ]);
 
+const WORKFORCE_WRITE_ROLES: ReadonlySet<AppRole> = new Set([
+  "delivery_manager",
+  "super_admin",
+]);
+
 function canUserReadAnnotators(role: AppRole | undefined): boolean {
   if (role === undefined) return false;
   return ANNOTATOR_READ_ROLES.has(role);
+}
+
+function canUserManageWorkforce(role: AppRole | undefined): boolean {
+  if (role === undefined) return false;
+  return WORKFORCE_WRITE_ROLES.has(role);
+}
+
+const CAPABILITY_GAP_TYPE_LABELS: Record<CapabilityGapType, string> = {
+  skill_shortage: "Skill shortage",
+  sme_shortage: "SME shortage",
+  certification_gap: "Certification gap",
+  training_gap: "Training gap",
+  utilization_overload: "Utilization overload",
+  utilization_underload: "Utilization underload",
+};
+
+const capabilityGapTypeLabel = (gapType: CapabilityGapType) =>
+  CAPABILITY_GAP_TYPE_LABELS[gapType];
+
+const capabilityGapSeverityClass = (severity: CapabilityGapSeverity) => {
+  if (severity === "critical" || severity === "high") {
+    return "bg-[color:var(--danger)]/15 text-[color:var(--danger)] border-[color:var(--danger)]/30";
+  }
+  if (severity === "medium") {
+    return "bg-[color:var(--warning)]/15 text-[color:var(--warning)] border-[color:var(--warning)]/30";
+  }
+  return "bg-[color:var(--success)]/15 text-[color:var(--success)] border-[color:var(--success)]/30";
+};
+
+const capabilityGapSeverityLabel = (severity: CapabilityGapSeverity) =>
+  severity.charAt(0).toUpperCase() + severity.slice(1);
+
+const capabilityGapStatusClass = (status: CapabilityGapStatus) => {
+  if (status === "open") {
+    return "bg-[color:var(--warning)]/15 text-[color:var(--warning)] border-[color:var(--warning)]/30";
+  }
+  if (status === "acknowledged") {
+    return "bg-secondary text-muted-foreground border-border";
+  }
+  if (status === "resolved") {
+    return "bg-[color:var(--success)]/15 text-[color:var(--success)] border-[color:var(--success)]/30";
+  }
+  return "bg-muted text-muted-foreground border-border";
+};
+
+const capabilityGapStatusLabel = (status: CapabilityGapStatus) =>
+  status.charAt(0).toUpperCase() + status.slice(1);
+
+function formatDetectedAt(iso: string): string {
+  try {
+    return new Date(iso).toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function summarizeCapabilityGaps(gaps: CapabilityGapRead[]) {
+  const openGaps = gaps.filter(
+    (gap) => gap.status === "open" || gap.status === "acknowledged",
+  );
+  const highCritical = openGaps.filter(
+    (gap) => gap.severity === "high" || gap.severity === "critical",
+  );
+  const latestDetected =
+    gaps.length > 0
+      ? gaps.reduce((latest, gap) =>
+          gap.detected_at > latest ? gap.detected_at : latest,
+        gaps[0]!.detected_at)
+      : null;
+  return { openCount: openGaps.length, highCriticalCount: highCritical.length, latestDetected };
 }
 
 const EMPTY_VALUE = "-";
@@ -203,6 +294,71 @@ function WorkforcePage() {
   const trainingGapsLoading = canReadInternalWorkforce && trainingGapsQuery.isLoading;
   const trainingGapsError =
     trainingGapsQuery.error instanceof Error ? trainingGapsQuery.error.message : null;
+
+  const canManageWorkforce = canUserManageWorkforce(user?.role);
+  const queryClient = useQueryClient();
+
+  const capabilityGapsQuery = useProjectCapabilityGapsQuery(
+    resolvedProjectId,
+    canReadInternalWorkforce,
+  );
+  const capabilityGaps = capabilityGapsQuery.data ?? [];
+  const capabilityGapsLoading = canReadInternalWorkforce && capabilityGapsQuery.isLoading;
+  const capabilityGapsError =
+    capabilityGapsQuery.error instanceof Error ? capabilityGapsQuery.error.message : null;
+  const capabilityGapsSummary = useMemo(
+    () => summarizeCapabilityGaps(capabilityGaps),
+    [capabilityGaps],
+  );
+
+  const [detectMessage, setDetectMessage] = useState<string | null>(null);
+  const [recommendMessage, setRecommendMessage] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [updatingGapId, setUpdatingGapId] = useState<string | null>(null);
+
+  const detectGapsMutation = useMutation({
+    mutationFn: () => detectProjectCapabilityGaps(resolvedProjectId!),
+    onSuccess: (result) => {
+      setActionError(null);
+      setDetectMessage(
+        `${result.created_count} new gap(s) created (${result.detected_count} detected)`,
+      );
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projectCapabilityGaps(resolvedProjectId!),
+      });
+    },
+    onError: (error: Error) => {
+      setDetectMessage(null);
+      setActionError(error.message);
+    },
+  });
+
+  const generateRecommendationsMutation = useMutation({
+    mutationFn: () => generateWorkforceRecommendations(resolvedProjectId!),
+    onSuccess: (result) => {
+      setActionError(null);
+      setRecommendMessage(`${result.recommendations_created} recommendation(s) created`);
+    },
+    onError: (error: Error) => {
+      setRecommendMessage(null);
+      setActionError(error.message);
+    },
+  });
+
+  const handleGapStatusUpdate = async (gapId: string, status: CapabilityGapStatus) => {
+    setUpdatingGapId(gapId);
+    setActionError(null);
+    try {
+      await updateCapabilityGap(gapId, { status });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projectCapabilityGaps(resolvedProjectId!),
+      });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Failed to update gap.");
+    } finally {
+      setUpdatingGapId(null);
+    }
+  };
 
   const selectedProject = projects.find((project) => project.id === resolvedProjectId);
 
@@ -460,6 +616,128 @@ function WorkforcePage() {
                     </span>
                   )}
                 </div>
+              </>
+            )}
+          </Card>
+
+          {/* --- Live: capability gaps (Phase 5) --- */}
+          <Card>
+            <SectionHeader
+              title="Capability Gaps"
+              sub="Detected workforce skill, training, and utilization gaps"
+              right={
+                canManageWorkforce && resolvedProjectId ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDetectMessage(null);
+                        setRecommendMessage(null);
+                        detectGapsMutation.mutate();
+                      }}
+                      disabled={detectGapsMutation.isPending || generateRecommendationsMutation.isPending}
+                      className="rounded border border-border bg-elevated px-2.5 py-1 text-[11px] font-medium text-foreground hover:bg-card disabled:opacity-50"
+                    >
+                      {detectGapsMutation.isPending ? "Detecting..." : "Detect gaps"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDetectMessage(null);
+                        setRecommendMessage(null);
+                        generateRecommendationsMutation.mutate();
+                      }}
+                      disabled={detectGapsMutation.isPending || generateRecommendationsMutation.isPending}
+                      className="rounded border border-[color:var(--brand)]/30 bg-[color:var(--brand)]/10 px-2.5 py-1 text-[11px] font-medium text-[color:var(--brand)] hover:bg-[color:var(--brand)]/20 disabled:opacity-50"
+                    >
+                      {generateRecommendationsMutation.isPending
+                        ? "Generating..."
+                        : "Generate recommendations"}
+                    </button>
+                  </div>
+                ) : undefined
+              }
+            />
+            {!canReadInternalWorkforce ? (
+              <PlaceholderPanel
+                title="Capability gaps restricted"
+                reason="Internal workforce capability gaps are not available to client users."
+              />
+            ) : capabilityGapsLoading ? (
+              <div className="space-y-2">
+                <div className="h-8 animate-pulse rounded-md bg-elevated" />
+                <div className="h-10 animate-pulse rounded-md bg-elevated" />
+                <div className="h-10 animate-pulse rounded-md bg-elevated" />
+              </div>
+            ) : capabilityGapsError ? (
+              <p className="text-sm text-[color:var(--danger)]">{capabilityGapsError}</p>
+            ) : (
+              <>
+                {canReadInternalWorkforce && (
+                  <div className="mb-4 flex flex-wrap gap-2">
+                    <span className="rounded border border-border bg-elevated px-2 py-1 text-[11px] text-muted-foreground">
+                      {capabilityGapsSummary.openCount} open gap
+                      {capabilityGapsSummary.openCount === 1 ? "" : "s"}
+                    </span>
+                    {capabilityGapsSummary.highCriticalCount > 0 && (
+                      <span className="rounded border border-[color:var(--danger)]/30 bg-[color:var(--danger)]/10 px-2 py-1 text-[11px] font-medium text-[color:var(--danger)]">
+                        {capabilityGapsSummary.highCriticalCount} high/critical
+                      </span>
+                    )}
+                    {capabilityGapsSummary.latestDetected && (
+                      <span className="rounded border border-border bg-elevated px-2 py-1 text-[11px] text-muted-foreground">
+                        Latest: {formatDetectedAt(capabilityGapsSummary.latestDetected)}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {detectMessage && (
+                  <p className="mb-3 text-xs text-[color:var(--success)]">{detectMessage}</p>
+                )}
+                {recommendMessage && (
+                  <p className="mb-3 text-xs text-[color:var(--success)]">{recommendMessage}</p>
+                )}
+                {actionError && (
+                  <p className="mb-3 text-xs text-[color:var(--danger)]">{actionError}</p>
+                )}
+                {capabilityGaps.length === 0 ? (
+                  <PlaceholderPanel
+                    title="No capability gaps"
+                    reason={
+                      canManageWorkforce
+                        ? "Run gap detection to scan skill coverage, training, certifications, and utilization."
+                        : "No open capability gaps have been recorded for this project."
+                    }
+                  />
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead className="text-left text-muted-foreground">
+                        <tr className="border-b border-border">
+                          <th className="py-2 pr-3 font-medium">Title</th>
+                          <th className="py-2 pr-3 font-medium">Type</th>
+                          <th className="py-2 pr-3 font-medium">Severity</th>
+                          <th className="py-2 pr-3 font-medium">Status</th>
+                          <th className="py-2 pr-3 font-medium">Detected</th>
+                          {canManageWorkforce && (
+                            <th className="py-2 pr-3 font-medium">Actions</th>
+                          )}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {capabilityGaps.map((gap) => (
+                          <CapabilityGapRowView
+                            key={gap.id}
+                            gap={gap}
+                            canManage={canManageWorkforce}
+                            isUpdating={updatingGapId === gap.id}
+                            onStatusUpdate={handleGapStatusUpdate}
+                          />
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </>
             )}
           </Card>
@@ -738,6 +1016,88 @@ function WorkforcePage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function CapabilityGapRowView({
+  gap,
+  canManage,
+  isUpdating,
+  onStatusUpdate,
+}: {
+  gap: CapabilityGapRead;
+  canManage: boolean;
+  isUpdating: boolean;
+  onStatusUpdate: (gapId: string, status: CapabilityGapStatus) => void;
+}) {
+  const isActive = gap.status === "open" || gap.status === "acknowledged";
+
+  return (
+    <tr className="border-b border-border/50">
+      <td className="py-2.5 pr-3">
+        <div className="font-medium">{gap.title}</div>
+        <div className="mt-0.5 text-[11px] text-muted-foreground line-clamp-2">{gap.detail}</div>
+      </td>
+      <td className="py-2.5 pr-3 text-muted-foreground">
+        {capabilityGapTypeLabel(gap.gap_type)}
+      </td>
+      <td className="py-2.5 pr-3">
+        <span
+          className={cn(
+            "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium",
+            capabilityGapSeverityClass(gap.severity),
+          )}
+        >
+          {capabilityGapSeverityLabel(gap.severity)}
+        </span>
+      </td>
+      <td className="py-2.5 pr-3">
+        <span
+          className={cn(
+            "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium",
+            capabilityGapStatusClass(gap.status),
+          )}
+        >
+          {capabilityGapStatusLabel(gap.status)}
+        </span>
+      </td>
+      <td className="py-2.5 pr-3 text-muted-foreground whitespace-nowrap">
+        {formatDetectedAt(gap.detected_at)}
+      </td>
+      {canManage && (
+        <td className="py-2.5 pr-3">
+          {isActive && !isUpdating ? (
+            <div className="flex flex-wrap gap-1">
+              {gap.status === "open" && (
+                <button
+                  type="button"
+                  onClick={() => onStatusUpdate(gap.id, "acknowledged")}
+                  className="rounded border border-border bg-elevated px-1.5 py-0.5 text-[10px] hover:bg-card"
+                >
+                  Acknowledge
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => onStatusUpdate(gap.id, "resolved")}
+                className="rounded border border-[color:var(--success)]/30 bg-[color:var(--success)]/10 px-1.5 py-0.5 text-[10px] text-[color:var(--success)] hover:bg-[color:var(--success)]/20"
+              >
+                Resolve
+              </button>
+              <button
+                type="button"
+                onClick={() => onStatusUpdate(gap.id, "dismissed")}
+                className="rounded border border-border bg-elevated px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-card"
+              >
+                Dismiss
+              </button>
+            </div>
+          ) : isUpdating ? (
+            <span className="text-[10px] text-muted-foreground">Updating...</span>
+          ) : null}
+        </td>
+      )}
+    </tr>
   );
 }
 

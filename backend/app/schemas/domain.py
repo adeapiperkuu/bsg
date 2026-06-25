@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -20,6 +21,9 @@ from app.db.models import (
     CertificationStatus,
     TrainingGapType,
     TrainingRecordStatus,
+    CapabilityGapSeverity,
+    CapabilityGapStatus,
+    CapabilityGapType,
 )
 from app.schemas.common import EvidenceLinkRead, ORMModel, Pagination, ensure_month_start
 
@@ -492,6 +496,40 @@ class TrainingGapSummaryRead(BaseModel):
     rows: list[TrainingGapRow]
 
 
+class CapabilityGapRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    project_id: UUID
+    team_id: UUID | None
+    skill_id: UUID | None
+    gap_type: CapabilityGapType
+    severity: CapabilityGapSeverity
+    title: str
+    detail: str
+    evidence: dict[str, Any] | None
+    status: CapabilityGapStatus
+    detected_at: datetime
+    resolved_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CapabilityGapUpdate(BaseModel):
+    status: CapabilityGapStatus | None = None
+    severity: CapabilityGapSeverity | None = None
+    title: str | None = None
+    detail: str | None = None
+
+
+class CapabilityGapDetectionResponse(BaseModel):
+    project_id: UUID
+    detected_count: int
+    created_count: int
+    gaps: list[CapabilityGapRead]
+    risk_alerts_created: int
+    recommendations_created: int
+
+
 class ThroughputSnapshotRead(ORMModel):
     id: UUID
     project_id: UUID
@@ -585,6 +623,12 @@ class MitigationRecommendationRead(ORMModel):
     source_risk_type: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class WorkforceRecommendationGenerateResponse(BaseModel):
+    project_id: UUID
+    recommendations_created: int
+    recommendations: list[MitigationRecommendationRead]
 
 
 class MitigationRecommendationAssignOwner(BaseModel):

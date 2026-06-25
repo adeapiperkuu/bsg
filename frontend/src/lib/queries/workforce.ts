@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import {
   getProjectSkillMatrix,
   getProjectTrainingGaps,
+  listProjectCapabilityGaps,
   listProjectSkillRequirements,
   listProjectTeams,
   listProjectUtilization,
@@ -316,6 +317,22 @@ export function useProjectTrainingGapsQuery(
   canReadInternalWorkforce: boolean,
 ) {
   return useQuery(projectTrainingGapsQueryOptions(projectId, canReadInternalWorkforce));
+}
+
+export function projectCapabilityGapsQueryOptions(projectId: string | null, enabled: boolean) {
+  return queryOptions({
+    queryKey: queryKeys.projectCapabilityGaps(projectId ?? ""),
+    queryFn: () => listProjectCapabilityGaps(projectId!),
+    enabled: Boolean(projectId) && enabled,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function useProjectCapabilityGapsQuery(
+  projectId: string | null,
+  canReadInternalWorkforce: boolean,
+) {
+  return useQuery(projectCapabilityGapsQueryOptions(projectId, canReadInternalWorkforce));
 }
 
 export { UTILIZATION_CAPACITY_THRESHOLD, UTILIZATION_UNDERUTILIZED_THRESHOLD };

@@ -191,6 +191,29 @@ class TrainingGapType(StrEnum):
     PENDING_CERTIFICATION_REVIEW = "pending_certification_review"
 
 
+class CapabilityGapType(StrEnum):
+    SKILL_SHORTAGE = "skill_shortage"
+    SME_SHORTAGE = "sme_shortage"
+    CERTIFICATION_GAP = "certification_gap"
+    TRAINING_GAP = "training_gap"
+    UTILIZATION_OVERLOAD = "utilization_overload"
+    UTILIZATION_UNDERLOAD = "utilization_underload"
+
+
+class CapabilityGapSeverity(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class CapabilityGapStatus(StrEnum):
+    OPEN = "open"
+    ACKNOWLEDGED = "acknowledged"
+    RESOLVED = "resolved"
+    DISMISSED = "dismissed"
+
+
 class KnowledgeExtractionStatus(StrEnum):
     PENDING = "pending"
     EXTRACTING = "extracting"
@@ -547,6 +570,33 @@ class TrainingRecord(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     score_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+
+
+class CapabilityGap(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "capability_gaps"
+    __table_args__ = (
+        Index("capability_gaps_org_id_idx", "org_id"),
+        Index("capability_gaps_project_id_idx", "project_id"),
+        Index("capability_gaps_team_id_idx", "team_id"),
+        Index("capability_gaps_skill_id_idx", "skill_id"),
+        Index("capability_gaps_gap_type_idx", "gap_type"),
+        Index("capability_gaps_severity_idx", "severity"),
+        Index("capability_gaps_status_idx", "status"),
+        Index("capability_gaps_detected_at_idx", "detected_at"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    team_id: Mapped[UUID | None] = mapped_column(ForeignKey("teams.id", ondelete="SET NULL"))
+    skill_id: Mapped[UUID | None] = mapped_column(ForeignKey("skills.id", ondelete="SET NULL"))
+    gap_type: Mapped[CapabilityGapType] = mapped_column(Text)
+    severity: Mapped[CapabilityGapSeverity] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text)
+    detail: Mapped[str] = mapped_column(Text)
+    evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    status: Mapped[CapabilityGapStatus] = mapped_column(Text, default=CapabilityGapStatus.OPEN)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class QualitySnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
