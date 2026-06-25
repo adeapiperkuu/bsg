@@ -11,19 +11,19 @@ import {
 } from "recharts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, SectionHeader, KpiCard, AiBadge, StatusPill } from "@/components/bsg/widgets";
-import { skillMatrix } from "@/lib/bsg/data";
 import { useProjectsQuery } from "@/lib/queries/delivery";
 import {
   UTILIZATION_CAPACITY_THRESHOLD,
   averageUtilizationBySite,
   buildLatestTeamUtilization,
   summarizeTeamUtilization,
+  useProjectSkillMatrixQuery,
   useProjectUtilizationQuery,
   useProjectWorkforceSummary,
 } from "@/lib/queries/workforce";
 import { useAuthStore } from "@/stores/useAuthStore";
 import type { AppRole } from "@/types/auth";
-import type { DeliverySite, TeamRead } from "@/types/workforce";
+import type { DeliverySite, SkillCoverageStatus, SkillMatrixRow, TeamRead } from "@/types/workforce";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/workforce")({
@@ -46,12 +46,27 @@ const tip = {
   color: "#f0f2f7",
 };
 
-const coverageColor = (v: string) =>
-  v === "High"
+const coverageStatusClass = (status: SkillCoverageStatus) =>
+  status === "high"
     ? "bg-[color:var(--success)]/20 text-[color:var(--success)]"
-    : v === "Medium"
+    : status === "medium"
       ? "bg-[color:var(--warning)]/20 text-[color:var(--warning)]"
       : "bg-[color:var(--danger)]/20 text-[color:var(--danger)]";
+
+const coverageStatusLabel = (status: SkillCoverageStatus) =>
+  status.charAt(0).toUpperCase() + status.slice(1);
+
+const formatProficiency = (level: string) =>
+  level.charAt(0).toUpperCase() + level.slice(1);
+
+const siteSummaryFor = (row: SkillMatrixRow, site: DeliverySite) =>
+  row.by_site.find((entry) => entry.site === site);
+
+const skillMatrixConfidence = (rows: SkillMatrixRow[]) => {
+  if (rows.length === 0) return 0;
+  const highCount = rows.filter((row) => row.coverage_status === "high").length;
+  return Math.round((highCount / rows.length) * 100);
+};
 
 const SITE_LABELS: Record<DeliverySite, string> = {
   india: "India",
@@ -123,6 +138,16 @@ function WorkforcePage() {
     return Math.ceil(peak / 10) * 10 + 10;
   }, [teamUtilization]);
   const siteUtilization = useMemo(() => averageUtilizationBySite(teamUtilization), [teamUtilization]);
+
+  const skillMatrixQuery = useProjectSkillMatrixQuery(resolvedProjectId, canReadInternalWorkforce);
+  const skillMatrixRows = skillMatrixQuery.data?.rows ?? [];
+  const skillMatrixLoading = canReadInternalWorkforce && skillMatrixQuery.isLoading;
+  const skillMatrixError =
+    skillMatrixQuery.error instanceof Error ? skillMatrixQuery.error.message : null;
+  const skillMatrixConfidencePct = useMemo(
+    () => skillMatrixConfidence(skillMatrixRows),
+    [skillMatrixRows],
+  );
 
   const selectedProject = projects.find((project) => project.id === resolvedProjectId);
 
@@ -258,55 +283,57 @@ function WorkforcePage() {
             />
           </div>
 
-          {/* --- Placeholder: skill matrix (Phase 3) --- */}
+          {/* --- Live: skill coverage matrix (Phase 3) --- */}
           <Card>
             <SectionHeader
               title="Skill Coverage Matrix"
-              sub="Domains x regions"
-              right={<AiBadge confidence={85} />}
+              sub="Required skills vs available project coverage"
+              right={
+                canReadInternalWorkforce && skillMatrixRows.length > 0 ? (
+                  <AiBadge confidence={skillMatrixConfidencePct} />
+                ) : undefined
+              }
             />
-            <PlaceholderPanel
-              title="Skill coverage not connected yet"
-              reason="Skills taxonomy and matrix APIs are planned for Phase 3."
-            />
-            <div className="mt-4 overflow-x-auto opacity-40">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-muted-foreground">
-                    <th className="py-2 pr-3 text-left font-medium">Domain</th>
-                    <th className="py-2 pr-3 text-center font-medium">India</th>
-                    <th className="py-2 pr-3 text-center font-medium">Kosovo</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {skillMatrix.map((s) => (
-                    <tr key={s.domain} className="border-t border-border/50">
-                      <td className="py-2.5 pr-3 font-medium">{s.domain}</td>
-                      <td className="py-2.5 pr-3 text-center">
-                        <span
-                          className={cn(
-                            "inline-block rounded px-2.5 py-1 text-[11px] font-medium",
-                            coverageColor(s.India),
-                          )}
-                        >
-                          {s.India}
-                        </span>
-                      </td>
-                      <td className="py-2.5 pr-3 text-center">
-                        <span
-                          className={cn(
-                            "inline-block rounded px-2.5 py-1 text-[11px] font-medium",
-                            coverageColor(s.Kosovo),
-                          )}
-                        >
-                          {s.Kosovo}
-                        </span>
-                      </td>
+            {!canReadInternalWorkforce ? (
+              <PlaceholderPanel
+                title="Skill coverage restricted"
+                reason="Internal workforce skill coverage is not available to client users."
+              />
+            ) : skillMatrixLoading ? (
+              <div className="space-y-2">
+                <div className="h-10 animate-pulse rounded-md bg-elevated" />
+                <div className="h-10 animate-pulse rounded-md bg-elevated" />
+                <div className="h-10 animate-pulse rounded-md bg-elevated" />
+              </div>
+            ) : skillMatrixError ? (
+              <p className="text-sm text-[color:var(--danger)]">{skillMatrixError}</p>
+            ) : skillMatrixRows.length === 0 ? (
+              <PlaceholderPanel
+                title="No skill requirements yet"
+                reason="Add project skill requirements to populate this matrix."
+              />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="text-left text-muted-foreground">
+                    <tr className="border-b border-border">
+                      <th className="py-2 pr-3 font-medium">Skill</th>
+                      <th className="py-2 pr-3 font-medium">Proficiency</th>
+                      <th className="py-2 pr-3 font-medium">Headcount</th>
+                      <th className="py-2 pr-3 font-medium">SMEs</th>
+                      <th className="py-2 pr-3 font-medium">Status</th>
+                      <th className="py-2 pr-3 text-center font-medium">India</th>
+                      <th className="py-2 pr-3 text-center font-medium">Kosovo</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {skillMatrixRows.map((row) => (
+                      <SkillMatrixRowView key={row.skill_id} row={row} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </Card>
 
           {/* --- Live: utilization snapshots (Phase 2) --- */}
@@ -500,10 +527,58 @@ function WorkforcePage() {
             )}
             {view === "matrix" && (
               <div className="mt-4">
-                <PlaceholderPanel
-                  title="Regional skill matrix preview"
-                  reason="Skill coverage by site requires Phase 3 skills data."
-                />
+                {!canReadInternalWorkforce ? (
+                  <PlaceholderPanel
+                    title="Regional skill matrix restricted"
+                    reason="Internal workforce skill coverage is not available to client users."
+                  />
+                ) : skillMatrixLoading ? (
+                  <div className="h-24 animate-pulse rounded-md bg-elevated" />
+                ) : skillMatrixError ? (
+                  <p className="text-sm text-[color:var(--danger)]">{skillMatrixError}</p>
+                ) : skillMatrixRows.length === 0 ? (
+                  <PlaceholderPanel
+                    title="No regional skill matrix data"
+                    reason="Add project skill requirements to compare India and Kosovo coverage."
+                  />
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead className="text-left text-muted-foreground">
+                        <tr className="border-b border-border">
+                          <th className="py-2 pr-3 font-medium">Skill</th>
+                          <th className="py-2 pr-3 text-center font-medium">India</th>
+                          <th className="py-2 pr-3 text-center font-medium">Kosovo</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {skillMatrixRows.map((row) => {
+                          const india = siteSummaryFor(row, "india");
+                          const kosovo = siteSummaryFor(row, "kosovo");
+                          return (
+                            <tr key={row.skill_id} className="border-b border-border/50">
+                              <td className="py-2.5 pr-3 font-medium">{row.skill_name}</td>
+                              <td className="py-2.5 pr-3 text-center">
+                                {india ? (
+                                  <RegionalSiteBadge summary={india} required={row.required_headcount} />
+                                ) : (
+                                  EMPTY_VALUE
+                                )}
+                              </td>
+                              <td className="py-2.5 pr-3 text-center">
+                                {kosovo ? (
+                                  <RegionalSiteBadge summary={kosovo} required={row.required_headcount} />
+                                ) : (
+                                  EMPTY_VALUE
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
           </Card>
@@ -519,6 +594,76 @@ function WorkforcePage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function SkillMatrixRowView({ row }: { row: SkillMatrixRow }) {
+  const india = siteSummaryFor(row, "india");
+  const kosovo = siteSummaryFor(row, "kosovo");
+  const domainLabel = row.domain ?? row.category;
+
+  return (
+    <tr className="border-b border-border/50">
+      <td className="py-2.5 pr-3">
+        <div className="font-medium">{row.skill_name}</div>
+        {domainLabel ? (
+          <div className="text-[11px] text-muted-foreground">{domainLabel}</div>
+        ) : null}
+      </td>
+      <td className="py-2.5 pr-3 text-muted-foreground">
+        {formatProficiency(row.required_proficiency_level)}
+      </td>
+      <td className="py-2.5 pr-3">
+        {row.available_headcount} / {row.required_headcount}
+      </td>
+      <td className="py-2.5 pr-3">
+        {row.available_sme_count} / {row.required_sme_count}
+      </td>
+      <td className="py-2.5 pr-3">
+        <span
+          className={cn(
+            "inline-block rounded px-2.5 py-1 text-[11px] font-medium",
+            coverageStatusClass(row.coverage_status),
+          )}
+        >
+          {coverageStatusLabel(row.coverage_status)}
+        </span>
+      </td>
+      <td className="py-2.5 pr-3 text-center">
+        {india ? (
+          <RegionalSiteBadge summary={india} required={row.required_headcount} />
+        ) : (
+          EMPTY_VALUE
+        )}
+      </td>
+      <td className="py-2.5 pr-3 text-center">
+        {kosovo ? (
+          <RegionalSiteBadge summary={kosovo} required={row.required_headcount} />
+        ) : (
+          EMPTY_VALUE
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function RegionalSiteBadge({
+  summary,
+  required,
+}: {
+  summary: { available_headcount: number; coverage_status: SkillCoverageStatus };
+  required: number;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-block rounded px-2.5 py-1 text-[11px] font-medium",
+        coverageStatusClass(summary.coverage_status),
+      )}
+      title={`${summary.available_headcount} available / ${required} required`}
+    >
+      {summary.available_headcount}/{required}
+    </span>
   );
 }
 

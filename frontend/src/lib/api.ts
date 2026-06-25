@@ -1,5 +1,13 @@
 import type { AppRole, AuthSession, MeUser, OrganisationRead, UserRead } from "@/types/auth";
-import type { AnnotatorRead, ProjectUtilizationFilters, TeamRead, UtilizationSnapshotRead } from "@/types/workforce";
+import type {
+  AnnotatorRead,
+  ProjectUtilizationFilters,
+  ProjectSkillRequirementRead,
+  SkillMatrixRead,
+  SkillRead,
+  TeamRead,
+  UtilizationSnapshotRead,
+} from "@/types/workforce";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
@@ -311,6 +319,25 @@ export async function listProjectUtilization(
   const body = await apiFetch<{ data: UtilizationSnapshotRead[] }>(
     `/projects/${projectId}/utilization?${query}`,
   );
+  return body.data;
+}
+
+export async function listWorkforceSkills(): Promise<SkillRead[]> {
+  const body = await apiFetch<{ data: SkillRead[] }>("/workforce/skills?limit=100");
+  return body.data;
+}
+
+export async function listProjectSkillRequirements(
+  projectId: string,
+): Promise<ProjectSkillRequirementRead[]> {
+  const body = await apiFetch<{ data: ProjectSkillRequirementRead[] }>(
+    `/projects/${projectId}/skill-requirements?limit=100`,
+  );
+  return body.data;
+}
+
+export async function getProjectSkillMatrix(projectId: string): Promise<SkillMatrixRead> {
+  const body = await apiFetch<{ data: SkillMatrixRead }>(`/projects/${projectId}/skill-matrix`);
   return body.data;
 }
 

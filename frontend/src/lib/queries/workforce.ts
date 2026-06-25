@@ -1,7 +1,14 @@
 import { queryOptions, useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
-import { listProjectTeams, listProjectUtilization, listTeamAnnotators } from "@/lib/api";
+import {
+  getProjectSkillMatrix,
+  listProjectSkillRequirements,
+  listProjectTeams,
+  listProjectUtilization,
+  listTeamAnnotators,
+  listWorkforceSkills,
+} from "@/lib/api";
 import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
 import type {
   AnnotatorRead,
@@ -247,6 +254,51 @@ export function useProjectUtilizationQuery(
   filters: ProjectUtilizationFilters = {},
 ) {
   return useQuery(projectUtilizationQueryOptions(projectId, canReadUtilization, filters));
+}
+
+export function workforceSkillsQueryOptions(enabled: boolean) {
+  return queryOptions({
+    queryKey: queryKeys.workforceSkills,
+    queryFn: () => listWorkforceSkills(),
+    enabled,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function projectSkillRequirementsQueryOptions(projectId: string | null, enabled: boolean) {
+  return queryOptions({
+    queryKey: queryKeys.projectSkillRequirements(projectId ?? ""),
+    queryFn: () => listProjectSkillRequirements(projectId!),
+    enabled: Boolean(projectId) && enabled,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function projectSkillMatrixQueryOptions(projectId: string | null, enabled: boolean) {
+  return queryOptions({
+    queryKey: queryKeys.projectSkillMatrix(projectId ?? ""),
+    queryFn: () => getProjectSkillMatrix(projectId!),
+    enabled: Boolean(projectId) && enabled,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function useWorkforceSkillsQuery(canReadInternalWorkforce: boolean) {
+  return useQuery(workforceSkillsQueryOptions(canReadInternalWorkforce));
+}
+
+export function useProjectSkillRequirementsQuery(
+  projectId: string | null,
+  canReadInternalWorkforce: boolean,
+) {
+  return useQuery(projectSkillRequirementsQueryOptions(projectId, canReadInternalWorkforce));
+}
+
+export function useProjectSkillMatrixQuery(
+  projectId: string | null,
+  canReadInternalWorkforce: boolean,
+) {
+  return useQuery(projectSkillMatrixQueryOptions(projectId, canReadInternalWorkforce));
 }
 
 export { UTILIZATION_CAPACITY_THRESHOLD, UTILIZATION_UNDERUTILIZED_THRESHOLD };

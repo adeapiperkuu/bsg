@@ -12,6 +12,10 @@ export const queryKeys = {
   teamAnnotators: (teamId: string) => ["teams", teamId, "annotators"] as const,
   projectUtilization: (projectId: string, filters: Record<string, string | number | undefined> = {}) =>
     ["projects", projectId, "utilization", filters] as const,
+  workforceSkills: ["workforce", "skills"] as const,
+  projectSkillRequirements: (projectId: string) =>
+    ["projects", projectId, "skill-requirements"] as const,
+  projectSkillMatrix: (projectId: string) => ["projects", projectId, "skill-matrix"] as const,
 };
 
 export const STALE_TIME_MS = 5 * 60 * 1000;

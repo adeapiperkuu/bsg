@@ -1,5 +1,11 @@
 export type DeliverySite = "india" | "kosovo";
 
+export type ProficiencyLevel = "beginner" | "intermediate" | "advanced" | "expert";
+
+export type SkillRequirementPriority = "low" | "medium" | "high" | "critical";
+
+export type SkillCoverageStatus = "high" | "medium" | "low";
+
 export type TeamRead = {
   id: string;
   project_id: string;
@@ -47,4 +53,55 @@ export type ProjectUtilizationFilters = {
   from_date?: string;
   to_date?: string;
   limit?: number;
+};
+
+export type SkillRead = {
+  id: string;
+  org_id: string;
+  name: string;
+  category: string | null;
+  domain: string | null;
+  description: string | null;
+  is_critical: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProjectSkillRequirementRead = {
+  id: string;
+  org_id: string;
+  project_id: string;
+  skill_id: string;
+  required_proficiency_level: ProficiencyLevel;
+  required_headcount: number;
+  required_sme_count: number;
+  priority: SkillRequirementPriority;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SkillMatrixSiteSummary = {
+  site: DeliverySite;
+  available_headcount: number;
+  available_sme_count: number;
+  coverage_status: SkillCoverageStatus;
+};
+
+export type SkillMatrixRow = {
+  skill_id: string;
+  skill_name: string;
+  category: string | null;
+  domain: string | null;
+  required_proficiency_level: ProficiencyLevel;
+  required_headcount: number;
+  available_headcount: number;
+  required_sme_count: number;
+  available_sme_count: number;
+  coverage_status: SkillCoverageStatus;
+  by_site: SkillMatrixSiteSummary[];
+};
+
+export type SkillMatrixRead = {
+  project_id: string;
+  rows: SkillMatrixRow[];
 };
