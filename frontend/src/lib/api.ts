@@ -8,6 +8,7 @@ import type {
   KnowledgeRetrievalSettingsApi,
   KnowledgeVersionCompareApi,
 } from "@/types/knowledge";
+import type { DeliveryChatRequest, DeliveryChatResponse } from "@/types/delivery-chat";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
@@ -442,6 +443,20 @@ export async function askKnowledgeAgent(queryText: string, options: KnowledgeAsk
       min_relevance_score: options.minRelevanceScore ?? 0.25,
       project: options.project || null,
       department: options.department || null,
+    }),
+  });
+  return body.data;
+}
+
+export async function sendDeliveryChatMessage(
+  payload: DeliveryChatRequest,
+): Promise<DeliveryChatResponse> {
+  const body = await apiFetch<{ data: DeliveryChatResponse }>("/delivery/chat", {
+    method: "POST",
+    body: JSON.stringify({
+      message: payload.message,
+      project_id: payload.project_id ?? null,
+      conversation_id: payload.conversation_id ?? null,
     }),
   });
   return body.data;
