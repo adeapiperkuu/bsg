@@ -19,6 +19,7 @@ from app.api.routes import (
     quality,
     system,
     users,
+    workforce,
 )
 from app.core.config import get_settings
 from app.core.csrf import CsrfMiddleware
@@ -62,6 +63,7 @@ def create_app() -> FastAPI:
     app.include_router(delivery.router, prefix=api_prefix)
     app.include_router(delivery_dashboard.router, prefix=api_prefix)
     app.include_router(quality.router, prefix=api_prefix)
+    app.include_router(workforce.router, prefix=api_prefix)
     app.include_router(agents.router, prefix=api_prefix)
     app.include_router(communications.router, prefix=api_prefix)
     app.include_router(metrics.router, prefix=api_prefix)

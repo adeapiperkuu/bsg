@@ -10,6 +10,7 @@ from app.db.models import (
     AppRole,
     CommunicationStatus,
     CommunicationType,
+    DeliverySite,
     MilestoneStatus,
     ProjectStatus,
     RiskTier,
@@ -138,6 +139,59 @@ class MilestoneRead(ORMModel):
     planned_date: date
     actual_date: date | None
     status: MilestoneStatus
+
+
+class TeamRead(ORMModel):
+    id: UUID
+    project_id: UUID
+    org_id: UUID
+    name: str
+    site: DeliverySite
+    domain: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class TeamCreate(BaseModel):
+    name: str
+    site: DeliverySite
+    domain: str
+    is_active: bool = True
+
+
+class TeamUpdate(BaseModel):
+    name: str | None = None
+    site: DeliverySite | None = None
+    domain: str | None = None
+    is_active: bool | None = None
+
+
+class AnnotatorRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    team_id: UUID
+    full_name: str
+    site: DeliverySite
+    is_sme_certified: bool
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class AnnotatorCreate(BaseModel):
+    full_name: str
+    site: DeliverySite
+    is_sme_certified: bool = False
+    is_active: bool = True
+
+
+class AnnotatorUpdate(BaseModel):
+    full_name: str | None = None
+    site: DeliverySite | None = None
+    is_sme_certified: bool | None = None
+    is_active: bool | None = None
+    team_id: UUID | None = None
 
 
 class ThroughputSnapshotRead(ORMModel):

@@ -1,13 +1,5 @@
 import type { AppRole, AuthSession, MeUser, OrganisationRead, UserRead } from "@/types/auth";
-import type {
-  KnowledgeDocumentApi,
-  KnowledgeAskResponseApi,
-  KnowledgeDocumentFilters,
-  KnowledgeDocumentVersionApi,
-  KnowledgeFolderApi,
-  KnowledgeRetrievalSettingsApi,
-  KnowledgeVersionCompareApi,
-} from "@/types/knowledge";
+import type { AnnotatorRead, TeamRead } from "@/types/workforce";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
@@ -292,6 +284,16 @@ export async function listProjectMilestones(projectId: string): Promise<Mileston
   const body = await apiFetch<{ data: MilestoneRead[] }>(
     `/projects/${projectId}/milestones`,
   );
+  return body.data;
+}
+
+export async function listProjectTeams(projectId: string): Promise<TeamRead[]> {
+  const body = await apiFetch<{ data: TeamRead[] }>(`/projects/${projectId}/teams?limit=100`);
+  return body.data;
+}
+
+export async function listTeamAnnotators(teamId: string): Promise<AnnotatorRead[]> {
+  const body = await apiFetch<{ data: AnnotatorRead[] }>(`/teams/${teamId}/annotators?limit=100`);
   return body.data;
 }
 
