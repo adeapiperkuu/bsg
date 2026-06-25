@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   LineChart,
   Line,
@@ -15,7 +15,14 @@ import {
 import { useState } from "react";
 import { Card, SectionHeader, KpiCard, AiBadge, EvidenceBadge, StatusPill } from "@/components/bsg/widgets";
 import { AgentQueryBox } from "@/components/bsg/AgentQueryBox";
-import { fetchQualityDashboard, listProjects } from "@/lib/api";
+import {
+  fetchCalibrationBrief,
+  fetchQualityDashboard,
+  fetchReviewerScorecards,
+  fetchSopAmbiguityFlags,
+  listProjects,
+  resolveRiskAlert,
+} from "@/lib/api";
 
 export const Route = createFileRoute("/quality")({ component: QualityPage });
 
@@ -54,6 +61,7 @@ function kpiTone(
 }
 
 function QualityPage() {
+  const queryClient = useQueryClient();
   const { data: projects = [] } = useQuery({ queryKey: ["projects"], queryFn: listProjects });
   const [projectId, setProjectId] = useState<string | undefined>(undefined);
   const activeProjectId = projectId ?? projects[0]?.id;
@@ -63,6 +71,29 @@ function QualityPage() {
     queryFn: () => fetchQualityDashboard(activeProjectId!),
     enabled: Boolean(activeProjectId),
   });
+
+  const { data: calibrationBrief } = useQuery({
+    queryKey: ["calibration-brief", activeProjectId],
+    queryFn: () => fetchCalibrationBrief(activeProjectId!),
+    enabled: Boolean(activeProjectId),
+  });
+
+  const { data: sopFlags = [] } = useQuery({
+    queryKey: ["sop-flags", activeProjectId],
+    queryFn: () => fetchSopAmbiguityFlags(activeProjectId!),
+    enabled: Boolean(activeProjectId),
+  });
+
+  const { data: reviewerScorecards = [] } = useQuery({
+    queryKey: ["reviewer-scorecards", activeProjectId],
+    queryFn: () => fetchReviewerScorecards(activeProjectId!),
+    enabled: Boolean(activeProjectId),
+  });
+
+  const handleResolveAlert = async (alertId: string) => {
+    await resolveRiskAlert(alertId, "Resolved from Quality dashboard");
+    await queryClient.invalidateQueries({ queryKey: ["quality-dashboard", activeProjectId] });
+  };
 
   const trendData =
     dashboard?.trend.map((t) => ({
@@ -173,9 +204,20 @@ function QualityPage() {
                 )}
                 {dashboard.drift_alerts.map((alert) => (
                   <li key={alert.id} className="rounded-md border border-border bg-elevated p-3 text-xs">
-                    <div className="flex items-center gap-2">
-                      <StatusPill status={alert.risk_tier === "critical" ? "Critical" : "Warning"} />
-                      <span className="font-medium">{alert.title}</span>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <StatusPill status={alert.risk_tier === "critical" ? "Critical" : "Warning"} />
+                        <span className="font-medium">{alert.title}</span>
+                      </div>
+                      {(alert.status === "open" || alert.status === "acknowledged") && (
+                        <button
+                          type="button"
+                          onClick={() => handleResolveAlert(alert.id)}
+                          className="rounded border border-border px-2 py-0.5 text-[10px] hover:bg-card"
+                        >
+                          Resolve
+                        </button>
+                      )}
                     </div>
                     <div className="mt-1 text-muted-foreground">{alert.detail}</div>
                   </li>
@@ -223,6 +265,72 @@ function QualityPage() {
               </table>
             </div>
           </Card>
+
+          {calibrationBrief && calibrationBrief.candidates.length > 0 && (
+            <Card>
+              <SectionHeader title="Calibration Brief" sub="UC-03 reviewer calibration candidates" right={<AiBadge />} />
+              {calibrationBrief.brief_text && (
+                <p className="mb-3 text-sm text-foreground/90">{calibrationBrief.brief_text}</p>
+              )}
+              <ul className="space-y-2 text-xs">
+                {calibrationBrief.candidates.map((c) => (
+                  <li key={c.annotator_id} className="rounded border border-border bg-elevated p-2">
+                    <div className="flex items-center gap-2">
+                      <StatusPill status={c.priority === "immediate" ? "Critical" : "Warning"} />
+                      <span className="font-medium">Reviewer {c.annotator_id.slice(0, 8)}…</span>
+                      <span className="text-muted-foreground">{c.accuracy_pct?.toFixed(1)}% · {c.items_evaluated} items</span>
+                    </div>
+                    <div className="mt-1 text-muted-foreground">{c.reason}</div>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
+
+          {sopFlags.length > 0 && (
+            <Card>
+              <SectionHeader title="SOP Ambiguity Flags" sub="UC-04 distributed IAA drop" />
+              <ul className="space-y-2 text-xs">
+                {sopFlags.map((f, i) => (
+                  <li key={f.alert_id ?? i} className="rounded border border-border bg-elevated p-3">
+                    <div className="font-medium">
+                      {f.sop_version ? `SOP v${f.sop_version}` : "SOP ambiguity"} · {f.affected_reviewer_count} pairs
+                    </div>
+                    <div className="mt-1 text-muted-foreground">{f.detail}</div>
+                    {f.draft_amendment && <p className="mt-2 text-foreground/90">{f.draft_amendment}</p>}
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
+
+          {reviewerScorecards.length > 0 && (
+            <Card>
+              <SectionHeader title="Reviewer Scorecards" sub="Per-reviewer weekly accuracy" />
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="text-left text-muted-foreground">
+                    <tr className="border-b border-border">
+                      <th className="py-2 pr-3 font-medium">Reviewer</th>
+                      <th className="py-2 pr-3 font-medium">Week</th>
+                      <th className="py-2 pr-3 font-medium">Items</th>
+                      <th className="py-2 pr-3 font-medium">Accuracy</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reviewerScorecards.map((r) => (
+                      <tr key={r.id} className="border-b border-border/50">
+                        <td className="py-2 pr-3 font-mono">{r.annotator_id.slice(0, 8)}…</td>
+                        <td className="py-2 pr-3">W{r.iso_week}/{r.iso_year}</td>
+                        <td className="py-2 pr-3">{r.items_evaluated}</td>
+                        <td className="py-2 pr-3">{r.accuracy_pct != null ? `${r.accuracy_pct}%` : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
 
           {dashboard.narrative && (
             <Card>

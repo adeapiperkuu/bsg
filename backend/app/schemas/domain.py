@@ -250,7 +250,7 @@ class RiskAlertRead(ORMModel):
     title: str
     detail: str
     slippage_probability: Decimal | None
-    contributing_causes: dict[str, float] | None
+    contributing_causes: dict | None
     status: AlertStatus
     source_table: str | None = None
     source_row_id: UUID | None = None
@@ -402,6 +402,59 @@ class QualitySummaryRead(BaseModel):
     confidence: str
 
 
+class QualityScanRunRead(ORMModel):
+    id: UUID
+    trigger: str
+    triggered_by: UUID | None
+    iso_year: int
+    iso_week: int
+    status: str
+    started_at: datetime
+    finished_at: datetime | None
+    projects_scanned: int
+    snapshots_evaluated: int
+    alerts_created: int
+    data_gaps: int
+    per_project_results: list[dict] | None = None
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminProjectRead(BaseModel):
+    id: UUID
+    name: str
+    org_id: UUID
+    org_name: str
+    status: ProjectStatus
+    vertical: str
+    start_date: date
+    target_end_date: date
+    latest_iso_year: int | None = None
+    latest_iso_week: int | None = None
+    active_drift_alerts: int = 0
+    data_gap_teams: list[str] = []
+
+
+class QualityPortfolioProjectRead(BaseModel):
+    project_id: UUID
+    name: str
+    org_name: str
+    status: str
+    active_drift_alerts: int = 0
+    latest_gold_accuracy: str | None = None
+    data_gap: bool = False
+
+
+class QualityPortfolioRead(BaseModel):
+    portfolio_week: str
+    projects_total: int
+    projects_with_drift: int
+    blended_gold_accuracy: str | None = None
+    blended_rework_rate: str | None = None
+    per_project: list[QualityPortfolioProjectRead] = []
+
+
 class NotificationRead(ORMModel):
     id: UUID
     title: str
@@ -425,3 +478,194 @@ class ClientCsatCreate(BaseModel):
     @classmethod
     def validate_month_start(cls, value: date) -> date:
         return ensure_month_start(value)
+
+
+# --- Phase 2.0 Quality Intelligence schemas ---
+
+
+class KnowledgeLessonCreate(BaseModel):
+    title: str
+    body: str
+    tags: list[str] = []
+    linked_quality_event_id: UUID | None = None
+    linked_alert_id: UUID | None = None
+
+
+class KnowledgeLessonRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    title: str
+    body: str
+    tags: list[str] = []
+    linked_quality_event_id: UUID | None = None
+    linked_alert_id: UUID | None = None
+    created_by: UUID
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeSearchResult(BaseModel):
+    id: UUID
+    source_type: str
+    title: str
+    snippet: str
+
+
+class ReviewerScorecardCreate(BaseModel):
+    annotator_id: UUID
+    iso_year: int = Field(ge=2024)
+    iso_week: int = Field(ge=1, le=53)
+    items_evaluated: int = Field(ge=0)
+    accuracy_pct: Decimal | None = Field(default=None, ge=0, le=100)
+    error_breakdown: dict | None = None
+
+
+class ReviewerScorecardRead(ORMModel):
+    id: UUID
+    annotator_id: UUID
+    project_id: UUID
+    org_id: UUID
+    iso_year: int
+    iso_week: int
+    items_evaluated: int
+    accuracy_pct: Decimal | None
+    error_breakdown: dict | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class IaaMeasurementCreate(BaseModel):
+    team_id: UUID | None = None
+    reviewer_a_id: UUID
+    reviewer_b_id: UUID
+    task_type: str | None = None
+    krippendorff_alpha: Decimal | None = Field(default=None, ge=0, le=1)
+    iso_year: int = Field(ge=2024)
+    iso_week: int = Field(ge=1, le=53)
+
+
+class IaaMeasurementRead(ORMModel):
+    id: UUID
+    project_id: UUID
+    org_id: UUID
+    team_id: UUID | None
+    reviewer_a_id: UUID
+    reviewer_b_id: UUID
+    task_type: str | None
+    krippendorff_alpha: Decimal | None
+    iso_year: int
+    iso_week: int
+    created_at: datetime
+
+
+class SopVersionCreate(BaseModel):
+    sop_document_id: UUID
+    version: str
+    change_summary: str | None = None
+    effective_date: date
+
+
+class SopVersionRead(ORMModel):
+    id: UUID
+    sop_document_id: UUID
+    org_id: UUID
+    version: str
+    change_summary: str | None
+    effective_date: date
+    created_at: datetime
+
+
+class GoldSetMetadataCreate(BaseModel):
+    version: str
+    item_count: int = Field(ge=0)
+
+
+class GoldSetMetadataRead(ORMModel):
+    id: UUID
+    project_id: UUID
+    org_id: UUID
+    version: str
+    item_count: int
+    last_updated: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+class OnboardingRecordCreate(BaseModel):
+    annotator_id: UUID
+    onboarding_date: date
+    calibration_status: str = "pending"
+    notes: str | None = None
+
+
+class OnboardingRecordRead(ORMModel):
+    id: UUID
+    annotator_id: UUID
+    org_id: UUID
+    onboarding_date: date
+    calibration_status: str
+    notes: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SkillGapSignal(BaseModel):
+    signal_type: str = "skill_gap"
+    reviewer_ids: list[str]
+    project_id: UUID
+    task_type: str | None = None
+    error_category: str | None = None
+    recommendation: str
+    urgency: str
+
+
+class CalibrationCandidateRead(BaseModel):
+    annotator_id: UUID
+    accuracy_pct: float | None
+    items_evaluated: int
+    error_category: str | None = None
+    priority: str
+    reason: str
+
+
+class CalibrationBriefRead(BaseModel):
+    project_id: UUID
+    iso_year: int
+    iso_week: int
+    candidates: list[CalibrationCandidateRead] = []
+    brief_text: str | None = None
+    signal_sent_at: datetime | None = None
+
+
+class SopAmbiguityFlagRead(BaseModel):
+    alert_id: UUID | None = None
+    task_type: str | None = None
+    affected_reviewer_count: int = 0
+    sop_version: str | None = None
+    draft_amendment: str | None = None
+    detail: str | None = None
+
+
+class WhatIfQueryRead(BaseModel):
+    scenario: str
+    projected_outcome: str
+    assumptions: list[str] = []
+    confidence: str
+    no_precedent: bool = False
+    comparable_lessons: list[dict] = []
+
+
+class InterAgentSignalRead(ORMModel):
+    id: UUID
+    signal_type: str
+    source_agent: str
+    target_agent: str
+    payload: dict
+    status: str
+    project_id: UUID | None
+    org_id: UUID | None
+    created_at: datetime
+
+
+class RiskAlertResolve(BaseModel):
+    resolution_summary: str | None = None

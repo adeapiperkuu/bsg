@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.quality_intelligence.drift import DriftResult
+from app.agents.quality_intelligence.signals import mirror_quality_risk_signal
 from app.agents.quality_intelligence.root_cause import RootCauseResult
 from app.db.models import (
     AlertStatus,
@@ -56,6 +57,16 @@ async def create_drift_risk_alert(
         contributing["primary_driver"] = root_cause.primary_driver or "undetermined"
         contributing["confidence"] = root_cause.confidence
 
+    contributing["quality_risk_payload"] = {
+        "signal_type": "quality_risk",
+        "severity": drift.severity.value,
+        "rework_rate_pct": str(snapshot.rework_rate_pct) if snapshot.rework_rate_pct is not None else None,
+        "hold_recommended": drift.severity in {RiskTier.HIGH, RiskTier.CRITICAL},
+        "affected_team_id": str(snapshot.team_id),
+        "iso_week": snapshot.iso_week,
+        "iso_year": snapshot.iso_year,
+    }
+
     alert = RiskAlert(
         project_id=snapshot.project_id,
         org_id=snapshot.org_id,
@@ -70,6 +81,17 @@ async def create_drift_risk_alert(
     )
     session.add(alert)
     await session.flush()
+
+    payload = contributing.get("quality_risk_payload")
+    if payload:
+        await mirror_quality_risk_signal(
+            session,
+            project_id=snapshot.project_id,
+            org_id=snapshot.org_id,
+            alert_id=alert.id,
+            quality_risk_payload=payload,
+        )
+
     return alert
 
 

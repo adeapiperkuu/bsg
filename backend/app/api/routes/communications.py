@@ -20,7 +20,15 @@ from app.db.models import (
 )
 from app.schemas.common import DataResponse, EvidenceLinkRead, ListResponse, Pagination
 from app.schemas.domain import CommunicationApprove, CommunicationDraftCreate, CommunicationRead, CommunicationReview
-from app.services.communications import approve, create_draft, get_visible_communication, move_to_review, reject, send
+from app.services.communications import (
+    approve,
+    create_draft,
+    generate_comms_draft_body,
+    get_visible_communication,
+    move_to_review,
+    reject,
+    send,
+)
 from app.services.evidence import EvidenceInput
 from app.services.scoping import get_visible_project
 
@@ -64,6 +72,9 @@ async def draft_communication(
         )
     ]
 
+    quality_snaps: list[QualitySnapshot] = []
+    drift_alerts: list[RiskAlert] = []
+
     # For weekly summaries, attach quality evidence when available.
     if payload.comm_type == CommunicationType.WEEKLY_SUMMARY:
         quality_snaps = list(
@@ -78,9 +89,11 @@ async def draft_communication(
         )
         # Deduplicate: one row per team (latest week only).
         seen_teams: set[UUID] = set()
+        deduped_snaps: list[QualitySnapshot] = []
         for snap in quality_snaps:
             if snap.team_id not in seen_teams:
                 seen_teams.add(snap.team_id)
+                deduped_snaps.append(snap)
                 evidence.append(
                     EvidenceInput(
                         source_table="quality_snapshots",
@@ -88,6 +101,7 @@ async def draft_communication(
                         description=f"Quality snapshot W{snap.iso_week}/{snap.iso_year} for team {snap.team_id}.",
                     )
                 )
+        quality_snaps = deduped_snaps
 
         drift_alerts = list(
             (
@@ -112,9 +126,12 @@ async def draft_communication(
                 )
             )
 
-    body = (
-        "Draft generation is ready for LLM integration. "
-        "This placeholder is evidence-backed and must be reviewed before sending."
+    body = await generate_comms_draft_body(
+        project,
+        latest_throughput,
+        quality_snaps,
+        drift_alerts,
+        payload.comm_type,
     )
     communication = await create_draft(
         session,

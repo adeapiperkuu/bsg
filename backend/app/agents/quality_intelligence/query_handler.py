@@ -8,8 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.quality_intelligence.drift import evaluate_drift
+from app.agents.quality_intelligence.oka_client import OKAClient
 from app.agents.quality_intelligence.prompts import QUALITY_SYSTEM_PROMPT, build_user_prompt
 from app.agents.quality_intelligence.root_cause import analyze_root_cause
+from app.agents.quality_intelligence.what_if import analyze_what_if, what_if_to_read
 from app.core.config import get_settings
 from app.core.security import CurrentUser
 from app.db.models import (
@@ -30,6 +32,8 @@ from app.services.scoping import get_visible_project
 
 def classify_intent(query_text: str) -> str:
     lower = query_text.lower()
+    if any(w in lower for w in ("what if", "if we", "scenario", "would happen")):
+        return "what_if"
     if any(w in lower for w in ("why", "driving", "root cause", "drop", "increasing")):
         return "diagnostic"
     if any(w in lower for w in ("focus", "fix", "recommend", "action", "should i")):
@@ -158,6 +162,20 @@ async def answer_quality_query(
             },
             default=str,
         )
+
+    if intent == "what_if":
+        what_if = await analyze_what_if(session, project, payload.query_text)
+        analysis_summary = json.dumps(
+            {"what_if": what_if_to_read(what_if).model_dump()},
+            default=str,
+        )
+
+    oka = OKAClient()
+    oka_lessons = await oka.retrieve_lessons(org_id=str(project.org_id), error_category="quality")
+    if oka_lessons:
+        context = context + "\n" + json.dumps({"oka_lessons": oka_lessons}, default=str)
+    else:
+        context = context + "\n[OKA_UNAVAILABLE] No OKA lessons retrieved."
 
     scoped_context = filter_context_for_role(context, current_user.role)
     user_prompt = build_user_prompt(

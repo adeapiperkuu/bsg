@@ -1,9 +1,12 @@
 from datetime import datetime, timezone
+import json
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.quality_intelligence.comms_prompts import COMMS_SYSTEM_PROMPT
+from app.core.config import get_settings
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser, can_read_all_orgs
 from app.db.models import (
@@ -11,10 +14,88 @@ from app.db.models import (
     ClientCommunication,
     CommunicationEvidenceLink,
     CommunicationStatus,
+    CommunicationType,
     Project,
+    QualitySnapshot,
+    RiskAlert,
+    ThroughputSnapshot,
 )
 from app.schemas.domain import CommunicationApprove, CommunicationReview
 from app.services.evidence import EvidenceInput, require_evidence
+from app.services.llm.client import LLMClient
+
+COMMS_PLACEHOLDER_BODY = (
+    "Draft generation is ready for LLM integration. "
+    "This placeholder is evidence-backed and must be reviewed before sending."
+)
+
+
+def build_comms_context(
+    throughput_snap: ThroughputSnapshot,
+    quality_snaps: list[QualitySnapshot],
+    drift_alerts: list[RiskAlert],
+) -> str:
+    parts: list[str] = [
+        json.dumps(
+            {
+                "throughput": {
+                    "snapshot_date": str(throughput_snap.snapshot_date),
+                    "units_completed": throughput_snap.units_completed,
+                    "units_forecast": throughput_snap.units_forecast,
+                    "rolling_7day_units": throughput_snap.rolling_7day_units,
+                }
+            },
+            default=str,
+        )
+    ]
+    for snap in quality_snaps:
+        parts.append(
+            json.dumps(
+                {
+                    "quality_snapshot": {
+                        "iso_week": snap.iso_week,
+                        "iso_year": snap.iso_year,
+                        "gold_set_accuracy_pct": str(snap.gold_set_accuracy_pct),
+                        "iaa": str(snap.iaa_krippendorff_alpha),
+                        "rework_rate_pct": str(snap.rework_rate_pct),
+                        "has_drift_alert": snap.has_drift_alert,
+                    }
+                },
+                default=str,
+            )
+        )
+    for alert in drift_alerts:
+        parts.append(
+            json.dumps(
+                {"drift_alert": {"title": alert.title, "detail": alert.detail, "risk_tier": alert.risk_tier.value}},
+                default=str,
+            )
+        )
+    return "\n".join(parts)
+
+
+async def generate_comms_draft_body(
+    project: Project,
+    throughput_snap: ThroughputSnapshot,
+    quality_snaps: list[QualitySnapshot],
+    drift_alerts: list[RiskAlert],
+    comm_type: CommunicationType | str,
+) -> str:
+    settings = get_settings()
+    if not settings.llm_api_key:
+        return COMMS_PLACEHOLDER_BODY
+
+    context = build_comms_context(throughput_snap, quality_snaps, drift_alerts)
+    comm_label = comm_type.value if hasattr(comm_type, "value") else str(comm_type)
+    try:
+        llm = LLMClient()
+        return await llm.generate_structured(
+            system=COMMS_SYSTEM_PROMPT,
+            user=f"Write a {comm_label} for project '{project.name}'.",
+            context=context,
+        )
+    except ApiError:
+        return COMMS_PLACEHOLDER_BODY
 
 
 async def get_visible_communication(

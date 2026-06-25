@@ -653,3 +653,68 @@ Context sent per NL query: up to 6 `quality_snapshots` + error entries + 5 open 
 ---
 
 *This roadmap should be updated when phases complete or when open decisions are resolved. Mirror substantive changes in `QUALITY_INTELLIGENCE_V1_GAPS.md` and `04. Roadmap.md`.*
+
+---
+
+## Current Implementation State (as of 2026-06-25)
+
+### What is fully implemented and live
+
+| Area | Status | Key files |
+|------|--------|-----------|
+| Phase 1.0 — all capabilities | Complete | see §4 |
+| Phase 2.0 — all use cases (UC-01 through UC-05) | Complete | see below |
+| DB schema — all Phase 2 tables | Migrated | `supabase/migrations/20260625130000_quality_phase2_schema.sql` |
+| Inter-agent signal bus | Migrated | `supabase/migrations/20260625140000_inter_agent_signals.sql` |
+| Frontend — calibration brief panel, SOP ambiguity flags, reviewer scorecards table, resolve alert button | Complete | `frontend/src/routes/quality.tsx` |
+
+#### Phase 2.0 backend modules
+
+| Module | File | UC covered |
+|--------|------|------------|
+| Reviewer scorecard queries | `backend/app/agents/quality_intelligence/calibration.py` | UC-03 |
+| Calibration brief generation + skill-gap signal | `backend/app/agents/quality_intelligence/calibration.py` | UC-03 |
+| SOP ambiguity detection + amendment draft | `backend/app/agents/quality_intelligence/sop_ambiguity.py` | UC-04 |
+| SOP change correlation via `sop_version_history` | `backend/app/agents/quality_intelligence/sop_ambiguity.py` | UC-04 |
+| What-if engine (intent classify → rule projection → LLM narrative) | `backend/app/agents/quality_intelligence/what_if.py` | UC-05 |
+| OKA client placeholder (graceful fallback) | `backend/app/agents/quality_intelligence/oka_client.py` | BR-07 |
+| Lesson write-back on alert resolve | `backend/app/agents/knowledge/lesson_log.py` + `backend/app/services/quality.py` | BR-08 |
+| Root-cause v2 (6 hypotheses) | `backend/app/agents/quality_intelligence/root_cause.py` | UC-01 |
+| Inter-agent signal emission | `backend/app/agents/quality_intelligence/signals.py` | cross-agent |
+
+### What is blocked on other agents
+
+The following Phase 2 capabilities are code-complete but produce no data or degraded results until the dependent agents are implemented:
+
+| Capability | Blocked by | Impact |
+|-----------|------------|--------|
+| UC-03 calibration brief — annotator accuracy scoring | **Workforce Agent** must populate `reviewer_scorecards`; table exists, no data | Returns empty brief |
+| UC-04 SOP change correlation | **Knowledge Agent** must populate `sop_documents` + `sop_version_history`; tables exist, no data | SOP correlation always returns `None` |
+| UC-05 What-if — OKA lesson retrieval | **Knowledge Agent** (OKA) not implemented; `oka_client.py` falls back to empty lessons | Narrative generated without lesson context |
+| BR-08 lesson write-back | **Knowledge Agent** must own `knowledge_lessons` table; table exists, no data | Writes lessons, but no downstream Knowledge Agent queries them |
+| Skill-gap signal delivery | **Workforce Agent** must consume `inter_agent_signals`; table exists | Signals emitted to DB, no consumer reads them |
+| Quality escalation delivery | **Governance Agent** must consume `inter_agent_signals` | Same as above |
+
+### Tables dropped — to be re-created by the responsible team
+
+The following tables were applied by this session's migration scripts but belong to other agents. They have been **dropped** so each agent team can define their own schema. The Quality Intelligence agent has fallback code for all of them:
+
+| Table | Owned by | QI dependency |
+|-------|----------|--------------|
+| `workforce_skills` | Workforce Agent | None — QI reads `reviewer_scorecards` directly |
+| `workforce_utilization_snapshots` | Workforce Agent | Read by root-cause v2 fatigue hypothesis (graceful fallback if absent) |
+| `project_dependencies` | Governance Agent | None direct |
+| `governance_actions` | Governance Agent | None direct |
+| `knowledge_lessons` | Knowledge Agent | `quality_lesson_links` FKs to this; `lesson_log.py` writes here |
+| `sop_documents` | Knowledge Agent | `sop_version_history` FKs to this |
+
+> `quality_lesson_links` and `sop_version_history` were also dropped as a consequence of the FK dependency. They will need to be re-applied after the Knowledge Agent migration establishes `knowledge_lessons` and `sop_documents`.
+
+### How to resume
+
+1. Knowledge Agent team applies their migration (creates `knowledge_lessons`, `sop_documents`)
+2. Re-apply `supabase/migrations/20260625130000_quality_phase2_schema.sql` to restore `sop_version_history` and `quality_lesson_links`
+3. Workforce Agent team applies their migration and populates `reviewer_scorecards`
+4. Governance Agent team consumes `inter_agent_signals` where `target_agent = 'governance_agent'`
+5. Run `backend/scripts/apply_migrations.py` to verify all tables are present
+6. Phase 2.5 (portfolio heatmap, leadership escalation) can then proceed

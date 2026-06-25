@@ -82,7 +82,7 @@ async def test_alert_dedup_by_source_row_id() -> None:
 async def test_new_alert_sets_source_fields() -> None:
     """create_drift_risk_alert sets source_table and source_row_id on a new alert."""
     from app.agents.quality_intelligence.alerts import create_drift_risk_alert
-    from app.db.models import RiskAlert
+    from app.db.models import InterAgentSignal, RiskAlert
 
     snap = _make_snapshot()
     drift = DriftResult(has_drift=True, severity=RiskTier.MEDIUM, detail="3-week declining trend")
@@ -106,8 +106,9 @@ async def test_new_alert_sets_source_fields() -> None:
     session = _FakeSession()
     await create_drift_risk_alert(session, snap, drift)
 
-    assert len(added) == 1
-    alert: RiskAlert = added[0]
+    alerts = [a for a in added if isinstance(a, RiskAlert)]
+    assert len(alerts) == 1
+    alert: RiskAlert = alerts[0]
     assert alert.source_table == "quality_snapshots"
     assert alert.source_row_id == snap.id
 
@@ -119,24 +120,42 @@ async def test_new_alert_sets_source_fields() -> None:
 
 @pytest.mark.asyncio
 async def test_scan_all_projects_empty_db() -> None:
-    """scan_all_projects returns zero counts when there are no active projects."""
+    """scan_all_projects returns a completed run with zero counts when no active projects."""
+    from app.db.models import QualityScanRun, ScanStatus
     from app.services.quality import scan_all_projects
+
+    added: list = []
 
     async def _fake_execute(stmt):
         class _Result:
             def scalars(self):
                 return iter([])
+
+            def all(self):
+                return []
+
         return _Result()
 
     class _FakeSession:
         execute = AsyncMock(side_effect=_fake_execute)
 
+        def add(self, obj):
+            added.append(obj)
+            if isinstance(obj, QualityScanRun):
+                obj.id = uuid4()
+
+        flush = AsyncMock()
+
         async def commit(self):
             pass
 
+        async def refresh(self, obj):
+            pass
+
     session = _FakeSession()
-    totals = await scan_all_projects(session)
-    assert totals["projects"] == 0
-    assert totals["snapshots"] == 0
-    assert totals["alerts"] == 0
-    assert totals["data_gaps"] == 0
+    run = await scan_all_projects(session)
+    assert run.projects_scanned == 0
+    assert run.snapshots_evaluated == 0
+    assert run.alerts_created == 0
+    assert run.data_gaps == 0
+    assert run.status == ScanStatus.COMPLETED

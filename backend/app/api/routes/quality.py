@@ -6,22 +6,53 @@ from sqlalchemy import select
 from app.api.deps import SessionDep, UserDep
 from app.core.exceptions import ApiError
 from app.core.security import require_role
-from app.db.models import AppRole, QualityErrorEntry, QualitySnapshot, Team
+from app.db.models import AppRole, QualityErrorEntry, QualitySnapshot, RiskAlert, ScanTrigger, Team
 from app.schemas.common import DataResponse, ListResponse, Pagination
 from app.schemas.domain import (
+    AdminProjectRead,
+    CalibrationBriefRead,
+    GoldSetMetadataCreate,
+    GoldSetMetadataRead,
+    IaaMeasurementCreate,
+    IaaMeasurementRead,
+    InterAgentSignalRead,
+    OnboardingRecordCreate,
+    OnboardingRecordRead,
     QualityDashboardRead,
     QualityErrorEntryCreate,
+    QualityPortfolioRead,
+    QualityScanRunRead,
     QualitySnapshotCreate,
     QualitySnapshotRead,
     QualitySnapshotUpdate,
     QualitySummaryRead,
+    ReviewerScorecardCreate,
+    ReviewerScorecardRead,
+    RiskAlertRead,
+    RiskAlertResolve,
+    SopAmbiguityFlagRead,
+    SopVersionCreate,
+    SopVersionRead,
 )
 from app.services.quality import (
     build_quality_dashboard,
+    create_iaa_measurement,
+    create_onboarding_record,
+    create_reviewer_scorecard,
+    create_sop_version,
     evaluate_snapshot,
     generate_quality_summary,
+    get_calibration_brief_for_project,
+    get_leadership_quality_portfolio,
+    get_sop_ambiguity_flags,
+    list_admin_projects,
+    list_inter_agent_signals,
+    list_quality_scan_runs,
+    list_reviewer_scorecards,
     load_snapshot_with_errors,
+    resolve_risk_alert,
     scan_all_projects,
+    upsert_gold_set_metadata,
     upsert_quality_snapshot,
 )
 from app.services.scoping import get_visible_project
@@ -29,13 +60,47 @@ from app.services.scoping import get_visible_project
 router = APIRouter(tags=["quality"])
 
 
-@router.post("/internal/quality-scan", response_model=DataResponse[dict])
+@router.post("/internal/quality-scan", response_model=DataResponse[QualityScanRunRead])
 async def trigger_quality_scan(
     session: SessionDep,
     current_user=Depends(require_role(AppRole.SUPER_ADMIN)),
-) -> DataResponse[dict]:
-    totals = await scan_all_projects(session)
-    return DataResponse(data=totals)
+) -> DataResponse[QualityScanRunRead]:
+    run = await scan_all_projects(
+        session,
+        trigger=ScanTrigger.MANUAL,
+        triggered_by=current_user.id,
+    )
+    return DataResponse(data=QualityScanRunRead.model_validate(run))
+
+
+@router.get("/internal/quality-scan-runs", response_model=ListResponse[QualityScanRunRead])
+async def get_quality_scan_runs(
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.SUPER_ADMIN)),
+) -> ListResponse[QualityScanRunRead]:
+    rows = await list_quality_scan_runs(session)
+    return ListResponse(
+        data=[QualityScanRunRead.model_validate(row) for row in rows],
+        pagination=Pagination(limit=50),
+    )
+
+
+@router.get("/internal/projects", response_model=ListResponse[AdminProjectRead])
+async def list_internal_projects(
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.SUPER_ADMIN)),
+) -> ListResponse[AdminProjectRead]:
+    rows = await list_admin_projects(session)
+    return ListResponse(data=rows, pagination=Pagination(limit=200))
+
+
+@router.get("/leadership/quality-portfolio", response_model=DataResponse[QualityPortfolioRead])
+async def get_leadership_quality_portfolio_route(
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[QualityPortfolioRead]:
+    portfolio = await get_leadership_quality_portfolio(session)
+    return DataResponse(data=portfolio)
 
 
 async def _snapshot_to_read(session: SessionDep, snapshot: QualitySnapshot) -> QualitySnapshotRead:
@@ -165,3 +230,155 @@ async def get_quality_summary(
         iso_week = cal[1]
     summary = await generate_quality_summary(session, project, iso_year, iso_week, current_user)
     return DataResponse(data=summary)
+
+
+@router.post("/projects/{project_id}/reviewer-scorecards", response_model=DataResponse[ReviewerScorecardRead])
+async def post_reviewer_scorecard(
+    project_id: UUID,
+    payload: ReviewerScorecardCreate,
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
+) -> DataResponse[ReviewerScorecardRead]:
+    project = await get_visible_project(session, project_id, current_user)
+    card = await create_reviewer_scorecard(session, project, payload)
+    await session.commit()
+    await session.refresh(card)
+    return DataResponse(data=ReviewerScorecardRead.model_validate(card))
+
+
+@router.get("/projects/{project_id}/reviewer-scorecards", response_model=ListResponse[ReviewerScorecardRead])
+async def get_reviewer_scorecards(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: UserDep,
+    iso_year: int | None = Query(default=None),
+    iso_week: int | None = Query(default=None),
+) -> ListResponse[ReviewerScorecardRead]:
+    project = await get_visible_project(session, project_id, current_user)
+    rows = await list_reviewer_scorecards(session, project.id, iso_year=iso_year, iso_week=iso_week)
+    return ListResponse(
+        data=[ReviewerScorecardRead.model_validate(r) for r in rows],
+        pagination=Pagination(limit=100),
+    )
+
+
+@router.post("/projects/{project_id}/iaa-measurements", response_model=DataResponse[IaaMeasurementRead])
+async def post_iaa_measurement(
+    project_id: UUID,
+    payload: IaaMeasurementCreate,
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
+) -> DataResponse[IaaMeasurementRead]:
+    project = await get_visible_project(session, project_id, current_user)
+    row = await create_iaa_measurement(session, project, payload)
+    await session.commit()
+    await session.refresh(row)
+    return DataResponse(data=IaaMeasurementRead.model_validate(row))
+
+
+@router.post("/projects/{project_id}/sop-versions", response_model=DataResponse[SopVersionRead])
+async def post_sop_version(
+    project_id: UUID,
+    payload: SopVersionCreate,
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
+) -> DataResponse[SopVersionRead]:
+    project = await get_visible_project(session, project_id, current_user)
+    row = await create_sop_version(session, project, payload)
+    await session.commit()
+    await session.refresh(row)
+    return DataResponse(data=SopVersionRead.model_validate(row))
+
+
+@router.post("/projects/{project_id}/gold-set-metadata", response_model=DataResponse[GoldSetMetadataRead])
+async def post_gold_set_metadata(
+    project_id: UUID,
+    payload: GoldSetMetadataCreate,
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
+) -> DataResponse[GoldSetMetadataRead]:
+    project = await get_visible_project(session, project_id, current_user)
+    row = await upsert_gold_set_metadata(session, project, payload)
+    await session.commit()
+    await session.refresh(row)
+    return DataResponse(data=GoldSetMetadataRead.model_validate(row))
+
+
+@router.post("/projects/{project_id}/onboarding-records", response_model=DataResponse[OnboardingRecordRead])
+async def post_onboarding_record(
+    project_id: UUID,
+    payload: OnboardingRecordCreate,
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
+) -> DataResponse[OnboardingRecordRead]:
+    project = await get_visible_project(session, project_id, current_user)
+    row = await create_onboarding_record(session, project, payload)
+    await session.commit()
+    await session.refresh(row)
+    return DataResponse(data=OnboardingRecordRead.model_validate(row))
+
+
+@router.get("/projects/{project_id}/calibration-brief", response_model=DataResponse[CalibrationBriefRead])
+async def get_calibration_brief(
+    project_id: UUID,
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
+    iso_year: int | None = Query(default=None),
+    iso_week: int | None = Query(default=None),
+) -> DataResponse[CalibrationBriefRead]:
+    from datetime import datetime, timezone
+
+    project = await get_visible_project(session, project_id, current_user)
+    if iso_year is None or iso_week is None:
+        now = datetime.now(timezone.utc)
+        cal = now.isocalendar()
+        iso_year = cal[0]
+        iso_week = cal[1]
+    brief = await get_calibration_brief_for_project(
+        session, project, iso_year=iso_year, iso_week=iso_week
+    )
+    return DataResponse(data=brief)
+
+
+@router.get("/projects/{project_id}/sop-ambiguity-flags", response_model=ListResponse[SopAmbiguityFlagRead])
+async def get_sop_ambiguity_flags_route(
+    project_id: UUID,
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
+) -> ListResponse[SopAmbiguityFlagRead]:
+    project = await get_visible_project(session, project_id, current_user)
+    flags = await get_sop_ambiguity_flags(session, project.id)
+    return ListResponse(data=flags, pagination=Pagination(limit=50))
+
+
+@router.get("/inter-agent-signals", response_model=ListResponse[InterAgentSignalRead])
+async def get_inter_agent_signals(
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.SUPER_ADMIN)),
+) -> ListResponse[InterAgentSignalRead]:
+    rows = await list_inter_agent_signals(session)
+    return ListResponse(
+        data=[InterAgentSignalRead.model_validate(r) for r in rows],
+        pagination=Pagination(limit=50),
+    )
+
+
+@router.patch("/risk-alerts/{alert_id}/resolve", response_model=DataResponse[RiskAlertRead])
+async def resolve_risk_alert_route(
+    alert_id: UUID,
+    payload: RiskAlertResolve,
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
+) -> DataResponse[RiskAlertRead]:
+    alert = (await session.execute(select(RiskAlert).where(RiskAlert.id == alert_id))).scalar_one_or_none()
+    if alert is None or (current_user.role != AppRole.SUPER_ADMIN and alert.org_id != current_user.org_id):
+        raise ApiError(404, "NOT_FOUND", "Risk alert was not found.")
+    alert = await resolve_risk_alert(
+        session,
+        alert,
+        resolved_by=current_user.id,
+        resolution_summary=payload.resolution_summary,
+    )
+    await session.commit()
+    await session.refresh(alert)
+    return DataResponse(data=RiskAlertRead.model_validate(alert))

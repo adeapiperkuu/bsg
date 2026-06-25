@@ -2,7 +2,7 @@ import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   LayoutDashboard, Activity, ShieldCheck, Users, GitBranch, Briefcase,
   BookOpen, FolderKanban, ListChecks, Settings2, FileText, Folder, BarChart3, Settings,
-  Bell, Sun, Moon, Search, Crown, Signal, LogOut, ChevronDown, Menu,
+  Bell, Sun, Moon, Search, Crown, Signal, LogOut, ChevronDown, Menu, Bot,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useRole } from "@/lib/bsg/role";
@@ -67,6 +67,8 @@ const adminNav: { section: string; items: NavItem[] }[] = [
   { section: "Platform", items: [
     { to: "/admin", label: "Admin Console", icon: Settings2 },
     { to: "/admin/users", label: "Users", icon: Users },
+    { to: "/admin/projects", label: "Projects", icon: FolderKanban },
+    { to: "/admin/agent-runs", label: "Agent Runs", icon: Bot },
   ]},
 ];
 

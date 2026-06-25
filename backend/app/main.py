@@ -24,6 +24,7 @@ from app.core.config import get_settings
 from app.core.csrf import CsrfMiddleware
 from app.core.exceptions import register_exception_handlers
 from app.db.session import AsyncSessionLocal, dispose_engine
+from app.db.models import ScanTrigger
 from app.services.quality import scan_all_projects
 
 logger = logging.getLogger(__name__)
@@ -33,8 +34,8 @@ async def _scheduled_quality_scan() -> None:
     """Scheduler wrapper: opens its own DB session (no FastAPI DI)."""
     async with AsyncSessionLocal() as session:
         try:
-            totals = await scan_all_projects(session)
-            logger.info("Scheduled quality scan complete: %s", totals)
+            run = await scan_all_projects(session, trigger=ScanTrigger.SCHEDULER)
+            logger.info("Scheduled quality scan complete run_id=%s status=%s", run.id, run.status)
         except Exception:
             logger.exception("Scheduled quality scan failed")
 
