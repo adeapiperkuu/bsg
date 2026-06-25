@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from time import perf_counter
 from typing import Any
 from uuid import UUID
@@ -60,6 +61,79 @@ def _collect_sources(dashboard: dict[str, Any]) -> list[DeliveryChatSource]:
     return sources
 
 
+def _severity_score(dashboard: dict[str, Any]) -> float:
+    traffic = str(dashboard.get("traffic_light") or "green")
+    traffic_weight = {"red": 30.0, "yellow": 15.0, "green": 0.0}.get(traffic, 10.0)
+    confidence = float(dashboard.get("confidence") or 0)
+    open_risks = len(dashboard.get("risks") or [])
+    open_bottlenecks = len(dashboard.get("bottlenecks") or [])
+    return traffic_weight + open_risks * 5 + open_bottlenecks * 4 + max(0.0, 100.0 - confidence) / 5
+
+
+ROOT_CAUSE_LABELS: dict[str, str] = {
+    "confidence_shortfall": "Schedule confidence shortfall",
+    "throughput_decline": "Throughput decline",
+    "milestone_urgency": "Milestone urgency",
+    "open_bottlenecks": "Open bottlenecks",
+    "quality_drift": "Quality drift",
+}
+
+
+def _extract_root_causes(dashboard: dict[str, Any]) -> list[dict[str, Any]]:
+    overview = dashboard.get("overview")
+    if not isinstance(overview, dict):
+        return []
+    calculated_risk = overview.get("calculated_risk")
+    if not isinstance(calculated_risk, dict):
+        return []
+    causes = calculated_risk.get("contributing_causes")
+    if not isinstance(causes, dict):
+        return []
+    ranked = sorted(
+        (
+            {
+                "cause": ROOT_CAUSE_LABELS.get(key, key.replace("_", " ")),
+                "weight": float(value) if isinstance(value, (int, float)) else 0.0,
+            }
+            for key, value in causes.items()
+            if isinstance(value, (int, float)) and float(value) > 0
+        ),
+        key=lambda item: item["weight"],
+        reverse=True,
+    )
+    return ranked[:4]
+
+
+def _project_operational_brief(dashboard: dict[str, Any], project_id: Any) -> dict[str, Any]:
+    overview = dashboard.get("overview") if isinstance(dashboard.get("overview"), dict) else {}
+    project = overview.get("project") if isinstance(overview.get("project"), dict) else {}
+    risks = dashboard.get("risks") or []
+    bottlenecks = dashboard.get("bottlenecks") or []
+    risk_titles = [str(r.get("title") or "") for r in risks if isinstance(r, dict)]
+    bottleneck_titles = [str(b.get("title") or "") for b in bottlenecks if isinstance(b, dict)]
+    root_causes = _extract_root_causes(dashboard)
+    confidence = float(dashboard.get("confidence") or 0)
+    traffic = str(dashboard.get("traffic_light") or "green")
+    return {
+        "project_id": project_id,
+        "project_name": project.get("name"),
+        "traffic_light": traffic,
+        "schedule_confidence_pct": confidence,
+        "open_risks": len(risks),
+        "open_bottlenecks": len(bottlenecks),
+        "risk_titles": [title for title in risk_titles if title],
+        "bottleneck_titles": [title for title in bottleneck_titles if title],
+        "top_root_causes": root_causes,
+        "severity_score": round(_severity_score(dashboard), 1),
+        "urgency_tier": (
+            "critical" if traffic == "red" and confidence < 15
+            else "high" if traffic == "red" or confidence < 25
+            else "elevated" if traffic == "yellow"
+            else "stable"
+        ),
+    }
+
+
 def _portfolio_summary(portfolio: dict[str, Any]) -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
     for entry in portfolio.get("projects") or []:
@@ -68,40 +142,163 @@ def _portfolio_summary(portfolio: dict[str, Any]) -> list[dict[str, Any]]:
         dashboard = entry.get("dashboard")
         if not isinstance(dashboard, dict):
             continue
-        overview = dashboard.get("overview")
-        project_name = None
-        if isinstance(overview, dict):
-            project = overview.get("project")
-            if isinstance(project, dict):
-                project_name = project.get("name")
-        summaries.append(
-            {
-                "project_id": entry.get("project_id"),
-                "project_name": project_name,
-                "traffic_light": dashboard.get("traffic_light"),
-                "confidence": dashboard.get("confidence"),
-                "open_risks": len(dashboard.get("risks") or []),
-                "open_bottlenecks": len(dashboard.get("bottlenecks") or []),
-            }
-        )
+        summaries.append(_project_operational_brief(dashboard, entry.get("project_id")))
+    summaries.sort(key=lambda item: float(item.get("severity_score") or 0), reverse=True)
     return summaries
+
+
+def _match_cited_sources(
+    catalog: list[DeliveryChatSource],
+    cited_titles: list[str],
+    answer_text: str,
+) -> list[DeliveryChatSource]:
+    if not catalog:
+        return []
+
+    matched: list[DeliveryChatSource] = []
+    seen: set[str] = set()
+    answer_lower = answer_text.lower()
+
+    def try_add(source: DeliveryChatSource) -> None:
+        key = source.title.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        matched.append(source)
+
+    for cited in cited_titles:
+        cited_lower = cited.lower().strip()
+        if not cited_lower:
+            continue
+        for source in catalog:
+            title_lower = source.title.lower()
+            if title_lower == cited_lower or cited_lower in title_lower or title_lower in cited_lower:
+                try_add(source)
+
+    if not matched:
+        for source in catalog:
+            if source.title.lower() in answer_lower:
+                try_add(source)
+
+    return matched[:6]
+
+
+def _detect_portfolio_patterns(portfolio: dict[str, Any]) -> dict[str, Any]:
+    risk_themes: Counter[str] = Counter()
+    bottleneck_themes: Counter[str] = Counter()
+    root_cause_themes: Counter[str] = Counter()
+    red_projects = 0
+    low_confidence_projects = 0
+
+    for entry in portfolio.get("projects") or []:
+        if not isinstance(entry, dict):
+            continue
+        dashboard = entry.get("dashboard")
+        if not isinstance(dashboard, dict):
+            continue
+        if str(dashboard.get("traffic_light")) == "red":
+            red_projects += 1
+        if float(dashboard.get("confidence") or 0) < 15:
+            low_confidence_projects += 1
+        for risk in dashboard.get("risks") or []:
+            if isinstance(risk, dict) and risk.get("title"):
+                risk_themes[str(risk["title"]).lower()] += 1
+        for bottleneck in dashboard.get("bottlenecks") or []:
+            if isinstance(bottleneck, dict) and bottleneck.get("title"):
+                bottleneck_themes[str(bottleneck["title"]).lower()] += 1
+        for cause in _extract_root_causes(dashboard):
+            root_cause_themes[str(cause["cause"]).lower()] += 1
+
+    def top_items(counter: Counter[str], limit: int = 4) -> list[dict[str, Any]]:
+        return [
+            {"theme": theme, "project_count": count}
+            for theme, count in counter.most_common(limit)
+            if count >= 1
+        ]
+
+    return {
+        "red_status_project_count": red_projects,
+        "sub_15pct_confidence_count": low_confidence_projects,
+        "recurring_risk_themes": top_items(risk_themes),
+        "recurring_bottleneck_themes": top_items(bottleneck_themes),
+        "recurring_root_causes": top_items(root_cause_themes),
+    }
+
+
+def _classify_question(message: str) -> str:
+    q = message.lower()
+    portfolio_signals = (
+        "which project",
+        "at risk",
+        "portfolio",
+        "leadership",
+        "this week",
+        "focus",
+        "driving",
+        "confidence down",
+        "decline",
+        "blocking delivery",
+        "what's blocking",
+        "whats blocking",
+        "throughput",
+        "milestone",
+        "slip",
+        "attention",
+        "priorit",
+        "across",
+        "all project",
+        "where should",
+        "need attention",
+    )
+    if any(signal in q for signal in portfolio_signals):
+        return "portfolio"
+    return "project"
 
 
 def _build_context(
     *,
     project_dashboard: dict[str, Any] | None,
     portfolio: dict[str, Any],
+    message: str,
 ) -> dict[str, Any]:
+    ranked = _portfolio_summary(portfolio)
+    priority_projects = [entry for entry in ranked if entry.get("urgency_tier") != "stable"][:5]
     context: dict[str, Any] = {
-        "portfolio_summary": _portfolio_summary(portfolio),
-        "portfolio_milestones": portfolio.get("milestones") or [],
+        "analyst_directive": (
+            "Provide grounded decision support only. Interpret delivery signals — do not invent "
+            "staffing numbers, resource allocations, budgets, or business impacts not in the data. "
+            "Every recommendation must trace to evidence: confidence levels, risks, bottlenecks, "
+            "milestones, or portfolio patterns. State confidence (High/Medium/Low) for conclusions. "
+            "Use Immediate / Near-Term / Strategic action categories. When uncertain, say so."
+        ),
+        "available_data_scope": {
+            "has_staffing_data": False,
+            "has_budget_data": False,
+            "has_sla_data": False,
+            "supported_signals": [
+                "schedule_confidence_pct",
+                "traffic_light_status",
+                "open_risks",
+                "active_bottlenecks",
+                "milestones",
+                "root_cause_factors",
+                "throughput_metrics",
+                "portfolio_pattern_counts",
+            ],
+        },
+        "question_scope": _classify_question(message),
+        "portfolio_ranked_by_severity": ranked,
+        "leadership_priority_projects": priority_projects,
+        "portfolio_patterns": _detect_portfolio_patterns(portfolio),
+        "at_risk_project_count": sum(
+            1 for entry in ranked if str(entry.get("traffic_light")) != "green"
+        ),
     }
     if project_dashboard is not None:
+        brief = _project_operational_brief(project_dashboard, None)
         context["focused_project"] = {
-            "overview": project_dashboard.get("overview"),
+            **brief,
             "milestones": project_dashboard.get("milestones"),
-            "confidence": project_dashboard.get("confidence"),
-            "traffic_light": project_dashboard.get("traffic_light"),
             "risks": project_dashboard.get("risks"),
             "bottlenecks": project_dashboard.get("bottlenecks"),
         }
@@ -164,49 +361,44 @@ async def answer_delivery_chat(
             current_user=current_user,
         )
 
-    context = _build_context(project_dashboard=project_dashboard, portfolio=portfolio)
-    evidence_sources = _collect_sources(project_dashboard) if project_dashboard else []
-    if not evidence_sources:
-        for entry in portfolio.get("projects") or []:
-            if not isinstance(entry, dict):
-                continue
-            dashboard = entry.get("dashboard")
-            if isinstance(dashboard, dict):
-                evidence_sources.extend(_collect_sources(dashboard))
-                if len(evidence_sources) >= 12:
-                    break
+    context = _build_context(
+        project_dashboard=project_dashboard,
+        portfolio=portfolio,
+        message=message.strip(),
+    )
+
+    evidence_catalog: list[DeliveryChatSource] = []
+    if project_dashboard is not None:
+        evidence_catalog = _collect_sources(project_dashboard)
+    for entry in portfolio.get("projects") or []:
+        if len(evidence_catalog) >= 20:
+            break
+        if not isinstance(entry, dict):
+            continue
+        dashboard = entry.get("dashboard")
+        if isinstance(dashboard, dict):
+            evidence_catalog.extend(_collect_sources(dashboard))
 
     history = await _load_conversation_history(session, current_user, conversation_id)
     llm_result = await LLMClient().generate_delivery_answer(
         query=message.strip(),
         context=context,
         history=history,
-        evidence_sources=[source.model_dump(mode="json") for source in evidence_sources[:12]],
+        evidence_sources=[source.model_dump(mode="json") for source in evidence_catalog[:20]],
     )
 
     answer = str(llm_result.get("answer", "")).strip()
     if not answer:
         answer = (
-            "I could not generate a delivery analysis right now. "
-            "Please verify delivery data is available and try again."
+            "## Executive Assessment\n"
+            "Delivery analysis could not be generated from current data.\n\n"
+            "## Recommended Leadership Actions\n"
+            "1. Verify delivery data is loaded and retry."
         )
 
-    llm_sources = llm_result.get("sources")
-    response_sources = list(evidence_sources[:6])
-    if isinstance(llm_sources, list) and llm_sources:
-        for item in llm_sources:
-            if not isinstance(item, dict):
-                continue
-            title = str(item.get("title") or "").strip()
-            if not title:
-                continue
-            response_sources.append(
-                DeliveryChatSource(
-                    title=title,
-                    type=str(item.get("type") or "evidence"),
-                    description=str(item.get("description") or "") or None,
-                )
-            )
+    cited_titles = llm_result.get("cited_source_titles")
+    cited_title_list = [str(title) for title in cited_titles] if isinstance(cited_titles, list) else []
+    response_sources = _match_cited_sources(evidence_catalog, cited_title_list, answer)
 
     query = AgentQuery(
         user_id=current_user.id,
@@ -221,7 +413,7 @@ async def answer_delivery_chat(
     session.add(query)
     await session.flush()
 
-    for source in response_sources[:8]:
+    for source in response_sources:
         if source.id is not None:
             table = {
                 "risk": "risk_alerts",
@@ -237,18 +429,8 @@ async def answer_delivery_chat(
                 )
             )
 
-    # Deduplicate sources by title for the API response
-    seen: set[str] = set()
-    unique_sources: list[DeliveryChatSource] = []
-    for source in response_sources:
-        key = source.title.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        unique_sources.append(source)
-
     return DeliveryChatRead(
         answer=answer,
-        sources=unique_sources[:8],
+        sources=response_sources,
         conversation_id=conversation_id or query.id,
     )

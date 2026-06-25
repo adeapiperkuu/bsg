@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { sendDeliveryChatMessage } from "@/lib/api";
+import { sanitizeDeliveryMarkdown } from "@/components/delivery/delivery-markdown";
 import type { DeliveryChatMessage } from "@/types/delivery-chat";
 
 function createMessageId(): string {
@@ -53,7 +54,7 @@ export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
             {
               id: createMessageId(),
               role: "agent",
-              text: response.answer,
+              text: sanitizeDeliveryMarkdown(response.answer),
               sources: response.sources,
             },
           ];

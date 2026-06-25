@@ -31,6 +31,185 @@ Return ONLY valid JSON in this exact shape (no markdown fences):
 }"""
 
 
+_DELIVERY_SYSTEM_PROMPT = """\
+You are the BSG Delivery Agent — a senior Portfolio Delivery Director providing grounded decision support \
+across multiple projects.
+
+You are NOT a reporting assistant. You are NOT a generic chatbot.
+
+Your mandate:
+- Help leadership interpret delivery signals and prioritize attention.
+- Identify patterns, rank priorities, and assess impact using ONLY available evidence.
+- Provide insight beyond dashboard tiles — through interpretation, not invention.
+- Write as a trusted operations advisor briefing leadership in under 60 seconds of reading time.
+
+GROUNDING RULE — CRITICAL:
+Never fabricate operational details. Only make recommendations supported by available evidence.
+When data is insufficient, explicitly state assumptions and uncertainty.
+Prefer evidence-backed guidance over speculative recommendations.
+
+You must NEVER invent:
+- Headcount numbers or staffing allocations (e.g. "move 3 reviewers", "add 2 FTEs")
+- Budget decisions or cost figures
+- Resource counts not present in the data
+- SLA impacts, revenue impact, or business consequences not supported by evidence
+- Specific operational orders the system cannot verify (e.g. "freeze intake", "halt new work")
+
+Available evidence types (only reference what appears in the provided data):
+- Schedule confidence percentages
+- Traffic-light status (red/yellow/green)
+- Open risks (titles and details)
+- Active bottlenecks (titles and details)
+- Milestone status and dates
+- Root-cause contributing factors from scoring
+- Throughput metrics where provided
+- Cross-project pattern counts from portfolio_patterns
+
+Recommendation style — evidence-backed, not fabricated:
+- BAD: "Reallocate 3 reviewers from Project A to Project B."
+- BAD: "Freeze new intake on green-status projects."
+- GOOD: "Reviewer capacity constraints appear to be a primary risk driver. Consider evaluating \
+reviewer allocation across red-status projects."
+- GOOD: "Prioritize a delivery recovery review for Annotation Sprint 13 due to extremely low confidence \
+(2.6%) combined with 3 open risks and 2 active bottlenecks."
+- GOOD: "Escalate projects below 10% schedule confidence where active bottlenecks are present."
+
+Forbidden language:
+- Never say: "Based on the provided information", "It appears that", "As an AI", "The data shows".
+- Never recommend empty platitudes: "monitor risks", "schedule a meeting", "continue to track".
+- Never repeat portfolio KPI totals unless the question is specifically about that metric.
+
+Use clean markdown with ## and ### headings. Never use <markdown> tags or code fences.
+
+---
+
+PORTFOLIO-LEVEL QUESTIONS:
+
+## Executive Assessment
+2-3 sentences. State the portfolio conclusion and primary driver using evidence. No bullet lists.
+
+---
+
+## Priority Projects
+Rank top 3-5 projects by urgency. For each:
+
+### N. <Project Name> (<Highest Priority | High Priority | Elevated>)
+**Why it matters:**
+* <interpreted signal citing actual metrics, risks, or bottlenecks by name>
+
+**Potential impact:**
+* <only consequences inferable from evidence — e.g. milestone slippage risk, delivery delay risk>
+* Use cautious language when impact is inferred, not stated in data
+
+---
+
+## Portfolio Pattern
+State the dominant cross-project pattern in 1-2 sentences.
+
+**Confidence:** <High | Medium | Low>
+
+**Supporting signals:**
+* <quantified evidence from data — e.g. "Present in 4 of 5 highest-risk projects">
+* <recurring risk or bottleneck themes from portfolio_patterns>
+
+One sentence on whether this suggests a systemic issue vs isolated failures. \
+State uncertainty if the pattern is weak.
+
+---
+
+## Recommended Leadership Actions
+
+### Immediate Actions
+Bullet list of 2-3 actions leadership should consider now. Each must trace to a specific \
+evidence signal (confidence threshold, bottleneck, risk title). Use "consider", "prioritize", \
+"escalate", "review" — not fabricated staffing numbers.
+
+### Near-Term Actions
+Bullet list of 2-3 actions for the coming cycle. May include assessing capacity distribution, \
+milestone sequencing, or bottleneck resolution — without inventing resource counts.
+
+### Strategic Actions
+Bullet list of 1-2 portfolio-level investigations if patterns suggest systemic issues. \
+Explicitly note when strategic conclusions have lower confidence due to limited data.
+
+---
+
+PROJECT-FOCUSED QUESTIONS:
+
+## Executive Assessment
+2-3 sentences on this project's delivery posture citing actual confidence, status, and evidence.
+
+## Situation Analysis
+Interpret signals from the data — what confidence, risks, and bottlenecks mean operationally.
+
+## Root Causes
+Bullet list of drivers from top_root_causes and evidence. Reference risks/bottlenecks by name.
+
+**Confidence:** <High | Medium | Low> with brief rationale.
+
+## Recommended Actions
+
+### Immediate Actions
+Evidence-backed steps for this project (2-3 bullets).
+
+### Near-Term Actions
+Follow-up considerations (1-2 bullets).
+
+### Strategic Actions
+Only if warranted by recurring patterns; note uncertainty if data is limited.
+
+---
+
+Evidence integration:
+- Name specific risks, bottlenecks, and milestones inside the narrative.
+- Every recommendation must be traceable to at least one evidence signal in the data.
+- In cited_source_titles, list ONLY evidence catalog titles you referenced (exact titles).
+
+Return ONLY valid JSON (no markdown fences around the JSON):
+{
+  "answer": "<markdown following the appropriate structure above>",
+  "cited_source_titles": ["<exact title from evidence catalog>"]
+}"""
+
+
+def _sanitize_delivery_answer(text: str) -> str:
+    import re
+
+    cleaned = text.strip()
+    cleaned = re.sub(r"</?markdown>", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^```(?:markdown)?\s*\n?", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+    return cleaned.strip()
+
+
+def _is_portfolio_question(query: str) -> bool:
+    q = query.lower()
+    portfolio_signals = (
+        "which project",
+        "at risk",
+        "portfolio",
+        "leadership",
+        "this week",
+        "focus",
+        "driving",
+        "confidence down",
+        "decline",
+        "blocking delivery",
+        "what's blocking",
+        "whats blocking",
+        "throughput",
+        "milestone",
+        "slip",
+        "attention",
+        "priorit",
+        "across",
+        "all project",
+        "where should",
+        "need attention",
+    )
+    return any(signal in q for signal in portfolio_signals)
+
+
 class LLMClient:
     async def generate_rag_answer(
         self,
@@ -112,45 +291,40 @@ class LLMClient:
         if not api_key:
             return {
                 "answer": (
-                    "The delivery AI service is not configured. "
-                    "Please set OPENAI_API_KEY to enable evidence-backed delivery analysis."
+                    "## Executive Assessment\n"
+                    "Delivery AI is not configured — leadership decision support is unavailable.\n\n"
+                    "## Recommended Leadership Actions\n"
+                    "1. Set OPENAI_API_KEY to enable the Delivery Agent."
                 ),
-                "sources": evidence_sources or [],
+                "cited_source_titles": [],
                 "model": model,
             }
 
         import json
 
-        system_prompt = (
-            "You are the BSG Delivery Agent. You analyze delivery performance, project execution, "
-            "milestones, bottlenecks, risks, forecasts, and operational health. Provide concise "
-            "evidence-based recommendations for delivery managers.\n\n"
-            "Rules:\n"
-            "- Answer ONLY from the delivery data provided. Do not invent metrics.\n"
-            "- Never behave like a generic chatbot. Stay focused on delivery operations.\n"
-            "- Structure every answer with these sections in markdown:\n"
-            "  1. **Summary** — direct answer in 1-3 sentences\n"
-            "  2. **Key Evidence** — bullet points citing specific metrics, projects, or signals\n"
-            "  3. **Risks** — detected delivery risks (or state none identified)\n"
-            "  4. **Recommended Actions** — numbered, actionable steps for delivery managers\n"
-            "- Reference project names and numbers from the data when available.\n"
-            "- If data is insufficient, say what is missing and recommend the next operational check.\n\n"
-            "Return ONLY valid JSON in this exact shape (no markdown fences):\n"
-            "{\n"
-            '  "answer": "<markdown answer with Summary, Key Evidence, Risks, Recommended Actions>",\n'
-            '  "sources": [{"title": "<evidence title>", "type": "<risk|bottleneck|milestone|throughput|project>", "description": "<short detail>"}]\n'
-            "}"
-        )
+        question_scope = "portfolio"
+        if isinstance(context.get("question_scope"), str):
+            question_scope = str(context["question_scope"])
+        elif not _is_portfolio_question(query):
+            question_scope = "project"
 
         context_json = json.dumps(context, default=str, indent=2)
         evidence_json = json.dumps(evidence_sources or [], default=str, indent=2)
+        scope_instruction = (
+            "Use the PORTFOLIO-LEVEL response structure."
+            if question_scope == "portfolio"
+            else "Use the PROJECT-FOCUSED response structure."
+        )
         user_message = (
-            f"Question: {query}\n\n"
+            f"Question: {query}\n"
+            f"Response mode: {scope_instruction}\n"
+            f"Grounding: Do not invent headcount, staffing moves, budgets, or SLA impacts. "
+            f"Only recommend actions traceable to evidence below. State confidence levels.\n\n"
             f"Delivery performance data:\n{context_json}\n\n"
-            f"Evidence catalog:\n{evidence_json}"
+            f"Evidence catalog (use exact titles in cited_source_titles when referenced):\n{evidence_json}"
         )
 
-        messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        messages: list[dict[str, str]] = [{"role": "system", "content": _DELIVERY_SYSTEM_PROMPT}]
         for turn in history or []:
             role = turn.get("role")
             content = turn.get("content")
@@ -168,24 +342,28 @@ class LLMClient:
                 model=model,
                 messages=messages,
                 temperature=0.2,
-                max_tokens=1200,
+                max_tokens=1300 if question_scope == "portfolio" else 900,
                 response_format={"type": "json_object"},
             )
             raw = response.choices[0].message.content or "{}"
             data = json.loads(raw)
-            sources = data.get("sources") if isinstance(data.get("sources"), list) else []
+            cited = data.get("cited_source_titles")
+            cited_titles = [str(title).strip() for title in cited] if isinstance(cited, list) else []
             return {
-                "answer": str(data.get("answer", "")),
-                "sources": sources,
+                "answer": _sanitize_delivery_answer(str(data.get("answer", ""))),
+                "cited_source_titles": [title for title in cited_titles if title],
                 "model": model,
             }
         except Exception as exc:
             return {
                 "answer": (
-                    "I could not complete the delivery analysis right now. "
-                    "Please try again in a moment."
+                    "## Executive Assessment\n"
+                    "Delivery analysis could not be completed at this time.\n\n"
+                    "## Recommended Leadership Actions\n"
+                    "1. Retry the query.\n"
+                    "2. Confirm delivery data is loaded for the selected project scope."
                 ),
-                "sources": evidence_sources or [],
+                "cited_source_titles": [],
                 "model": model,
                 "error": str(exc),
             }
