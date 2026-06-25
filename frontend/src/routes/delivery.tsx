@@ -8,29 +8,26 @@ import {
   CartesianGrid,
   Tooltip,
 } from "recharts";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import {
   Card,
   SectionHeader,
   KpiCard,
   AiBadge,
-  EvidenceBadge,
   StatusPill,
 } from "@/components/bsg/widgets";
 import {
   type DeliveryDashboardResponse,
-  type ProjectRead,
-  type ThroughputSnapshotRead,
 } from "@/lib/api";
 import {
   useDeliveryDashboardQuery,
   useDeliveryPortfolioQuery,
   useOrganisationsQuery,
   useProjectDeliveryConfidenceQuery,
-  useProjectThroughputQuery,
   useProjectsQuery,
 } from "@/lib/queries/delivery";
 import { MitigationRecommendationsPanel } from "@/features/mitigation-recommendations/components/MitigationRecommendationsPanel";
+import { DeliveryChat } from "@/components/delivery";
 
 export const Route = createFileRoute("/delivery")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -59,8 +56,6 @@ const ROOT_CAUSE_LABELS: Record<string, string> = {
   open_bottlenecks: "Open bottlenecks",
   quality_drift: "Quality drift",
 };
-
-type Msg = { role: "ai" | "user"; text: string; sources?: string[] };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -100,17 +95,6 @@ function latestThroughputUnits(dashboard: DeliveryDashboardResponse | undefined)
   const overview = asRecord(dashboard?.overview);
   const latest = asRecord(overview?.latest_throughput);
   return typeof latest?.units_completed === "number" ? latest.units_completed : 0;
-}
-
-function throughputDelta(snapshots: ThroughputSnapshotRead[]): string | undefined {
-  if (snapshots.length < 2) return undefined;
-  const current = snapshots[0];
-  const previous = snapshots[1];
-  if (previous.units_completed === 0) return undefined;
-  const pct =
-    ((current.units_completed - previous.units_completed) / previous.units_completed) * 100;
-  const sign = pct >= 0 ? "+" : "";
-  return `${sign}${pct.toFixed(1)}% WoW`;
 }
 
 function buildRootCauses(dashboard: DeliveryDashboardResponse) {
@@ -180,39 +164,6 @@ function computeMilestoneHitRate(milestones: Array<Record<string, unknown>>): nu
   return Math.round((hit / closed.length) * 100);
 }
 
-function buildAgentAnswer(
-  question: string,
-  project: ProjectRead | undefined,
-  dashboard: DeliveryDashboardResponse | undefined,
-  atRiskCount: number,
-  throughputSnapshots: ThroughputSnapshotRead[],
-): string {
-  const q = question.toLowerCase();
-  const projectName = project?.name ?? "the selected project";
-
-  if (q.includes("risk") || q.includes("blocking")) {
-    const openRisks = dashboard?.risks ?? [];
-    if (openRisks.length === 0) {
-      return `${atRiskCount} project(s) are flagged at portfolio level. ${projectName} has no open delivery risks right now.`;
-    }
-    const titles = openRisks
-      .slice(0, 3)
-      .map((risk) => String(risk.title ?? "Untitled risk"))
-      .join("; ");
-    return `${atRiskCount} project(s) are at risk in the portfolio. For ${projectName}, open risks include: ${titles}.`;
-  }
-
-  if (q.includes("throughput") || q.includes("decline")) {
-    const units = latestThroughputUnits(dashboard);
-    const delta = throughputDelta(throughputSnapshots);
-    return `${projectName} is reporting ${formatNumber(units)}/d throughput${delta ? ` (${delta})` : ""} with ${Math.round(dashboard?.confidence ?? 0)}% schedule confidence.`;
-  }
-
-  if (dashboard?.daily_summary) return dashboard.daily_summary;
-
-  return `${projectName} is at ${Math.round(dashboard?.confidence ?? 0)}% schedule confidence with traffic-light status ${dashboard?.traffic_light ?? "unknown"}.`;
-}
-
 function DeliveryPage() {
   const navigate = useNavigate({ from: "/delivery" });
   const { projectId: urlProjectId } = Route.useSearch();
@@ -242,10 +193,6 @@ function DeliveryPage() {
 
   const selectedDashboardQuery = useDeliveryDashboardQuery(resolvedProjectId);
   const confidenceQuery = useProjectDeliveryConfidenceQuery(resolvedProjectId);
-  const throughputQuery = useProjectThroughputQuery(resolvedProjectId);
-
-  const [messages, setMessages] = useState<Msg[]>([]);
-  const [input, setInput] = useState("");
 
   const orgById = useMemo(
     () => new Map(organisations.map((org) => [org.id, org.name])),
@@ -271,7 +218,6 @@ function DeliveryPage() {
 
   const selectedProject = projects.find((project) => project.id === resolvedProjectId);
   const selectedDashboard = resolvedProjectId ? dashboards[resolvedProjectId] : undefined;
-  const throughputSnapshots = throughputQuery.data ?? [];
   const portfolioMilestones = portfolioQuery.data?.milestones ?? [];
 
   const loading =
@@ -322,47 +268,8 @@ function DeliveryPage() {
       ].filter(Boolean)
     : [];
 
-  const atRiskCount = portfolioKpis.atRiskProjects;
-
-  useEffect(() => {
-    if (!selectedDashboard || !selectedProject) return;
-    const initialText =
-      selectedDashboard.daily_summary ??
-      buildAgentAnswer(
-        "portfolio status",
-        selectedProject,
-        selectedDashboard,
-        atRiskCount,
-        throughputSnapshots,
-      );
-    setMessages([{ role: "ai", text: initialText }]);
-  }, [
-    selectedProject?.id,
-    selectedDashboard?.daily_summary,
-    selectedDashboard?.confidence,
-    selectedDashboard?.traffic_light,
-    atRiskCount,
-  ]);
-
   const selectProject = (projectId: string) => {
     navigate({ search: { projectId } });
-  };
-
-  const send = (question: string) => {
-    const answer = buildAgentAnswer(
-      question,
-      selectedProject,
-      selectedDashboard,
-      portfolioKpis.atRiskProjects,
-      throughputSnapshots,
-    );
-    const sources = evidenceAttachments.slice(0, 2).map((title) => title);
-    setMessages((current) => [
-      ...current,
-      { role: "user", text: question },
-      { role: "ai", text: answer, sources },
-    ]);
-    setInput("");
   };
 
   if (errorMessage) {
@@ -593,77 +500,7 @@ function DeliveryPage() {
       </div>
 
       <div className="lg:col-span-3">
-        <Card className="sticky top-20">
-          <SectionHeader
-            title="Ask Delivery Agent"
-            sub="Evidence-backed answers"
-            right={<AiBadge />}
-          />
-          <div className="mb-3 flex flex-wrap gap-1.5">
-            {[
-              "Which projects are at risk?",
-              "Why did throughput decline?",
-              "What's blocking delivery?",
-            ].map((suggestion) => (
-              <button
-                key={suggestion}
-                onClick={() => send(suggestion)}
-                className="rounded-full border border-border bg-elevated px-2.5 py-1 text-[11px] hover:bg-card"
-              >
-                {suggestion}
-              </button>
-            ))}
-          </div>
-          <div className="mb-3 max-h-[420px] space-y-2 overflow-y-auto">
-            {messages.map((message, index) => (
-              <div
-                key={index}
-                className={
-                  message.role === "ai"
-                    ? "rounded-md border border-border bg-elevated p-2.5 text-xs"
-                    : "rounded-md bg-[color:var(--brand)]/10 p-2.5 text-xs"
-                }
-              >
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  {message.role === "ai" ? "Delivery Agent" : "You"}
-                </div>
-                <div>{message.text}</div>
-                {message.role === "ai" && message.sources && message.sources.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {message.sources.map((source) => (
-                      <span
-                        key={source}
-                        className="rounded border border-border bg-card px-1.5 py-0.5 text-[9px]"
-                      >
-                        📎 {source}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (input.trim()) send(input.trim());
-            }}
-            className="flex gap-2"
-          >
-            <input
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              placeholder="Ask about delivery…"
-              className="flex-1 rounded border border-border bg-card px-2.5 py-1.5 text-xs outline-none focus:border-[color:var(--brand)]"
-            />
-            <button
-              type="submit"
-              className="rounded bg-[color:var(--brand)] px-3 py-1.5 text-xs font-medium text-[color:var(--brand-foreground)]"
-            >
-              Send
-            </button>
-          </form>
-        </Card>
+        <DeliveryChat projectId={resolvedProjectId} />
       </div>
     </div>
   );

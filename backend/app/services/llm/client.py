@@ -95,3 +95,97 @@ class LLMClient:
                 "structured": {},
                 "error": str(exc),
             }
+
+    async def generate_delivery_answer(
+        self,
+        query: str,
+        context: dict[str, object],
+        *,
+        history: list[dict[str, str]] | None = None,
+        evidence_sources: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
+        """Generate a delivery operations answer grounded in dashboard context."""
+        settings = get_settings()
+        api_key = settings.openai_api_key or settings.llm_api_key
+        model = settings.openai_model or settings.llm_model or "gpt-4o-mini"
+
+        if not api_key:
+            return {
+                "answer": (
+                    "The delivery AI service is not configured. "
+                    "Please set OPENAI_API_KEY to enable evidence-backed delivery analysis."
+                ),
+                "sources": evidence_sources or [],
+                "model": model,
+            }
+
+        import json
+
+        system_prompt = (
+            "You are the BSG Delivery Agent. You analyze delivery performance, project execution, "
+            "milestones, bottlenecks, risks, forecasts, and operational health. Provide concise "
+            "evidence-based recommendations for delivery managers.\n\n"
+            "Rules:\n"
+            "- Answer ONLY from the delivery data provided. Do not invent metrics.\n"
+            "- Never behave like a generic chatbot. Stay focused on delivery operations.\n"
+            "- Structure every answer with these sections in markdown:\n"
+            "  1. **Summary** — direct answer in 1-3 sentences\n"
+            "  2. **Key Evidence** — bullet points citing specific metrics, projects, or signals\n"
+            "  3. **Risks** — detected delivery risks (or state none identified)\n"
+            "  4. **Recommended Actions** — numbered, actionable steps for delivery managers\n"
+            "- Reference project names and numbers from the data when available.\n"
+            "- If data is insufficient, say what is missing and recommend the next operational check.\n\n"
+            "Return ONLY valid JSON in this exact shape (no markdown fences):\n"
+            "{\n"
+            '  "answer": "<markdown answer with Summary, Key Evidence, Risks, Recommended Actions>",\n'
+            '  "sources": [{"title": "<evidence title>", "type": "<risk|bottleneck|milestone|throughput|project>", "description": "<short detail>"}]\n'
+            "}"
+        )
+
+        context_json = json.dumps(context, default=str, indent=2)
+        evidence_json = json.dumps(evidence_sources or [], default=str, indent=2)
+        user_message = (
+            f"Question: {query}\n\n"
+            f"Delivery performance data:\n{context_json}\n\n"
+            f"Evidence catalog:\n{evidence_json}"
+        )
+
+        messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        for turn in history or []:
+            role = turn.get("role")
+            content = turn.get("content")
+            if role in {"user", "assistant"} and isinstance(content, str) and content.strip():
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": user_message})
+
+        client_kwargs: dict[str, str] = {"api_key": api_key}
+        if settings.openai_base_url or settings.llm_base_url:
+            client_kwargs["base_url"] = (settings.openai_base_url or settings.llm_base_url or "")
+
+        try:
+            client = AsyncOpenAI(**client_kwargs)
+            response = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.2,
+                max_tokens=1200,
+                response_format={"type": "json_object"},
+            )
+            raw = response.choices[0].message.content or "{}"
+            data = json.loads(raw)
+            sources = data.get("sources") if isinstance(data.get("sources"), list) else []
+            return {
+                "answer": str(data.get("answer", "")),
+                "sources": sources,
+                "model": model,
+            }
+        except Exception as exc:
+            return {
+                "answer": (
+                    "I could not complete the delivery analysis right now. "
+                    "Please try again in a moment."
+                ),
+                "sources": evidence_sources or [],
+                "model": model,
+                "error": str(exc),
+            }
