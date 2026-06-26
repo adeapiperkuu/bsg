@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -104,6 +104,12 @@ def _snapshot(org_id, project_id, team_id, pct) -> UtilizationSnapshot:
         available_hours=Decimal("100"),
         utilization_pct=Decimal(str(pct)),
     )
+
+
+def _stale_snapshot(org_id, project_id, team_id, pct, *, age_days=30) -> UtilizationSnapshot:
+    snapshot = _snapshot(org_id, project_id, team_id, pct)
+    snapshot.snapshot_date = date.today() - timedelta(days=age_days)
+    return snapshot
 
 
 def _requirement(org_id, project_id) -> ProjectSkillRequirement:
@@ -530,3 +536,377 @@ async def test_insufficient_evidence_fallback_when_no_project() -> None:
     )
     query = await answer_workforce_query(session, user, payload)
     assert "Select a project" in query.answer_text
+
+
+async def _ask(question: str, session: "FakeSession", *, matrix=None, training=None) -> str:
+    """Run a question end-to-end through answer_workforce_query for a DM in ORG_A."""
+    user = _user(AppRole.DELIVERY_MANAGER, ORG_A)
+    project = session.project
+    payload = AgentQueryCreate(
+        agent_name=WORKFORCE_AGENT_NAME,
+        project_id=project.id,
+        query_text=question,
+    )
+    with (
+        patch(
+            "app.services.workforce_agent.build_project_skill_matrix",
+            new=AsyncMock(return_value=matrix or _empty_matrix(project.id)),
+        ),
+        patch(
+            "app.services.workforce_agent.build_project_training_gaps",
+            new=AsyncMock(return_value=training or _training(project.id, total=0)),
+        ),
+    ):
+        query = await answer_workforce_query(session, user, payload)
+    return query.answer_text
+
+
+def _session_with_team(**kwargs) -> FakeSession:
+    project = _project(ORG_A)
+    team = _team(ORG_A, project.id)
+    defaults = {"project": project, "teams": [team]}
+    defaults.update(kwargs)
+    return FakeSession(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_sme_question_focuses_on_sme_coverage() -> None:
+    project = _project(ORG_A)
+    team = _team(ORG_A, project.id)
+    session = FakeSession(
+        project=project,
+        teams=[team],
+        annotators=[
+            _annotator(ORG_A, team.id, name="Priya Sharma", sme=True),
+            _annotator(ORG_A, team.id, name="Arben Krasniqi", sme=False),
+        ],
+    )
+    answer = await _ask("Do we have enough SME coverage?", session)
+    assert "SME coverage" in answer
+    assert not answer.startswith("Workforce summary for")
+
+
+@pytest.mark.asyncio
+async def test_overloaded_question_says_no_utilization_when_missing() -> None:
+    session = _session_with_team(snapshots=[])
+    answer = await _ask("Which teams are overloaded?", session)
+    assert "No utilization snapshots are available" in answer
+
+
+@pytest.mark.asyncio
+async def test_overloaded_question_reports_overloaded_teams() -> None:
+    project = _project(ORG_A)
+    team = _team(ORG_A, project.id, name="Pod A")
+    session = FakeSession(
+        project=project,
+        teams=[team],
+        snapshots=[_snapshot(ORG_A, project.id, team.id, 105)],
+    )
+    answer = await _ask("Which teams are overloaded?", session)
+    assert "Utilization for" in answer
+    assert "Overloaded" in answer
+
+
+@pytest.mark.asyncio
+async def test_skills_question_says_no_requirements_when_none() -> None:
+    session = _session_with_team(requirements=[])
+    answer = await _ask("Which skills are missing for this project?", session)
+    assert "No skill requirements are configured" in answer
+
+
+@pytest.mark.asyncio
+async def test_training_question_says_no_gaps_when_zero() -> None:
+    project = _project(ORG_A)
+    team = _team(ORG_A, project.id)
+    session = FakeSession(project=project, teams=[team])
+    answer = await _ask(
+        "Are training gaps creating risk?",
+        session,
+        training=_training(project.id, total=0),
+    )
+    assert "No open training gaps" in answer
+
+
+@pytest.mark.asyncio
+async def test_capability_gaps_question_prompts_detection_when_none() -> None:
+    session = _session_with_team(gaps=[])
+    answer = await _ask("What are the biggest capability gaps?", session)
+    assert "capability gap" in answer.lower()
+    assert "detection" in answer.lower()
+
+
+@pytest.mark.asyncio
+async def test_capability_gaps_question_lists_gaps_when_present() -> None:
+    project = _project(ORG_A)
+    team = _team(ORG_A, project.id)
+    session = FakeSession(
+        project=project,
+        teams=[team],
+        gaps=[_gap(ORG_A, project.id, severity=CapabilityGapSeverity.CRITICAL)],
+    )
+    answer = await _ask("What are the biggest capability gaps?", session)
+    assert "Capability gaps for" in answer
+    assert "Top gaps" in answer
+
+
+@pytest.mark.asyncio
+async def test_recommendations_question_says_none_when_absent() -> None:
+    session = _session_with_team(risk_alerts=[], recommendations=[])
+    answer = await _ask("Any workforce recommendations?", session)
+    assert "No workforce recommendations exist yet" in answer
+
+
+@pytest.mark.asyncio
+async def test_generic_summary_question_returns_summary_style() -> None:
+    project = _project(ORG_A)
+    team = _team(ORG_A, project.id)
+    session = FakeSession(
+        project=project,
+        teams=[team],
+        annotators=[_annotator(ORG_A, team.id, sme=True)],
+        snapshots=[_snapshot(ORG_A, project.id, team.id, 70)],
+    )
+    answer = await _ask("Summarize overall workforce status", session)
+    assert answer.startswith("Workforce summary for")
+
+
+@pytest.mark.asyncio
+async def test_different_questions_return_different_answers() -> None:
+    project = _project(ORG_A)
+    team = _team(ORG_A, project.id)
+
+    def fresh() -> FakeSession:
+        return FakeSession(
+            project=project,
+            teams=[team],
+            annotators=[_annotator(ORG_A, team.id, sme=True)],
+            snapshots=[_snapshot(ORG_A, project.id, team.id, 105)],
+        )
+
+    sme_answer = await _ask("Do we have enough SME coverage?", fresh())
+    util_answer = await _ask("Which teams are overloaded?", fresh())
+    assert sme_answer != util_answer
+    assert "SME coverage" in sme_answer
+    assert "Utilization for" in util_answer
+
+
+@pytest.mark.asyncio
+async def test_topic_answer_excludes_annotator_names() -> None:
+    project = _project(ORG_A)
+    team = _team(ORG_A, project.id)
+    secret = "Priya Sharma"
+    session = FakeSession(
+        project=project,
+        teams=[team],
+        annotators=[_annotator(ORG_A, team.id, name=secret, sme=True)],
+    )
+    answer = await _ask("Do we have enough SME coverage?", session)
+    assert secret not in answer
+
+
+async def _ask_query(question: str, session: "FakeSession", *, matrix=None, training=None):
+    """Run a question end-to-end and return the persisted AgentQuery (for evidence checks)."""
+    user = _user(AppRole.DELIVERY_MANAGER, ORG_A)
+    project = session.project
+    payload = AgentQueryCreate(
+        agent_name=WORKFORCE_AGENT_NAME,
+        project_id=project.id,
+        query_text=question,
+    )
+    with (
+        patch(
+            "app.services.workforce_agent.build_project_skill_matrix",
+            new=AsyncMock(return_value=matrix or _empty_matrix(project.id)),
+        ),
+        patch(
+            "app.services.workforce_agent.build_project_training_gaps",
+            new=AsyncMock(return_value=training or _training(project.id, total=0)),
+        ),
+    ):
+        return await answer_workforce_query(session, user, payload)
+
+
+@pytest.mark.asyncio
+async def test_stale_utilization_snapshot_warns_and_medium_confidence() -> None:
+    project = _project(ORG_A)
+    team = _team(ORG_A, project.id, name="Pod A")
+    session = FakeSession(
+        project=project,
+        teams=[team],
+        snapshots=[_stale_snapshot(ORG_A, project.id, team.id, 105, age_days=30)],
+    )
+    answer = await _ask("Which teams are overloaded?", session)
+    assert "Utilization for" in answer
+    assert "stale" in answer.lower()
+    assert "30 days old" in answer
+    assert "Confidence: Medium." in answer
+
+
+@pytest.mark.asyncio
+async def test_missing_utilization_data_low_confidence_and_limitation() -> None:
+    session = _session_with_team(snapshots=[])
+    answer = await _ask("Which teams are overloaded?", session)
+    assert "No utilization snapshots are available" in answer
+    assert "cannot confirm" in answer.lower()
+    assert "Confidence: Low." in answer
+
+
+@pytest.mark.asyncio
+async def test_fresh_utilization_data_high_confidence() -> None:
+    project = _project(ORG_A)
+    team = _team(ORG_A, project.id, name="Pod A")
+    session = FakeSession(
+        project=project,
+        teams=[team],
+        snapshots=[_snapshot(ORG_A, project.id, team.id, 105)],
+    )
+    answer = await _ask("Which teams are overloaded?", session)
+    assert "Confidence: High." in answer
+    assert "stale" not in answer.lower()
+
+
+@pytest.mark.asyncio
+async def test_capacity_answer_mentions_missing_utilization() -> None:
+    project = _project(ORG_A)
+    team = _team(ORG_A, project.id)
+    session = FakeSession(
+        project=project,
+        teams=[team],
+        annotators=[_annotator(ORG_A, team.id, sme=True)],
+        snapshots=[],
+    )
+    answer = await _ask("How much capacity do we have?", session)
+    assert "active annotators" in answer
+    assert "no utilization snapshots are available" in answer.lower()
+    assert "Confidence: Medium." in answer
+
+
+@pytest.mark.asyncio
+async def test_missing_skill_requirements_low_confidence() -> None:
+    session = _session_with_team(requirements=[])
+    answer = await _ask("Which skills are missing for this project?", session)
+    assert "No skill requirements are configured" in answer
+    assert "Confidence: Low." in answer
+
+
+@pytest.mark.asyncio
+async def test_missing_training_records_message() -> None:
+    project = _project(ORG_A)
+    team = _team(ORG_A, project.id)
+    session = FakeSession(project=project, teams=[team])
+    answer = await _ask(
+        "Are there any training gaps?",
+        session,
+        training=_training(project.id, total=0),
+    )
+    assert "No open training gaps" in answer
+    assert "no training records available" in answer.lower()
+
+
+@pytest.mark.asyncio
+async def test_missing_capability_gaps_low_confidence() -> None:
+    session = _session_with_team(gaps=[])
+    answer = await _ask("What are the biggest capability gaps?", session)
+    assert "detection" in answer.lower()
+    assert "Confidence: Low." in answer
+
+
+@pytest.mark.asyncio
+async def test_evidence_ranked_utilization_first_for_utilization_question() -> None:
+    project = _project(ORG_A)
+    team = _team(ORG_A, project.id, name="Pod A")
+    session = FakeSession(
+        project=project,
+        teams=[team],
+        snapshots=[_snapshot(ORG_A, project.id, team.id, 105)],
+        requirements=[_requirement(ORG_A, project.id)],
+        gaps=[_gap(ORG_A, project.id)],
+    )
+    query = await _ask_query("Which teams are overloaded?", session)
+    links = [obj for obj in session.added if isinstance(obj, AgentQueryEvidenceLink)]
+    assert links
+    assert links[0].source_table == "utilization_snapshots"
+
+
+@pytest.mark.asyncio
+async def test_evidence_ranked_teams_first_for_sme_question() -> None:
+    project = _project(ORG_A)
+    team = _team(ORG_A, project.id)
+    session = FakeSession(
+        project=project,
+        teams=[team],
+        annotators=[_annotator(ORG_A, team.id, sme=True)],
+        snapshots=[_snapshot(ORG_A, project.id, team.id, 80)],
+        gaps=[_gap(ORG_A, project.id)],
+    )
+    query = await _ask_query("Do we have enough SME coverage?", session)
+    links = [obj for obj in session.added if isinstance(obj, AgentQueryEvidenceLink)]
+    assert links
+    assert links[0].source_table in {"teams", "projects"}
+    # Capability gaps must not be the top-ranked evidence for an SME question.
+    assert links[0].source_table != "capability_gaps"
+
+
+@pytest.mark.asyncio
+async def test_confidence_levels_vary_by_data_state() -> None:
+    project = _project(ORG_A)
+    team = _team(ORG_A, project.id)
+
+    high = await _ask(
+        "Which teams are overloaded?",
+        FakeSession(
+            project=project,
+            teams=[team],
+            snapshots=[_snapshot(ORG_A, project.id, team.id, 105)],
+        ),
+    )
+    medium = await _ask(
+        "Which teams are overloaded?",
+        FakeSession(
+            project=project,
+            teams=[team],
+            snapshots=[_stale_snapshot(ORG_A, project.id, team.id, 105)],
+        ),
+    )
+    low = await _ask(
+        "Which teams are overloaded?",
+        FakeSession(project=project, teams=[team], snapshots=[]),
+    )
+    assert "Confidence: High." in high
+    assert "Confidence: Medium." in medium
+    assert "Confidence: Low." in low
+
+
+@pytest.mark.asyncio
+async def test_no_annotator_names_with_stale_utilization() -> None:
+    project = _project(ORG_A)
+    team = _team(ORG_A, project.id)
+    secret = "Priya Sharma"
+    session = FakeSession(
+        project=project,
+        teams=[team],
+        annotators=[_annotator(ORG_A, team.id, name=secret, sme=True)],
+        snapshots=[_stale_snapshot(ORG_A, project.id, team.id, 105)],
+    )
+    user = _user(AppRole.DELIVERY_MANAGER, ORG_A)
+    payload = AgentQueryCreate(
+        agent_name=WORKFORCE_AGENT_NAME,
+        project_id=project.id,
+        query_text="Which teams are overloaded?",
+    )
+    with (
+        patch(
+            "app.services.workforce_agent.build_project_skill_matrix",
+            new=AsyncMock(return_value=_empty_matrix(project.id)),
+        ),
+        patch(
+            "app.services.workforce_agent.build_project_training_gaps",
+            new=AsyncMock(return_value=_training(project.id, total=0)),
+        ),
+    ):
+        query = await answer_workforce_query(session, user, payload)
+    assert secret not in query.answer_text
+    links = [obj for obj in session.added if isinstance(obj, AgentQueryEvidenceLink)]
+    for link in links:
+        assert link.source_table != "annotators"
+        assert secret not in (link.description or "")
