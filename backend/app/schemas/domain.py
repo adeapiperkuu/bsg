@@ -1,9 +1,9 @@
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.db.models import (
     AlertStatus,
@@ -11,9 +11,19 @@ from app.db.models import (
     AppRole,
     CommunicationStatus,
     CommunicationType,
+    DeliverySite,
     MilestoneStatus,
+    ProficiencyLevel,
     ProjectStatus,
     RiskTier,
+    SkillCoverageStatus,
+    SkillRequirementPriority,
+    CertificationStatus,
+    TrainingGapType,
+    TrainingRecordStatus,
+    CapabilityGapSeverity,
+    CapabilityGapStatus,
+    CapabilityGapType,
 )
 from app.schemas.common import EvidenceLinkRead, ORMModel, Pagination, ensure_month_start
 
@@ -141,6 +151,385 @@ class MilestoneRead(ORMModel):
     status: MilestoneStatus
 
 
+class TeamRead(ORMModel):
+    id: UUID
+    project_id: UUID
+    org_id: UUID
+    name: str
+    site: DeliverySite
+    domain: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class TeamCreate(BaseModel):
+    name: str
+    site: DeliverySite
+    domain: str
+    is_active: bool = True
+
+
+class TeamUpdate(BaseModel):
+    name: str | None = None
+    site: DeliverySite | None = None
+    domain: str | None = None
+    is_active: bool | None = None
+
+
+class AnnotatorRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    team_id: UUID
+    full_name: str
+    site: DeliverySite
+    is_sme_certified: bool
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class AnnotatorCreate(BaseModel):
+    full_name: str
+    site: DeliverySite
+    is_sme_certified: bool = False
+    is_active: bool = True
+
+
+class AnnotatorUpdate(BaseModel):
+    full_name: str | None = None
+    site: DeliverySite | None = None
+    is_sme_certified: bool | None = None
+    is_active: bool | None = None
+    team_id: UUID | None = None
+
+
+class UtilizationSnapshotRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    project_id: UUID
+    team_id: UUID | None
+    annotator_id: UUID | None
+    snapshot_date: date
+    allocated_hours: Decimal
+    available_hours: Decimal
+    utilization_pct: Decimal
+    billable_hours: Decimal | None
+    non_billable_hours: Decimal | None
+    notes: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class UtilizationSnapshotCreate(BaseModel):
+    snapshot_date: date
+    team_id: UUID | None = None
+    annotator_id: UUID | None = None
+    allocated_hours: Decimal = Field(ge=0)
+    available_hours: Decimal = Field(ge=0)
+    utilization_pct: Decimal | None = Field(default=None, ge=0)
+    billable_hours: Decimal | None = Field(default=None, ge=0)
+    non_billable_hours: Decimal | None = Field(default=None, ge=0)
+    notes: str | None = None
+
+    @model_validator(mode="after")
+    def annotator_requires_team(self) -> "UtilizationSnapshotCreate":
+        if self.annotator_id is not None and self.team_id is None:
+            raise ValueError("team_id is required when annotator_id is provided.")
+        return self
+
+
+class UtilizationSnapshotUpdate(BaseModel):
+    snapshot_date: date | None = None
+    team_id: UUID | None = None
+    annotator_id: UUID | None = None
+    allocated_hours: Decimal | None = Field(default=None, ge=0)
+    available_hours: Decimal | None = Field(default=None, ge=0)
+    utilization_pct: Decimal | None = Field(default=None, ge=0)
+    billable_hours: Decimal | None = Field(default=None, ge=0)
+    non_billable_hours: Decimal | None = Field(default=None, ge=0)
+    notes: str | None = None
+
+
+class SkillRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    name: str
+    category: str | None
+    domain: str | None
+    description: str | None
+    is_critical: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class SkillCreate(BaseModel):
+    name: str
+    category: str | None = None
+    domain: str | None = None
+    description: str | None = None
+    is_critical: bool = False
+
+
+class SkillUpdate(BaseModel):
+    name: str | None = None
+    category: str | None = None
+    domain: str | None = None
+    description: str | None = None
+    is_critical: bool | None = None
+
+
+class AnnotatorSkillRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    annotator_id: UUID
+    skill_id: UUID
+    proficiency_level: ProficiencyLevel
+    verified_by: UUID | None
+    verified_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AnnotatorSkillCreate(BaseModel):
+    skill_id: UUID
+    proficiency_level: ProficiencyLevel
+    verified_by: UUID | None = None
+    verified_at: datetime | None = None
+
+
+class AnnotatorSkillUpdate(BaseModel):
+    proficiency_level: ProficiencyLevel | None = None
+    verified_by: UUID | None = None
+    verified_at: datetime | None = None
+
+
+class ProjectSkillRequirementRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    project_id: UUID
+    skill_id: UUID
+    required_proficiency_level: ProficiencyLevel
+    required_headcount: int
+    required_sme_count: int
+    priority: SkillRequirementPriority
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProjectSkillRequirementCreate(BaseModel):
+    skill_id: UUID
+    required_proficiency_level: ProficiencyLevel
+    required_headcount: int = Field(default=1, ge=0)
+    required_sme_count: int = Field(default=0, ge=0)
+    priority: SkillRequirementPriority = SkillRequirementPriority.MEDIUM
+
+
+class ProjectSkillRequirementUpdate(BaseModel):
+    required_proficiency_level: ProficiencyLevel | None = None
+    required_headcount: int | None = Field(default=None, ge=0)
+    required_sme_count: int | None = Field(default=None, ge=0)
+    priority: SkillRequirementPriority | None = None
+
+
+class SkillMatrixSiteSummary(BaseModel):
+    site: DeliverySite
+    available_headcount: int
+    available_sme_count: int
+    coverage_status: SkillCoverageStatus
+
+
+class SkillMatrixRow(BaseModel):
+    skill_id: UUID
+    skill_name: str
+    category: str | None
+    domain: str | None
+    required_proficiency_level: ProficiencyLevel
+    required_headcount: int
+    available_headcount: int
+    required_sme_count: int
+    available_sme_count: int
+    coverage_status: SkillCoverageStatus
+    by_site: list[SkillMatrixSiteSummary]
+
+
+class SkillMatrixRead(BaseModel):
+    project_id: UUID
+    rows: list[SkillMatrixRow]
+
+
+class CertificationRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    name: str
+    issuing_body: str | None
+    description: str | None
+    validity_months: int | None
+    is_required_for_sme: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class CertificationCreate(BaseModel):
+    name: str
+    issuing_body: str | None = None
+    description: str | None = None
+    validity_months: int | None = Field(default=None, ge=0)
+    is_required_for_sme: bool = False
+
+
+class CertificationUpdate(BaseModel):
+    name: str | None = None
+    issuing_body: str | None = None
+    description: str | None = None
+    validity_months: int | None = Field(default=None, ge=0)
+    is_required_for_sme: bool | None = None
+
+
+class EmployeeCertificationRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    annotator_id: UUID
+    certification_id: UUID
+    issued_at: date | None
+    expires_at: date | None
+    status: CertificationStatus
+    evidence_url: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class EmployeeCertificationCreate(BaseModel):
+    certification_id: UUID
+    issued_at: date | None = None
+    expires_at: date | None = None
+    status: CertificationStatus = CertificationStatus.ACTIVE
+    evidence_url: str | None = None
+
+
+class EmployeeCertificationUpdate(BaseModel):
+    issued_at: date | None = None
+    expires_at: date | None = None
+    status: CertificationStatus | None = None
+    evidence_url: str | None = None
+
+
+class TrainingProgramRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    skill_id: UUID | None
+    name: str
+    description: str | None
+    required_for_skill_level: ProficiencyLevel | None
+    is_mandatory: bool
+    knowledge_document_id: UUID | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TrainingProgramCreate(BaseModel):
+    name: str
+    skill_id: UUID | None = None
+    description: str | None = None
+    required_for_skill_level: ProficiencyLevel | None = None
+    is_mandatory: bool = False
+    knowledge_document_id: UUID | None = None
+
+
+class TrainingProgramUpdate(BaseModel):
+    name: str | None = None
+    skill_id: UUID | None = None
+    description: str | None = None
+    required_for_skill_level: ProficiencyLevel | None = None
+    is_mandatory: bool | None = None
+    knowledge_document_id: UUID | None = None
+
+
+class TrainingRecordRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    annotator_id: UUID
+    training_program_id: UUID
+    status: TrainingRecordStatus
+    started_at: datetime | None
+    completed_at: datetime | None
+    score_pct: Decimal | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TrainingRecordCreate(BaseModel):
+    training_program_id: UUID
+    status: TrainingRecordStatus = TrainingRecordStatus.NOT_STARTED
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    score_pct: Decimal | None = Field(default=None, ge=0, le=100)
+
+
+class TrainingRecordUpdate(BaseModel):
+    status: TrainingRecordStatus | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    score_pct: Decimal | None = Field(default=None, ge=0, le=100)
+
+
+class TrainingGapRow(BaseModel):
+    team_id: UUID | None
+    team_name: str | None
+    skill_id: UUID | None
+    skill_name: str | None
+    training_program_id: UUID | None
+    training_program_name: str | None
+    certification_id: UUID | None
+    certification_name: str | None
+    gap_type: TrainingGapType
+    affected_count: int
+
+
+class TrainingGapSummaryRead(BaseModel):
+    project_id: UUID
+    total_training_gaps: int
+    mandatory_training_incomplete: int
+    expired_or_failed_training: int
+    expired_certifications: int
+    pending_certification_reviews: int
+    rows: list[TrainingGapRow]
+
+
+class CapabilityGapRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    project_id: UUID
+    team_id: UUID | None
+    skill_id: UUID | None
+    gap_type: CapabilityGapType
+    severity: CapabilityGapSeverity
+    title: str
+    detail: str
+    evidence: dict[str, Any] | None
+    status: CapabilityGapStatus
+    detected_at: datetime
+    resolved_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CapabilityGapUpdate(BaseModel):
+    status: CapabilityGapStatus | None = None
+    severity: CapabilityGapSeverity | None = None
+    title: str | None = None
+    detail: str | None = None
+
+
+class CapabilityGapDetectionResponse(BaseModel):
+    project_id: UUID
+    detected_count: int
+    created_count: int
+    gaps: list[CapabilityGapRead]
+    risk_alerts_created: int
+    recommendations_created: int
+
+
 class ThroughputSnapshotRead(ORMModel):
     id: UUID
     project_id: UUID
@@ -234,6 +623,12 @@ class MitigationRecommendationRead(ORMModel):
     source_risk_type: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class WorkforceRecommendationGenerateResponse(BaseModel):
+    project_id: UUID
+    recommendations_created: int
+    recommendations: list[MitigationRecommendationRead]
 
 
 class MitigationRecommendationAssignOwner(BaseModel):

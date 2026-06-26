@@ -11,6 +11,7 @@ from app.schemas.domain import AgentQueryCreate, AgentQueryRead
 from app.services.agent_queries import SUPPORTED_AGENTS, answer_query
 from app.services.evidence import EvidenceInput
 from app.services.scoping import get_visible_project
+from app.services.workforce_agent import WORKFORCE_AGENT_NAME, answer_workforce_query
 
 router = APIRouter(tags=["agent queries"])
 
@@ -19,6 +20,17 @@ router = APIRouter(tags=["agent queries"])
 async def create_agent_query(payload: AgentQueryCreate, session: SessionDep, current_user: UserDep) -> DataResponse[AgentQueryRead]:
     if payload.agent_name not in SUPPORTED_AGENTS:
         raise ApiError(400, "VALIDATION_ERROR", "Agent is not supported in MVP.")
+
+    if payload.agent_name == WORKFORCE_AGENT_NAME:
+        query = await answer_workforce_query(session, current_user, payload)
+        await session.commit()
+        await session.refresh(query)
+        data = AgentQueryRead.model_validate(query)
+        data.evidence_links = [
+            EvidenceLinkRead(**item.__dict__) for item in await _query_evidence(session, query.id)
+        ]
+        return DataResponse(data=data)
+
     evidence: list[EvidenceInput] = []
     if payload.project_id:
         project = await get_visible_project(session, payload.project_id, current_user)

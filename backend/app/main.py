@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.agents.delivery.routes import chat as delivery_chat
 from app.agents.delivery.routes import dashboard as delivery_dashboard
 from app.api.routes import (
     agents,
@@ -19,6 +20,7 @@ from app.api.routes import (
     quality,
     system,
     users,
+    workforce,
 )
 from app.core.config import get_settings
 from app.core.csrf import CsrfMiddleware
@@ -61,7 +63,9 @@ def create_app() -> FastAPI:
     app.include_router(projects.router, prefix=api_prefix)
     app.include_router(delivery.router, prefix=api_prefix)
     app.include_router(delivery_dashboard.router, prefix=api_prefix)
+    app.include_router(delivery_chat.router, prefix=api_prefix)
     app.include_router(quality.router, prefix=api_prefix)
+    app.include_router(workforce.router, prefix=api_prefix)
     app.include_router(agents.router, prefix=api_prefix)
     app.include_router(communications.router, prefix=api_prefix)
     app.include_router(metrics.router, prefix=api_prefix)

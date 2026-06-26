@@ -149,6 +149,71 @@ class KnowledgeProcessingStatus(StrEnum):
     FAILED = "failed"
 
 
+class ProficiencyLevel(StrEnum):
+    BEGINNER = "beginner"
+    INTERMEDIATE = "intermediate"
+    ADVANCED = "advanced"
+    EXPERT = "expert"
+
+
+class SkillRequirementPriority(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class SkillCoverageStatus(StrEnum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class CertificationStatus(StrEnum):
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    PENDING_REVIEW = "pending_review"
+    REVOKED = "revoked"
+
+
+class TrainingRecordStatus(StrEnum):
+    NOT_STARTED = "not_started"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    EXPIRED = "expired"
+
+
+class TrainingGapType(StrEnum):
+    MANDATORY_TRAINING_INCOMPLETE = "mandatory_training_incomplete"
+    EXPIRED_OR_FAILED_TRAINING = "expired_or_failed_training"
+    EXPIRED_CERTIFICATION = "expired_certification"
+    PENDING_CERTIFICATION_REVIEW = "pending_certification_review"
+
+
+class CapabilityGapType(StrEnum):
+    SKILL_SHORTAGE = "skill_shortage"
+    SME_SHORTAGE = "sme_shortage"
+    CERTIFICATION_GAP = "certification_gap"
+    TRAINING_GAP = "training_gap"
+    UTILIZATION_OVERLOAD = "utilization_overload"
+    UTILIZATION_UNDERLOAD = "utilization_underload"
+
+
+class CapabilityGapSeverity(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class CapabilityGapStatus(StrEnum):
+    OPEN = "open"
+    ACKNOWLEDGED = "acknowledged"
+    RESOLVED = "resolved"
+    DISMISSED = "dismissed"
+
+
 class KnowledgeExtractionStatus(StrEnum):
     PENDING = "pending"
     EXTRACTING = "extracting"
@@ -383,6 +448,175 @@ class Annotator(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     site: Mapped[DeliverySite] = mapped_column(delivery_site)
     is_sme_certified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+
+
+class UtilizationSnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "utilization_snapshots"
+    __table_args__ = (
+        Index("utilization_snapshots_org_id_idx", "org_id"),
+        Index("utilization_snapshots_project_id_idx", "project_id"),
+        Index("utilization_snapshots_team_id_idx", "team_id"),
+        Index("utilization_snapshots_annotator_id_idx", "annotator_id"),
+        Index("utilization_snapshots_snapshot_date_idx", "snapshot_date"),
+        Index("utilization_snapshots_project_id_date_idx", "project_id", "snapshot_date"),
+        Index("utilization_snapshots_team_id_date_idx", "team_id", "snapshot_date"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    team_id: Mapped[UUID | None] = mapped_column(ForeignKey("teams.id", ondelete="SET NULL"))
+    annotator_id: Mapped[UUID | None] = mapped_column(ForeignKey("annotators.id", ondelete="SET NULL"))
+    snapshot_date: Mapped[date] = mapped_column(Date)
+    allocated_hours: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    available_hours: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    utilization_pct: Mapped[Decimal] = mapped_column(Numeric(7, 2))
+    billable_hours: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    non_billable_hours: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    notes: Mapped[str | None] = mapped_column(Text)
+
+
+class Skill(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "skills"
+    __table_args__ = (
+        Index("skills_org_id_idx", "org_id"),
+        Index("skills_name_idx", "name"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    name: Mapped[str] = mapped_column(Text)
+    category: Mapped[str | None] = mapped_column(Text)
+    domain: Mapped[str | None] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    is_critical: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
+
+class AnnotatorSkill(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "annotator_skills"
+    __table_args__ = (
+        Index("annotator_skills_org_id_idx", "org_id"),
+        Index("annotator_skills_annotator_id_idx", "annotator_id"),
+        Index("annotator_skills_skill_id_idx", "skill_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    annotator_id: Mapped[UUID] = mapped_column(ForeignKey("annotators.id", ondelete="CASCADE"))
+    skill_id: Mapped[UUID] = mapped_column(ForeignKey("skills.id", ondelete="RESTRICT"))
+    proficiency_level: Mapped[ProficiencyLevel] = mapped_column(Text)
+    verified_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ProjectSkillRequirement(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "project_skill_requirements"
+    __table_args__ = (
+        Index("project_skill_requirements_org_id_idx", "org_id"),
+        Index("project_skill_requirements_project_id_idx", "project_id"),
+        Index("project_skill_requirements_skill_id_idx", "skill_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    skill_id: Mapped[UUID] = mapped_column(ForeignKey("skills.id", ondelete="RESTRICT"))
+    required_proficiency_level: Mapped[ProficiencyLevel] = mapped_column(Text)
+    required_headcount: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    required_sme_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    priority: Mapped[SkillRequirementPriority] = mapped_column(Text, default=SkillRequirementPriority.MEDIUM)
+
+
+class Certification(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "certifications"
+    __table_args__ = (
+        Index("certifications_org_id_idx", "org_id"),
+        Index("certifications_name_idx", "name"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    name: Mapped[str] = mapped_column(Text)
+    issuing_body: Mapped[str | None] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    validity_months: Mapped[int | None] = mapped_column(Integer)
+    is_required_for_sme: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
+
+class EmployeeCertification(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "employee_certifications"
+    __table_args__ = (
+        Index("employee_certifications_org_id_idx", "org_id"),
+        Index("employee_certifications_annotator_id_idx", "annotator_id"),
+        Index("employee_certifications_certification_id_idx", "certification_id"),
+        Index("employee_certifications_expires_at_idx", "expires_at"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    annotator_id: Mapped[UUID] = mapped_column(ForeignKey("annotators.id", ondelete="CASCADE"))
+    certification_id: Mapped[UUID] = mapped_column(ForeignKey("certifications.id", ondelete="RESTRICT"))
+    issued_at: Mapped[date | None] = mapped_column(Date)
+    expires_at: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[CertificationStatus] = mapped_column(Text, default=CertificationStatus.ACTIVE)
+    evidence_url: Mapped[str | None] = mapped_column(Text)
+
+
+class TrainingProgram(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "training_programs"
+    __table_args__ = (
+        Index("training_programs_org_id_idx", "org_id"),
+        Index("training_programs_skill_id_idx", "skill_id"),
+        Index("training_programs_name_idx", "name"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    skill_id: Mapped[UUID | None] = mapped_column(ForeignKey("skills.id", ondelete="SET NULL"))
+    name: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    required_for_skill_level: Mapped[ProficiencyLevel | None] = mapped_column(Text)
+    is_mandatory: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    knowledge_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="SET NULL"),
+    )
+
+
+class TrainingRecord(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "training_records"
+    __table_args__ = (
+        Index("training_records_org_id_idx", "org_id"),
+        Index("training_records_annotator_id_idx", "annotator_id"),
+        Index("training_records_training_program_id_idx", "training_program_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    annotator_id: Mapped[UUID] = mapped_column(ForeignKey("annotators.id", ondelete="CASCADE"))
+    training_program_id: Mapped[UUID] = mapped_column(ForeignKey("training_programs.id", ondelete="RESTRICT"))
+    status: Mapped[TrainingRecordStatus] = mapped_column(Text, default=TrainingRecordStatus.NOT_STARTED)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    score_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+
+
+class CapabilityGap(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "capability_gaps"
+    __table_args__ = (
+        Index("capability_gaps_org_id_idx", "org_id"),
+        Index("capability_gaps_project_id_idx", "project_id"),
+        Index("capability_gaps_team_id_idx", "team_id"),
+        Index("capability_gaps_skill_id_idx", "skill_id"),
+        Index("capability_gaps_gap_type_idx", "gap_type"),
+        Index("capability_gaps_severity_idx", "severity"),
+        Index("capability_gaps_status_idx", "status"),
+        Index("capability_gaps_detected_at_idx", "detected_at"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    team_id: Mapped[UUID | None] = mapped_column(ForeignKey("teams.id", ondelete="SET NULL"))
+    skill_id: Mapped[UUID | None] = mapped_column(ForeignKey("skills.id", ondelete="SET NULL"))
+    gap_type: Mapped[CapabilityGapType] = mapped_column(Text)
+    severity: Mapped[CapabilityGapSeverity] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text)
+    detail: Mapped[str] = mapped_column(Text)
+    evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    status: Mapped[CapabilityGapStatus] = mapped_column(Text, default=CapabilityGapStatus.OPEN)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class QualitySnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
