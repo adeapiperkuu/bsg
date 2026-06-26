@@ -13,6 +13,7 @@ SUPPORTED_AGENTS = {
     "delivery_performance_agent",
     "quality_intelligence_agent",
     "client_interaction_agent",
+    "workforce_capability_agent",
 }
 
 
