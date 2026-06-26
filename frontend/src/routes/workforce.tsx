@@ -735,7 +735,7 @@ function WorkforcePage() {
                 )}
                 {capabilityGaps.length === 0 ? (
                   <PlaceholderPanel
-                    title="No capability gaps"
+                    title="No capability gaps recorded"
                     reason={
                       canManageWorkforce
                         ? "Run gap detection to scan skill coverage, training, certifications, and utilization."
@@ -835,7 +835,7 @@ function WorkforcePage() {
           </Card>
         </div>
 
-        <div className="space-y-4 lg:col-span-2">
+        <div className="space-y-5 lg:col-span-2">
           {/* --- Live: teams grouped by site --- */}
           <Card>
             <SectionHeader
