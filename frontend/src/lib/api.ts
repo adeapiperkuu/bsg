@@ -606,12 +606,16 @@ export function defaultRouteForRole(role: AppRole): string {
   }
 }
 
+function isClientPortalPath(path: string): boolean {
+  return path === "/client" || path.startsWith("/client/");
+}
+
 export function canAccessPath(role: AppRole, path: string): boolean {
   if (path === "/login" || path === "/unauthorized" || path === "/settings") return true;
   if (role === "super_admin") return path.startsWith("/admin");
-  if (role === "client") return path.startsWith("/client");
+  if (role === "client") return isClientPortalPath(path);
   if (role === "bsg_leadership") return path.startsWith("/leadership");
-  return !path.startsWith("/client") && !path.startsWith("/admin");
+  return !isClientPortalPath(path) && !path.startsWith("/admin");
 }
 
 export async function getKnowledgeBootstrap(): Promise<KnowledgeBootstrapApi> {
