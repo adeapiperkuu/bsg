@@ -80,6 +80,39 @@ export type ProjectSkillRequirementRead = {
   updated_at: string;
 };
 
+export type ProjectSkillRequirementCreatePayload = {
+  skill_id: string;
+  required_proficiency_level: ProficiencyLevel;
+  required_headcount?: number;
+  required_sme_count?: number;
+  priority?: SkillRequirementPriority;
+};
+
+export type ProjectSkillRequirementUpdatePayload = {
+  required_proficiency_level?: ProficiencyLevel;
+  required_headcount?: number;
+  required_sme_count?: number;
+  priority?: SkillRequirementPriority;
+};
+
+export type UtilizationSnapshotCreatePayload = {
+  snapshot_date: string;
+  team_id?: string | null;
+  allocated_hours: number;
+  available_hours: number;
+  utilization_pct?: number | null;
+  notes?: string | null;
+};
+
+export type UtilizationSnapshotUpdatePayload = {
+  snapshot_date?: string;
+  team_id?: string | null;
+  allocated_hours?: number;
+  available_hours?: number;
+  utilization_pct?: number | null;
+  notes?: string | null;
+};
+
 export type SkillMatrixSiteSummary = {
   site: DeliverySite;
   available_headcount: number;

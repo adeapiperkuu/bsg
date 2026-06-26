@@ -14,6 +14,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, SectionHeader, KpiCard, AiBadge, StatusPill } from "@/components/bsg/widgets";
 import { EmployeeProfileDrawer } from "@/components/bsg/EmployeeProfileDrawer";
 import {
+  SkillRequirementsManager,
+  UtilizationSnapshotsManager,
+} from "@/components/bsg/WorkforceManagement";
+import { WorkforceRecommendationsPanel } from "@/components/bsg/WorkforceRecommendationsPanel";
+import {
   createAgentQuery,
   detectProjectCapabilityGaps,
   generateWorkforceRecommendations,
@@ -239,6 +244,30 @@ const WORKFORCE_STARTER_QUESTIONS = [
   "Are training gaps creating risk?",
 ];
 
+function ManageToggleButton({
+  active,
+  onToggle,
+}: {
+  active: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={active}
+      className={cn(
+        "rounded border px-2 py-0.5 text-[11px] font-medium",
+        active
+          ? "border-[color:var(--brand)]/30 bg-[color:var(--brand)]/10 text-[color:var(--brand)]"
+          : "border-border bg-elevated text-muted-foreground hover:bg-card",
+      )}
+    >
+      {active ? "Close" : "Manage"}
+    </button>
+  );
+}
+
 function PlaceholderPanel({ title, reason }: { title: string; reason: string }) {
   return (
     <div className="rounded-md border border-dashed border-border bg-elevated/50 px-4 py-8 text-center">
@@ -352,6 +381,9 @@ function WorkforcePage() {
     onSuccess: (result) => {
       setActionError(null);
       setRecommendMessage(`${result.recommendations_created} recommendation(s) created`);
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projectRecommendations(resolvedProjectId!),
+      });
     },
     onError: (error: Error) => {
       setRecommendMessage(null);
@@ -377,6 +409,8 @@ function WorkforcePage() {
   const [expandedTeams, setExpandedTeams] = useState<Set<string>>(() => new Set());
   const [selectedAnnotator, setSelectedAnnotator] = useState<AnnotatorRead | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [showSkillRequirementsManager, setShowSkillRequirementsManager] = useState(false);
+  const [showUtilizationManager, setShowUtilizationManager] = useState(false);
 
   const toggleTeamExpanded = (teamId: string) => {
     setExpandedTeams((prev) => {
@@ -581,8 +615,20 @@ function WorkforcePage() {
               title="Skill Coverage Matrix"
               sub="Required skills vs available project coverage"
               right={
-                canReadInternalWorkforce && skillMatrixRows.length > 0 ? (
-                  <AiBadge confidence={skillMatrixConfidencePct} />
+                canReadInternalWorkforce ? (
+                  <div className="flex items-center gap-2">
+                    {skillMatrixRows.length > 0 ? (
+                      <AiBadge confidence={skillMatrixConfidencePct} />
+                    ) : null}
+                    {resolvedProjectId ? (
+                      <ManageToggleButton
+                        active={showSkillRequirementsManager}
+                        onToggle={() =>
+                          setShowSkillRequirementsManager((prev) => !prev)
+                        }
+                      />
+                    ) : null}
+                  </div>
                 ) : undefined
               }
             />
@@ -626,6 +672,12 @@ function WorkforcePage() {
                 </table>
               </div>
             )}
+            {canReadInternalWorkforce && showSkillRequirementsManager && resolvedProjectId ? (
+              <SkillRequirementsManager
+                projectId={resolvedProjectId}
+                canManage={canManageWorkforce}
+              />
+            ) : null}
           </Card>
 
           {/* --- Live: utilization snapshots (Phase 2) --- */}
@@ -633,6 +685,14 @@ function WorkforcePage() {
             <SectionHeader
               title="Workforce Utilization"
               sub={`By team / ${UTILIZATION_CAPACITY_THRESHOLD}% capacity threshold`}
+              right={
+                canReadInternalWorkforce && resolvedProjectId ? (
+                  <ManageToggleButton
+                    active={showUtilizationManager}
+                    onToggle={() => setShowUtilizationManager((prev) => !prev)}
+                  />
+                ) : undefined
+              }
             />
             {!canReadInternalWorkforce ? (
               <PlaceholderPanel
@@ -678,6 +738,13 @@ function WorkforcePage() {
                 </div>
               </>
             )}
+            {canReadInternalWorkforce && showUtilizationManager && resolvedProjectId ? (
+              <UtilizationSnapshotsManager
+                projectId={resolvedProjectId}
+                teams={summary.teams}
+                canManage={canManageWorkforce}
+              />
+            ) : null}
           </Card>
 
           {/* --- Live: capability gaps (Phase 5) --- */}
@@ -801,6 +868,14 @@ function WorkforcePage() {
               </>
             )}
           </Card>
+
+          {/* --- Live: workforce recommendations (Phase 5) --- */}
+          {canReadInternalWorkforce ? (
+            <WorkforceRecommendationsPanel
+              projectId={resolvedProjectId}
+              canManage={canManageWorkforce}
+            />
+          ) : null}
 
           {/* --- Live: team / annotator summary --- */}
           <Card>

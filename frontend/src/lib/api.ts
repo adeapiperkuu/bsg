@@ -14,7 +14,9 @@ import type {
   EmployeeCertificationRead,
   EmployeeCertificationUpdatePayload,
   ProjectUtilizationFilters,
+  ProjectSkillRequirementCreatePayload,
   ProjectSkillRequirementRead,
+  ProjectSkillRequirementUpdatePayload,
   SkillMatrixRead,
   SkillRead,
   TeamRead,
@@ -23,7 +25,9 @@ import type {
   TrainingRecordCreatePayload,
   TrainingRecordRead,
   TrainingRecordUpdatePayload,
+  UtilizationSnapshotCreatePayload,
   UtilizationSnapshotRead,
+  UtilizationSnapshotUpdatePayload,
   WorkforceRecommendationGenerateResponse,
 } from "@/types/workforce";
 import type {
@@ -350,6 +354,32 @@ export async function listProjectUtilization(
   return body.data;
 }
 
+export async function createUtilizationSnapshot(
+  projectId: string,
+  payload: UtilizationSnapshotCreatePayload,
+): Promise<UtilizationSnapshotRead> {
+  const body = await apiFetch<{ data: UtilizationSnapshotRead }>(
+    `/projects/${projectId}/utilization`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+  return body.data;
+}
+
+export async function updateUtilizationSnapshot(
+  snapshotId: string,
+  payload: UtilizationSnapshotUpdatePayload,
+): Promise<UtilizationSnapshotRead> {
+  const body = await apiFetch<{ data: UtilizationSnapshotRead }>(
+    `/utilization/${snapshotId}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+  return body.data;
+}
+
+export async function deleteUtilizationSnapshot(snapshotId: string): Promise<void> {
+  await apiFetch<void>(`/utilization/${snapshotId}`, { method: "DELETE" });
+}
+
 export async function listWorkforceSkills(): Promise<SkillRead[]> {
   const body = await apiFetch<{ data: SkillRead[] }>("/workforce/skills?limit=100");
   return body.data;
@@ -481,6 +511,32 @@ export async function listProjectSkillRequirements(
     `/projects/${projectId}/skill-requirements?limit=100`,
   );
   return body.data;
+}
+
+export async function createProjectSkillRequirement(
+  projectId: string,
+  payload: ProjectSkillRequirementCreatePayload,
+): Promise<ProjectSkillRequirementRead> {
+  const body = await apiFetch<{ data: ProjectSkillRequirementRead }>(
+    `/projects/${projectId}/skill-requirements`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+  return body.data;
+}
+
+export async function updateProjectSkillRequirement(
+  requirementId: string,
+  payload: ProjectSkillRequirementUpdatePayload,
+): Promise<ProjectSkillRequirementRead> {
+  const body = await apiFetch<{ data: ProjectSkillRequirementRead }>(
+    `/skill-requirements/${requirementId}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+  return body.data;
+}
+
+export async function deleteProjectSkillRequirement(requirementId: string): Promise<void> {
+  await apiFetch<void>(`/skill-requirements/${requirementId}`, { method: "DELETE" });
 }
 
 export async function getProjectSkillMatrix(projectId: string): Promise<SkillMatrixRead> {
