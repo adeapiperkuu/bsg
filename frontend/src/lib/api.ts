@@ -27,11 +27,21 @@ import type {
   WorkforceRecommendationGenerateResponse,
 } from "@/types/workforce";
 import type {
+  KnowledgeBootstrapApi,
   KnowledgeDocumentApi,
   KnowledgeAskResponseApi,
+  KnowledgeAnswerModeApi,
+  AgentQueryApi,
+  KnowledgeEvalMetricsApi,
+  KnowledgeEvalQuestionApi,
+  KnowledgeEvalRunApi,
+  KnowledgeConversationTurnApi,
   KnowledgeDocumentFilters,
   KnowledgeDocumentVersionApi,
+  KnowledgeFeedbackRequestApi,
+  KnowledgeFeedbackResponseApi,
   KnowledgeFolderApi,
+  KnowledgeGapTodoApi,
   KnowledgeRetrievalSettingsApi,
   KnowledgeVersionCompareApi,
 } from "@/types/knowledge";
@@ -107,7 +117,6 @@ export async function apiFetch<T>(
 
   if (response.status === 401 && !path.startsWith("/auth/") && !retried) {
     const error = await parseApiError(response);
-    if (error.code === "AUTH_REQUIRED") throw error;
     const refreshed = await fetch(`${API_BASE}/auth/refresh`, {
       method: "POST",
       credentials: "include",
@@ -605,6 +614,32 @@ export function canAccessPath(role: AppRole, path: string): boolean {
   return !path.startsWith("/client") && !path.startsWith("/admin");
 }
 
+export async function getKnowledgeBootstrap(): Promise<KnowledgeBootstrapApi> {
+  try {
+    const body = await apiFetch<{ data: KnowledgeBootstrapApi }>("/knowledge/bootstrap");
+    return body.data;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      const [folders, documents] = await Promise.all([listKnowledgeFolders(), listKnowledgeDocuments()]);
+      return {
+        folders,
+        documents,
+        library_health: {
+          ready_count: documents.filter((d) => d.workflow_state === "approved").length,
+          needs_review_count: documents.filter((d) => d.workflow_state === "needs_review").length,
+          expired_count: documents.filter((d) => d.workflow_state === "expired").length,
+          needs_reindex_count: documents.filter((d) => d.workflow_state === "needs_reindex").length,
+          indexing_count: 0,
+          draft_count: documents.filter((d) => d.status === "draft").length,
+          archived_count: documents.filter((d) => d.status === "archived").length,
+          open_gaps: [],
+        },
+      };
+    }
+    throw error;
+  }
+}
+
 export async function listKnowledgeDocuments(filters: KnowledgeDocumentFilters = {}): Promise<KnowledgeDocumentApi[]> {
   const params = new URLSearchParams();
   if (filters.sourceType) params.set("source_type", filters.sourceType);
@@ -677,26 +712,95 @@ export async function downloadKnowledgeDocumentFile(documentId: string): Promise
 }
 
 export type KnowledgeAskOptions = {
-  includeHistories?: boolean;
+  conversationHistory?: KnowledgeConversationTurnApi[];
+  answerMode?: KnowledgeAnswerModeApi;
   maxSources?: number;
-  minRelevanceScore?: number;
-  project?: string;
-  department?: string;
 };
 
 export async function askKnowledgeAgent(queryText: string, options: KnowledgeAskOptions = {}): Promise<KnowledgeAskResponseApi> {
+  const payload: Record<string, unknown> = {
+    query_text: queryText,
+    conversation_history: options.conversationHistory ?? [],
+  };
+  if (options.answerMode !== undefined) {
+    payload.answer_mode = options.answerMode;
+  }
+  if (options.maxSources !== undefined) {
+    payload.max_sources = options.maxSources;
+  }
   const body = await apiFetch<{ data: KnowledgeAskResponseApi }>("/knowledge/ask", {
     method: "POST",
-    body: JSON.stringify({
-      query_text: queryText,
-      include_histories: options.includeHistories ?? true,
-      max_sources: options.maxSources ?? 5,
-      min_relevance_score: options.minRelevanceScore ?? 0.25,
-      project: options.project || null,
-      department: options.department || null,
-    }),
+    body: JSON.stringify(payload),
   });
   return body.data;
+}
+
+export type KnowledgeStreamEvent =
+  | { type: "meta"; query_id?: string; citations: KnowledgeAskResponseApi["citations"]; confidence_estimate: number }
+  | { type: "delta"; text: string }
+  | { type: "replace"; text: string }
+  | { type: "done"; query_id?: string | null; answer_text: string; confidence_score: number; confidence_reasons: string[]; next_step: string; structured_answer: KnowledgeAskResponseApi["structured_answer"]; model_used: string | null; retrieval_debug?: KnowledgeAskResponseApi["retrieval_debug"] }
+  | { type: "error"; message: string };
+
+export async function* streamKnowledgeAsk(
+  queryText: string,
+  options: KnowledgeAskOptions = {},
+): AsyncGenerator<KnowledgeStreamEvent> {
+  const payload: Record<string, unknown> = {
+    query_text: queryText,
+    conversation_history: options.conversationHistory ?? [],
+  };
+  if (options.answerMode !== undefined) payload.answer_mode = options.answerMode;
+  if (options.maxSources !== undefined) payload.max_sources = options.maxSources;
+
+  const headers = new Headers({ "Content-Type": "application/json" });
+  const csrf = document.cookie.match(/(?:^|; )csrf_token=([^;]*)/)?.[1];
+  if (csrf) headers.set("X-CSRF-Token", decodeURIComponent(csrf));
+
+  const response = await fetch(`${API_BASE}/knowledge/ask/stream`, {
+    method: "POST",
+    headers,
+    credentials: "include",
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok || !response.body) {
+    const err = await response.json().catch(() => ({})) as { error?: { code?: string; message?: string } };
+    throw new ApiError(response.status, err.error?.code ?? "API_ERROR", err.error?.message ?? "Stream request failed.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+
+  const parseSseLine = (line: string): KnowledgeStreamEvent | null => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data: ")) return null;
+    const raw = trimmed.slice(6).trim();
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as KnowledgeStreamEvent;
+    } catch {
+      return null;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split(/\r?\n/);
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      const event = parseSseLine(line);
+      if (event) yield event;
+    }
+  }
+
+  if (buf.trim()) {
+    const event = parseSseLine(buf);
+    if (event) yield event;
+  }
 }
 
 export async function sendDeliveryChatMessage(
@@ -760,6 +864,77 @@ export async function updateKnowledgeRetrievalSettings(
   const body = await apiFetch<{ data: KnowledgeRetrievalSettingsApi }>("/knowledge/retrieval-settings", {
     method: "PATCH",
     body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
+export async function getKnowledgeQueryAnswer(queryId: string): Promise<KnowledgeAskResponseApi> {
+  const body = await apiFetch<{ data: KnowledgeAskResponseApi }>(`/knowledge/queries/${queryId}`);
+  return body.data;
+}
+
+export async function listAgentQueries(limit = 20): Promise<AgentQueryApi[]> {
+  const body = await apiFetch<{ data: AgentQueryApi[] }>(`/agent-queries?limit=${limit}`);
+  return body.data;
+}
+
+export async function getKnowledgeEvalMetrics(days = 30): Promise<KnowledgeEvalMetricsApi> {
+  const body = await apiFetch<{ data: KnowledgeEvalMetricsApi }>(`/knowledge/eval/metrics?days=${days}`);
+  return body.data;
+}
+
+export async function listKnowledgeEvalQuestions(): Promise<KnowledgeEvalQuestionApi[]> {
+  const body = await apiFetch<{ data: KnowledgeEvalQuestionApi[] }>("/knowledge/eval/questions");
+  return body.data;
+}
+
+export async function createKnowledgeEvalQuestion(payload: {
+  question_text: string;
+  expected_document_ids: string[];
+  expected_answer_notes?: string | null;
+}): Promise<KnowledgeEvalQuestionApi> {
+  const body = await apiFetch<{ data: KnowledgeEvalQuestionApi }>("/knowledge/eval/questions", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
+export async function updateKnowledgeEvalQuestion(
+  questionId: string,
+  payload: Partial<Pick<KnowledgeEvalQuestionApi, "question_text" | "expected_document_ids" | "expected_answer_notes" | "is_active">>,
+): Promise<KnowledgeEvalQuestionApi> {
+  const body = await apiFetch<{ data: KnowledgeEvalQuestionApi }>(`/knowledge/eval/questions/${questionId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
+export async function runKnowledgeEval(limit = 50): Promise<KnowledgeEvalRunApi> {
+  const body = await apiFetch<{ data: KnowledgeEvalRunApi }>(`/knowledge/eval/run?limit=${limit}`, {
+    method: "POST",
+  });
+  return body.data;
+}
+
+export async function submitKnowledgeFeedback(
+  payload: KnowledgeFeedbackRequestApi,
+): Promise<KnowledgeFeedbackResponseApi> {
+  const body = await apiFetch<{ data: KnowledgeFeedbackResponseApi }>("/knowledge/feedback", {
+    method: "POST",
+    body: JSON.stringify({
+      query_id: payload.query_id,
+      rating: payload.rating,
+      comment: payload.comment ?? null,
+    }),
+  });
+  return body.data;
+}
+
+export async function resolveKnowledgeGap(gapId: string): Promise<KnowledgeGapTodoApi> {
+  const body = await apiFetch<{ data: KnowledgeGapTodoApi }>(`/knowledge/gaps/${gapId}/resolve`, {
+    method: "POST",
   });
   return body.data;
 }

@@ -221,6 +221,16 @@ class KnowledgeExtractionStatus(StrEnum):
     FAILED = "failed"
 
 
+class KnowledgeFeedbackRating(StrEnum):
+    UP = "up"
+    DOWN = "down"
+
+
+class KnowledgeGapStatus(StrEnum):
+    OPEN = "open"
+    RESOLVED = "resolved"
+
+
 app_role = Enum(AppRole, name="app_role", values_callable=lambda x: [e.value for e in x])
 delivery_site = Enum(DeliverySite, name="delivery_site", values_callable=lambda x: [e.value for e in x])
 project_status = Enum(ProjectStatus, name="project_status", values_callable=lambda x: [e.value for e in x])
@@ -287,6 +297,16 @@ knowledge_processing_status = Enum(
 knowledge_extraction_status = Enum(
     KnowledgeExtractionStatus,
     name="knowledge_extraction_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+knowledge_feedback_rating = Enum(
+    KnowledgeFeedbackRating,
+    name="knowledge_feedback_rating",
+    values_callable=lambda x: [e.value for e in x],
+)
+knowledge_gap_status = Enum(
+    KnowledgeGapStatus,
+    name="knowledge_gap_status",
     values_callable=lambda x: [e.value for e in x],
 )
 
@@ -724,6 +744,7 @@ class AgentQuery(Base, UuidPrimaryKey, CreatedAt):
     answer_text: Mapped[str] = mapped_column(Text)
     model_used: Mapped[str | None] = mapped_column(Text)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
+    retrieval_params: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
 
 class AgentQueryEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
@@ -936,3 +957,38 @@ class KnowledgeEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
     chunk_id: Mapped[UUID | None] = mapped_column(ForeignKey("knowledge_document_chunks.id", ondelete="SET NULL"))
     citation_label: Mapped[str] = mapped_column(Text)
     relevance_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+
+
+class KnowledgeQueryFeedback(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "knowledge_query_feedback"
+    __table_args__ = (
+        UniqueConstraint("agent_query_id", "user_id", name="knowledge_query_feedback_query_user_key"),
+        Index("knowledge_query_feedback_org_idx", "org_id"),
+        Index("knowledge_query_feedback_query_idx", "agent_query_id"),
+        Index("knowledge_query_feedback_rating_idx", "org_id", "rating"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    agent_query_id: Mapped[UUID] = mapped_column(ForeignKey("agent_queries.id", ondelete="CASCADE"))
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    rating: Mapped[KnowledgeFeedbackRating] = mapped_column(knowledge_feedback_rating)
+    comment: Mapped[str | None] = mapped_column(Text)
+
+
+class KnowledgeGap(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "knowledge_gaps"
+    __table_args__ = (
+        Index("knowledge_gaps_org_status_idx", "org_id", "status"),
+        Index("knowledge_gaps_query_idx", "agent_query_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    agent_query_id: Mapped[UUID | None] = mapped_column(ForeignKey("agent_queries.id", ondelete="SET NULL"))
+    query_text: Mapped[str] = mapped_column(Text)
+    message: Mapped[str] = mapped_column(Text)
+    suggested_title: Mapped[str | None] = mapped_column(Text)
+    suggested_source_type: Mapped[str | None] = mapped_column(Text)
+    suggested_folder_kind: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[KnowledgeGapStatus] = mapped_column(knowledge_gap_status, default=KnowledgeGapStatus.OPEN)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))

@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -30,18 +31,29 @@ import { cn } from "@/lib/utils";
 import {
   askKnowledgeAgent,
   compareKnowledgeDocumentVersions,
+  createKnowledgeEvalQuestion,
   createKnowledgeFolder,
   deleteKnowledgeDocument,
   downloadKnowledgeDocumentFile,
+  getKnowledgeBootstrap,
   getKnowledgeDocument,
+  getKnowledgeEvalMetrics,
+  getKnowledgeQueryAnswer,
+  getKnowledgeRetrievalSettings,
+  listAgentQueries,
+  listKnowledgeEvalQuestions,
   listKnowledgeDocumentVersions,
-  listKnowledgeDocuments,
   listKnowledgeFolders,
   reindexKnowledgeDocument,
+  resolveKnowledgeGap,
+  runKnowledgeEval,
+  streamKnowledgeAsk,
+  submitKnowledgeFeedback,
+  updateKnowledgeRetrievalSettings,
   updateKnowledgeDocument,
+  updateKnowledgeEvalQuestion,
   uploadKnowledgeDocument,
 } from "@/lib/api";
-import { KnowledgeRetrievalPanel } from "@/components/knowledge/KnowledgeRetrievalPanel";
 import { TypewriterText } from "@/components/knowledge/TypewriterText";
 import { TypingIndicator } from "@/components/knowledge/TypingIndicator";
 import { useAuthStore } from "@/stores/useAuthStore";
@@ -58,16 +70,24 @@ import {
 } from "@/lib/knowledge-mappers";
 import type {
   KnowledgeAskResponseApi,
+  AgentQueryApi,
   KnowledgeCitationApi,
   KnowledgeDocumentVersionApi,
+  KnowledgeEvalMetricsApi,
+  KnowledgeEvalQuestionApi,
+  KnowledgeEvalRunApi,
   KnowledgeFolderKind,
   KnowledgeGapApi,
+  KnowledgeGapTodoApi,
+  KnowledgeLibraryHealthApi,
   KnowledgeRetrievalSettingsApi,
+  KnowledgeRetrievalDebugApi,
   KnowledgeStructuredAnswerApi,
   KnowledgeVersionCompareApi,
 } from "@/types/knowledge";
 import {
-  Archive,
+  AlertTriangle,
+  Copy,
   Bot,
   CheckCircle2,
   ChevronDown,
@@ -78,15 +98,14 @@ import {
   Folder,
   GitCompare,
   History,
-  Library,
   Loader2,
   Plus,
   Send,
   RefreshCw,
   Search,
-  Settings2,
-  ShieldCheck,
   Sparkles,
+  ThumbsDown,
+  ThumbsUp,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -95,8 +114,9 @@ export const Route = createFileRoute("/knowledge")({ component: KnowledgePage })
 
 type UploadState = "idle" | "uploading" | "success" | "error";
 type SortMode = "recent" | "title" | "approved" | "indexed";
-type HealthFilter = "all" | "ready" | "needs_approval" | "indexing" | "archived";
+type HealthFilter = "all" | "ready" | "needs_approval" | "indexing" | "archived" | "expired" | "needs_reindex";
 type ChatMessage = {
+  id: string;
   role: "user" | "agent";
   text: string;
   next_step?: string;
@@ -105,8 +125,28 @@ type ChatMessage = {
   structured_answer?: KnowledgeStructuredAnswerApi | null;
   knowledge_gap?: KnowledgeGapApi | null;
   citations?: KnowledgeCitationApi[];
+  retrieval_debug?: KnowledgeRetrievalDebugApi | null;
+  regenerationSummary?: string;
+  query_id?: string | null;
+  feedback?: "up" | "down";
+  feedbackComment?: string;
+  isServiceError?: boolean;
+  isStreaming?: boolean;
+  retryQuestion?: string;
+  detailsExpanded?: boolean;
 };
 type LibraryFolder = { id: string; kind: KnowledgeFolderKind; name: string };
+
+const EMPTY_LIBRARY_HEALTH: KnowledgeLibraryHealthApi = {
+  ready_count: 0,
+  needs_review_count: 0,
+  expired_count: 0,
+  needs_reindex_count: 0,
+  indexing_count: 0,
+  draft_count: 0,
+  archived_count: 0,
+  open_gaps: [],
+};
 
 const workflowStates: WorkflowState[] = ["Needs review", "Approved", "Expired", "Needs re-index", "Archived"];
 
@@ -122,17 +162,291 @@ const visibilities: Visibility[] = ["Internal-only", "Leadership-only", "Client-
 const statuses: DocumentStatus[] = ["Draft", "Approved", "Archived"];
 const acceptedExtensions = [".pdf", ".docx", ".txt", ".md", ".csv"];
 const folderPreviewLimit = 6;
-const suggestedQuestions = [
+const SUGGESTED_QUESTION_LIMIT = 6;
+const FALLBACK_SUGGESTED_QUESTIONS = [
   "When should a quality escalation be triggered?",
-  "What actions improved quality in Project Alpha?",
   "What are the onboarding steps before production launch?",
+  "What actions improved quality in past projects?",
 ];
+const FOLDER_SUGGESTIONS: Partial<Record<KnowledgeFolderKind, string>> = {
+  sops: "What quality and escalation SOPs are available?",
+  guides: "Ask about Guides — what onboarding steps are documented?",
+  histories: "Ask about Histories — what lessons learned are captured?",
+};
+const TYPEWRITER_MAX_CHARS = 4000;
+const LOW_CONFIDENCE_THRESHOLD = 0.5;
+const NO_KNOWLEDGE_ANSWER =
+  "I could not find this information in the uploaded knowledge base.";
+const REGENERATE_MORE_SOURCES = 8;
+const KNOWLEDGE_CHAT_STORAGE_PREFIX = "bsg:knowledge-chat";
+const CHAT_SCROLL_THRESHOLD_PX = 80;
+
+type KnowledgeChatSession = {
+  messages: ChatMessage[];
+  selectedAgentMessageId: string | null;
+};
+
+function createChatMessageId() {
+  return crypto.randomUUID();
+}
+
+function normalizeChatMessage(value: unknown): ChatMessage | null {
+  if (!value || typeof value !== "object") return null;
+  const msg = value as ChatMessage;
+  if (msg.role !== "user" && msg.role !== "agent") return null;
+  if (typeof msg.text !== "string") return null;
+  return { ...msg, id: msg.id ?? createChatMessageId() };
+}
+
+function createUserMessage(text: string): ChatMessage {
+  return { id: createChatMessageId(), role: "user", text };
+}
+
+function getKnowledgeChatStorageKey(userId: string) {
+  return `${KNOWLEDGE_CHAT_STORAGE_PREFIX}:${userId}`;
+}
+
+function isChatMessage(value: unknown): value is ChatMessage {
+  return normalizeChatMessage(value) !== null;
+}
+
+function loadKnowledgeChatSession(userId: string): KnowledgeChatSession | null {
+  try {
+    const raw = sessionStorage.getItem(getKnowledgeChatStorageKey(userId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as KnowledgeChatSession & { selectedAgentMessageIndex?: number | null };
+    if (!Array.isArray(parsed.messages)) return null;
+    const messages = parsed.messages
+      .map(normalizeChatMessage)
+      .filter((message): message is ChatMessage => message !== null);
+    if (messages.length !== parsed.messages.length) return null;
+    let selectedAgentMessageId = parsed.selectedAgentMessageId ?? null;
+    if (
+      !selectedAgentMessageId &&
+      typeof parsed.selectedAgentMessageIndex === "number" &&
+      parsed.selectedAgentMessageIndex >= 0 &&
+      parsed.selectedAgentMessageIndex < messages.length
+    ) {
+      selectedAgentMessageId = messages[parsed.selectedAgentMessageIndex]?.id ?? null;
+    }
+    if (selectedAgentMessageId && !messages.some((message) => message.id === selectedAgentMessageId)) {
+      selectedAgentMessageId = null;
+    }
+    return { messages, selectedAgentMessageId };
+  } catch {
+    return null;
+  }
+}
+
+function saveKnowledgeChatSession(userId: string, session: KnowledgeChatSession) {
+  try {
+    sessionStorage.setItem(getKnowledgeChatStorageKey(userId), JSON.stringify(session));
+  } catch {
+    // ignore quota errors or private browsing
+  }
+}
+
+function clearKnowledgeChatSession(userId: string) {
+  try {
+    sessionStorage.removeItem(getKnowledgeChatStorageKey(userId));
+  } catch {
+    // ignore
+  }
+}
+
+function buildSuggestedQuestions(
+  documents: KnowledgeDocument[],
+  folders: LibraryFolder[],
+  messages: ChatMessage[],
+  limit = SUGGESTED_QUESTION_LIMIT,
+): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  const add = (question: string) => {
+    const text = question.trim();
+    const key = text.toLowerCase();
+    if (!text || seen.has(key) || result.length >= limit) return;
+    seen.add(key);
+    result.push(text);
+  };
+
+  const readyDocs = documents.filter(isRetrievalReady);
+
+  for (const doc of readyDocs.filter((item) => item.sourceType === "SOP").slice(0, 2)) {
+    add(`What does the "${doc.title}" SOP cover?`);
+  }
+
+  const recentCitationTitles: string[] = [];
+  for (let i = messages.length - 1; i >= 0 && recentCitationTitles.length < 3; i -= 1) {
+    const msg = messages[i];
+    if (msg.role !== "agent" || !msg.citations?.length) continue;
+    for (const citation of msg.citations) {
+      if (!recentCitationTitles.includes(citation.title)) {
+        recentCitationTitles.push(citation.title);
+      }
+    }
+  }
+  for (const title of recentCitationTitles.slice(0, 2)) {
+    add(`Tell me more about "${title}"`);
+  }
+
+  for (const folder of folders) {
+    if (result.length >= limit) break;
+    const hasReady = readyDocs.some((doc) => doc.folderId === folder.id);
+    if (!hasReady) continue;
+    const template = FOLDER_SUGGESTIONS[folder.kind];
+    if (template) add(template);
+    else if (folder.kind === "custom") add(`Ask about ${folder.name} — what's documented there?`);
+  }
+
+  for (const fallback of FALLBACK_SUGGESTED_QUESTIONS) {
+    if (result.length >= limit) break;
+    add(fallback);
+  }
+
+  return result.slice(0, limit);
+}
+
+function formatRetrievalScopeLabel(settings: KnowledgeRetrievalSettingsApi | null): string | null {
+  if (!settings) return null;
+  const parts: string[] = [];
+  if (settings.project) parts.push(`Project: ${settings.project}`);
+  if (settings.department) parts.push(`Department: ${settings.department}`);
+  if (!settings.include_histories) parts.push("Histories off");
+  if (parts.length === 0) return null;
+  return parts.join(" / ");
+}
 
 const initialDocuments: KnowledgeDocument[] = [];
 
+const KNOWLEDGE_CONVERSATION_TURN_LIMIT = 6;
+
+function buildConversationHistory(messages: ChatMessage[]) {
+  return messages
+    .filter((message) => !message.isServiceError)
+    .slice(-KNOWLEDGE_CONVERSATION_TURN_LIMIT)
+    .map((message) => ({
+      role: message.role === "user" ? ("user" as const) : ("assistant" as const),
+      content: message.text,
+    }));
+}
+
+function findPrecedingUserQuestion(messages: ChatMessage[], agentMessageId: string): string | null {
+  const agentIndex = messages.findIndex((message) => message.id === agentMessageId);
+  if (agentIndex < 0) return null;
+  for (let i = agentIndex - 1; i >= 0; i -= 1) {
+    if (messages[i].role === "user") return messages[i].text;
+  }
+  return null;
+}
+
+function agentMessageFromResponse(response: KnowledgeAskResponseApi): ChatMessage {
+  return {
+    id: createChatMessageId(),
+    role: "agent",
+    text: response.answer_text,
+    next_step: response.next_step,
+    confidence_score: response.confidence_score,
+    confidence_reasons: response.confidence_reasons,
+    structured_answer: response.structured_answer,
+    knowledge_gap: response.knowledge_gap,
+    citations: response.citations,
+    retrieval_debug: response.retrieval_debug ?? null,
+    query_id: response.query_id,
+    detailsExpanded:
+      (response.confidence_score ?? 1) < LOW_CONFIDENCE_THRESHOLD || !!response.knowledge_gap,
+  };
+}
+
+function inferAnswerMode(question: string): "internal" | "client_safe" {
+  const lowered = question.toLowerCase();
+  return /\b(client|customer|external|client-safe|customer-facing)\b/.test(lowered)
+    ? "client_safe"
+    : "internal";
+}
+
+function shouldAnimateAnswer(text: string) {
+  return text.length <= TYPEWRITER_MAX_CHARS;
+}
+
+function buildAgentDisplayText(
+  message: Pick<ChatMessage, "text" | "structured_answer" | "next_step">,
+): string {
+  const direct = message.text?.trim();
+  if (direct) return direct;
+  const sa = message.structured_answer;
+  if (sa) {
+    const parts = [sa.policy, sa.steps, sa.owner, sa.evidence, sa.next_action]
+      .map((part) => part?.trim())
+      .filter(Boolean);
+    if (parts.length > 0) return parts.join("\n\n");
+  }
+  const nextStep = message.next_step?.trim();
+  if (nextStep) return nextStep;
+  return "";
+}
+
+function resolveAgentAnswerText(
+  message: Pick<ChatMessage, "text" | "structured_answer" | "next_step">,
+  answerText?: string | null,
+  options?: { useFallback?: boolean },
+): string {
+  const merged = {
+    ...message,
+    text: answerText?.trim() || message.text,
+  };
+  const display = buildAgentDisplayText(merged);
+  if (display) return display;
+  if (options?.useFallback === false) return "";
+  return NO_KNOWLEDGE_ANSWER;
+}
+
+function isLowConfidenceMessage(message: ChatMessage) {
+  return (message.confidence_score ?? 1) < LOW_CONFIDENCE_THRESHOLD;
+}
+
+function isMessageDetailsOpen(message: ChatMessage) {
+  return message.detailsExpanded ?? (isLowConfidenceMessage(message) || !!message.knowledge_gap);
+}
+
+function summarizeRegeneration(previous: ChatMessage, next: ChatMessage): string {
+  const previousTitles = new Set((previous.citations ?? []).map((item) => item.title));
+  const nextTitles = new Set((next.citations ?? []).map((item) => item.title));
+  const added = [...nextTitles].filter((title) => !previousTitles.has(title));
+  const removed = [...previousTitles].filter((title) => !nextTitles.has(title));
+  const parts: string[] = [];
+  if (added.length > 0) parts.push(`Added ${added.length} source${added.length === 1 ? "" : "s"}`);
+  if (removed.length > 0) parts.push(`Removed ${removed.length} source${removed.length === 1 ? "" : "s"}`);
+  if (previous.confidence_score !== undefined && next.confidence_score !== undefined) {
+    const delta = Math.round((next.confidence_score - previous.confidence_score) * 100);
+    if (delta !== 0) parts.push(`Confidence ${delta > 0 ? "+" : ""}${delta} pts`);
+  }
+  if (parts.length === 0) return "Regenerated with the same visible source set";
+  return parts.join(" · ");
+}
+
+function hasCollapsibleDetails(message: ChatMessage) {
+  if (message.role !== "agent" || message.isServiceError) return false;
+  const sa = message.structured_answer;
+  const hasStructured = Boolean(
+    sa?.policy || sa?.steps || sa?.owner || sa?.evidence || sa?.next_action,
+  );
+  return !!(
+    hasStructured ||
+    message.confidence_reasons?.length ||
+    message.regenerationSummary ||
+    message.retrieval_debug ||
+    message.next_step ||
+    message.knowledge_gap
+  );
+}
+
+function isInteractiveChatTarget(target: EventTarget | null) {
+  return target instanceof Element && Boolean(target.closest("button, textarea, a, input, select"));
+}
+
 function KnowledgePage() {
   const user = useAuthStore((s) => s.user);
-  const canManageRetrieval = user?.role === "bsg_leadership" || user?.role === "super_admin";
   const [documents, setDocuments] = useState<KnowledgeDocument[]>(initialDocuments);
   const [libraryFolders, setLibraryFolders] = useState<LibraryFolder[]>([]);
   const [loadingFolders, setLoadingFolders] = useState(true);
@@ -148,12 +462,24 @@ function KnowledgePage() {
   const [docsLoadError, setDocsLoadError] = useState("");
   const [askInput, setAskInput] = useState("");
   const [asking, setAsking] = useState(false);
-  const [animatingMessageIndex, setAnimatingMessageIndex] = useState<number | null>(null);
+  const [animatingMessageId, setAnimatingMessageId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [activeSources, setActiveSources] = useState<KnowledgeCitationApi[]>([]);
-  const [lastConfidence, setLastConfidence] = useState<number | null>(null);
-  const [retrievalSettings, setRetrievalSettings] = useState<KnowledgeRetrievalSettingsApi | null>(null);
-  const [showRetrievalPanel, setShowRetrievalPanel] = useState(false);
+  const [selectedAgentMessageId, setSelectedAgentMessageId] = useState<string | null>(null);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [liveAnnouncement, setLiveAnnouncement] = useState("");
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+  const [retrievalScope, setRetrievalScope] = useState<KnowledgeRetrievalSettingsApi | null>(null);
+  const [scopeDraft, setScopeDraft] = useState<KnowledgeRetrievalSettingsApi | null>(null);
+  const [savingScope, setSavingScope] = useState(false);
+  const [queryHistory, setQueryHistory] = useState<AgentQueryApi[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [evalMetrics, setEvalMetrics] = useState<KnowledgeEvalMetricsApi | null>(null);
+  const [evalQuestions, setEvalQuestions] = useState<KnowledgeEvalQuestionApi[]>([]);
+  const [loadingEval, setLoadingEval] = useState(false);
+  const [runningEval, setRunningEval] = useState(false);
+  const [lastEvalRun, setLastEvalRun] = useState<KnowledgeEvalRunApi | null>(null);
+  const [evalQuestionText, setEvalQuestionText] = useState("");
+  const [evalExpectedDocId, setEvalExpectedDocId] = useState("");
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [isDocumentOpen, setIsDocumentOpen] = useState(false);
   const [versions, setVersions] = useState<KnowledgeDocumentVersionApi[]>([]);
@@ -163,6 +489,8 @@ function KnowledgePage() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadState, setUploadState] = useState<UploadState>("idle");
   const [uploadError, setUploadError] = useState("");
+  const [uploadWarning, setUploadWarning] = useState("");
+  const [libraryHealth, setLibraryHealth] = useState<KnowledgeLibraryHealthApi>(EMPTY_LIBRARY_HEALTH);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [activeFolder, setActiveFolder] = useState<string | "All">("All");
@@ -174,6 +502,9 @@ function KnowledgePage() {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const followChatScrollRef = useRef(true);
+  const chatHydratedUserIdRef = useRef<string | null>(null);
   const [form, setForm] = useState({
     title: "",
     folderId: "",
@@ -186,18 +517,45 @@ function KnowledgePage() {
   });
 
   const libraryLoading = loadingDocs || loadingFolders;
+  const selectedAgentMessage =
+    selectedAgentMessageId != null
+      ? messages.find((message) => message.id === selectedAgentMessageId) ?? null
+      : null;
+  const sidebarSources =
+    selectedAgentMessage?.role === "agent" ? selectedAgentMessage.citations ?? [] : [];
+  const sidebarConfidence = selectedAgentMessage?.confidence_score ?? null;
   const selectedDoc = documents.find((item) => item.id === docId) ?? null;
   const approvedIndexedDocs = documents.filter(isRetrievalReady);
+  const canAsk = approvedIndexedDocs.length > 0;
+  const suggestedQuestions = useMemo(
+    () => buildSuggestedQuestions(documents, libraryFolders, messages),
+    [documents, libraryFolders, messages],
+  );
+  const retrievalScopeLabel = useMemo(
+    () => formatRetrievalScopeLabel(retrievalScope),
+    [retrievalScope],
+  );
+  const canAdjustScope = user?.role === "bsg_leadership" || user?.role === "super_admin";
   const draftCount = documents.filter((item) => item.status === "Draft").length;
   const indexingCount = documents.filter((item) => item.indexing).length;
   const archivedCount = documents.filter((item) => item.status === "Archived").length;
+  const expiredCount = documents.filter((item) => item.workflowState === "Expired").length;
+  const needsReindexCount = documents.filter((item) => item.workflowState === "Needs re-index").length;
   const healthFilters = [
     { id: "all" as const, label: "All", count: documents.length },
     { id: "ready" as const, label: "Ready", count: approvedIndexedDocs.length },
     { id: "needs_approval" as const, label: "Needs approval", count: draftCount },
+    { id: "expired" as const, label: "Expired", count: libraryHealth.expired_count || expiredCount },
+    { id: "needs_reindex" as const, label: "Needs re-index", count: libraryHealth.needs_reindex_count || needsReindexCount },
     { id: "indexing" as const, label: "Indexing", count: indexingCount },
     { id: "archived" as const, label: "Archived", count: archivedCount },
   ];
+  const libraryTodos = libraryHealth.open_gaps;
+  const hasLibraryTodos =
+    libraryTodos.length > 0 ||
+    (libraryHealth.expired_count || expiredCount) > 0 ||
+    (libraryHealth.needs_reindex_count || needsReindexCount) > 0 ||
+    (!canAsk && documents.length > 0);
 
   const activeFilterCount = [
     activeFolder !== "All",
@@ -223,6 +581,8 @@ function KnowledgePage() {
         healthFilter === "all" ||
         (healthFilter === "ready" && isRetrievalReady(item)) ||
         (healthFilter === "needs_approval" && item.status === "Draft") ||
+        (healthFilter === "expired" && item.workflowState === "Expired") ||
+        (healthFilter === "needs_reindex" && item.workflowState === "Needs re-index") ||
         (healthFilter === "indexing" && item.indexing) ||
         (healthFilter === "archived" && item.status === "Archived");
       const matchesSearch =
@@ -286,21 +646,30 @@ function KnowledgePage() {
   useEffect(() => {
     const load = async () => {
       setLoadingDocs(true);
+      setLoadingFolders(true);
       setDocsLoadError("");
       try {
-        const [rows] = await Promise.all([
-          listKnowledgeDocuments(),
-          loadLibraryFolders(),
-        ]);
-        const mapped = rows.map(documentFromApi);
+        const { folders, documents, library_health } = await getKnowledgeBootstrap();
+        setLibraryFolders(
+          folders.map((row) => ({
+            id: row.id,
+            kind: row.folder_kind,
+            name: row.name,
+          })),
+        );
+        const mapped = documents.map(documentFromApi);
         setDocuments(mapped);
+        setLibraryHealth(library_health ?? EMPTY_LIBRARY_HEALTH);
         setDocId((current) => (current && mapped.some((item) => item.id === current) ? current : mapped[0]?.id ?? null));
       } catch (err) {
         setDocuments([]);
+        setLibraryFolders([]);
+        setLibraryHealth(EMPTY_LIBRARY_HEALTH);
         setDocId(null);
         setDocsLoadError(err instanceof Error ? err.message : "Could not load knowledge documents.");
       } finally {
         setLoadingDocs(false);
+        setLoadingFolders(false);
       }
     };
     void load();
@@ -311,6 +680,56 @@ function KnowledgePage() {
     setForm((current) => (current.folderId ? current : { ...current, folderId: libraryFolders[0].id }));
     setCollapsedFolders((current) => (current.size > 0 ? current : new Set(libraryFolders.map((folder) => folder.id))));
   }, [libraryFolders]);
+
+  useEffect(() => {
+    if (!user?.id) {
+      setRetrievalScope(null);
+      setScopeDraft(null);
+      return;
+    }
+    void getKnowledgeRetrievalSettings()
+      .then((settings) => {
+        setRetrievalScope(settings);
+        setScopeDraft(settings);
+      })
+      .catch(() => {
+        setRetrievalScope(null);
+        setScopeDraft(null);
+      });
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) {
+      setQueryHistory([]);
+      return;
+    }
+    setLoadingHistory(true);
+    void listAgentQueries(30)
+      .then((rows) =>
+        setQueryHistory(rows.filter((row) => row.agent_name === "operational_knowledge_agent")),
+      )
+      .catch(() => setQueryHistory([]))
+      .finally(() => setLoadingHistory(false));
+  }, [user?.id, messages.length]);
+
+  useEffect(() => {
+    if (!user?.id) {
+      setEvalMetrics(null);
+      setEvalQuestions([]);
+      return;
+    }
+    setLoadingEval(true);
+    void Promise.all([getKnowledgeEvalMetrics(30), listKnowledgeEvalQuestions()])
+      .then(([metrics, questions]) => {
+        setEvalMetrics(metrics);
+        setEvalQuestions(questions);
+      })
+      .catch(() => {
+        setEvalMetrics(null);
+        setEvalQuestions([]);
+      })
+      .finally(() => setLoadingEval(false));
+  }, [user?.id, messages.length]);
 
   useEffect(() => {
     if (!selectedDoc || !isDocumentOpen) return;
@@ -341,13 +760,66 @@ function KnowledgePage() {
     setCompareRightId("");
   }, [isDocumentOpen, selectedDoc?.id]);
 
-  const scrollChatToEnd = () => {
+  const scrollChatToEnd = (force = false) => {
+    if (!force && !followChatScrollRef.current) return;
     chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   };
 
+  const isNearChatBottom = () => {
+    const container = chatScrollRef.current;
+    if (!container) return true;
+    return container.scrollHeight - container.scrollTop - container.clientHeight <= CHAT_SCROLL_THRESHOLD_PX;
+  };
+
+  const handleChatScroll = () => {
+    const following = isNearChatBottom();
+    followChatScrollRef.current = following;
+    setShowJumpToBottom(!following);
+  };
+
+  const jumpToChatBottom = () => {
+    followChatScrollRef.current = true;
+    setShowJumpToBottom(false);
+    scrollChatToEnd(true);
+  };
+
+  const announceAgentMessage = (text: string) => {
+    setLiveAnnouncement(`Knowledge Agent: ${text}`);
+  };
+
+  useEffect(() => {
+    if (!liveAnnouncement) return;
+    const timer = window.setTimeout(() => setLiveAnnouncement(""), 1500);
+    return () => window.clearTimeout(timer);
+  }, [liveAnnouncement]);
+
   useEffect(() => {
     scrollChatToEnd();
-  }, [asking, messages.length, animatingMessageIndex]);
+  }, [asking, messages.length, animatingMessageId]);
+
+  useEffect(() => {
+    const userId = user?.id;
+    if (!userId) {
+      chatHydratedUserIdRef.current = null;
+      return;
+    }
+    if (chatHydratedUserIdRef.current === userId) return;
+    chatHydratedUserIdRef.current = userId;
+    const stored = loadKnowledgeChatSession(userId);
+    setMessages(stored?.messages ?? []);
+    setSelectedAgentMessageId(stored?.selectedAgentMessageId ?? null);
+    setAnimatingMessageId(null);
+  }, [user?.id]);
+
+  useEffect(() => {
+    const userId = user?.id;
+    if (!userId || chatHydratedUserIdRef.current !== userId) return;
+    if (messages.length === 0) {
+      clearKnowledgeChatSession(userId);
+      return;
+    }
+    saveKnowledgeChatSession(userId, { messages, selectedAgentMessageId });
+  }, [user?.id, messages, selectedAgentMessageId]);
 
   useEffect(() => {
     if (!isDocumentOpen || !activeChunkId || documentTab !== "chunks") return;
@@ -382,6 +854,7 @@ function KnowledgePage() {
     setUploadState("idle");
     setUploadProgress(0);
     setUploadError("");
+    setUploadWarning("");
     setSelectedFile(null);
     setForm({
       title: "",
@@ -402,12 +875,18 @@ function KnowledgePage() {
       setUploadError(error || "Document title, folder, and owner/approver are required.");
       return;
     }
+    if (form.status === "Approved" && !form.effectiveDate) {
+      setUploadState("error");
+      setUploadError("Approved uploads require an effective date before indexing.");
+      return;
+    }
 
     const file = selectedFile;
     if (!file) return;
 
     setUploadState("uploading");
     setUploadError("");
+    setUploadWarning("");
     setUploadProgress(38);
     try {
       const fields = uploadFormToApi(form);
@@ -433,6 +912,9 @@ function KnowledgePage() {
       });
       setUploadProgress(100);
       setUploadState("success");
+      if (newDocument.qualityWarnings.length > 0) {
+        setUploadWarning(newDocument.qualityWarnings.join(" "));
+      }
       window.setTimeout(() => {
         setIsUploadOpen(false);
         resetUpload();
@@ -525,71 +1007,375 @@ function KnowledgePage() {
     }
   };
 
-  const submitAsk = async () => {
-    const question = askInput.trim();
-    if (!question || asking || animatingMessageIndex !== null) return;
-    setMessages((current) => [...current, { role: "user", text: question }]);
-    setAskInput("");
+  const submitAsk = async (
+    questionOverride?: string,
+    options?: { skipUserMessage?: boolean; maxSources?: number },
+  ) => {
+    const question = (questionOverride ?? askInput).trim();
+    if (!question || asking || !canAsk) return;
+    followChatScrollRef.current = true;
+    setShowJumpToBottom(false);
+    if (!options?.skipUserMessage) {
+      setMessages((current) => [...current, createUserMessage(question)]);
+      if (!questionOverride) setAskInput("");
+    }
+    setAsking(true);
+    const conversationHistory = buildConversationHistory(messages);
+    const agentMsgId = createChatMessageId();
+
+    // Create a stub agent message immediately so the user sees a response forming
+    const stub: ChatMessage = {
+      id: agentMsgId,
+      role: "agent",
+      text: "",
+      isStreaming: true,
+    };
+    setMessages((current) => [...current, stub]);
+    setSelectedAgentMessageId(agentMsgId);
+
+    let gotDone = false;
+    let streamAnswer = "";
+    const askOptions = {
+      conversationHistory,
+      answerMode: inferAnswerMode(question),
+      maxSources: options?.maxSources,
+    };
+
+    try {
+      for await (const event of streamKnowledgeAsk(question, askOptions)) {
+        if (event.type === "meta") {
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId
+                ? { ...msg, citations: event.citations as ChatMessage["citations"], query_id: event.query_id ?? null }
+                : msg,
+            ),
+          );
+        } else if (event.type === "delta") {
+          streamAnswer += event.text;
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId ? { ...msg, text: msg.text + event.text } : msg,
+            ),
+          );
+          scrollChatToEnd();
+        } else if (event.type === "replace") {
+          streamAnswer = event.text;
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId ? { ...msg, text: event.text } : msg,
+            ),
+          );
+        } else if (event.type === "done") {
+          gotDone = true;
+          streamAnswer = event.answer_text?.trim() || streamAnswer;
+          setMessages((current) =>
+            current.map((msg) => {
+              if (msg.id !== agentMsgId) return msg;
+              const sa = event.structured_answer;
+              const nextMessage = {
+                ...msg,
+                text: resolveAgentAnswerText(
+                  { ...msg, text: streamAnswer },
+                  event.answer_text,
+                ),
+                isStreaming: false,
+                query_id: event.query_id,
+                confidence_score: event.confidence_score,
+                confidence_reasons: event.confidence_reasons,
+                next_step: event.next_step || undefined,
+                structured_answer: sa ?? null,
+                citations: msg.citations,
+                retrieval_debug: event.retrieval_debug ?? null,
+                detailsExpanded:
+                  (event.confidence_score ?? 1) < LOW_CONFIDENCE_THRESHOLD ? true : msg.detailsExpanded,
+              };
+              return nextMessage;
+            }),
+          );
+          announceAgentMessage(
+            resolveAgentAnswerText(
+              { text: streamAnswer, structured_answer: event.structured_answer, next_step: event.next_step },
+              event.answer_text,
+            ),
+          );
+          if ((event.confidence_score ?? 1) === 0) {
+            try {
+              const bootstrap = await getKnowledgeBootstrap();
+              setLibraryHealth(bootstrap.library_health ?? EMPTY_LIBRARY_HEALTH);
+            } catch {
+              // library todos refresh is best-effort
+            }
+          }
+        } else if (event.type === "error") {
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId
+                ? { ...msg, text: "Couldn't reach the agent — retry?", isStreaming: false, isServiceError: true, retryQuestion: question }
+                : msg,
+            ),
+          );
+          announceAgentMessage("Couldn't reach the agent — retry?");
+        }
+      }
+
+      if (!gotDone && !streamAnswer.trim()) {
+        const response = await askKnowledgeAgent(question, askOptions);
+        const agentMsg = agentMessageFromResponse(response);
+        setMessages((current) =>
+          current.map((msg) => (msg.id === agentMsgId ? { ...agentMsg, id: agentMsgId, isStreaming: false } : msg)),
+        );
+        announceAgentMessage(agentMsg.text);
+      } else if (!gotDone && streamAnswer.trim()) {
+        setMessages((current) =>
+          current.map((msg) =>
+            msg.id === agentMsgId ? { ...msg, text: streamAnswer, isStreaming: false } : msg,
+          ),
+        );
+        announceAgentMessage(streamAnswer);
+      }
+    } catch {
+      setMessages((current) =>
+        current.map((msg) =>
+          msg.id === agentMsgId
+            ? { ...msg, text: msg.text || "Couldn't reach the agent — retry?", isStreaming: false, isServiceError: !msg.text, retryQuestion: !msg.text ? question : undefined }
+            : msg,
+        ),
+      );
+    } finally {
+      setMessages((current) =>
+        current.map((msg) =>
+          msg.id === agentMsgId && msg.isStreaming ? { ...msg, isStreaming: false } : msg,
+        ),
+      );
+      setAsking(false);
+    }
+  };
+
+  const regenerateAgentAnswer = async (agentMessageId: string, options?: { moreSources?: boolean }) => {
+    if (asking || !canAsk) return;
+    const agentIndex = messages.findIndex((message) => message.id === agentMessageId);
+    if (agentIndex < 0) return;
+    const previousAgentMessage = messages[agentIndex];
+    const question = findPrecedingUserQuestion(messages, agentMessageId);
+    if (!question) return;
+
+    const priorMessages = messages.slice(0, agentIndex);
+    const conversationHistory = buildConversationHistory(priorMessages.slice(0, -1));
+
+    followChatScrollRef.current = true;
+    setShowJumpToBottom(false);
+    setMessages((current) => current.filter((message) => message.id !== agentMessageId));
+    setAnimatingMessageId(null);
     setAsking(true);
     try {
       const response = await askKnowledgeAgent(question, {
-        includeHistories: retrievalSettings?.include_histories ?? true,
-        maxSources: retrievalSettings?.max_sources ?? 5,
-        minRelevanceScore: retrievalSettings?.min_confidence ?? 0.25,
-        project: retrievalSettings?.project ?? undefined,
-        department: retrievalSettings?.department ?? undefined,
+        conversationHistory,
+        answerMode: inferAnswerMode(question),
+        maxSources: options?.moreSources ? REGENERATE_MORE_SOURCES : undefined,
       });
-      const agentMsg: ChatMessage = {
-        role: "agent",
-        text: response.answer_text,
-        next_step: response.next_step,
-        confidence_score: response.confidence_score,
-        confidence_reasons: response.confidence_reasons,
-        structured_answer: response.structured_answer,
-        knowledge_gap: response.knowledge_gap,
-        citations: response.citations,
-      };
+      const agentMsg = agentMessageFromResponse(response);
+      agentMsg.regenerationSummary = summarizeRegeneration(previousAgentMessage, agentMsg);
       setMessages((current) => {
-        const next = [...current, agentMsg];
-        setAnimatingMessageIndex(next.length - 1);
+        const next = [...current];
+        next.splice(agentIndex, 0, agentMsg);
         return next;
       });
-      setActiveSources(response.citations);
-      setLastConfidence(response.confidence_score);
-      if (response.citations[0]) {
-        openDocumentWithChunk(response.citations[0].document_id, response.citations[0].chunk_id, false);
+      setSelectedAgentMessageId(agentMsg.id);
+      if (shouldAnimateAnswer(agentMsg.text)) {
+        setAnimatingMessageId(agentMsg.id);
+      } else {
+        announceAgentMessage(agentMsg.text);
       }
     } catch {
-      const fallback = "I could not find this information in the uploaded knowledge base.";
+      const errorMsg: ChatMessage = {
+        id: createChatMessageId(),
+        role: "agent",
+        text: "Couldn't reach the agent — retry?",
+        isServiceError: true,
+        retryQuestion: question,
+      };
       setMessages((current) => {
-        const next = [
-          ...current,
-          {
-            role: "agent" as const,
-            text: fallback,
-            confidence_score: 0,
-            confidence_reasons: ["The knowledge service could not complete the request."],
-            knowledge_gap: {
-              message: fallback,
-              suggested_title: question.slice(0, 80),
-              suggested_source_type: "sop",
-              suggested_folder_kind: "sops",
-            },
-          },
-        ];
-        setAnimatingMessageIndex(next.length - 1);
+        const next = [...current];
+        next.splice(agentIndex, 0, errorMsg);
         return next;
       });
-      setActiveSources([]);
-      setLastConfidence(0);
+      announceAgentMessage(errorMsg.text);
     } finally {
       setAsking(false);
+    }
+  };
+
+  const setMessageFeedback = async (messageId: string, feedback: "up" | "down", comment?: string) => {
+    let queryId: string | null = null;
+    let previousFeedback: "up" | "down" | undefined;
+    let nextFeedback: "up" | "down" | undefined;
+
+    setMessages((current) => {
+      const target = current.find((msg) => msg.id === messageId);
+      if (!target || target.role !== "agent") return current;
+
+      queryId = target.query_id ?? null;
+      previousFeedback = target.feedback;
+      const togglingOff = target.feedback === feedback && comment === undefined;
+      nextFeedback = togglingOff ? undefined : feedback;
+
+      return current.map((msg) => {
+        if (msg.id !== messageId) return msg;
+        return {
+          ...msg,
+          feedback: nextFeedback,
+          feedbackComment: comment !== undefined ? comment : msg.feedbackComment,
+        };
+      });
+    });
+
+    if (!nextFeedback || !queryId) return;
+
+    try {
+      await submitKnowledgeFeedback({
+        query_id: queryId,
+        rating: feedback,
+        comment: comment ?? null,
+      });
+    } catch {
+      setMessages((current) =>
+        current.map((msg) => (msg.id === messageId ? { ...msg, feedback: previousFeedback } : msg)),
+      );
+    }
+  };
+
+  const setFeedbackComment = (messageId: string, comment: string) => {
+    setMessages((current) =>
+      current.map((msg) => (msg.id === messageId ? { ...msg, feedbackComment: comment } : msg)),
+    );
+  };
+
+  const retryAsk = async (question: string, errorMessageId: string) => {
+    if (!question || asking || !canAsk) return;
+    setMessages((current) => current.filter((message) => message.id !== errorMessageId));
+    await submitAsk(question, { skipUserMessage: true });
+  };
+
+  const openSavedAnswer = async (query: AgentQueryApi) => {
+    if (asking) return;
+    setAsking(true);
+    try {
+      const response = await getKnowledgeQueryAnswer(query.id);
+      const userMsg = createUserMessage(query.query_text);
+      const agentMsg = agentMessageFromResponse(response);
+      agentMsg.detailsExpanded = true;
+      setMessages((current) => [...current, userMsg, agentMsg]);
+      setSelectedAgentMessageId(agentMsg.id);
+      announceAgentMessage(agentMsg.text);
+    } catch {
+      window.alert("Could not reopen that saved answer.");
+    } finally {
+      setAsking(false);
+    }
+  };
+
+  const saveRetrievalScope = async () => {
+    if (!scopeDraft || savingScope) return;
+    setSavingScope(true);
+    try {
+      const saved = await updateKnowledgeRetrievalSettings({
+        ...scopeDraft,
+        project: scopeDraft.project?.trim() || null,
+        department: scopeDraft.department?.trim() || null,
+      });
+      setRetrievalScope(saved);
+      setScopeDraft(saved);
+    } catch {
+      window.alert("Could not update retrieval scope.");
+    } finally {
+      setSavingScope(false);
+    }
+  };
+
+  const refreshEvalDashboard = async () => {
+    const [metrics, questions] = await Promise.all([getKnowledgeEvalMetrics(30), listKnowledgeEvalQuestions()]);
+    setEvalMetrics(metrics);
+    setEvalQuestions(questions);
+  };
+
+  const addEvalQuestion = async () => {
+    const question = evalQuestionText.trim();
+    if (!question) return;
+    try {
+      const created = await createKnowledgeEvalQuestion({
+        question_text: question,
+        expected_document_ids: evalExpectedDocId ? [evalExpectedDocId] : [],
+      });
+      setEvalQuestions((current) => [created, ...current]);
+      setEvalQuestionText("");
+      setEvalExpectedDocId("");
+      void refreshEvalDashboard();
+    } catch {
+      window.alert("Could not add that eval question.");
+    }
+  };
+
+  const toggleEvalQuestion = async (question: KnowledgeEvalQuestionApi) => {
+    try {
+      const updated = await updateKnowledgeEvalQuestion(question.id, { is_active: !question.is_active });
+      setEvalQuestions((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      void refreshEvalDashboard();
+    } catch {
+      window.alert("Could not update that eval question.");
+    }
+  };
+
+  const runEvalSet = async () => {
+    if (runningEval) return;
+    setRunningEval(true);
+    try {
+      const result = await runKnowledgeEval(50);
+      setLastEvalRun(result);
+      await refreshEvalDashboard();
+    } catch {
+      window.alert("Could not run the eval set.");
+    } finally {
+      setRunningEval(false);
+    }
+  };
+
+  const toggleMessageDetails = (messageId: string) => {
+    setMessages((current) =>
+      current.map((msg) =>
+        msg.id === messageId && msg.role === "agent"
+          ? { ...msg, detailsExpanded: !isMessageDetailsOpen(msg) }
+          : msg,
+      ),
+    );
+  };
+
+  const copyAgentAnswer = async (messageId: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedMessageId(messageId);
+      window.setTimeout(() => {
+        setCopiedMessageId((current) => (current === messageId ? null : current));
+      }, 2000);
+    } catch {
+      window.alert("Could not copy to clipboard.");
     }
   };
 
   const handleAsk = (event: FormEvent) => {
     event.preventDefault();
     void submitAsk();
+  };
+
+  const clearConversation = () => {
+    setMessages([]);
+    setSelectedAgentMessageId(null);
+    setAnimatingMessageId(null);
+    setCopiedMessageId(null);
+    setAskInput("");
+    followChatScrollRef.current = true;
+    setShowJumpToBottom(false);
+    if (user?.id) clearKnowledgeChatSession(user.id);
   };
 
   const toggleFolder = (folderId: string) => {
@@ -621,7 +1407,7 @@ function KnowledgePage() {
     if (openDialog) setIsDocumentOpen(true);
   };
 
-  const prefillUploadFromGap = (gap: KnowledgeGapApi) => {
+  const prefillUploadFromGap = (gap: KnowledgeGapApi | KnowledgeGapTodoApi) => {
     const sourceMap: Record<string, SourceType> = {
       sop: "SOP",
       guide: "Guide",
@@ -640,6 +1426,18 @@ function KnowledgePage() {
       status: "Draft",
     }));
     setIsUploadOpen(true);
+  };
+
+  const handleResolveGap = async (gapId: string) => {
+    try {
+      await resolveKnowledgeGap(gapId);
+      setLibraryHealth((current) => ({
+        ...current,
+        open_gaps: current.open_gaps.filter((gap) => gap.id !== gapId),
+      }));
+    } catch {
+      // keep todo visible if resolve fails
+    }
   };
 
   const openCreateFolder = () => {
@@ -686,16 +1484,9 @@ function KnowledgePage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 px-1 py-2 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
-          <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            <Library className="h-3.5 w-3.5" />
-            Operational Knowledge Agent
-          </div>
-          <h1 className="mt-2 text-xl font-semibold tracking-tight text-foreground">Knowledge workspace</h1>
+          <h1 className="text-xl font-semibold tracking-tight text-foreground">Knowledge workspace</h1>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <SummaryPill icon={<ShieldCheck className="h-3.5 w-3.5" />} label="Retrievable" value={approvedIndexedDocs.length} />
-          <SummaryPill icon={<Loader2 className="h-3.5 w-3.5" />} label="Indexing" value={indexingCount} />
-          <SummaryPill icon={<Archive className="h-3.5 w-3.5" />} label="Drafts" value={draftCount} />
           <Button
             className="h-9 gap-2 bg-[color:var(--brand)] text-xs text-[color:var(--brand-foreground)]"
             onClick={() => setIsUploadOpen(true)}
@@ -709,54 +1500,61 @@ function KnowledgePage() {
       <div className="grid grid-cols-12 items-stretch gap-5 xl:h-[calc(100vh-11.5rem)] xl:min-h-[44rem]">
         <div className="col-span-12 flex min-h-0 flex-col gap-5 xl:col-span-4">
           <Card className="shrink-0 border-transparent bg-card/80">
-            <div className="border-b border-border/70 px-4 py-3">
-              <div className="flex items-center gap-2">
-                <Sparkles className="h-3.5 w-3.5 text-[color:var(--brand)]" />
-                <span className="text-sm font-semibold tracking-tight text-foreground">Sources</span>
+            <div className="border-b border-border/70 px-3 py-2">
+              <div className="flex items-center gap-1.5">
+                <Sparkles className="h-3 w-3 text-[color:var(--brand)]" />
+                <span className="text-xs font-semibold tracking-tight text-foreground">Sources</span>
+                {sidebarSources.length > 0 && (
+                  <span className="text-[10px] text-muted-foreground">
+                    · {sidebarSources.length} for selected answer
+                  </span>
+                )}
               </div>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                {activeSources.length > 0
-                  ? `${activeSources.length} source${activeSources.length !== 1 ? "s" : ""} used`
-                  : "Ask a question to see sources"}
-              </p>
             </div>
 
-            {activeSources.length === 0 ? (
-              <div className="flex items-center gap-3 px-4 py-5 text-xs text-muted-foreground">
-                <FileText className="h-7 w-7 shrink-0 opacity-25" />
-                <span>Source documents will appear here after you ask a question.</span>
+            {sidebarSources.length === 0 ? (
+              <div className="flex items-center gap-2.5 px-3 py-3 text-left">
+                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-secondary/60 text-muted-foreground">
+                  <FileText className="h-3.5 w-3.5" />
+                </div>
+                <p className="text-[11px] leading-4 text-muted-foreground">
+                  {selectedAgentMessageId != null
+                    ? "No sources cited for this answer."
+                    : "Ask a question, then click an answer to view citations."}
+                </p>
               </div>
             ) : (
-              <div className="max-h-56 space-y-2 overflow-y-auto px-3 py-3">
-                {activeSources.map((src, idx) => {
+              <div className="max-h-36 space-y-1.5 overflow-y-auto px-2.5 py-2">
+                {sidebarSources.map((src, idx) => {
                   const pct = Math.round(src.relevance_score * 100);
+                  const isSelected = docId === src.document_id && activeChunkId === src.chunk_id;
                   return (
                     <button
                       key={`${src.document_id}-${idx}`}
                       type="button"
                       onClick={() => openDocumentWithChunk(src.document_id, src.chunk_id, true)}
-                      className="w-full rounded-md border border-border/70 bg-secondary/40 p-3 text-left transition-colors hover:bg-secondary/80"
+                      className={cn(
+                        "w-full rounded-md border p-2 text-left transition-colors",
+                        isSelected
+                          ? "border-[color:var(--brand)]/40 bg-[color:var(--brand)]/8"
+                          : "border-border/70 bg-secondary/40 hover:bg-secondary/80",
+                      )}
                     >
-                      <div className="mb-1 flex items-start justify-between gap-2">
-                        <span className="line-clamp-2 text-[11px] font-semibold leading-tight text-foreground">{src.title}</span>
+                      <div className="mb-0.5 flex items-start justify-between gap-2">
+                        <span className="line-clamp-1 text-[10px] font-semibold leading-tight text-foreground">{src.title}</span>
                         {pct > 0 && (
-                          <span className="shrink-0 rounded-sm bg-[color:var(--brand)]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[color:var(--brand)]">
+                          <span className="shrink-0 rounded-sm bg-[color:var(--brand)]/10 px-1 py-0.5 text-[9px] font-semibold text-[color:var(--brand)]">
                             {pct}%
                           </span>
                         )}
                       </div>
-                      <div className="mb-2 text-[10px] text-muted-foreground">
+                      <div className="text-[9px] text-muted-foreground">
                         {src.source_type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
-                        {src.folder_name ? ` | ${src.folder_name}` : ""}
-                        {src.page_number ? ` | p. ${src.page_number}` : ""}
+                        {src.folder_name ? ` · ${src.folder_name}` : ""}
+                        {src.page_number ? ` · p. ${src.page_number}` : ""}
                       </div>
-                      {pct > 0 && (
-                        <div className="h-1 w-full overflow-hidden rounded-full bg-border/60">
-                          <div
-                            className="h-full rounded-full bg-[color:var(--brand)]"
-                            style={{ width: `${Math.min(pct, 100)}%` }}
-                          />
-                        </div>
+                      {src.chunk_preview && (
+                        <p className="mt-1 line-clamp-2 text-[9px] leading-3.5 text-muted-foreground">{src.chunk_preview}</p>
                       )}
                     </button>
                   );
@@ -790,6 +1588,88 @@ function KnowledgePage() {
           {docsLoadError && (
             <div className="rounded-md border border-[color:var(--danger)]/30 bg-[color:var(--danger)]/8 px-3 py-2 text-xs text-[color:var(--danger)]">
               {docsLoadError}
+            </div>
+          )}
+
+          {hasLibraryTodos && (
+            <div className="space-y-2 rounded-md border border-[color:var(--brand)]/20 bg-[color:var(--brand)]/5 p-3">
+              <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
+                <AlertTriangle className="h-3.5 w-3.5 text-[color:var(--brand)]" />
+                Library health
+              </div>
+              {!canAsk && (
+                <p className="text-[11px] leading-4 text-muted-foreground">
+                  The agent has no retrieval-ready sources. Approve and index documents before asking questions.
+                </p>
+              )}
+              <div className="flex flex-wrap gap-1.5">
+                {(libraryHealth.expired_count || expiredCount) > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHealthFilter("expired");
+                      setWorkflowFilter("Expired");
+                    }}
+                    className="rounded-full border border-[color:var(--danger)]/30 bg-[color:var(--danger)]/10 px-2.5 py-1 text-[10px] font-medium text-[color:var(--danger)]"
+                  >
+                    {libraryHealth.expired_count || expiredCount} expired
+                  </button>
+                )}
+                {(libraryHealth.needs_reindex_count || needsReindexCount) > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHealthFilter("needs_reindex");
+                      setWorkflowFilter("Needs re-index");
+                    }}
+                    className="rounded-full border border-border/70 bg-card px-2.5 py-1 text-[10px] font-medium text-foreground"
+                  >
+                    {libraryHealth.needs_reindex_count || needsReindexCount} need re-index
+                  </button>
+                )}
+                {draftCount > 0 && !canAsk && (
+                  <button
+                    type="button"
+                    onClick={() => setHealthFilter("needs_approval")}
+                    className="rounded-full border border-border/70 bg-card px-2.5 py-1 text-[10px] font-medium text-foreground"
+                  >
+                    {draftCount} awaiting approval
+                  </button>
+                )}
+              </div>
+              {libraryTodos.length > 0 && (
+                <div className="space-y-2 border-t border-border/50 pt-2">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Knowledge gaps
+                  </p>
+                  {libraryTodos.slice(0, 5).map((gap) => (
+                    <div key={gap.id} className="rounded-md border border-border/60 bg-card/80 p-2">
+                      <p className="text-[11px] font-medium text-foreground">{gap.query_text}</p>
+                      <p className="mt-0.5 text-[10px] text-muted-foreground">{gap.message}</p>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-[10px]"
+                          onClick={() => prefillUploadFromGap(gap)}
+                        >
+                          Upload related doc
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 text-[10px]"
+                          onClick={() => void handleResolveGap(gap.id)}
+                        >
+                          Mark resolved
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -1050,58 +1930,339 @@ function KnowledgePage() {
                     <div>
                       <h3 className="text-sm font-semibold tracking-tight text-foreground">Ask Knowledge Agent</h3>
                       <p className="mt-0.5 text-xs text-muted-foreground">Answers use approved, ready documents only.</p>
+                      {retrievalScopeLabel && (
+                        <span className="mt-1.5 inline-flex rounded-full border border-[color:var(--brand)]/25 bg-[color:var(--brand)]/8 px-2.5 py-0.5 text-[10px] font-medium text-[color:var(--brand)]">
+                          {retrievalScopeLabel}
+                        </span>
+                      )}
+                      {canAdjustScope && scopeDraft && (
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <button
+                              type="button"
+                              className="mt-1.5 inline-flex rounded-full border border-border/70 px-2.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                            >
+                              Adjust scope
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent align="start" className="w-80 space-y-3 p-3">
+                            <div>
+                              <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Retrieval scope</div>
+                              <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
+                                Applies to future Knowledge Agent answers.
+                              </p>
+                            </div>
+                            <div className="space-y-2">
+                              <label className="block text-[11px] font-medium text-muted-foreground">
+                                Project
+                                <Input
+                                  value={scopeDraft.project ?? ""}
+                                  onChange={(event) => setScopeDraft((current) => current ? { ...current, project: event.target.value } : current)}
+                                  placeholder="All projects"
+                                  className="mt-1 h-8 text-xs"
+                                />
+                              </label>
+                              <label className="block text-[11px] font-medium text-muted-foreground">
+                                Department
+                                <Input
+                                  value={scopeDraft.department ?? ""}
+                                  onChange={(event) => setScopeDraft((current) => current ? { ...current, department: event.target.value } : current)}
+                                  placeholder="All departments"
+                                  className="mt-1 h-8 text-xs"
+                                />
+                              </label>
+                              <div className="grid grid-cols-2 gap-2">
+                                <label className="block text-[11px] font-medium text-muted-foreground">
+                                  Max sources
+                                  <Input
+                                    type="number"
+                                    min={1}
+                                    max={10}
+                                    value={scopeDraft.max_sources}
+                                    onChange={(event) => setScopeDraft((current) => current ? { ...current, max_sources: Number(event.target.value) } : current)}
+                                    className="mt-1 h-8 text-xs"
+                                  />
+                                </label>
+                                <label className="block text-[11px] font-medium text-muted-foreground">
+                                  Min relevance
+                                  <Input
+                                    type="number"
+                                    min={0}
+                                    max={1}
+                                    step={0.05}
+                                    value={scopeDraft.min_confidence}
+                                    onChange={(event) => setScopeDraft((current) => current ? { ...current, min_confidence: Number(event.target.value) } : current)}
+                                    className="mt-1 h-8 text-xs"
+                                  />
+                                </label>
+                              </div>
+                              <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                                <input
+                                  type="checkbox"
+                                  checked={scopeDraft.include_histories}
+                                  onChange={(event) => setScopeDraft((current) => current ? { ...current, include_histories: event.target.checked } : current)}
+                                />
+                                Include histories and lessons learned
+                              </label>
+                            </div>
+                            <Button
+                              type="button"
+                              size="sm"
+                              disabled={savingScope}
+                              className="h-8 w-full text-xs"
+                              onClick={() => void saveRetrievalScope()}
+                            >
+                              {savingScope ? "Saving..." : "Save scope"}
+                            </Button>
+                          </PopoverContent>
+                        </Popover>
+                      )}
                     </div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={asking}
+                        className="h-8 gap-1.5 px-2 text-xs text-muted-foreground"
+                      >
+                        <Sparkles className="h-3.5 w-3.5" />
+                        Eval
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent align="end" className="w-[360px] space-y-3 p-3">
+                      <div>
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                          Evaluation & observability
+                        </div>
+                        <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
+                          Last {evalMetrics?.days ?? 30} days of Knowledge Agent traffic.
+                        </p>
+                      </div>
+                      {loadingEval ? (
+                        <p className="text-xs text-muted-foreground">Loading eval metrics...</p>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-2">
+                          <InfoTile label="Citation hit" value={`${Math.round((evalMetrics?.citation_hit_rate ?? 0) * 100)}%`} />
+                          <InfoTile label="Empty answers" value={`${Math.round((evalMetrics?.empty_answer_rate ?? 0) * 100)}%`} />
+                          <InfoTile label="Latency p95" value={evalMetrics?.latency_p95_ms ? `${evalMetrics.latency_p95_ms}ms` : "N/A"} />
+                          <InfoTile label="Downvotes" value={`${Math.round((evalMetrics?.downvote_rate ?? 0) * 100)}%`} />
+                        </div>
+                      )}
+                      <div className="rounded-md border border-border/60 bg-secondary/25 p-2">
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                            Gold Q&A set
+                          </span>
+                          <span className="text-[10px] text-muted-foreground">
+                            {evalMetrics?.eval_question_count ?? evalQuestions.filter((item) => item.is_active).length} active
+                          </span>
+                        </div>
+                        {canAdjustScope && (
+                          <div className="mb-2 space-y-1.5">
+                            <Input
+                              value={evalQuestionText}
+                              onChange={(event) => setEvalQuestionText(event.target.value)}
+                              placeholder="Question expected to cite a source"
+                              className="h-8 text-xs"
+                            />
+                            <Select value={evalExpectedDocId || "none"} onValueChange={(value) => setEvalExpectedDocId(value === "none" ? "" : value)}>
+                              <SelectTrigger className="h-8 text-xs">
+                                <SelectValue placeholder="Expected source" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="none">No expected source</SelectItem>
+                                {approvedIndexedDocs.slice(0, 50).map((doc) => (
+                                  <SelectItem key={doc.id} value={doc.id}>{doc.title}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <Button
+                              type="button"
+                              size="sm"
+                              className="h-8 w-full text-xs"
+                              disabled={!evalQuestionText.trim()}
+                              onClick={() => void addEvalQuestion()}
+                            >
+                              Add gold question
+                            </Button>
+                          </div>
+                        )}
+                        <div className="max-h-32 space-y-1 overflow-y-auto">
+                          {evalQuestions.length === 0 ? (
+                            <p className="text-[11px] text-muted-foreground">No gold questions yet.</p>
+                          ) : (
+                            evalQuestions.slice(0, 6).map((question) => (
+                              <div key={question.id} className="flex items-start justify-between gap-2 rounded-sm bg-card/70 px-2 py-1.5">
+                                <span className={cn("line-clamp-2 text-[11px] leading-4", !question.is_active && "text-muted-foreground line-through")}>
+                                  {question.question_text}
+                                </span>
+                                {canAdjustScope && (
+                                  <button
+                                    type="button"
+                                    className="shrink-0 text-[10px] text-muted-foreground hover:text-foreground"
+                                    onClick={() => void toggleEvalQuestion(question)}
+                                  >
+                                    {question.is_active ? "Disable" : "Enable"}
+                                  </button>
+                                )}
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                      {canAdjustScope && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={runningEval || evalQuestions.every((item) => !item.is_active)}
+                          className="h-8 w-full text-xs"
+                          onClick={() => void runEvalSet()}
+                        >
+                          {runningEval ? "Running eval..." : "Run active eval set"}
+                        </Button>
+                      )}
+                      {lastEvalRun && (
+                        <p className="text-[11px] leading-4 text-muted-foreground">
+                          Last run: {lastEvalRun.run_count} questions, {Math.round(lastEvalRun.citation_hit_rate * 100)}% citation hit, {Math.round(lastEvalRun.empty_answer_rate * 100)}% empty.
+                        </p>
+                      )}
+                    </PopoverContent>
+                  </Popover>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={asking}
+                        className="h-8 gap-1.5 px-2 text-xs text-muted-foreground"
+                      >
+                        <History className="h-3.5 w-3.5" />
+                        History
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent align="end" className="w-80 p-2">
+                      <div className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        Recent knowledge answers
+                      </div>
+                      {loadingHistory ? (
+                        <p className="px-1 py-2 text-xs text-muted-foreground">Loading saved answers...</p>
+                      ) : queryHistory.length === 0 ? (
+                        <p className="px-1 py-2 text-xs text-muted-foreground">No saved answers yet.</p>
+                      ) : (
+                        <div className="max-h-72 space-y-1 overflow-y-auto">
+                          {queryHistory.slice(0, 12).map((query) => (
+                            <button
+                              key={query.id}
+                              type="button"
+                              disabled={asking}
+                              onClick={() => void openSavedAnswer(query)}
+                              className="w-full rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-secondary disabled:opacity-50"
+                            >
+                              <span className="line-clamp-2 font-medium text-foreground">{query.query_text}</span>
+                              <span className="mt-0.5 block text-[10px] text-muted-foreground">
+                                {new Date(query.created_at).toLocaleString()}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </PopoverContent>
+                  </Popover>
                   <span className="rounded-full bg-[color:var(--success)]/10 px-2.5 py-1 text-[10px] font-medium text-[color:var(--success)]">
                     {approvedIndexedDocs.length} sources ready
                   </span>
-                  <AiBadge confidence={lastConfidence != null ? Math.round(lastConfidence * 100) : 0} />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-8 gap-1.5 px-2 text-xs text-muted-foreground"
-                    onClick={() => setShowRetrievalPanel((v) => !v)}
-                  >
-                    <Settings2 className="h-3.5 w-3.5" />
-                    Retrieval
-                  </Button>
+                  {sidebarConfidence != null && (
+                    <AiBadge confidence={Math.round(sidebarConfidence * 100)} />
+                  )}
+                  {(messages.length > 0 || selectedAgentMessageId != null) && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={asking}
+                      className="h-8 gap-1.5 px-2 text-xs text-muted-foreground"
+                      onClick={clearConversation}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      Clear conversation
+                    </Button>
+                  )}
                 </div>
               </div>
             </div>
 
-            {showRetrievalPanel && (
-              <div className="px-5 pt-3">
-                <KnowledgeRetrievalPanel canManage={canManageRetrieval} onChange={setRetrievalSettings} />
+            <div className="relative mx-5 mt-4 min-h-0 flex-1">
+              <div
+                ref={chatScrollRef}
+                onScroll={handleChatScroll}
+                className="h-full space-y-4 overflow-y-auto rounded-md bg-secondary/35 p-4 text-xs"
+              >
+              <div className="sr-only" aria-live="polite" aria-atomic="true">
+                {liveAnnouncement}
               </div>
-            )}
-
-            <div className="px-5 pt-3">
-              <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Suggested questions</div>
-              <div className="flex flex-wrap gap-2">
-              {suggestedQuestions.map((question) => (
-                <button
-                  key={question}
-                  type="button"
-                  onClick={() => setAskInput(question)}
-                  className="rounded-full border border-border/70 bg-card px-3 py-1.5 text-[11px] text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
-                >
-                  {question}
-                </button>
-              ))}
-              </div>
-            </div>
-
-            <div className="mx-5 mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto rounded-md bg-secondary/35 p-4 text-xs">
-              {messages.map((message, index) => {
-                const isAnimating = message.role === "agent" && index === animatingMessageIndex;
-                const showAgentDetails = message.role === "agent" && !isAnimating;
+              {messages.length === 0 && !asking ? (
+                <div className="flex h-full min-h-[220px] flex-col items-center justify-center px-2 py-6 text-center">
+                  <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-card text-[color:var(--brand)]">
+                    <Sparkles className="h-5 w-5" />
+                  </div>
+                  <p className="text-sm font-medium text-foreground">
+                    {canAsk ? "Ask about SOPs, guides, or past issues" : "Upload and approve documents first"}
+                  </p>
+                  <p className="mt-1 max-w-sm text-[11px] leading-4 text-muted-foreground">
+                    {canAsk
+                      ? "Answers are grounded in approved, indexed documents from your knowledge library."
+                      : `No retrieval-ready sources yet (${approvedIndexedDocs.length} ready). Upload a document, set owner and effective date, approve it, and wait for indexing.`}
+                  </p>
+                  {!canAsk && (
+                    <div className="mt-3 max-w-sm space-y-1 text-left text-[11px] text-muted-foreground">
+                      {draftCount > 0 && <p>• Approve {draftCount} draft document{draftCount === 1 ? "" : "s"}</p>}
+                      {needsReindexCount > 0 && <p>• Re-index {needsReindexCount} document{needsReindexCount === 1 ? "" : "s"} stuck in processing</p>}
+                      {expiredCount > 0 && <p>• Review {expiredCount} expired SOP{expiredCount === 1 ? "" : "s"}</p>}
+                      {documents.length === 0 && <p>• Upload your first SOP or guide using the library panel</p>}
+                    </div>
+                  )}
+                  <div className="mt-5 flex max-w-md flex-wrap justify-center gap-2">
+                    {canAsk && suggestedQuestions.length > 0 ? (
+                      suggestedQuestions.map((question) => (
+                        <button
+                          key={question}
+                          type="button"
+                          onClick={() => void submitAsk(question)}
+                          className="rounded-full border border-border/70 bg-card px-3 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:border-[color:var(--brand)]/30 hover:bg-secondary/70 hover:text-foreground"
+                        >
+                          {question}
+                        </button>
+                      ))
+                    ) : (
+                      <p className="text-[11px] text-muted-foreground">
+                        {canAsk
+                          ? "Upload and approve documents to see suggested questions."
+                          : "Use Upload Document in the library, then approve and index it."}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ) : (
+              messages.map((message) => {
+                const isAnimating = message.role === "agent" && message.id === animatingMessageId;
+                const isAgentReply = message.role === "agent" && !message.isServiceError && !message.isStreaming;
+                const showPostAnimationActions = isAgentReply && !isAnimating;
+                const showAgentDetails = isAgentReply && !isAnimating;
+                const detailsOpen = isAgentReply && isMessageDetailsOpen(message);
+                const showCollapsibleDetails = showAgentDetails && hasCollapsibleDetails(message);
+                const isSelectedAgent = message.role === "agent" && message.id === selectedAgentMessageId;
+                const isSelectableAgent = message.role === "agent" && !message.isServiceError;
 
                 return (
                 <div
-                  key={`${message.role}-${index}`}
+                  key={message.id}
                   className={cn(
                     "flex gap-3",
                     message.role === "user"
@@ -1110,91 +2271,230 @@ function KnowledgePage() {
                   )}
                 >
                   {message.role === "agent" && (
-                    <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-card text-muted-foreground">
+                    <div
+                      className={cn(
+                        "mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-card text-muted-foreground",
+                        message.isServiceError && "text-[color:var(--danger)]",
+                      )}
+                    >
                       <Bot className="h-3.5 w-3.5" />
                     </div>
                   )}
                   <div
+                    role={isSelectableAgent ? "button" : undefined}
+                    tabIndex={isSelectableAgent ? 0 : undefined}
+                    onClick={
+                      isSelectableAgent
+                        ? (event) => {
+                            if (isInteractiveChatTarget(event.target)) return;
+                            setSelectedAgentMessageId(message.id);
+                          }
+                        : undefined
+                    }
+                    onKeyDown={
+                      isSelectableAgent
+                        ? (event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              setSelectedAgentMessageId(message.id);
+                            }
+                          }
+                        : undefined
+                    }
                     className={cn(
                       "max-w-[88%] rounded-md px-3 py-3",
                       message.role === "user"
                         ? "bg-[color:var(--brand)] text-[color:var(--brand-foreground)]"
-                        : "bg-card",
+                        : message.isServiceError
+                          ? "border border-[color:var(--danger)]/30 bg-[color:var(--danger)]/5"
+                          : "bg-card",
+                      isSelectableAgent && "cursor-pointer transition-shadow hover:shadow-sm",
+                      isSelectedAgent && "ring-2 ring-[color:var(--brand)]/35",
                     )}
                   >
                     <div className={cn("mb-1 flex items-center justify-between gap-2 text-[10px] font-semibold uppercase tracking-wider", message.role === "user" ? "text-white/70" : "text-muted-foreground")}>
-                      <span>{message.role === "user" ? "You" : "Knowledge Agent"}</span>
-                      {showAgentDetails && message.confidence_score !== undefined && message.confidence_score > 0 && (
-                        <span className="rounded-sm bg-[color:var(--success)]/15 px-1.5 py-0.5 text-[color:var(--success)] normal-case">
-                          {Math.round(message.confidence_score * 100)}% confidence
-                        </span>
-                      )}
+                      <span>
+                        {message.role === "user"
+                          ? "You"
+                          : message.isServiceError
+                            ? "Service error"
+                            : "Knowledge Agent"}
+                      </span>
+                      <div className="flex items-center gap-1.5 normal-case">
+                        {isAnimating && (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setAnimatingMessageId(null);
+                              announceAgentMessage(message.text);
+                            }}
+                            className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-secondary/70 hover:text-foreground"
+                          >
+                            Skip
+                          </button>
+                        )}
+                        {isAgentReply && message.confidence_score !== undefined && message.confidence_score > 0 && (
+                          <span className="rounded-sm bg-[color:var(--success)]/15 px-1.5 py-0.5 text-[color:var(--success)]">
+                            {Math.round(message.confidence_score * 100)}% confidence
+                          </span>
+                        )}
+                      </div>
                     </div>
                     {isAnimating ? (
                       <TypewriterText
                         text={message.text}
                         className="leading-5"
-                        onProgress={scrollChatToEnd}
-                        onComplete={() => setAnimatingMessageIndex(null)}
+                        onProgress={() => scrollChatToEnd()}
+                        onComplete={() => {
+                          setAnimatingMessageId(null);
+                          announceAgentMessage(message.text);
+                        }}
                       />
+                    ) : message.isStreaming ? (
+                      <p className="leading-5">
+                        {message.text ? (
+                          <>
+                            {message.text}
+                            <span className="ml-0.5 inline-block h-3.5 w-0.5 animate-pulse bg-current align-text-bottom opacity-70" aria-hidden="true" />
+                          </>
+                        ) : (
+                          <TypingIndicator />
+                        )}
+                      </p>
                     ) : (
-                      <p className="leading-5">{message.text}</p>
+                      <p className={cn("leading-5", message.isServiceError && "text-foreground")}>
+                        {buildAgentDisplayText(message) || NO_KNOWLEDGE_ANSWER}
+                      </p>
                     )}
-                    {showAgentDetails && message.confidence_reasons && message.confidence_reasons.length > 0 && (
-                      <div className="mt-2.5 rounded-sm border border-border/60 bg-secondary/40 px-2.5 py-2">
-                        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Why this confidence</div>
-                        <ul className="space-y-0.5 text-[11px] leading-4 text-muted-foreground">
-                          {message.confidence_reasons.map((reason) => (
-                            <li key={reason}>• {reason}</li>
-                          ))}
-                        </ul>
+                    {showPostAnimationActions && (
+                      <div className="relative z-10 mt-2.5 flex flex-wrap items-center gap-1 border-t border-border/50 pt-2">
+                        <button
+                          type="button"
+                          disabled={asking}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void copyAgentAnswer(message.id, message.text);
+                          }}
+                          className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-secondary/70 hover:text-foreground disabled:opacity-50"
+                        >
+                          {copiedMessageId === message.id ? (
+                            <>
+                              <CheckCircle2 className="h-3 w-3 text-[color:var(--success)]" />
+                              Copied
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-3 w-3" />
+                              Copy
+                            </>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={asking || !canAsk}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void regenerateAgentAnswer(message.id);
+                          }}
+                          className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-secondary/70 hover:text-foreground disabled:opacity-50"
+                        >
+                          <RefreshCw className="h-3 w-3" />
+                          Regenerate
+                        </button>
+                        <button
+                          type="button"
+                          disabled={asking || !canAsk}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void regenerateAgentAnswer(message.id, { moreSources: true });
+                          }}
+                          className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-secondary/70 hover:text-foreground disabled:opacity-50"
+                          title="Regenerate with more source documents"
+                        >
+                          More sources
+                        </button>
+                        <span className="mx-0.5 h-3 w-px bg-border/70" aria-hidden="true" />
+                        <button
+                          type="button"
+                          onClick={() => void setMessageFeedback(message.id, "up")}
+                          className={cn(
+                            "inline-flex cursor-pointer items-center rounded-sm p-1 transition-colors",
+                            message.feedback === "up"
+                              ? "bg-[color:var(--success)]/20 text-[color:var(--success)] ring-1 ring-[color:var(--success)]/40"
+                              : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground",
+                          )}
+                          title="Helpful answer"
+                          aria-label="Helpful answer"
+                          aria-pressed={message.feedback === "up"}
+                        >
+                          <ThumbsUp className={cn("h-3.5 w-3.5", message.feedback === "up" && "fill-current")} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void setMessageFeedback(message.id, "down")}
+                          className={cn(
+                            "inline-flex cursor-pointer items-center rounded-sm p-1 transition-colors",
+                            message.feedback === "down"
+                              ? "bg-[color:var(--danger)]/20 text-[color:var(--danger)] ring-1 ring-[color:var(--danger)]/40"
+                              : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground",
+                          )}
+                          title="Not helpful"
+                          aria-label="Not helpful"
+                          aria-pressed={message.feedback === "down"}
+                        >
+                          <ThumbsDown className={cn("h-3.5 w-3.5", message.feedback === "down" && "fill-current")} />
+                        </button>
                       </div>
                     )}
-                    {showAgentDetails && message.structured_answer && (
-                      <div className="mt-2.5 space-y-2 rounded-sm border border-border/60 bg-secondary/30 p-2.5">
-                        <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Operational answer</div>
-                        {message.structured_answer.policy && <StructuredField label="Policy" value={message.structured_answer.policy} />}
-                        {message.structured_answer.steps && <StructuredField label="Steps" value={message.structured_answer.steps} />}
-                        {message.structured_answer.owner && <StructuredField label="Owner" value={message.structured_answer.owner} />}
-                        {message.structured_answer.evidence && <StructuredField label="Evidence" value={message.structured_answer.evidence} />}
-                        {message.structured_answer.next_action && <StructuredField label="Next action" value={message.structured_answer.next_action} />}
+                    {showPostAnimationActions && message.feedback === "down" && (
+                      <div className="mt-2" onClick={(event) => event.stopPropagation()}>
+                        <Textarea
+                          value={message.feedbackComment ?? ""}
+                          onChange={(event) => setFeedbackComment(message.id, event.target.value)}
+                          onBlur={(event) => {
+                            const value = event.target.value.trim();
+                            if (value) {
+                              void setMessageFeedback(message.id, "down", value);
+                            }
+                          }}
+                          placeholder="What was wrong? (optional)"
+                          className="min-h-[52px] resize-none text-xs"
+                          rows={2}
+                        />
                       </div>
                     )}
-                    {showAgentDetails && message.knowledge_gap && (
-                      <div className="mt-2.5 rounded-sm border border-[color:var(--warning)]/30 bg-[color:var(--warning)]/8 p-2.5">
-                        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--warning)]">Missing knowledge</div>
-                        <p className="text-[11px] leading-4 text-foreground">{message.knowledge_gap.message}</p>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          <Button type="button" size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => prefillUploadFromGap(message.knowledge_gap!)}>
-                            Upload related document
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 text-[10px]"
-                            onClick={() => setWorkflowFilter("Needs review")}
-                          >
-                            Review pending documents
-                          </Button>
-                        </div>
+                    {message.isServiceError && !isAnimating && message.retryQuestion && (
+                      <div className="mt-2.5">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 gap-1.5 text-[10px]"
+                          disabled={asking || !canAsk}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void retryAsk(message.retryQuestion!, message.id);
+                          }}
+                        >
+                          <RefreshCw className="h-3 w-3" />
+                          Retry
+                        </Button>
                       </div>
                     )}
-                    {showAgentDetails && message.next_step && (
-                      <div className="mt-2.5 rounded-sm border border-[color:var(--brand)]/20 bg-[color:var(--brand)]/5 px-2.5 py-2">
-                        <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--brand)]/70">Recommended next step</div>
-                        <p className="text-[11px] leading-4 text-foreground">{message.next_step}</p>
-                      </div>
-                    )}
-                    {showAgentDetails && message.citations && message.citations.length > 0 && (
+                    {isAgentReply && message.citations && message.citations.length > 0 && (
                       <div className="mt-2.5 border-t border-border/50 pt-2">
                         <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Sources</div>
                         <div className="flex flex-wrap gap-1.5">
-                          {message.citations.map((item) => (
+                          {message.citations.map((item, index) => (
                             <button
-                              key={`${item.document_id}-${item.citation_label}`}
+                              key={item.chunk_id ?? `${item.document_id}-${item.chunk_index ?? index}`}
                               type="button"
-                              onClick={() => openDocumentWithChunk(item.document_id, item.chunk_id, true)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setSelectedAgentMessageId(message.id);
+                                openDocumentWithChunk(item.document_id, item.chunk_id, true);
+                              }}
                               className="rounded-md border border-border/70 bg-secondary/50 px-2 py-1 text-[10px] text-foreground hover:bg-secondary"
                             >
                               {item.title}
@@ -1206,11 +2506,114 @@ function KnowledgePage() {
                         </div>
                       </div>
                     )}
+                    {showCollapsibleDetails && (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleMessageDetails(message.id);
+                        }}
+                        className="mt-2.5 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
+                      >
+                        <ChevronDown className={cn("h-3 w-3 transition-transform", detailsOpen && "rotate-180")} />
+                        {detailsOpen ? "Hide details" : "Details"}
+                      </button>
+                    )}
+                    {showCollapsibleDetails && detailsOpen && (
+                      <div className="mt-2 space-y-2.5">
+                        {message.confidence_reasons && message.confidence_reasons.length > 0 && (
+                          <div className="rounded-sm border border-border/60 bg-secondary/40 px-2.5 py-2">
+                            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Why this confidence</div>
+                            <ul className="space-y-0.5 text-[11px] leading-4 text-muted-foreground">
+                              {message.confidence_reasons.map((reason) => (
+                                <li key={reason}>• {reason}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {message.regenerationSummary && (
+                          <div className="rounded-sm border border-[color:var(--brand)]/20 bg-[color:var(--brand)]/5 px-2.5 py-2">
+                            <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--brand)]/70">What changed</div>
+                            <p className="text-[11px] leading-4 text-muted-foreground">{message.regenerationSummary}</p>
+                          </div>
+                        )}
+                        {message.retrieval_debug && (
+                          <div className="rounded-sm border border-border/60 bg-secondary/30 px-2.5 py-2">
+                            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Why these sources?</div>
+                            <div className="space-y-1 text-[11px] leading-4 text-muted-foreground">
+                              {message.retrieval_debug.retrieval_query && (
+                                <p>Search query: {message.retrieval_debug.retrieval_query}</p>
+                              )}
+                              <p>
+                                Scope: {message.retrieval_debug.project || "All projects"}
+                                {message.retrieval_debug.department ? ` / ${message.retrieval_debug.department}` : ""}
+                                {message.retrieval_debug.include_histories === false ? " / histories off" : ""}
+                              </p>
+                              <p>
+                                Candidates: {message.retrieval_debug.eligible_doc_count ?? "n/a"} docs
+                                {message.retrieval_debug.has_embeddings === false ? " / keyword fallback" : " / hybrid search"}
+                              </p>
+                              {message.retrieval_debug.sources && message.retrieval_debug.sources.length > 0 && (
+                                <div className="mt-1 space-y-1">
+                                  {message.retrieval_debug.sources.slice(0, 5).map((source) => (
+                                    <div key={source.chunk_id} className="rounded-sm bg-card/70 px-2 py-1">
+                                      <span className="font-medium text-foreground">{source.title}</span>
+                                      <span className="ml-1">
+                                        relevance {Math.round(source.relevance_score * 100)}%,
+                                        vector {Math.round(source.vector_score * 100)}%,
+                                        keyword {Math.round(source.keyword_score * 100)}%
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        {message.structured_answer && (
+                          <div className="space-y-2 rounded-sm border border-border/60 bg-secondary/30 p-2.5">
+                            <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Operational answer</div>
+                            {message.structured_answer.policy && <StructuredField label="Policy" value={message.structured_answer.policy} />}
+                            {message.structured_answer.steps && <StructuredField label="Steps" value={message.structured_answer.steps} />}
+                            {message.structured_answer.owner && <StructuredField label="Owner" value={message.structured_answer.owner} />}
+                            {message.structured_answer.evidence && <StructuredField label="Evidence" value={message.structured_answer.evidence} />}
+                            {message.structured_answer.next_action && <StructuredField label="Next action" value={message.structured_answer.next_action} />}
+                          </div>
+                        )}
+                        {message.next_step && (
+                          <div className="rounded-sm border border-[color:var(--brand)]/20 bg-[color:var(--brand)]/5 px-2.5 py-2">
+                            <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--brand)]/70">Recommended next step</div>
+                            <p className="text-[11px] leading-4 text-foreground">{message.next_step}</p>
+                          </div>
+                        )}
+                        {message.knowledge_gap && !message.isServiceError && (
+                          <div className="rounded-sm border border-[color:var(--warning)]/30 bg-[color:var(--warning)]/8 p-2.5">
+                            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--warning)]">Missing knowledge</div>
+                            <p className="text-[11px] leading-4 text-foreground">{message.knowledge_gap.message}</p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <Button type="button" size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => prefillUploadFromGap(message.knowledge_gap!)}>
+                                Upload related document
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 text-[10px]"
+                                onClick={() => setWorkflowFilter("Needs review")}
+                              >
+                                Review pending documents
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
                 );
-              })}
-              {asking && (
+              })
+              )}
+              {asking && !messages.some((message) => message.isStreaming) && (
                 <div className="flex gap-3">
                   <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-card text-muted-foreground">
                     <Bot className="h-3.5 w-3.5" />
@@ -1222,13 +2625,27 @@ function KnowledgePage() {
                 </div>
               )}
               <div ref={chatEndRef} aria-hidden="true" />
+              </div>
+              {showJumpToBottom && (
+                <button
+                  type="button"
+                  onClick={jumpToChatBottom}
+                  className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-border/70 bg-card px-3 py-1.5 text-[10px] font-medium text-foreground shadow-sm transition-colors hover:bg-secondary"
+                >
+                  Jump to latest
+                </button>
+              )}
             </div>
 
-            <form className="flex shrink-0 gap-2 p-5 pt-4" onSubmit={handleAsk}>
-              <input
-                placeholder="Ask about an SOP, guide, or historical issue..."
+            <form className="flex shrink-0 flex-col gap-2 p-5 pt-4" onSubmit={handleAsk}>
+              {!canAsk && (
+                <p className="text-xs text-muted-foreground">Upload and approve documents first.</p>
+              )}
+              <div className="flex items-end gap-2">
+              <Textarea
+                placeholder={canAsk ? "Ask about an SOP, guide, or historical issue..." : "Upload and approve documents first"}
                 value={askInput}
-                disabled={asking || animatingMessageIndex !== null}
+                disabled={asking || !canAsk}
                 onChange={(event) => setAskInput(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
@@ -1236,81 +2653,21 @@ function KnowledgePage() {
                     void submitAsk();
                   }
                 }}
-                className="min-h-10 flex-1 rounded-md border border-border bg-card px-3 py-2 text-sm outline-none focus:border-[color:var(--brand)]"
+                rows={2}
+                className="min-h-[4.5rem] flex-1 resize-none rounded-md border-border bg-card text-sm shadow-none focus-visible:border-[color:var(--brand)] focus-visible:ring-0"
               />
               <Button
                 type="submit"
-                disabled={asking || animatingMessageIndex !== null}
+                disabled={asking || !canAsk}
                 className="h-10 gap-2 bg-[color:var(--brand)] px-4 text-xs text-[color:var(--brand-foreground)]"
               >
                 <Send className="h-3.5 w-3.5" />
-                {asking ? "Asking" : animatingMessageIndex !== null ? "Replying" : "Ask"}
+                {asking ? "Asking" : "Ask"}
               </Button>
+              </div>
             </form>
           </Card>
 
-        </div>
-
-        <div className="hidden">
-          <Card className="border-transparent bg-card/80">
-            <div className="border-b border-border/70 px-4 py-3">
-              <div className="flex items-center gap-2">
-                <Sparkles className="h-3.5 w-3.5 text-[color:var(--brand)]" />
-                <span className="text-sm font-semibold tracking-tight text-foreground">Sources</span>
-              </div>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                {activeSources.length > 0
-                  ? `${activeSources.length} source${activeSources.length !== 1 ? "s" : ""} used`
-                  : "Ask a question to see sources"}
-              </p>
-            </div>
-
-            {activeSources.length === 0 ? (
-              <div className="flex flex-col items-center gap-3 px-4 py-8 text-center text-xs text-muted-foreground">
-                <FileText className="h-8 w-8 opacity-25" />
-                <span>Source documents will appear here after you ask a question.</span>
-              </div>
-            ) : (
-              <div className="space-y-2 px-3 py-3">
-                {activeSources.map((src, idx) => {
-                  const pct = Math.round(src.relevance_score * 100);
-                  return (
-                    <button
-                      key={`${src.document_id}-${idx}`}
-                      type="button"
-                      onClick={() => openDocumentWithChunk(src.document_id, src.chunk_id, true)}
-                      className="w-full rounded-md border border-border/70 bg-secondary/40 p-3 text-left hover:bg-secondary/80 transition-colors"
-                    >
-                      <div className="mb-1 flex items-start justify-between gap-2">
-                        <span className="line-clamp-2 text-[11px] font-semibold text-foreground leading-tight">{src.title}</span>
-                        {pct > 0 && (
-                          <span className="shrink-0 rounded-sm bg-[color:var(--brand)]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[color:var(--brand)]">
-                            {pct}%
-                          </span>
-                        )}
-                      </div>
-                      <div className="mb-2 text-[10px] text-muted-foreground">
-                        {src.source_type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
-                        {src.folder_name ? ` · ${src.folder_name}` : ""}
-                        {src.page_number ? ` · p. ${src.page_number}` : ""}
-                      </div>
-                      {src.chunk_preview && (
-                        <p className="mb-2 line-clamp-3 text-[10px] leading-4 text-muted-foreground">{src.chunk_preview}</p>
-                      )}
-                      {pct > 0 && (
-                        <div className="h-1 w-full overflow-hidden rounded-full bg-border/60">
-                          <div
-                            className="h-full rounded-full bg-[color:var(--brand)]"
-                            style={{ width: `${Math.min(pct, 100)}%` }}
-                          />
-                        </div>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </Card>
         </div>
 
       </div>
@@ -1725,6 +3082,11 @@ function KnowledgePage() {
               </div>
               {uploadState !== "error" && <Progress value={uploadProgress} />}
               {uploadState === "error" && <p className="text-[color:var(--danger)]">{uploadError}</p>}
+              {uploadWarning && (
+                <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-800 dark:text-amber-200">
+                  {uploadWarning}
+                </p>
+              )}
               {uploadState === "success" && <p className="mt-2 text-muted-foreground">The document is visible in the selected folder while chunks and embeddings are prepared.</p>}
             </div>
           )}
@@ -1782,16 +3144,6 @@ function QualityScoreBadge({
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-function SummaryPill({ icon, label, value }: { icon: ReactNode; label: string; value: number }) {
-  return (
-    <div className="flex h-9 items-center gap-2 rounded-md bg-card px-3 text-xs">
-      <span className="text-muted-foreground">{icon}</span>
-      <span className="font-semibold text-foreground">{value}</span>
-      <span className="text-muted-foreground">{label}</span>
     </div>
   );
 }

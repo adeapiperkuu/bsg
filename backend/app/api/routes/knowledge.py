@@ -3,7 +3,7 @@ from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 
 from app.api.deps import SessionDep
 from app.core.security import CurrentUser, require_role
@@ -18,9 +18,18 @@ from app.schemas.common import DataResponse, ListResponse, Pagination
 from app.schemas.domain import (
     KnowledgeAskCreate,
     KnowledgeAskRead,
+    KnowledgeGapTodoRead,
+    KnowledgeBootstrapRead,
     KnowledgeDocumentRead,
     KnowledgeDocumentUpdate,
     KnowledgeDocumentVersionRead,
+    KnowledgeEvalMetricsRead,
+    KnowledgeEvalQuestionCreate,
+    KnowledgeEvalQuestionRead,
+    KnowledgeEvalQuestionUpdate,
+    KnowledgeEvalRunRead,
+    KnowledgeFeedbackCreate,
+    KnowledgeFeedbackRead,
     KnowledgeFolderCreate,
     KnowledgeFolderRead,
     KnowledgeRetrievalSettingsRead,
@@ -30,17 +39,27 @@ from app.schemas.domain import (
 from app.services.knowledge import (
     ask_knowledge_agent,
     compare_document_versions,
+    create_knowledge_eval_question,
     create_knowledge_folder_by_name,
     create_document_from_upload,
     delete_document,
     get_document,
     get_document_file_download,
+    get_knowledge_bootstrap,
+    get_knowledge_eval_metrics,
+    get_knowledge_query_answer,
     get_retrieval_settings,
     list_document_versions,
+    list_knowledge_eval_questions,
     list_documents,
     list_knowledge_folders,
+    record_knowledge_feedback,
     reindex_document,
+    resolve_knowledge_gap,
+    run_knowledge_eval,
+    stream_knowledge_ask,
     update_document,
+    update_knowledge_eval_question,
     update_retrieval_settings,
 )
 
@@ -63,6 +82,30 @@ def _parse_enum(value: str, enum_cls, field_name: str):
         from app.core.exceptions import ApiError
 
         raise ApiError(400, "VALIDATION_ERROR", f"Invalid {field_name}.") from exc
+
+
+@router.get("/knowledge/bootstrap", response_model=DataResponse[KnowledgeBootstrapRead])
+async def knowledge_bootstrap(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[KnowledgeBootstrapRead]:
+    folders, documents, library_health = await get_knowledge_bootstrap(session, current_user)
+    await session.commit()
+    return DataResponse(
+        data=KnowledgeBootstrapRead(
+            folders=[
+                KnowledgeFolderRead(
+                    id=folder.id,
+                    name=folder.name,
+                    folder_kind=folder.folder_kind.value,
+                    display_order=folder.display_order,
+                )
+                for folder in folders
+            ],
+            documents=documents,
+            library_health=library_health,
+        )
+    )
 
 
 @router.get("/knowledge/folders", response_model=ListResponse[KnowledgeFolderRead])
@@ -267,12 +310,142 @@ async def ask_knowledge(
         session,
         current_user,
         payload.query_text.strip(),
+        conversation_history=payload.conversation_history,
+        answer_mode=payload.answer_mode,
         include_histories=payload.include_histories if payload.include_histories is not None else org_settings.include_histories,
         max_sources=payload.max_sources or org_settings.max_sources,
         min_relevance_score=payload.min_relevance_score if payload.min_relevance_score is not None else org_settings.min_confidence,
         project=payload.project or org_settings.project,
         department=payload.department or org_settings.department,
     )
+    await session.commit()
+    return DataResponse(data=row)
+
+
+@router.post("/knowledge/ask/stream")
+async def stream_knowledge(
+    payload: KnowledgeAskCreate,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> StreamingResponse:
+    org_settings = await get_retrieval_settings(session, current_user.org_id)
+
+    async def _generate():
+        async for chunk in stream_knowledge_ask(
+            session,
+            current_user,
+            payload.query_text.strip(),
+            conversation_history=payload.conversation_history,
+            answer_mode=payload.answer_mode,
+            include_histories=payload.include_histories if payload.include_histories is not None else org_settings.include_histories,
+            max_sources=payload.max_sources or org_settings.max_sources,
+            min_relevance_score=payload.min_relevance_score if payload.min_relevance_score is not None else org_settings.min_confidence,
+            project=payload.project or org_settings.project,
+            department=payload.department or org_settings.department,
+        ):
+            yield chunk
+        await session.commit()
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/knowledge/gaps/{gap_id}/resolve", response_model=DataResponse[KnowledgeGapTodoRead])
+async def resolve_gap(
+    gap_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[KnowledgeGapTodoRead]:
+    row = await resolve_knowledge_gap(session, current_user, gap_id)
+    await session.commit()
+    return DataResponse(data=row)
+
+
+@router.post("/knowledge/feedback", response_model=DataResponse[KnowledgeFeedbackRead])
+async def submit_knowledge_feedback(
+    payload: KnowledgeFeedbackCreate,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[KnowledgeFeedbackRead]:
+    row = await record_knowledge_feedback(
+        session,
+        current_user,
+        query_id=payload.query_id,
+        rating=payload.rating,
+        comment=payload.comment,
+    )
+    await session.commit()
+    return DataResponse(data=row)
+
+
+@router.get("/knowledge/queries/{query_id}", response_model=DataResponse[KnowledgeAskRead])
+async def get_knowledge_query(
+    query_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[KnowledgeAskRead]:
+    row = await get_knowledge_query_answer(session, current_user, query_id)
+    await session.commit()
+    return DataResponse(data=row)
+
+
+@router.get("/knowledge/eval/metrics", response_model=DataResponse[KnowledgeEvalMetricsRead])
+async def read_knowledge_eval_metrics(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+    days: int = Query(30, ge=1, le=365),
+) -> DataResponse[KnowledgeEvalMetricsRead]:
+    row = await get_knowledge_eval_metrics(session, current_user, days=days)
+    await session.commit()
+    return DataResponse(data=row)
+
+
+@router.get("/knowledge/eval/questions", response_model=ListResponse[KnowledgeEvalQuestionRead])
+async def list_knowledge_eval_questions_route(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> ListResponse[KnowledgeEvalQuestionRead]:
+    rows = await list_knowledge_eval_questions(session, current_user)
+    await session.commit()
+    return ListResponse(data=rows, pagination=Pagination(limit=len(rows)))
+
+
+@router.post("/knowledge/eval/questions", response_model=DataResponse[KnowledgeEvalQuestionRead])
+async def create_knowledge_eval_question_route(
+    payload: KnowledgeEvalQuestionCreate,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[KnowledgeEvalQuestionRead]:
+    row = await create_knowledge_eval_question(session, current_user, payload)
+    await session.commit()
+    return DataResponse(data=row)
+
+
+@router.patch("/knowledge/eval/questions/{question_id}", response_model=DataResponse[KnowledgeEvalQuestionRead])
+async def patch_knowledge_eval_question_route(
+    question_id: UUID,
+    payload: KnowledgeEvalQuestionUpdate,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[KnowledgeEvalQuestionRead]:
+    row = await update_knowledge_eval_question(session, current_user, question_id, payload)
+    await session.commit()
+    return DataResponse(data=row)
+
+
+@router.post("/knowledge/eval/run", response_model=DataResponse[KnowledgeEvalRunRead])
+async def run_knowledge_eval_route(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+    limit: int = Query(50, ge=1, le=50),
+) -> DataResponse[KnowledgeEvalRunRead]:
+    row = await run_knowledge_eval(session, current_user, limit=limit)
     await session.commit()
     return DataResponse(data=row)
 

@@ -69,5 +69,20 @@ async def list_agent_queries(session: SessionDep, current_user: UserDep, limit: 
     return ListResponse(data=[AgentQueryRead.model_validate(row) for row in rows], pagination=Pagination(limit=limit))
 
 
+@router.get("/agent-queries/{query_id}", response_model=DataResponse[AgentQueryRead])
+async def get_agent_query(query_id: UUID, session: SessionDep, current_user: UserDep) -> DataResponse[AgentQueryRead]:
+    query = select(AgentQuery).where(AgentQuery.id == query_id)
+    if current_user.role.value == "client":
+        query = query.where(AgentQuery.user_id == current_user.id)
+    elif current_user.role.value == "delivery_manager":
+        query = query.where(AgentQuery.org_id == current_user.org_id)
+    row = (await session.execute(query)).scalar_one_or_none()
+    if row is None:
+        raise ApiError(404, "NOT_FOUND", "Agent query not found.")
+    data = AgentQueryRead.model_validate(row)
+    data.evidence_links = [EvidenceLinkRead(**item.__dict__) for item in await _query_evidence(session, row.id)]
+    return DataResponse(data=data)
+
+
 async def _query_evidence(session: SessionDep, query_id: UUID) -> list[AgentQueryEvidenceLink]:
     return list((await session.execute(select(AgentQueryEvidenceLink).where(AgentQueryEvidenceLink.agent_query_id == query_id))).scalars())

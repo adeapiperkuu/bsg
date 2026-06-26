@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -663,6 +663,7 @@ class AgentQueryRead(ORMModel):
     model_used: str | None
     latency_ms: int | None
     created_at: datetime
+    retrieval_params: dict[str, object] | None = None
     evidence_links: list[EvidenceLinkRead] = []
 
 
@@ -824,8 +825,15 @@ class KnowledgeDocumentUpdate(BaseModel):
     effective_date: date | None = None
 
 
+class KnowledgeConversationTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=8000)
+
+
 class KnowledgeAskCreate(BaseModel):
-    query_text: str = Field(min_length=1)
+    query_text: str = Field(min_length=1, max_length=8000)
+    conversation_history: list[KnowledgeConversationTurn] = Field(default_factory=list, max_length=6)
+    answer_mode: Literal["internal", "client_safe"] = "internal"
     include_histories: bool = True
     max_sources: int = Field(default=5, ge=1, le=10)
     min_relevance_score: float = Field(default=0.25, ge=0.0, le=1.0)
@@ -864,6 +872,34 @@ class KnowledgeGapRead(BaseModel):
     suggested_folder_kind: str | None = None
 
 
+class KnowledgeGapTodoRead(BaseModel):
+    id: UUID
+    query_text: str
+    message: str
+    suggested_title: str | None = None
+    suggested_source_type: str | None = None
+    suggested_folder_kind: str | None = None
+    agent_query_id: UUID | None = None
+    created_at: datetime
+
+
+class KnowledgeLibraryHealthRead(BaseModel):
+    ready_count: int = 0
+    needs_review_count: int = 0
+    expired_count: int = 0
+    needs_reindex_count: int = 0
+    indexing_count: int = 0
+    draft_count: int = 0
+    archived_count: int = 0
+    open_gaps: list[KnowledgeGapTodoRead] = Field(default_factory=list)
+
+
+class KnowledgeBootstrapRead(BaseModel):
+    folders: list[KnowledgeFolderRead]
+    documents: list[KnowledgeDocumentRead]
+    library_health: KnowledgeLibraryHealthRead
+
+
 class KnowledgeAskRead(BaseModel):
     answer_text: str
     next_step: str = ""
@@ -874,6 +910,7 @@ class KnowledgeAskRead(BaseModel):
     citations: list[KnowledgeCitationRead]
     query_id: UUID | None = None
     model_used: str | None = None
+    retrieval_debug: dict[str, object] | None = None
 
 
 class KnowledgeDocumentVersionRead(BaseModel):
@@ -914,3 +951,70 @@ class KnowledgeRetrievalSettingsUpdate(BaseModel):
     max_sources: int | None = Field(default=None, ge=1, le=10)
     project: str | None = None
     department: str | None = None
+
+
+class KnowledgeFeedbackCreate(BaseModel):
+    query_id: UUID
+    rating: Literal["up", "down"]
+    comment: str | None = Field(default=None, max_length=2000)
+
+
+class KnowledgeFeedbackRead(BaseModel):
+    id: UUID
+    query_id: UUID
+    rating: str
+    comment: str | None = None
+    created_at: datetime
+
+
+class KnowledgeEvalQuestionCreate(BaseModel):
+    question_text: str = Field(min_length=1, max_length=8000)
+    expected_document_ids: list[UUID] = Field(default_factory=list, max_length=10)
+    expected_answer_notes: str | None = Field(default=None, max_length=4000)
+
+
+class KnowledgeEvalQuestionUpdate(BaseModel):
+    question_text: str | None = Field(default=None, min_length=1, max_length=8000)
+    expected_document_ids: list[UUID] | None = Field(default=None, max_length=10)
+    expected_answer_notes: str | None = Field(default=None, max_length=4000)
+    is_active: bool | None = None
+
+
+class KnowledgeEvalQuestionRead(BaseModel):
+    id: UUID
+    question_text: str
+    expected_document_ids: list[UUID] = []
+    expected_answer_notes: str | None = None
+    is_active: bool = True
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeEvalRunItemRead(BaseModel):
+    id: UUID
+    eval_question_id: UUID
+    query_id: UUID | None = None
+    citation_hit: bool
+    empty_answer: bool
+    latency_ms: int | None = None
+    observed_document_ids: list[UUID] = []
+    created_at: datetime
+
+
+class KnowledgeEvalRunRead(BaseModel):
+    run_count: int
+    citation_hit_rate: float
+    empty_answer_rate: float
+    latency_p95_ms: int | None = None
+    results: list[KnowledgeEvalRunItemRead]
+
+
+class KnowledgeEvalMetricsRead(BaseModel):
+    days: int
+    total_queries: int
+    empty_answer_rate: float
+    latency_p95_ms: int | None = None
+    downvote_rate: float
+    eval_question_count: int
+    eval_run_count: int
+    citation_hit_rate: float

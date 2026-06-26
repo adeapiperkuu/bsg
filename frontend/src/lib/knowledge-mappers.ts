@@ -55,6 +55,7 @@ export type KnowledgeDocument = {
   processingError?: string | null;
   preview: string[];
   qualityScore: KnowledgeQualityScoreApi | null;
+  qualityWarnings: string[];
   chunkCount: number;
   citationCount: number;
   approvedByName: string | null;
@@ -188,6 +189,7 @@ export function documentFromApi(row: KnowledgeDocumentApi): KnowledgeDocument {
     processingError: row.processing_error,
     preview: row.preview ?? [],
     qualityScore: row.quality_score ?? null,
+    qualityWarnings: row.quality_warnings ?? [],
     chunkCount: row.chunk_count ?? 0,
     citationCount: row.citation_count ?? 0,
     approvedByName: row.approved_by_name ?? null,
