@@ -205,6 +205,109 @@ export type WorkforceRecommendationGenerateResponse = {
   recommendations: WorkforceRecommendationRead[];
 };
 
+export type CertificationStatus = "active" | "expired" | "pending_review" | "revoked";
+
+export type TrainingRecordStatus =
+  | "not_started"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "expired";
+
+export type AnnotatorSkillRead = {
+  id: string;
+  org_id: string;
+  annotator_id: string;
+  skill_id: string;
+  proficiency_level: ProficiencyLevel;
+  verified_by: string | null;
+  verified_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AnnotatorSkillCreatePayload = {
+  skill_id: string;
+  proficiency_level: ProficiencyLevel;
+};
+
+export type AnnotatorSkillUpdatePayload = {
+  proficiency_level?: ProficiencyLevel;
+};
+
+export type CertificationRead = {
+  id: string;
+  org_id: string;
+  name: string;
+  issuing_body: string | null;
+  description: string | null;
+  validity_months: number | null;
+  is_required_for_sme: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type EmployeeCertificationRead = {
+  id: string;
+  org_id: string;
+  annotator_id: string;
+  certification_id: string;
+  issued_at: string | null;
+  expires_at: string | null;
+  status: CertificationStatus;
+  evidence_url: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type EmployeeCertificationCreatePayload = {
+  certification_id: string;
+  status?: CertificationStatus;
+  issued_at?: string | null;
+  expires_at?: string | null;
+};
+
+export type EmployeeCertificationUpdatePayload = {
+  status?: CertificationStatus;
+  issued_at?: string | null;
+  expires_at?: string | null;
+};
+
+export type TrainingProgramRead = {
+  id: string;
+  org_id: string;
+  skill_id: string | null;
+  name: string;
+  description: string | null;
+  required_for_skill_level: ProficiencyLevel | null;
+  is_mandatory: boolean;
+  knowledge_document_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TrainingRecordRead = {
+  id: string;
+  org_id: string;
+  annotator_id: string;
+  training_program_id: string;
+  status: TrainingRecordStatus;
+  started_at: string | null;
+  completed_at: string | null;
+  score_pct: string | number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TrainingRecordCreatePayload = {
+  training_program_id: string;
+  status?: TrainingRecordStatus;
+};
+
+export type TrainingRecordUpdatePayload = {
+  status?: TrainingRecordStatus;
+};
+
 export type AgentQueryEvidenceLinkRead = {
   id: string | null;
   source_table: string;

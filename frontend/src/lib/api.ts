@@ -3,15 +3,26 @@ import type {
   AgentQueryCreate,
   AgentQueryRead,
   AnnotatorRead,
+  AnnotatorSkillCreatePayload,
+  AnnotatorSkillRead,
+  AnnotatorSkillUpdatePayload,
   CapabilityGapDetectionResponse,
   CapabilityGapRead,
   CapabilityGapUpdatePayload,
+  CertificationRead,
+  EmployeeCertificationCreatePayload,
+  EmployeeCertificationRead,
+  EmployeeCertificationUpdatePayload,
   ProjectUtilizationFilters,
   ProjectSkillRequirementRead,
   SkillMatrixRead,
   SkillRead,
   TeamRead,
   TrainingGapSummaryRead,
+  TrainingProgramRead,
+  TrainingRecordCreatePayload,
+  TrainingRecordRead,
+  TrainingRecordUpdatePayload,
   UtilizationSnapshotRead,
   WorkforceRecommendationGenerateResponse,
 } from "@/types/workforce";
@@ -332,6 +343,125 @@ export async function listProjectUtilization(
 export async function listWorkforceSkills(): Promise<SkillRead[]> {
   const body = await apiFetch<{ data: SkillRead[] }>("/workforce/skills?limit=100");
   return body.data;
+}
+
+export async function listWorkforceCertifications(): Promise<CertificationRead[]> {
+  const body = await apiFetch<{ data: CertificationRead[] }>("/workforce/certifications?limit=100");
+  return body.data;
+}
+
+export async function listWorkforceTrainingPrograms(): Promise<TrainingProgramRead[]> {
+  const body = await apiFetch<{ data: TrainingProgramRead[] }>(
+    "/workforce/training-programs?limit=100",
+  );
+  return body.data;
+}
+
+export async function listAnnotatorSkills(annotatorId: string): Promise<AnnotatorSkillRead[]> {
+  const body = await apiFetch<{ data: AnnotatorSkillRead[] }>(
+    `/annotators/${annotatorId}/skills?limit=100`,
+  );
+  return body.data;
+}
+
+export async function createAnnotatorSkill(
+  annotatorId: string,
+  payload: AnnotatorSkillCreatePayload,
+): Promise<AnnotatorSkillRead> {
+  const body = await apiFetch<{ data: AnnotatorSkillRead }>(`/annotators/${annotatorId}/skills`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
+export async function updateAnnotatorSkill(
+  annotatorSkillId: string,
+  payload: AnnotatorSkillUpdatePayload,
+): Promise<AnnotatorSkillRead> {
+  const body = await apiFetch<{ data: AnnotatorSkillRead }>(
+    `/annotator-skills/${annotatorSkillId}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+  return body.data;
+}
+
+export async function deleteAnnotatorSkill(annotatorSkillId: string): Promise<void> {
+  await apiFetch<void>(`/annotator-skills/${annotatorSkillId}`, { method: "DELETE" });
+}
+
+export async function listAnnotatorCertifications(
+  annotatorId: string,
+): Promise<EmployeeCertificationRead[]> {
+  const body = await apiFetch<{ data: EmployeeCertificationRead[] }>(
+    `/annotators/${annotatorId}/certifications?limit=100`,
+  );
+  return body.data;
+}
+
+export async function createEmployeeCertification(
+  annotatorId: string,
+  payload: EmployeeCertificationCreatePayload,
+): Promise<EmployeeCertificationRead> {
+  const body = await apiFetch<{ data: EmployeeCertificationRead }>(
+    `/annotators/${annotatorId}/certifications`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+  return body.data;
+}
+
+export async function updateEmployeeCertification(
+  employeeCertificationId: string,
+  payload: EmployeeCertificationUpdatePayload,
+): Promise<EmployeeCertificationRead> {
+  const body = await apiFetch<{ data: EmployeeCertificationRead }>(
+    `/employee-certifications/${employeeCertificationId}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+  return body.data;
+}
+
+export async function deleteEmployeeCertification(
+  employeeCertificationId: string,
+): Promise<void> {
+  await apiFetch<void>(`/employee-certifications/${employeeCertificationId}`, {
+    method: "DELETE",
+  });
+}
+
+export async function listAnnotatorTrainingRecords(
+  annotatorId: string,
+): Promise<TrainingRecordRead[]> {
+  const body = await apiFetch<{ data: TrainingRecordRead[] }>(
+    `/annotators/${annotatorId}/training-records?limit=100`,
+  );
+  return body.data;
+}
+
+export async function createTrainingRecord(
+  annotatorId: string,
+  payload: TrainingRecordCreatePayload,
+): Promise<TrainingRecordRead> {
+  const body = await apiFetch<{ data: TrainingRecordRead }>(
+    `/annotators/${annotatorId}/training-records`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+  return body.data;
+}
+
+export async function updateTrainingRecord(
+  trainingRecordId: string,
+  payload: TrainingRecordUpdatePayload,
+): Promise<TrainingRecordRead> {
+  const body = await apiFetch<{ data: TrainingRecordRead }>(
+    `/training-records/${trainingRecordId}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+  return body.data;
+}
+
+export async function deleteTrainingRecord(trainingRecordId: string): Promise<void> {
+  await apiFetch<void>(`/training-records/${trainingRecordId}`, { method: "DELETE" });
 }
 
 export async function listProjectSkillRequirements(

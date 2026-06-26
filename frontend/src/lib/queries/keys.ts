@@ -13,6 +13,13 @@ export const queryKeys = {
   projectUtilization: (projectId: string, filters: Record<string, string | number | undefined> = {}) =>
     ["projects", projectId, "utilization", filters] as const,
   workforceSkills: ["workforce", "skills"] as const,
+  workforceCertifications: ["workforce", "certifications"] as const,
+  workforceTrainingPrograms: ["workforce", "training-programs"] as const,
+  annotatorSkills: (annotatorId: string) => ["annotators", annotatorId, "skills"] as const,
+  annotatorCertifications: (annotatorId: string) =>
+    ["annotators", annotatorId, "certifications"] as const,
+  annotatorTrainingRecords: (annotatorId: string) =>
+    ["annotators", annotatorId, "training-records"] as const,
   projectSkillRequirements: (projectId: string) =>
     ["projects", projectId, "skill-requirements"] as const,
   projectSkillMatrix: (projectId: string) => ["projects", projectId, "skill-matrix"] as const,

@@ -12,6 +12,7 @@ import {
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, SectionHeader, KpiCard, AiBadge, StatusPill } from "@/components/bsg/widgets";
+import { EmployeeProfileDrawer } from "@/components/bsg/EmployeeProfileDrawer";
 import {
   createAgentQuery,
   detectProjectCapabilityGaps,
@@ -35,6 +36,7 @@ import { useAuthStore } from "@/stores/useAuthStore";
 import type { AppRole } from "@/types/auth";
 import type {
   AgentQueryRead,
+  AnnotatorRead,
   CapabilityGapRead,
   CapabilityGapSeverity,
   CapabilityGapStatus,
@@ -371,6 +373,31 @@ function WorkforcePage() {
       setUpdatingGapId(null);
     }
   };
+
+  const [expandedTeams, setExpandedTeams] = useState<Set<string>>(() => new Set());
+  const [selectedAnnotator, setSelectedAnnotator] = useState<AnnotatorRead | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  const toggleTeamExpanded = (teamId: string) => {
+    setExpandedTeams((prev) => {
+      const next = new Set(prev);
+      if (next.has(teamId)) {
+        next.delete(teamId);
+      } else {
+        next.add(teamId);
+      }
+      return next;
+    });
+  };
+
+  const openAnnotatorProfile = (annotator: AnnotatorRead) => {
+    setSelectedAnnotator(annotator);
+    setDrawerOpen(true);
+  };
+
+  const selectedAnnotatorTeam = selectedAnnotator
+    ? summary.teams.find((team) => team.id === selectedAnnotator.team_id)
+    : undefined;
 
   const [agentQuestion, setAgentQuestion] = useState("");
   const [agentAnswer, setAgentAnswer] = useState<AgentQueryRead | null>(null);
@@ -781,7 +808,7 @@ function WorkforcePage() {
               title="Team Summary"
               sub={
                 canReadInternalWorkforce
-                  ? "Teams with headcount and SME coverage"
+                  ? "Expand a team to open an employee profile"
                   : "Team structure (annotator details restricted)"
               }
             />
@@ -808,26 +835,31 @@ function WorkforcePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {summary.teams.map((team) => (
-                      <TeamSummaryRow
-                        key={team.id}
-                        team={team}
-                        annotatorCount={
-                          canReadInternalWorkforce
-                            ? (summary.annotatorsByTeam.get(team.id) ?? []).filter(
-                                (annotator) => annotator.is_active,
-                              ).length
-                            : null
-                        }
-                        smeCount={
-                          canReadInternalWorkforce
-                            ? (summary.annotatorsByTeam.get(team.id) ?? []).filter(
-                                (annotator) => annotator.is_active && annotator.is_sme_certified,
-                              ).length
-                            : null
-                        }
-                      />
-                    ))}
+                    {summary.teams.map((team) => {
+                      const teamAnnotators = canReadInternalWorkforce
+                        ? (summary.annotatorsByTeam.get(team.id) ?? [])
+                        : null;
+                      const activeAnnotators = teamAnnotators
+                        ? teamAnnotators.filter((annotator) => annotator.is_active)
+                        : null;
+                      return (
+                        <TeamSummaryRow
+                          key={team.id}
+                          team={team}
+                          annotators={teamAnnotators}
+                          annotatorCount={activeAnnotators ? activeAnnotators.length : null}
+                          smeCount={
+                            activeAnnotators
+                              ? activeAnnotators.filter((annotator) => annotator.is_sme_certified)
+                                  .length
+                              : null
+                          }
+                          expanded={expandedTeams.has(team.id)}
+                          onToggle={() => toggleTeamExpanded(team.id)}
+                          onSelectAnnotator={openAnnotatorProfile}
+                        />
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1124,6 +1156,17 @@ function WorkforcePage() {
           </Card>
         </div>
       </div>
+
+      {canReadInternalWorkforce ? (
+        <EmployeeProfileDrawer
+          open={drawerOpen}
+          onOpenChange={setDrawerOpen}
+          annotator={selectedAnnotator}
+          team={selectedAnnotatorTeam}
+          projectId={resolvedProjectId}
+          canManage={canManageWorkforce}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1319,23 +1362,84 @@ function RegionalSiteBadge({
 
 function TeamSummaryRow({
   team,
+  annotators,
   annotatorCount,
   smeCount,
+  expanded,
+  onToggle,
+  onSelectAnnotator,
 }: {
   team: TeamRead;
+  annotators: AnnotatorRead[] | null;
   annotatorCount: number | null;
   smeCount: number | null;
+  expanded: boolean;
+  onToggle: () => void;
+  onSelectAnnotator: (annotator: AnnotatorRead) => void;
 }) {
+  const canExpand = annotators !== null;
+  const sortedAnnotators = canExpand
+    ? [...annotators].sort((left, right) => left.full_name.localeCompare(right.full_name))
+    : [];
+
   return (
-    <tr className="border-b border-border/50">
-      <td className="py-2.5 pr-3 font-medium">{team.name}</td>
-      <td className="py-2.5 pr-3 text-muted-foreground">{SITE_LABELS[team.site]}</td>
-      <td className="py-2.5 pr-3 text-muted-foreground">{team.domain}</td>
-      <td className="py-2.5 pr-3">{annotatorCount ?? EMPTY_VALUE}</td>
-      <td className="py-2.5 pr-3">{smeCount ?? EMPTY_VALUE}</td>
-      <td className="py-2.5 pr-3">
-        <StatusPill status={team.is_active ? "On Track" : "Warning"} />
-      </td>
-    </tr>
+    <>
+      <tr className="border-b border-border/50">
+        <td className="py-2.5 pr-3 font-medium">
+          {canExpand ? (
+            <button
+              type="button"
+              onClick={onToggle}
+              className="flex items-center gap-1.5 text-left hover:text-[color:var(--brand)]"
+              aria-expanded={expanded}
+            >
+              <span className="inline-block w-2 text-muted-foreground">
+                {expanded ? "v" : ">"}
+              </span>
+              {team.name}
+            </button>
+          ) : (
+            team.name
+          )}
+        </td>
+        <td className="py-2.5 pr-3 text-muted-foreground">{SITE_LABELS[team.site]}</td>
+        <td className="py-2.5 pr-3 text-muted-foreground">{team.domain}</td>
+        <td className="py-2.5 pr-3">{annotatorCount ?? EMPTY_VALUE}</td>
+        <td className="py-2.5 pr-3">{smeCount ?? EMPTY_VALUE}</td>
+        <td className="py-2.5 pr-3">
+          <StatusPill status={team.is_active ? "On Track" : "Warning"} />
+        </td>
+      </tr>
+      {canExpand && expanded ? (
+        <tr className="border-b border-border/50 bg-elevated/30">
+          <td colSpan={6} className="px-3 py-2">
+            {sortedAnnotators.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground">
+                No annotators on this team yet.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {sortedAnnotators.map((annotator) => (
+                  <button
+                    key={annotator.id}
+                    type="button"
+                    onClick={() => onSelectAnnotator(annotator)}
+                    className={cn(
+                      "rounded border px-2 py-1 text-[11px] hover:bg-card",
+                      annotator.is_active
+                        ? "border-border bg-elevated text-foreground"
+                        : "border-border bg-elevated text-muted-foreground",
+                    )}
+                  >
+                    {annotator.full_name}
+                    {annotator.is_sme_certified ? " (SME)" : ""}
+                  </button>
+                ))}
+              </div>
+            )}
+          </td>
+        </tr>
+      ) : null}
+    </>
   );
 }

@@ -4,12 +4,17 @@ import { useMemo } from "react";
 import {
   getProjectSkillMatrix,
   getProjectTrainingGaps,
+  listAnnotatorCertifications,
+  listAnnotatorSkills,
+  listAnnotatorTrainingRecords,
   listProjectCapabilityGaps,
   listProjectSkillRequirements,
   listProjectTeams,
   listProjectUtilization,
   listTeamAnnotators,
+  listWorkforceCertifications,
   listWorkforceSkills,
+  listWorkforceTrainingPrograms,
 } from "@/lib/api";
 import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
 import type {
@@ -333,6 +338,51 @@ export function useProjectCapabilityGapsQuery(
   canReadInternalWorkforce: boolean,
 ) {
   return useQuery(projectCapabilityGapsQueryOptions(projectId, canReadInternalWorkforce));
+}
+
+export function useWorkforceCertificationsQuery(enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.workforceCertifications,
+    queryFn: () => listWorkforceCertifications(),
+    enabled,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function useWorkforceTrainingProgramsQuery(enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.workforceTrainingPrograms,
+    queryFn: () => listWorkforceTrainingPrograms(),
+    enabled,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function useAnnotatorSkillsQuery(annotatorId: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.annotatorSkills(annotatorId ?? ""),
+    queryFn: () => listAnnotatorSkills(annotatorId!),
+    enabled: Boolean(annotatorId) && enabled,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function useAnnotatorCertificationsQuery(annotatorId: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.annotatorCertifications(annotatorId ?? ""),
+    queryFn: () => listAnnotatorCertifications(annotatorId!),
+    enabled: Boolean(annotatorId) && enabled,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function useAnnotatorTrainingRecordsQuery(annotatorId: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.annotatorTrainingRecords(annotatorId ?? ""),
+    queryFn: () => listAnnotatorTrainingRecords(annotatorId!),
+    enabled: Boolean(annotatorId) && enabled,
+    staleTime: STALE_TIME_MS,
+  });
 }
 
 export { UTILIZATION_CAPACITY_THRESHOLD, UTILIZATION_UNDERUTILIZED_THRESHOLD };
