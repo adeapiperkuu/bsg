@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     openai_base_url: str | None = None
     knowledge_embedding_model: str = "text-embedding-3-small"
     knowledge_embedding_dimensions: int = 1536
+    # Model used for low-confidence retry (more capable, slower)
+    knowledge_strong_model: str = "gpt-4o"
     email_api_key: str | None = None
     email_from_address: str | None = None
     knowledge_storage_bucket: str = "knowledge-documents"
