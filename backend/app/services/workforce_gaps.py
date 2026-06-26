@@ -56,6 +56,12 @@ OPEN_ALERT_STATUSES = (AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED)
 HIGH_PRIORITY = frozenset({SkillRequirementPriority.HIGH, SkillRequirementPriority.CRITICAL})
 
 
+def _enum_value(value) -> str | None:
+    if value is None:
+        return None
+    return value.value if hasattr(value, "value") else str(value)
+
+
 @dataclass(frozen=True)
 class GapCandidate:
     gap_type: CapabilityGapType
@@ -90,7 +96,7 @@ def _dedupe_key(
     team_id: UUID | None,
     skill_id: UUID | None,
 ) -> tuple[str, UUID | None, UUID | None]:
-    return (gap_type.value, team_id, skill_id)
+    return (_enum_value(gap_type) or "", team_id, skill_id)
 
 
 async def _load_existing_open_gaps(
@@ -209,7 +215,7 @@ async def detect_gap_candidates(
                         "required_headcount": row.required_headcount,
                         "available_headcount": row.available_headcount,
                         "shortage": shortage,
-                        "priority": requirement.priority.value if requirement else None,
+                        "priority": requirement.priority if requirement else None,
                         "is_critical_skill": skill.is_critical if skill else False,
                     },
                 ),
@@ -611,15 +617,15 @@ async def generate_workforce_recommendations(
             "project_id": row.project_id,
             "title": row.title,
             "description": row.description,
-            "severity": row.severity.value,
+            "severity": _enum_value(row.severity),
             "confidence_score": row.confidence_score,
-            "status": row.status.value,
-            "owner_type": row.owner_type.value if row.owner_type else None,
+            "status": _enum_value(row.status),
+            "owner_type": _enum_value(row.owner_type),
             "owner_id": row.owner_id,
             "owner_label": None,
             "source_risk_id": row.source_risk_id,
             "source_risk_title": None,
-            "source_risk_type": AlertType.WORKFORCE_IMBALANCE.value,
+            "source_risk_type": _enum_value(AlertType.WORKFORCE_IMBALANCE),
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }
