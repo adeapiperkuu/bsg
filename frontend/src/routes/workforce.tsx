@@ -2,6 +2,8 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
   BarChart,
   Bar,
+  LineChart,
+  Line,
   ResponsiveContainer,
   XAxis,
   YAxis,
@@ -30,6 +32,7 @@ import {
   UTILIZATION_CAPACITY_THRESHOLD,
   averageUtilizationBySite,
   buildLatestTeamUtilization,
+  normalizeUtilizationPct,
   summarizeTeamUtilization,
   useProjectCapabilityGapsQuery,
   useProjectSkillMatrixQuery,
@@ -282,6 +285,9 @@ function WorkforcePage() {
   const { projectId: urlProjectId } = Route.useSearch();
   const syncedProjectIdRef = useRef<string | null>(null);
   const [view, setView] = useState<"geo" | "matrix">("matrix");
+  const [siteFilter, setSiteFilter] = useState<DeliverySite | "all">("all");
+  const [domainFilter, setDomainFilter] = useState<string>("all");
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
 
   const user = useAuthStore((state) => state.user);
   const authLoading = useAuthStore((state) => state.isLoading);
@@ -305,6 +311,12 @@ function WorkforcePage() {
     navigate({ search: { projectId: resolvedProjectId }, replace: true });
   }, [resolvedProjectId, urlProjectId, navigate]);
 
+  useEffect(() => {
+    setSiteFilter("all");
+    setDomainFilter("all");
+    setCategoryFilter("all");
+  }, [resolvedProjectId]);
+
   const workforceQuery = useProjectWorkforceSummary(resolvedProjectId, canReadInternalWorkforce);
   const { summary, isLoading: workforceLoading, error: workforceError } = workforceQuery;
 
@@ -314,11 +326,6 @@ function WorkforcePage() {
     [utilizationQuery.data, summary.teams],
   );
   const utilizationStats = useMemo(() => summarizeTeamUtilization(teamUtilization), [teamUtilization]);
-  const utilizationYAxisMax = useMemo(() => {
-    const peak = teamUtilization.reduce((max, point) => Math.max(max, point.value), 0);
-    if (peak <= 100) return 100;
-    return Math.ceil(peak / 10) * 10 + 10;
-  }, [teamUtilization]);
   const siteUtilization = useMemo(() => averageUtilizationBySite(teamUtilization), [teamUtilization]);
 
   const skillMatrixQuery = useProjectSkillMatrixQuery(resolvedProjectId, canReadInternalWorkforce);
@@ -326,10 +333,6 @@ function WorkforcePage() {
   const skillMatrixLoading = canReadInternalWorkforce && skillMatrixQuery.isLoading;
   const skillMatrixError =
     skillMatrixQuery.error instanceof Error ? skillMatrixQuery.error.message : null;
-  const skillMatrixConfidencePct = useMemo(
-    () => skillMatrixConfidence(skillMatrixRows),
-    [skillMatrixRows],
-  );
 
   const trainingGapsQuery = useProjectTrainingGapsQuery(resolvedProjectId, canReadInternalWorkforce);
   const trainingGaps = trainingGapsQuery.data;
@@ -349,9 +352,154 @@ function WorkforcePage() {
   const capabilityGapsLoading = canReadInternalWorkforce && capabilityGapsQuery.isLoading;
   const capabilityGapsError =
     capabilityGapsQuery.error instanceof Error ? capabilityGapsQuery.error.message : null;
+
+  // --- Client-side dashboard filters (site / domain / skill category) ---
+  const filtersActive =
+    siteFilter !== "all" || domainFilter !== "all" || categoryFilter !== "all";
+
+  const domainOptions = useMemo(() => {
+    const values = new Set<string>();
+    for (const team of summary.teams) if (team.domain) values.add(team.domain);
+    for (const row of skillMatrixRows) if (row.domain) values.add(row.domain);
+    return [...values].sort();
+  }, [summary.teams, skillMatrixRows]);
+
+  const categoryOptions = useMemo(() => {
+    const values = new Set<string>();
+    for (const row of skillMatrixRows) if (row.category) values.add(row.category);
+    return [...values].sort();
+  }, [skillMatrixRows]);
+
+  const teamById = useMemo(() => {
+    const map = new Map<string, TeamRead>();
+    for (const team of summary.teams) map.set(team.id, team);
+    return map;
+  }, [summary.teams]);
+
+  const skillMatrixBySkillId = useMemo(() => {
+    const map = new Map<string, SkillMatrixRow>();
+    for (const row of skillMatrixRows) map.set(row.skill_id, row);
+    return map;
+  }, [skillMatrixRows]);
+
+  const filteredTeams = useMemo(
+    () =>
+      summary.teams.filter(
+        (team) =>
+          (siteFilter === "all" || team.site === siteFilter) &&
+          (domainFilter === "all" || team.domain === domainFilter),
+      ),
+    [summary.teams, siteFilter, domainFilter],
+  );
+
+  const filteredTeamUtilization = useMemo(
+    () =>
+      teamUtilization.filter((point) => {
+        if (siteFilter !== "all" && point.site !== siteFilter) return false;
+        if (domainFilter !== "all") {
+          const team = teamById.get(point.teamId);
+          if (team && team.domain !== domainFilter) return false;
+        }
+        return true;
+      }),
+    [teamUtilization, teamById, siteFilter, domainFilter],
+  );
+
+  const filteredUtilizationStats = useMemo(
+    () => summarizeTeamUtilization(filteredTeamUtilization),
+    [filteredTeamUtilization],
+  );
+
+  const filteredUtilizationYAxisMax = useMemo(() => {
+    const peak = filteredTeamUtilization.reduce((max, point) => Math.max(max, point.value), 0);
+    if (peak <= 100) return 100;
+    return Math.ceil(peak / 10) * 10 + 10;
+  }, [filteredTeamUtilization]);
+
+  // Team-level snapshots only (annotator-level ignored), used for the time trend.
+  const teamLevelSnapshotCount = useMemo(
+    () =>
+      (utilizationQuery.data ?? []).filter(
+        (snapshot) => snapshot.annotator_id === null && snapshot.team_id !== null,
+      ).length,
+    [utilizationQuery.data],
+  );
+
+  const utilizationTrend = useMemo(() => {
+    const byDate = new Map<string, { sum: number; count: number }>();
+    for (const snapshot of utilizationQuery.data ?? []) {
+      if (snapshot.annotator_id !== null || !snapshot.team_id) continue;
+      const team = teamById.get(snapshot.team_id);
+      if (siteFilter !== "all" && team && team.site !== siteFilter) continue;
+      if (domainFilter !== "all" && team && team.domain !== domainFilter) continue;
+      const bucket = byDate.get(snapshot.snapshot_date) ?? { sum: 0, count: 0 };
+      bucket.sum += normalizeUtilizationPct(snapshot.utilization_pct);
+      bucket.count += 1;
+      byDate.set(snapshot.snapshot_date, bucket);
+    }
+    return [...byDate.entries()]
+      .map(([date, { sum, count }]) => ({
+        date,
+        value: Math.round(sum / count),
+      }))
+      .sort((left, right) => left.date.localeCompare(right.date));
+  }, [utilizationQuery.data, teamById, siteFilter, domainFilter]);
+
+  const utilizationTrendYAxisMax = useMemo(() => {
+    const peak = utilizationTrend.reduce((max, point) => Math.max(max, point.value), 0);
+    if (peak <= 100) return 100;
+    return Math.ceil(peak / 10) * 10 + 10;
+  }, [utilizationTrend]);
+
+  const filteredSkillMatrixRows = useMemo(
+    () =>
+      skillMatrixRows.filter(
+        (row) =>
+          (domainFilter === "all" || row.domain === domainFilter) &&
+          (categoryFilter === "all" || row.category === categoryFilter),
+      ),
+    [skillMatrixRows, domainFilter, categoryFilter],
+  );
+
+  const gapRowMatchesFilters = (
+    teamId: string | null,
+    skillId: string | null,
+  ): boolean => {
+    const team = teamId ? teamById.get(teamId) : undefined;
+    const skill = skillId ? skillMatrixBySkillId.get(skillId) : undefined;
+    if (siteFilter !== "all" && team && team.site !== siteFilter) return false;
+    if (domainFilter !== "all" && team && team.domain !== domainFilter) return false;
+    if (categoryFilter !== "all" && skill?.category && skill.category !== categoryFilter) {
+      return false;
+    }
+    return true;
+  };
+
+  const filteredTrainingGapRows = useMemo(
+    () => trainingGapRows.filter((row) => gapRowMatchesFilters(row.team_id, row.skill_id)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [trainingGapRows, teamById, skillMatrixBySkillId, siteFilter, domainFilter, categoryFilter],
+  );
+
+  const filteredCapabilityGaps = useMemo(
+    () => capabilityGaps.filter((gap) => gapRowMatchesFilters(gap.team_id, gap.skill_id)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [capabilityGaps, teamById, skillMatrixBySkillId, siteFilter, domainFilter, categoryFilter],
+  );
+
+  const visibleSites = useMemo<DeliverySite[]>(
+    () => (siteFilter === "all" ? ["india", "kosovo"] : [siteFilter]),
+    [siteFilter],
+  );
+
+  const skillMatrixConfidencePctFiltered = useMemo(
+    () => skillMatrixConfidence(filteredSkillMatrixRows),
+    [filteredSkillMatrixRows],
+  );
+
   const capabilityGapsSummary = useMemo(
-    () => summarizeCapabilityGaps(capabilityGaps),
-    [capabilityGaps],
+    () => summarizeCapabilityGaps(filteredCapabilityGaps),
+    [filteredCapabilityGaps],
   );
 
   const [detectMessage, setDetectMessage] = useState<string | null>(null);
@@ -549,18 +697,63 @@ function WorkforcePage() {
             "Project focus"
           )}
         </div>
-        <select
-          value={resolvedProjectId ?? ""}
-          onChange={(event) => selectProject(event.target.value)}
-          disabled={projectsLoading || projects.length === 0}
-          className="rounded border border-border bg-card px-2.5 py-1.5 text-xs outline-none"
-        >
-          {projects.map((project) => (
-            <option key={project.id} value={project.id}>
-              {project.name}
-            </option>
-          ))}
-        </select>
+        <div className="flex flex-wrap items-center gap-2">
+          {canReadInternalWorkforce ? (
+            <>
+              <select
+                value={siteFilter}
+                onChange={(event) =>
+                  setSiteFilter(event.target.value as DeliverySite | "all")
+                }
+                className="rounded border border-border bg-card px-2.5 py-1.5 text-xs outline-none"
+              >
+                <option value="all">All sites</option>
+                <option value="india">India</option>
+                <option value="kosovo">Kosovo</option>
+              </select>
+              {domainOptions.length > 0 ? (
+                <select
+                  value={domainFilter}
+                  onChange={(event) => setDomainFilter(event.target.value)}
+                  className="rounded border border-border bg-card px-2.5 py-1.5 text-xs outline-none"
+                >
+                  <option value="all">All domains</option>
+                  {domainOptions.map((domain) => (
+                    <option key={domain} value={domain}>
+                      {domain}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              {categoryOptions.length > 0 ? (
+                <select
+                  value={categoryFilter}
+                  onChange={(event) => setCategoryFilter(event.target.value)}
+                  className="rounded border border-border bg-card px-2.5 py-1.5 text-xs outline-none"
+                >
+                  <option value="all">All categories</option>
+                  {categoryOptions.map((category) => (
+                    <option key={category} value={category}>
+                      {category}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+            </>
+          ) : null}
+          <select
+            value={resolvedProjectId ?? ""}
+            onChange={(event) => selectProject(event.target.value)}
+            disabled={projectsLoading || projects.length === 0}
+            className="rounded border border-border bg-card px-2.5 py-1.5 text-xs outline-none"
+          >
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-5">
@@ -617,8 +810,8 @@ function WorkforcePage() {
               right={
                 canReadInternalWorkforce ? (
                   <div className="flex items-center gap-2">
-                    {skillMatrixRows.length > 0 ? (
-                      <AiBadge confidence={skillMatrixConfidencePct} />
+                    {filteredSkillMatrixRows.length > 0 ? (
+                      <AiBadge confidence={skillMatrixConfidencePctFiltered} />
                     ) : null}
                     {resolvedProjectId ? (
                       <ManageToggleButton
@@ -650,6 +843,11 @@ function WorkforcePage() {
                 title="No skill requirements yet"
                 reason="Add project skill requirements to populate this matrix."
               />
+            ) : filteredSkillMatrixRows.length === 0 ? (
+              <PlaceholderPanel
+                title="No rows match the selected filters."
+                reason="Adjust or clear the domain or skill category filters."
+              />
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
@@ -660,13 +858,16 @@ function WorkforcePage() {
                       <th className="py-2 pr-3 font-medium">Headcount</th>
                       <th className="py-2 pr-3 font-medium">SMEs</th>
                       <th className="py-2 pr-3 font-medium">Status</th>
-                      <th className="py-2 pr-3 text-center font-medium">India</th>
-                      <th className="py-2 pr-3 text-center font-medium">Kosovo</th>
+                      {visibleSites.map((site) => (
+                        <th key={site} className="py-2 pr-3 text-center font-medium">
+                          {SITE_LABELS[site]}
+                        </th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {skillMatrixRows.map((row) => (
-                      <SkillMatrixRowView key={row.skill_id} row={row} />
+                    {filteredSkillMatrixRows.map((row) => (
+                      <SkillMatrixRowView key={row.skill_id} row={row} sites={visibleSites} />
                     ))}
                   </tbody>
                 </table>
@@ -706,13 +907,18 @@ function WorkforcePage() {
                 title="No utilization snapshots yet"
                 reason="Add utilization snapshots for project teams to populate this chart."
               />
+            ) : filteredTeamUtilization.length === 0 ? (
+              <PlaceholderPanel
+                title="No rows match the selected filters."
+                reason="Adjust or clear the site or domain filters."
+              />
             ) : (
               <>
                 <ResponsiveContainer width="100%" height={240}>
-                  <BarChart data={teamUtilization}>
+                  <BarChart data={filteredTeamUtilization}>
                     <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" />
                     <XAxis dataKey="team" {...axis} />
-                    <YAxis {...axis} domain={[0, utilizationYAxisMax]} />
+                    <YAxis {...axis} domain={[0, filteredUtilizationYAxisMax]} />
                     <Tooltip contentStyle={tip} />
                     <ReferenceLine
                       y={UTILIZATION_CAPACITY_THRESHOLD}
@@ -723,21 +929,64 @@ function WorkforcePage() {
                   </BarChart>
                 </ResponsiveContainer>
                 <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-muted-foreground">
-                  {utilizationStats.overloaded > 0 && (
+                  {filteredUtilizationStats.overloaded > 0 && (
                     <span className="text-[color:var(--warning)]">
-                      {utilizationStats.overloaded} team(s) at or above{" "}
+                      {filteredUtilizationStats.overloaded} team(s) at or above{" "}
                       {UTILIZATION_CAPACITY_THRESHOLD}%
                     </span>
                   )}
-                  {utilizationStats.underutilized > 0 && (
+                  {filteredUtilizationStats.underutilized > 0 && (
                     <span>
-                      {utilizationStats.underutilized} team(s) below{" "}
-                      {utilizationStats.underutilizedThreshold}%
+                      {filteredUtilizationStats.underutilized} team(s) below{" "}
+                      {filteredUtilizationStats.underutilizedThreshold}%
                     </span>
                   )}
                 </div>
               </>
             )}
+            {canReadInternalWorkforce && !utilizationLoading && teamLevelSnapshotCount > 0 ? (
+              <div className="mt-4 border-t border-border/60 pt-3">
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Utilization trend (avg across teams)
+                </div>
+                {utilizationTrend.length === 0 ? (
+                  <PlaceholderPanel
+                    title="No trend rows match the selected filters."
+                    reason="Adjust or clear the site or domain filters."
+                  />
+                ) : utilizationTrend.length < 2 ? (
+                  <PlaceholderPanel
+                    title="Not enough utilization history for a trend yet."
+                    reason="Add utilization snapshots across multiple dates to see a trend."
+                  />
+                ) : (
+                  <ResponsiveContainer width="100%" height={160}>
+                    <LineChart data={utilizationTrend}>
+                      <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" />
+                      <XAxis
+                        dataKey="date"
+                        {...axis}
+                        tickFormatter={(value: string) => value.slice(5)}
+                      />
+                      <YAxis {...axis} domain={[0, utilizationTrendYAxisMax]} />
+                      <Tooltip contentStyle={tip} />
+                      <ReferenceLine
+                        y={UTILIZATION_CAPACITY_THRESHOLD}
+                        stroke="#ef4444"
+                        strokeDasharray="4 4"
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="value"
+                        stroke="#0D1240"
+                        strokeWidth={2}
+                        dot={{ r: 2 }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            ) : null}
             {canReadInternalWorkforce && showUtilizationManager && resolvedProjectId ? (
               <UtilizationSnapshotsManager
                 projectId={resolvedProjectId}
@@ -836,6 +1085,11 @@ function WorkforcePage() {
                         : "No open capability gaps have been recorded for this project."
                     }
                   />
+                ) : filteredCapabilityGaps.length === 0 ? (
+                  <PlaceholderPanel
+                    title="No rows match the selected filters."
+                    reason="Adjust or clear the site, domain, or skill category filters."
+                  />
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="w-full text-xs">
@@ -852,7 +1106,7 @@ function WorkforcePage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {capabilityGaps.map((gap) => (
+                        {filteredCapabilityGaps.map((gap) => (
                           <CapabilityGapRowView
                             key={gap.id}
                             gap={gap}
@@ -896,6 +1150,11 @@ function WorkforcePage() {
               <p className="text-sm text-muted-foreground">
                 No teams are configured for this project yet.
               </p>
+            ) : filteredTeams.length === 0 ? (
+              <PlaceholderPanel
+                title="No rows match the selected filters."
+                reason="Adjust or clear the site or domain filters."
+              />
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
@@ -910,7 +1169,7 @@ function WorkforcePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {summary.teams.map((team) => {
+                    {filteredTeams.map((team) => {
                       const teamAnnotators = canReadInternalWorkforce
                         ? (summary.annotatorsByTeam.get(team.id) ?? [])
                         : null;
@@ -974,7 +1233,7 @@ function WorkforcePage() {
               <p className="text-sm text-muted-foreground">No teams to group by site yet.</p>
             ) : (
               <div className="grid grid-cols-2 gap-3">
-                {(["india", "kosovo"] as const).map((site) => {
+                {visibleSites.map((site) => {
                   const stats = summary.teamsBySite[site];
                   return (
                     <div key={site} className="rounded-md border border-border bg-elevated p-3">
@@ -1035,40 +1294,45 @@ function WorkforcePage() {
                     title="No regional skill matrix data"
                     reason="Add project skill requirements to compare India and Kosovo coverage."
                   />
+                ) : filteredSkillMatrixRows.length === 0 ? (
+                  <PlaceholderPanel
+                    title="No rows match the selected filters."
+                    reason="Adjust or clear the domain or skill category filters."
+                  />
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="w-full text-xs">
                       <thead className="text-left text-muted-foreground">
                         <tr className="border-b border-border">
                           <th className="py-2 pr-3 font-medium">Skill</th>
-                          <th className="py-2 pr-3 text-center font-medium">India</th>
-                          <th className="py-2 pr-3 text-center font-medium">Kosovo</th>
+                          {visibleSites.map((site) => (
+                            <th key={site} className="py-2 pr-3 text-center font-medium">
+                              {SITE_LABELS[site]}
+                            </th>
+                          ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {skillMatrixRows.map((row) => {
-                          const india = siteSummaryFor(row, "india");
-                          const kosovo = siteSummaryFor(row, "kosovo");
-                          return (
-                            <tr key={row.skill_id} className="border-b border-border/50">
-                              <td className="py-2.5 pr-3 font-medium">{row.skill_name}</td>
-                              <td className="py-2.5 pr-3 text-center">
-                                {india ? (
-                                  <RegionalSiteBadge summary={india} required={row.required_headcount} />
-                                ) : (
-                                  EMPTY_VALUE
-                                )}
-                              </td>
-                              <td className="py-2.5 pr-3 text-center">
-                                {kosovo ? (
-                                  <RegionalSiteBadge summary={kosovo} required={row.required_headcount} />
-                                ) : (
-                                  EMPTY_VALUE
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
+                        {filteredSkillMatrixRows.map((row) => (
+                          <tr key={row.skill_id} className="border-b border-border/50">
+                            <td className="py-2.5 pr-3 font-medium">{row.skill_name}</td>
+                            {visibleSites.map((site) => {
+                              const siteSummary = siteSummaryFor(row, site);
+                              return (
+                                <td key={site} className="py-2.5 pr-3 text-center">
+                                  {siteSummary ? (
+                                    <RegionalSiteBadge
+                                      summary={siteSummary}
+                                      required={row.required_headcount}
+                                    />
+                                  ) : (
+                                    EMPTY_VALUE
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
                       </tbody>
                     </table>
                   </div>
@@ -1122,34 +1386,41 @@ function WorkforcePage() {
                     </span>
                   )}
                 </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead className="text-left text-muted-foreground">
-                      <tr className="border-b border-border">
-                        <th className="py-2 pr-3 font-medium">Team</th>
-                        <th className="py-2 pr-3 font-medium">Gap</th>
-                        <th className="py-2 pr-3 font-medium">Subject</th>
-                        <th className="py-2 pr-3 font-medium">Affected</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {trainingGapRows.map((row, index) => (
-                        <tr key={trainingGapRowKey(row, index)} className="border-b border-border/50">
-                          <td className="py-2.5 pr-3 font-medium">
-                            {row.team_name ?? EMPTY_VALUE}
-                          </td>
-                          <td className="py-2.5 pr-3">
-                            <span className="inline-block rounded bg-[color:var(--danger)]/10 px-2 py-1 text-[11px] font-medium text-[color:var(--danger)]">
-                              {gapTypeLabel(row.gap_type)}
-                            </span>
-                          </td>
-                          <td className="py-2.5 pr-3 text-muted-foreground">{gapRowSubject(row)}</td>
-                          <td className="py-2.5 pr-3">{row.affected_count}</td>
+                {filteredTrainingGapRows.length === 0 ? (
+                  <PlaceholderPanel
+                    title="No rows match the selected filters."
+                    reason="Adjust or clear the site, domain, or skill category filters."
+                  />
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead className="text-left text-muted-foreground">
+                        <tr className="border-b border-border">
+                          <th className="py-2 pr-3 font-medium">Team</th>
+                          <th className="py-2 pr-3 font-medium">Gap</th>
+                          <th className="py-2 pr-3 font-medium">Subject</th>
+                          <th className="py-2 pr-3 font-medium">Affected</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {filteredTrainingGapRows.map((row, index) => (
+                          <tr key={trainingGapRowKey(row, index)} className="border-b border-border/50">
+                            <td className="py-2.5 pr-3 font-medium">
+                              {row.team_name ?? EMPTY_VALUE}
+                            </td>
+                            <td className="py-2.5 pr-3">
+                              <span className="inline-block rounded bg-[color:var(--danger)]/10 px-2 py-1 text-[11px] font-medium text-[color:var(--danger)]">
+                                {gapTypeLabel(row.gap_type)}
+                              </span>
+                            </td>
+                            <td className="py-2.5 pr-3 text-muted-foreground">{gapRowSubject(row)}</td>
+                            <td className="py-2.5 pr-3">{row.affected_count}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </>
             )}
           </Card>
@@ -1365,9 +1636,7 @@ function CapabilityGapRowView({
   );
 }
 
-function SkillMatrixRowView({ row }: { row: SkillMatrixRow }) {
-  const india = siteSummaryFor(row, "india");
-  const kosovo = siteSummaryFor(row, "kosovo");
+function SkillMatrixRowView({ row, sites }: { row: SkillMatrixRow; sites: DeliverySite[] }) {
   const domainLabel = row.domain ?? row.category;
 
   return (
@@ -1397,20 +1666,18 @@ function SkillMatrixRowView({ row }: { row: SkillMatrixRow }) {
           {coverageStatusLabel(row.coverage_status)}
         </span>
       </td>
-      <td className="py-2.5 pr-3 text-center">
-        {india ? (
-          <RegionalSiteBadge summary={india} required={row.required_headcount} />
-        ) : (
-          EMPTY_VALUE
-        )}
-      </td>
-      <td className="py-2.5 pr-3 text-center">
-        {kosovo ? (
-          <RegionalSiteBadge summary={kosovo} required={row.required_headcount} />
-        ) : (
-          EMPTY_VALUE
-        )}
-      </td>
+      {sites.map((site) => {
+        const siteSummary = siteSummaryFor(row, site);
+        return (
+          <td key={site} className="py-2.5 pr-3 text-center">
+            {siteSummary ? (
+              <RegionalSiteBadge summary={siteSummary} required={row.required_headcount} />
+            ) : (
+              EMPTY_VALUE
+            )}
+          </td>
+        );
+      })}
     </tr>
   );
 }

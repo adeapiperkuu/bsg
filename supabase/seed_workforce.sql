@@ -421,8 +421,14 @@ FROM teams t
 JOIN projects p ON p.id = t.project_id
 JOIN organisations o ON o.id = p.org_id
 JOIN (VALUES
+    ('Northwind Content Shield 4 Team 1', DATE '2026-06-08', 78.00, 100.00, 78.00, 'Ramping load ahead of policy launch.'),
+    ('Northwind Content Shield 4 Team 1', DATE '2026-06-15', 92.00, 100.00, 92.00, 'Sustained high load before launch.'),
     ('Northwind Content Shield 4 Team 1', DATE '2026-06-22', 108.00, 100.00, 108.00, 'Overtime to clear project backlog.'),
+    ('Northwind Content Shield 4 Team 2', DATE '2026-06-08', 71.00, 100.00, 71.00, 'Healthy steady-state utilization.'),
+    ('Northwind Content Shield 4 Team 2', DATE '2026-06-15', 74.00, 100.00, 74.00, 'Healthy steady-state utilization.'),
     ('Northwind Content Shield 4 Team 2', DATE '2026-06-22', 72.00, 100.00, 72.00, 'Healthy steady-state utilization.'),
+    ('Northwind Content Shield 4 Team 3', DATE '2026-06-08', 52.00, 100.00, 52.00, 'Underutilized; capacity available for reallocation.'),
+    ('Northwind Content Shield 4 Team 3', DATE '2026-06-15', 47.00, 100.00, 47.00, 'Underutilized; capacity available for reallocation.'),
     ('Northwind Content Shield 4 Team 3', DATE '2026-06-22', 48.00, 100.00, 48.00, 'Underutilized; capacity available for reallocation.')
   ) AS v(team_name, snap_date, allocated, available, util, notes) ON v.team_name = t.name
 WHERE o.name = 'Northwind Analytics'
