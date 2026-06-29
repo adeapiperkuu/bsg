@@ -9,8 +9,8 @@ def test_client_cannot_read_all_orgs() -> None:
     assert can_read_all_orgs(AppRole.CLIENT) is False
 
 
-def test_leadership_can_read_all_orgs() -> None:
-    assert can_read_all_orgs(AppRole.BSG_LEADERSHIP) is True
+def test_leadership_is_org_scoped() -> None:
+    assert can_read_all_orgs(AppRole.BSG_LEADERSHIP) is False
 
 
 def test_scoped_project_query_filters_client_org() -> None:

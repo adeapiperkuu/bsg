@@ -33,10 +33,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isLoading, isAuthenticated, pathname, user, navigate]);
 
-  if (isLoading && !PUBLIC_PATHS.includes(pathname)) {
+  if (!PUBLIC_PATHS.includes(pathname) && (isLoading || !isAuthenticated)) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">
-        Loading session…
+        Loading session...
       </div>
     );
   }

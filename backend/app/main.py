@@ -6,12 +6,15 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.agents.delivery.routes import chat as delivery_chat
+from app.agents.delivery.routes import dashboard as delivery_dashboard
 from app.api.routes import (
     agents,
     auth,
     communications,
     csat,
     delivery,
+    knowledge,
     me,
     metrics,
     organisations,
@@ -19,6 +22,7 @@ from app.api.routes import (
     quality,
     system,
     users,
+    workforce,
 )
 from app.core.config import get_settings
 from app.core.csrf import CsrfMiddleware
@@ -60,6 +64,7 @@ def create_app() -> FastAPI:
         redoc_url="/redoc" if settings.environment != "prod" else None,
     )
 
+    app.add_middleware(CsrfMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_allowed_origins,
@@ -67,7 +72,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.add_middleware(CsrfMiddleware)
     register_exception_handlers(app)
 
     app.include_router(system.router)
@@ -78,11 +82,15 @@ def create_app() -> FastAPI:
     app.include_router(users.router, prefix=api_prefix)
     app.include_router(projects.router, prefix=api_prefix)
     app.include_router(delivery.router, prefix=api_prefix)
+    app.include_router(delivery_dashboard.router, prefix=api_prefix)
+    app.include_router(delivery_chat.router, prefix=api_prefix)
     app.include_router(quality.router, prefix=api_prefix)
+    app.include_router(workforce.router, prefix=api_prefix)
     app.include_router(agents.router, prefix=api_prefix)
     app.include_router(communications.router, prefix=api_prefix)
     app.include_router(metrics.router, prefix=api_prefix)
     app.include_router(csat.router, prefix=api_prefix)
+    app.include_router(knowledge.router, prefix=api_prefix)
     return app
 
 
