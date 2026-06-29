@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
+import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -226,10 +227,67 @@ function ProjectsPage() {
         </Button>
       </div>
 
-      {error && !isCreateOpen && !editingProject && (
+      {error && !isCreateOpen && !editingProject && !loading && (
         <Card>
           <p className="text-sm text-[color:var(--danger)]">{error}</p>
         </Card>
+      )}
+
+      {loading ? (
+        <PageLoadingScreen />
+      ) : (
+      <Card className="rounded-md">
+        <SectionHeader title="Projects" />
+        {filteredProjects.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No projects found.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="text-left text-muted-foreground">
+                <tr className="border-b border-border">
+                  <th className="py-2 pr-3 font-medium">Project</th>
+                  <th className="py-2 pr-3 font-medium">Vertical</th>
+                  <th className="py-2 pr-3 font-medium">Status</th>
+                  <th className="py-2 pr-3 font-medium">Target End</th>
+                  <th className="py-2 pr-3 font-medium">Daily Target</th>
+                  <th className="py-2 pr-3 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredProjects.map((project) => (
+                  <tr key={project.id} className="border-b border-border/50">
+                    <td className="py-2.5 pr-3 font-medium">{project.name}</td>
+                    <td className="py-2.5 pr-3">{project.vertical}</td>
+                    <td className="py-2.5 pr-3">
+                      <StatusPill status={statusLabel(project.status)} />
+                    </td>
+                    <td className="py-2.5 pr-3">{project.target_end_date}</td>
+                    <td className="py-2.5 pr-3">{project.daily_target_units ?? "No data"}</td>
+                    <td className="py-2.5 pr-3">
+                      <div className="flex items-center gap-2">
+                        <Link
+                          to="/delivery"
+                          search={{ projectId: project.id }}
+                          className="rounded-sm border border-border px-3 py-1 text-xs font-medium hover:bg-elevated"
+                        >
+                          Open
+                        </Link>
+                        <button
+                          type="button"
+                          onClick={() => setEditingProject({ ...project })}
+                          className="rounded-sm bg-[color:var(--brand)] px-3 py-1 text-xs font-medium text-[color:var(--brand-foreground)] hover:bg-[color:var(--brand)]/90"
+                        >
+                          Edit
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
       )}
 
       <Dialog
@@ -356,61 +414,6 @@ function ProjectsPage() {
           </form>
         </DialogContent>
       </Dialog>
-
-      <Card className="rounded-md">
-        <SectionHeader title="Projects" />
-        {loading ? (
-          <p className="text-sm text-muted-foreground">Loading projects...</p>
-        ) : filteredProjects.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No projects found.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead className="text-left text-muted-foreground">
-                <tr className="border-b border-border">
-                  <th className="py-2 pr-3 font-medium">Project</th>
-                  <th className="py-2 pr-3 font-medium">Vertical</th>
-                  <th className="py-2 pr-3 font-medium">Status</th>
-                  <th className="py-2 pr-3 font-medium">Target End</th>
-                  <th className="py-2 pr-3 font-medium">Daily Target</th>
-                  <th className="py-2 pr-3 font-medium"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredProjects.map((project) => (
-                  <tr key={project.id} className="border-b border-border/50">
-                    <td className="py-2.5 pr-3 font-medium">{project.name}</td>
-                    <td className="py-2.5 pr-3">{project.vertical}</td>
-                    <td className="py-2.5 pr-3">
-                      <StatusPill status={statusLabel(project.status)} />
-                    </td>
-                    <td className="py-2.5 pr-3">{project.target_end_date}</td>
-                    <td className="py-2.5 pr-3">{project.daily_target_units ?? "No data"}</td>
-                    <td className="py-2.5 pr-3">
-                      <div className="flex items-center gap-2">
-                        <Link
-                          to="/delivery"
-                          search={{ projectId: project.id }}
-                          className="rounded-sm border border-border px-3 py-1 text-xs font-medium hover:bg-elevated"
-                        >
-                          Open
-                        </Link>
-                        <button
-                          type="button"
-                          onClick={() => setEditingProject({ ...project })}
-                          className="rounded-sm bg-[color:var(--brand)] px-3 py-1 text-xs font-medium text-[color:var(--brand-foreground)] hover:bg-[color:var(--brand)]/90"
-                        >
-                          Edit
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
 
       <Dialog
         open={Boolean(editingProject)}

@@ -13,7 +13,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
   SelectContent,
@@ -56,6 +55,7 @@ import {
 } from "@/lib/api";
 import { TypewriterText } from "@/components/knowledge/TypewriterText";
 import { TypingIndicator } from "@/components/knowledge/TypingIndicator";
+import { KnowledgeLoadingScreen } from "@/components/knowledge/KnowledgeLoadingScreen";
 import { useAuthStore } from "@/stores/useAuthStore";
 import {
   documentFromApi,
@@ -366,7 +366,7 @@ function inferAnswerMode(question: string): "internal" | "client_safe" {
 }
 
 function shouldAnimateAnswer(text: string) {
-  return text.length <= TYPEWRITER_MAX_CHARS;
+  return text.trim().length > 0 && text.length <= TYPEWRITER_MAX_CHARS;
 }
 
 function buildAgentDisplayText(
@@ -787,6 +787,19 @@ function KnowledgePage() {
     setLiveAnnouncement(`Knowledge Agent: ${text}`);
   };
 
+  const finishAgentAnswer = (messageId: string, text: string) => {
+    const displayText = text.trim();
+    if (!displayText) {
+      announceAgentMessage(NO_KNOWLEDGE_ANSWER);
+      return;
+    }
+    if (shouldAnimateAnswer(displayText)) {
+      setAnimatingMessageId(messageId);
+      return;
+    }
+    announceAgentMessage(displayText);
+  };
+
   useEffect(() => {
     if (!liveAnnouncement) return;
     const timer = window.setTimeout(() => setLiveAnnouncement(""), 1500);
@@ -1053,32 +1066,22 @@ function KnowledgePage() {
           );
         } else if (event.type === "delta") {
           streamAnswer += event.text;
-          setMessages((current) =>
-            current.map((msg) =>
-              msg.id === agentMsgId ? { ...msg, text: msg.text + event.text } : msg,
-            ),
-          );
-          scrollChatToEnd();
         } else if (event.type === "replace") {
           streamAnswer = event.text;
-          setMessages((current) =>
-            current.map((msg) =>
-              msg.id === agentMsgId ? { ...msg, text: event.text } : msg,
-            ),
-          );
         } else if (event.type === "done") {
           gotDone = true;
           streamAnswer = event.answer_text?.trim() || streamAnswer;
+          const resolvedText = resolveAgentAnswerText(
+            { text: streamAnswer, structured_answer: event.structured_answer, next_step: event.next_step },
+            event.answer_text,
+          );
           setMessages((current) =>
             current.map((msg) => {
               if (msg.id !== agentMsgId) return msg;
               const sa = event.structured_answer;
-              const nextMessage = {
+              return {
                 ...msg,
-                text: resolveAgentAnswerText(
-                  { ...msg, text: streamAnswer },
-                  event.answer_text,
-                ),
+                text: resolvedText,
                 isStreaming: false,
                 query_id: event.query_id,
                 confidence_score: event.confidence_score,
@@ -1090,15 +1093,9 @@ function KnowledgePage() {
                 detailsExpanded:
                   (event.confidence_score ?? 1) < LOW_CONFIDENCE_THRESHOLD ? true : msg.detailsExpanded,
               };
-              return nextMessage;
             }),
           );
-          announceAgentMessage(
-            resolveAgentAnswerText(
-              { text: streamAnswer, structured_answer: event.structured_answer, next_step: event.next_step },
-              event.answer_text,
-            ),
-          );
+          finishAgentAnswer(agentMsgId, resolvedText);
           if ((event.confidence_score ?? 1) === 0) {
             try {
               const bootstrap = await getKnowledgeBootstrap();
@@ -1125,14 +1122,15 @@ function KnowledgePage() {
         setMessages((current) =>
           current.map((msg) => (msg.id === agentMsgId ? { ...agentMsg, id: agentMsgId, isStreaming: false } : msg)),
         );
-        announceAgentMessage(agentMsg.text);
+        finishAgentAnswer(agentMsgId, agentMsg.text);
       } else if (!gotDone && streamAnswer.trim()) {
+        const resolvedText = resolveAgentAnswerText({ text: streamAnswer }, streamAnswer);
         setMessages((current) =>
           current.map((msg) =>
-            msg.id === agentMsgId ? { ...msg, text: streamAnswer, isStreaming: false } : msg,
+            msg.id === agentMsgId ? { ...msg, text: resolvedText, isStreaming: false } : msg,
           ),
         );
-        announceAgentMessage(streamAnswer);
+        finishAgentAnswer(agentMsgId, resolvedText);
       }
     } catch {
       setMessages((current) =>
@@ -1182,11 +1180,7 @@ function KnowledgePage() {
         return next;
       });
       setSelectedAgentMessageId(agentMsg.id);
-      if (shouldAnimateAnswer(agentMsg.text)) {
-        setAnimatingMessageId(agentMsg.id);
-      } else {
-        announceAgentMessage(agentMsg.text);
-      }
+      finishAgentAnswer(agentMsg.id, agentMsg.text);
     } catch {
       const errorMsg: ChatMessage = {
         id: createChatMessageId(),
@@ -1267,7 +1261,7 @@ function KnowledgePage() {
       agentMsg.detailsExpanded = true;
       setMessages((current) => [...current, userMsg, agentMsg]);
       setSelectedAgentMessageId(agentMsg.id);
-      announceAgentMessage(agentMsg.text);
+      finishAgentAnswer(agentMsg.id, agentMsg.text);
     } catch {
       window.alert("Could not reopen that saved answer.");
     } finally {
@@ -1486,17 +1480,22 @@ function KnowledgePage() {
         <div className="min-w-0">
           <h1 className="text-xl font-semibold tracking-tight text-foreground">Knowledge workspace</h1>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            className="h-9 gap-2 bg-[color:var(--brand)] text-xs text-[color:var(--brand-foreground)]"
-            onClick={() => setIsUploadOpen(true)}
-          >
-            <Upload className="h-4 w-4" />
-            Upload Document
-          </Button>
-        </div>
+        {!libraryLoading && (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              className="h-9 gap-2 bg-[color:var(--brand)] text-xs text-[color:var(--brand-foreground)]"
+              onClick={() => setIsUploadOpen(true)}
+            >
+              <Upload className="h-4 w-4" />
+              Upload Document
+            </Button>
+          </div>
+        )}
       </div>
 
+      {libraryLoading ? (
+        <KnowledgeLoadingScreen />
+      ) : (
       <div className="grid grid-cols-12 items-stretch gap-5 xl:h-[calc(100vh-11.5rem)] xl:min-h-[44rem]">
         <div className="col-span-12 flex min-h-0 flex-col gap-5 xl:col-span-4">
           <Card className="shrink-0 border-transparent bg-card/80">
@@ -1566,11 +1565,7 @@ function KnowledgePage() {
         <Card className="flex min-h-0 flex-1 flex-col border-transparent bg-card/80">
           <SectionHeader
             title="Knowledge Library"
-            sub={
-              libraryLoading
-                ? "Loading library..."
-                : `${documents.length} governed documents`
-            }
+            sub={`${documents.length} governed documents`}
             right={
               <Button
                 type="button"
@@ -1780,30 +1775,6 @@ function KnowledgePage() {
           </div>
 
           <div className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-            {libraryLoading ? (
-              <div className="space-y-4" aria-busy="true" aria-label="Loading knowledge library">
-                {[0, 1, 2].map((section) => (
-                  <div key={section} className="space-y-2">
-                    <Skeleton className="h-4 w-28" />
-                    {[0, 1].map((row) => (
-                      <div key={row} className="rounded-md bg-secondary/40 p-3">
-                        <div className="flex items-start gap-3">
-                          <Skeleton className="h-8 w-8 shrink-0 rounded-md" />
-                          <div className="min-w-0 flex-1 space-y-2">
-                            <Skeleton className="h-4 w-3/4" />
-                            <Skeleton className="h-3 w-1/2" />
-                            <div className="flex gap-1.5">
-                              <Skeleton className="h-5 w-16 rounded-full" />
-                              <Skeleton className="h-5 w-14 rounded-full" />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            ) : (
             <>
             {groupedDocuments.map((group) => {
               const isCollapsed = collapsedFolders.has(group.id);
@@ -1913,7 +1884,6 @@ function KnowledgePage() {
               </div>
             )}
             </>
-            )}
           </div>
         </Card>
         </div>
@@ -2352,16 +2322,7 @@ function KnowledgePage() {
                         }}
                       />
                     ) : message.isStreaming ? (
-                      <p className="leading-5">
-                        {message.text ? (
-                          <>
-                            {message.text}
-                            <span className="ml-0.5 inline-block h-3.5 w-0.5 animate-pulse bg-current align-text-bottom opacity-70" aria-hidden="true" />
-                          </>
-                        ) : (
-                          <TypingIndicator />
-                        )}
-                      </p>
+                      <TypingIndicator />
                     ) : (
                       <p className={cn("leading-5", message.isServiceError && "text-foreground")}>
                         {buildAgentDisplayText(message) || NO_KNOWLEDGE_ANSWER}
@@ -2641,7 +2602,7 @@ function KnowledgePage() {
               {!canAsk && (
                 <p className="text-xs text-muted-foreground">Upload and approve documents first.</p>
               )}
-              <div className="flex items-end gap-2">
+              <div className="flex items-center gap-2">
               <Textarea
                 placeholder={canAsk ? "Ask about an SOP, guide, or historical issue..." : "Upload and approve documents first"}
                 value={askInput}
@@ -2653,13 +2614,13 @@ function KnowledgePage() {
                     void submitAsk();
                   }
                 }}
-                rows={2}
-                className="min-h-[4.5rem] flex-1 resize-none rounded-md border-border bg-card text-sm shadow-none focus-visible:border-[color:var(--brand)] focus-visible:ring-0"
+                rows={1}
+                className="min-h-10 flex-1 resize-none rounded-md border-border bg-card py-2.5 text-sm shadow-none focus-visible:border-[color:var(--brand)] focus-visible:ring-0"
               />
               <Button
                 type="submit"
                 disabled={asking || !canAsk}
-                className="h-10 gap-2 bg-[color:var(--brand)] px-4 text-xs text-[color:var(--brand-foreground)]"
+                className="h-10 shrink-0 gap-2 bg-[color:var(--brand)] px-4 text-xs text-[color:var(--brand-foreground)]"
               >
                 <Send className="h-3.5 w-3.5" />
                 {asking ? "Asking" : "Ask"}
@@ -2671,6 +2632,7 @@ function KnowledgePage() {
         </div>
 
       </div>
+      )}
 
       <Dialog open={isDocumentOpen && !!selectedDoc} onOpenChange={setIsDocumentOpen}>
         <DialogContent className="flex h-[86vh] w-[min(92vw,68rem)] max-w-none flex-col overflow-hidden">
