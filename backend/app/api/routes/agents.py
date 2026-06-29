@@ -101,7 +101,15 @@ async def get_agent_query(
     elif current_user.role.value == "delivery_manager":
         query = query.where(AgentQuery.org_id == current_user.org_id)
     row = (await session.execute(query)).scalar_one_or_none()
+    # Double-check access for maximum compatibility with previous logic
     if row is None:
+        raise ApiError(404, "NOT_FOUND", "Agent query was not found.")
+    # If using a superuser/admin role, allow access to any row (consistent with previous permissions)
+    return_row = row
+    # Defensive check for old logic if higher priv user tries to fetch not theirs (should be unreachable, but for parity)
+    if current_user.role.value == "client" and row.user_id != current_user.id:
+        raise ApiError(404, "NOT_FOUND", "Agent query was not found.")
+    if current_user.role.value == "delivery_manager" and row.org_id != current_user.org_id:
         raise ApiError(404, "NOT_FOUND", "Agent query was not found.")
     data = AgentQueryRead.model_validate(row)
     data.evidence_links = [EvidenceLinkRead(**item.__dict__) for item in await _query_evidence(session, row.id)]

@@ -1242,7 +1242,122 @@ class RiskAlertResolve(BaseModel):
     resolution_summary: str | None = None
 
 
+# --- Workforce dashboard schemas ---
+
+
+class SkillGapSignal(BaseModel):
+    id: UUID
+    title: str
+    body: str
+    source_row_id: UUID | None = None
+    created_at: datetime
+    is_read: bool
+
+
+class TeamUtilizationRead(BaseModel):
+    team_id: UUID
+    team_name: str
+    iso_year: int
+    iso_week: int
+    target_hours: Decimal
+    logged_hours: Decimal
+    utilization_pct: Decimal | None = None
+    status: str
+
+
+class SkillMatrixEntry(BaseModel):
+    skill_code: str
+    proficiency_counts: dict[str, int]
+
+
+class WorkforceDashboardKpis(BaseModel):
+    teams_tracked: int
+    avg_utilization_pct: str | None = None
+    sme_certified_count: int
+    skill_records: int
+    open_skill_gaps: int
+
+
+class WorkforceDashboardRead(BaseModel):
+    kpis: WorkforceDashboardKpis
+    team_utilization: list[TeamUtilizationRead] = []
+    skill_matrix: list[SkillMatrixEntry] = []
+    skill_gap_signals: list[SkillGapSignal] = []
+
+
+class SmeAllocationRead(BaseModel):
+    annotator_id: UUID
+    team_id: UUID
+    team_name: str
+    site: str
+    skills: list[str]
+    utilization_pct: Decimal | None = None
+
+
 # --- Knowledge library schemas ---
+
+
+class KnowledgeFolderRead(ORMModel):
+    id: UUID
+    name: str
+    folder_kind: str
+    display_order: int
+
+
+class KnowledgeFolderCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class KnowledgeQualityCriterion(BaseModel):
+    key: str
+    label: str
+    passed: bool
+
+
+class KnowledgeQualityScore(BaseModel):
+    score: int
+    max_score: int = 6
+    criteria: list[KnowledgeQualityCriterion]
+
+
+class KnowledgeChunkRead(BaseModel):
+    id: UUID
+    chunk_index: int
+    section_title: str | None = None
+    page_number: int | None = None
+    chunk_text: str
+    token_count: int | None = None
+
+
+class KnowledgeDocumentRead(ORMModel):
+    id: UUID
+    folder_id: UUID
+    folder_name: str
+    folder_kind: str
+    title: str
+    source_type: str
+    version: str
+    visibility: str
+    status: str
+    owner_approver: str
+    effective_date: date | None
+    file_name: str
+    file_mime_type: str
+    file_url: str | None = None
+    processing_status: str
+    processing_error: str | None = None
+    indexing_status: str
+    preview: list[str]
+    workflow_state: str = "needs_review"
+    quality_score: KnowledgeQualityScore | None = None
+    chunk_count: int = 0
+    citation_count: int = 0
+    approved_by_name: str | None = None
+    approved_at: datetime | None = None
+    chunks: list[KnowledgeChunkRead] = []
+    semantic_relevance: float | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class KnowledgeDocumentUpdate(BaseModel):

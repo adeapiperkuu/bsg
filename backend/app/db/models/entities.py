@@ -106,6 +106,7 @@ class NotificationType(StrEnum):
     SYSTEM = "system"
 
 
+
 class SignalType(StrEnum):
     QUALITY_RISK = "quality_risk"
     SKILL_GAP = "skill_gap"
@@ -848,6 +849,7 @@ class Notification(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+
 class QualityScanRun(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     __tablename__ = "quality_scan_runs"
 
@@ -1030,6 +1032,38 @@ class InterAgentSignal(Base, UuidPrimaryKey, CreatedAt):
     status: Mapped[str] = mapped_column(Text, default=SignalStatus.PENDING, server_default="pending", index=True)
     project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     org_id: Mapped[UUID | None] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+
+
+class WorkforceSkill(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "workforce_skills"
+    __table_args__ = (
+        UniqueConstraint("annotator_id", "skill_code", name="workforce_skills_annotator_skill_key"),
+        Index("workforce_skills_annotator_id_idx", "annotator_id"),
+        Index("workforce_skills_org_id_idx", "org_id"),
+    )
+
+    annotator_id: Mapped[UUID] = mapped_column(ForeignKey("annotators.id", ondelete="CASCADE"))
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    skill_code: Mapped[str] = mapped_column(Text)
+    proficiency_level: Mapped[str] = mapped_column(Text)
+    certified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WorkforceUtilizationSnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "workforce_utilization_snapshots"
+    __table_args__ = (
+        UniqueConstraint("team_id", "iso_year", "iso_week", name="workforce_utilization_team_week_key"),
+        Index("workforce_utilization_team_id_idx", "team_id"),
+        Index("workforce_utilization_org_id_idx", "org_id"),
+    )
+
+    team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    iso_year: Mapped[int] = mapped_column(Integer)
+    iso_week: Mapped[int] = mapped_column(Integer)
+    target_hours: Mapped[Decimal] = mapped_column(Numeric(6, 2))
+    logged_hours: Mapped[Decimal] = mapped_column(Numeric(6, 2))
+    utilization_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
 
 
 class KnowledgeFolder(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):

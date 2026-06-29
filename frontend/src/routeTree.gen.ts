@@ -33,8 +33,11 @@ import { Route as ClientStatusRouteImport } from './routes/client.status'
 import { Route as ClientReportsRouteImport } from './routes/client.reports'
 import { Route as ClientAskRouteImport } from './routes/client.ask'
 import { Route as AdminUsersRouteImport } from './routes/admin.users'
+<<<<<<< HEAD
 import { Route as AdminProjectsRouteImport } from './routes/admin.projects'
 import { Route as AdminAgentRunsRouteImport } from './routes/admin.agent-runs'
+=======
+>>>>>>> 5dbfdec1dd5fc32986d7d6d91b317bb9b4543a30
 
 const WorkforceRoute = WorkforceRouteImport.update({
   id: '/workforce',
@@ -156,6 +159,7 @@ const AdminUsersRoute = AdminUsersRouteImport.update({
   path: '/users',
   getParentRoute: () => AdminRoute,
 } as any)
+<<<<<<< HEAD
 const AdminProjectsRoute = AdminProjectsRouteImport.update({
   id: '/projects',
   path: '/projects',
@@ -166,6 +170,8 @@ const AdminAgentRunsRoute = AdminAgentRunsRouteImport.update({
   path: '/agent-runs',
   getParentRoute: () => AdminRoute,
 } as any)
+=======
+>>>>>>> 5dbfdec1dd5fc32986d7d6d91b317bb9b4543a30
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -186,8 +192,11 @@ export interface FileRoutesByFullPath {
   '/settings': typeof SettingsRoute
   '/unauthorized': typeof UnauthorizedRoute
   '/workforce': typeof WorkforceRoute
+<<<<<<< HEAD
   '/admin/agent-runs': typeof AdminAgentRunsRoute
   '/admin/projects': typeof AdminProjectsRoute
+=======
+>>>>>>> 5dbfdec1dd5fc32986d7d6d91b317bb9b4543a30
   '/admin/users': typeof AdminUsersRoute
   '/client/ask': typeof ClientAskRoute
   '/client/reports': typeof ClientReportsRoute
@@ -213,8 +222,11 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsRoute
   '/unauthorized': typeof UnauthorizedRoute
   '/workforce': typeof WorkforceRoute
+<<<<<<< HEAD
   '/admin/agent-runs': typeof AdminAgentRunsRoute
   '/admin/projects': typeof AdminProjectsRoute
+=======
+>>>>>>> 5dbfdec1dd5fc32986d7d6d91b317bb9b4543a30
   '/admin/users': typeof AdminUsersRoute
   '/client/ask': typeof ClientAskRoute
   '/client/reports': typeof ClientReportsRoute
@@ -242,8 +254,11 @@ export interface FileRoutesById {
   '/settings': typeof SettingsRoute
   '/unauthorized': typeof UnauthorizedRoute
   '/workforce': typeof WorkforceRoute
+<<<<<<< HEAD
   '/admin/agent-runs': typeof AdminAgentRunsRoute
   '/admin/projects': typeof AdminProjectsRoute
+=======
+>>>>>>> 5dbfdec1dd5fc32986d7d6d91b317bb9b4543a30
   '/admin/users': typeof AdminUsersRoute
   '/client/ask': typeof ClientAskRoute
   '/client/reports': typeof ClientReportsRoute
@@ -272,8 +287,11 @@ export interface FileRouteTypes {
     | '/settings'
     | '/unauthorized'
     | '/workforce'
+<<<<<<< HEAD
     | '/admin/agent-runs'
     | '/admin/projects'
+=======
+>>>>>>> 5dbfdec1dd5fc32986d7d6d91b317bb9b4543a30
     | '/admin/users'
     | '/client/ask'
     | '/client/reports'
@@ -299,8 +317,11 @@ export interface FileRouteTypes {
     | '/settings'
     | '/unauthorized'
     | '/workforce'
+<<<<<<< HEAD
     | '/admin/agent-runs'
     | '/admin/projects'
+=======
+>>>>>>> 5dbfdec1dd5fc32986d7d6d91b317bb9b4543a30
     | '/admin/users'
     | '/client/ask'
     | '/client/reports'
@@ -327,8 +348,11 @@ export interface FileRouteTypes {
     | '/settings'
     | '/unauthorized'
     | '/workforce'
+<<<<<<< HEAD
     | '/admin/agent-runs'
     | '/admin/projects'
+=======
+>>>>>>> 5dbfdec1dd5fc32986d7d6d91b317bb9b4543a30
     | '/admin/users'
     | '/client/ask'
     | '/client/reports'
@@ -532,6 +556,7 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminUsersRouteImport
       parentRoute: typeof AdminRoute
     }
+<<<<<<< HEAD
     '/admin/projects': {
       id: '/admin/projects'
       path: '/projects'
@@ -546,19 +571,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminAgentRunsRouteImport
       parentRoute: typeof AdminRoute
     }
+=======
+>>>>>>> 5dbfdec1dd5fc32986d7d6d91b317bb9b4543a30
   }
 }
 
 interface AdminRouteChildren {
+<<<<<<< HEAD
   AdminAgentRunsRoute: typeof AdminAgentRunsRoute
   AdminProjectsRoute: typeof AdminProjectsRoute
+=======
+>>>>>>> 5dbfdec1dd5fc32986d7d6d91b317bb9b4543a30
   AdminUsersRoute: typeof AdminUsersRoute
   AdminIndexRoute: typeof AdminIndexRoute
 }
 
 const AdminRouteChildren: AdminRouteChildren = {
+<<<<<<< HEAD
   AdminAgentRunsRoute: AdminAgentRunsRoute,
   AdminProjectsRoute: AdminProjectsRoute,
+=======
+>>>>>>> 5dbfdec1dd5fc32986d7d6d91b317bb9b4543a30
   AdminUsersRoute: AdminUsersRoute,
   AdminIndexRoute: AdminIndexRoute,
 }

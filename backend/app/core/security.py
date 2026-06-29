@@ -106,4 +106,4 @@ def require_role(*allowed_roles: AppRole):
 
 
 def can_read_all_orgs(role: AppRole) -> bool:
-    return role in {AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN}
+    return role == AppRole.SUPER_ADMIN

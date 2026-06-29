@@ -54,3 +54,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "A required database table is missing. Apply pending Supabase migrations and try again.",
             )
         return error_response(500, "DATABASE_ERROR", "A database query failed.")
+    @app.exception_handler(Exception)
+    async def handle_unexpected_error(_: Request, exc: Exception) -> JSONResponse:
+        _ = exc
+        return error_response(500, "INTERNAL_SERVER_ERROR", "An unexpected server error occurred.")
