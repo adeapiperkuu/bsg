@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     llm_base_url: str | None = None
     llm_model: str | None = None
+    llm_intent_routing: bool = False
     oka_base_url: str | None = None
     email_api_key: str | None = None
     email_from_address: str | None = None

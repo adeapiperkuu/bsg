@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -184,14 +184,12 @@ class QualityErrorEntryCreate(BaseModel):
     error_category: str
     share_pct: Decimal = Field(ge=0, le=100)
     recommended_action: str | None = None
+    error_note: str | None = None
 
     @field_validator("error_category", mode="before")
     @classmethod
     def normalize_error_category(cls, v: str) -> str:
-        """Accept canonical code (ERR-01) or canonical name (Boundary precision).
-
-        Unknown values pass through with a warning; hard reject deferred to Phase 2.
-        """
+        """Accept canonical code (ERR-01) or canonical name; reject unknown categories."""
         raw = str(v).strip()
         upper = raw.upper()
         if upper in CANONICAL_ERROR_CODES:
@@ -200,8 +198,14 @@ class QualityErrorEntryCreate(BaseModel):
         for code, name in CANONICAL_ERROR_CODES.items():
             if lower == name:
                 return code
-        logger.warning("Unknown quality error category %r — passing through as free-text.", raw)
-        return raw
+        allowed = ", ".join(sorted(CANONICAL_ERROR_CODES.keys()))
+        raise ValueError(f"Unknown error category {raw!r}. Use one of: {allowed}")
+
+    @model_validator(mode="after")
+    def require_note_for_other(self) -> "QualityErrorEntryCreate":
+        if self.error_category == "ERR-OTHER" and not self.error_note:
+            raise ValueError("error_note is required when error_category is ERR-OTHER")
+        return self
 
 
 class QualitySnapshotRead(ORMModel):
@@ -346,6 +350,7 @@ class QualityDashboardKpis(BaseModel):
     gold_set_accuracy_pct: Decimal | None = None
     iaa_krippendorff_alpha: Decimal | None = None
     rework_rate_pct: Decimal | None = None
+    rework_rate_target_pct: Decimal | None = None
     active_drift_alerts: int = 0
 
 
@@ -369,6 +374,8 @@ class QualityTeamScorecard(BaseModel):
     rework_rate_pct: Decimal | None = None
     status: str
     has_drift_alert: bool = False
+    has_data_gap: bool = False
+    evaluated_item_count: int | None = None
 
 
 class QualityDashboardRead(BaseModel):
@@ -532,6 +539,74 @@ class ReviewerScorecardRead(ORMModel):
     error_breakdown: dict | None
     created_at: datetime
     updated_at: datetime
+
+
+class GoldSetEvaluationLogCreate(BaseModel):
+    annotator_id: UUID
+    item_id: str
+    score: Decimal | None = Field(default=None, ge=0, le=100)
+    error_category: str | None = None
+    evaluated_at: datetime | None = None
+
+    @field_validator("error_category", mode="before")
+    @classmethod
+    def normalize_eval_error_category(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        raw = str(v).strip()
+        upper = raw.upper()
+        if upper in CANONICAL_ERROR_CODES:
+            return upper
+        lower = raw.lower()
+        for code, name in CANONICAL_ERROR_CODES.items():
+            if lower == name:
+                return code
+        allowed = ", ".join(sorted(CANONICAL_ERROR_CODES.keys()))
+        raise ValueError(f"Unknown error category {raw!r}. Use one of: {allowed}")
+
+
+class GoldSetEvaluationLogRead(ORMModel):
+    id: UUID
+    annotator_id: UUID
+    project_id: UUID
+    org_id: UUID
+    item_id: str
+    score: Decimal | None
+    error_category: str | None
+    evaluated_at: datetime
+    created_at: datetime
+
+
+class ReworkLogCreate(BaseModel):
+    annotator_id: UUID | None = None
+    item_id: str
+    reason: str | None = None
+    rework_date: date
+
+
+class ReworkLogRead(ORMModel):
+    id: UUID
+    project_id: UUID
+    org_id: UUID
+    annotator_id: UUID | None
+    item_id: str
+    reason: str | None
+    rework_date: date
+    created_at: datetime
+
+
+class SopAmbiguityConfirm(BaseModel):
+    alert_id: UUID
+    sop_version_id: UUID
+
+
+class QualitySopLinkRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    risk_alert_id: UUID
+    sop_version_id: UUID
+    confirmed_by: UUID | None
+    created_at: datetime
 
 
 class IaaMeasurementCreate(BaseModel):

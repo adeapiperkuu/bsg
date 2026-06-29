@@ -3,8 +3,8 @@
 **Agent ID:** 02  
 **Agent name:** Quality Intelligence Agent  
 **Document version:** 1.0  
-**Last updated:** 2026-06-23  
-**Status:** Living roadmap  
+**Last updated:** 2026-06-26  
+**Status:** Phase 1.5 + 2.0 complete; Phase 2.5 deferred  
 
 **Related documents:**
 
@@ -40,9 +40,9 @@
 
 The Quality Intelligence Agent monitors annotation quality signals, detects drift before client impact, performs root-cause reasoning, and surfaces actionable recommendations. It operates in **passive (push)** and **active (pull)** modes.
 
-**Where we are:** Phase 1.0 MVP is implemented — dashboard, drift-on-ingest, basic root-cause, NL queries, risk alerts, and DM notifications.
+**Where we are:** Phase 1.5 (Connected Agent) and Phase 2.0 (Full Reasoning) are **complete**. The agent ships scheduled drift scans, inter-agent signal consumption, sanitized client summaries, item-level eval/rework ingestion, full six-hypothesis RCA, UC-03–07 backends, NL impact/historical queries, and acceptance test gates.
 
-**Where we are going:** Full v1.0 spec coverage across seven use cases, six inter-agent integrations, granular QA data, Operational Knowledge Agent coupling, and portfolio-level reporting.
+**Where we are going:** Phase 2.5 — governance auto-escalation, leadership heatmap extensions, and per-org threshold overrides.
 
 ```mermaid
 flowchart LR
@@ -52,15 +52,15 @@ flowchart LR
         A3[Basic RCA]
         A4[NL queries]
     end
-    subgraph p15 [Phase 1.5]
+    subgraph p15 [Phase 1.5 DONE]
         B1[Scheduler]
         B2[Client summary API]
-        B3[Delivery signals]
+        B3[Signal consumption]
     end
-    subgraph p20 [Phase 2.0]
-        C1[Scorecards]
-        C2[OKA RAG]
-        C3[What-if]
+    subgraph p20 [Phase 2.0 DONE]
+        C1[Scorecards + item logs]
+        C2[OKA + lessons]
+        C3[What-if + NL maturity]
     end
     subgraph p25 [Phase 2.5+]
         D1[Leadership heatmap]
@@ -94,13 +94,13 @@ flowchart LR
 | Step | Description | Status |
 |------|-------------|--------|
 | 1 | Dashboard metrics display | **Done** |
-| 2 | Automated drift alert logic | **Done** (on ingest; not scheduled) |
-| 3 | Root-cause reasoning (onboarding + SOP first) | **Partial** |
+| 2 | Automated drift alert logic | **Done** (on ingest + scheduled scan) |
+| 3 | Root-cause reasoning (all six hypotheses) | **Done** |
 | 4 | Conversational query interface | **Done** |
-| 5 | Inter-agent signal emission | **Not started** |
-| 6 | Client narrative generation | **Not started** |
-| 7 | What-if scenario analysis | **Not started** |
-| 8 | Lesson log write-back to Knowledge Agent | **Not started** |
+| 5 | Inter-agent signal emission + consumption | **Done** |
+| 6 | Client narrative generation (§8.4) | **Done** |
+| 7 | What-if scenario analysis | **Done** |
+| 8 | Lesson log write-back to Knowledge Agent | **Done** |
 
 ### 2.3 Product requirements status (QI-F01–F07)
 
@@ -109,7 +109,7 @@ flowchart LR
 | QI-F01 | Weekly snapshots per project/team | **Done** |
 | QI-F02 | Drift flags on threshold breach | **Done** |
 | QI-F03 | Error taxonomy entries with recommended action | **Done** |
-| QI-F04 | Min categories (boundary, class confusion, guideline ambiguity) | **Partial** — free-text, no enum |
+| QI-F04 | Min categories (boundary, class confusion, guideline ambiguity) | **Done** — ERR-01–07 hard validation |
 | QI-F05 | `quality_drift` risk alerts | **Done** |
 | QI-F06 | Client-visible metrics via `metric_configurations` | **Partial** |
 | QI-F07 | Weekly per-team granularity | **Done** |
@@ -121,8 +121,8 @@ flowchart LR
 | Phase | Platform alignment | Duration (estimate) | Goal |
 |-------|-------------------|---------------------|------|
 | **1.0 MVP** | `04. Roadmap.md` Phase 1 | Weeks 1–12 | Operable quality tower for pilot |
-| **1.5 Connected** | End of Phase 1 / early pilot | Weeks 12–16 | Scheduler, client summary, delivery linkage |
-| **2.0 Full reasoning** | `04. Roadmap.md` Phase 2 | Months 3–6 | Reviewer-level RCA, OKA, what-if, UC-03–05 |
+| **1.5 Connected** | End of Phase 1 / early pilot | Weeks 12–16 | **Complete** |
+| **2.0 Full reasoning** | `04. Roadmap.md` Phase 2 | Months 3–6 | **Complete** |
 | **2.5 Portfolio** | Phase 2+ | Months 6+ | Leadership heatmap, governance, per-org thresholds |
 
 ---
@@ -162,7 +162,9 @@ flowchart LR
 
 ## 5. Phase 1.5 — Connected Agent
 
-**Objective:** Finish Phase 1 platform promises: automated scans, quality in client comms, delivery risk linkage. Implements spec §16.2 steps 5–6 (partial).
+**Status:** **Complete** (2026-06-26)
+
+**Objective:** Finish Phase 1 platform promises: automated scans, quality in client comms, delivery risk linkage. Implements spec §16.2 steps 5–6.
 
 **Estimated effort:** 2–4 weeks  
 **Depends on:** Job scheduler decision, Client Interaction Agent draft API
@@ -242,14 +244,18 @@ flowchart LR
 
 ### Phase 1.5 exit criteria
 
-- Pilot client receives automated weekly drift evaluation
-- Quality summary appears in DM-approved client weekly draft
-- Delivery dashboard shows `quality_drift` linkage
-- Error taxonomy validated on ingest
+- [x] Pilot client receives automated weekly drift evaluation (`scan_all_projects` + scheduler)
+- [x] Quality summary appears in DM-approved client weekly draft (`generate_quality_summary` in comms)
+- [x] Delivery agent consumes `quality_risk` signals (`quality_signal_consumer.py` + dispatcher)
+- [x] Error taxonomy validated on ingest (hard ERR-01–07 rejection)
+- [x] Data-gap badge when team sample &lt; 30 items
+- [x] Rework-rate vs target on dashboard KPI card
 
 ---
 
 ## 6. Phase 2.0 — Full Reasoning
+
+**Status:** **Complete** (2026-06-26)
 
 **Objective:** Complete v1.0 spec depth — reviewer-level diagnosis, SOP workflow, knowledge loop, what-if. Aligns with platform Phase 2 and Regulatory-Grade Quality Layer.
 
@@ -358,11 +364,15 @@ Emit `skill_gap` payload on confirmed onboarding gap:
 
 ### Phase 2.0 exit criteria
 
-- UC-03, UC-04, UC-05 operational with real scorecard data
-- OKA enriches root-cause recommendations with lesson IDs and SOP refs
-- Resolved quality events auto-generate lesson log entries
-- What-if queries return projections with stated assumptions
-- Workforce Agent receives `skill_gap` signals
+- [x] UC-03, UC-04, UC-05 operational with scorecard / SOP / what-if backends
+- [x] OKA enriches root-cause recommendations (`oka_client.py` read path + graceful fallback)
+- [x] Resolved quality events generate lesson log entries (BR-08)
+- [x] What-if queries return projections with stated assumptions
+- [x] Workforce Agent consumes `skill_gap` signals (`skill_gap_consumer.py`)
+- [x] Item-level `gold_set_evaluation_logs` + `rework_logs` ingest and RCA utilization
+- [x] Impact + historical NL query intents (milestones, rework, OKA lessons)
+- [x] Citation enforcement + optional LLM intent routing
+- [x] Acceptance test gate (≥90% synthetic drift, RBAC matrix, 20-session concurrency)
 
 ---
 
@@ -471,13 +481,13 @@ Per `04. Roadmap.md` Phase 2 — cross-cutting, not agent-only:
 
 | UC | Name | MVP | 1.5 | 2.0 | 2.5 |
 |----|------|-----|-----|-----|-----|
-| UC-01 | Automated drift detection | Partial | Full | Full | Full |
-| UC-02 | Root-cause on query | Partial | Partial | Full | Full |
-| UC-03 | Reviewer calibration trigger | — | — | Full | Full |
-| UC-04 | SOP ambiguity workflow | — | — | Full | Full |
-| UC-05 | What-if analysis | — | — | Full | Full |
-| UC-06 | Client quality narrative | — | Partial | Full | Full |
-| UC-07 | Cross-project leadership report | — | Stub | Partial | Full |
+| UC-01 | Automated drift detection | Partial | **Full** | **Full** | Full |
+| UC-02 | Root-cause on query | Partial | Partial | **Full** | Full |
+| UC-03 | Reviewer calibration trigger | — | — | **Full** | Full |
+| UC-04 | SOP ambiguity workflow | — | — | **Full** | Full |
+| UC-05 | What-if analysis | — | — | **Full** | Full |
+| UC-06 | Client quality narrative | — | **Full** | **Full** | Full |
+| UC-07 | Cross-project leadership report | — | Stub | **Partial** | Full |
 
 ---
 
@@ -491,10 +501,10 @@ Per `04. Roadmap.md` Phase 2 — cross-cutting, not agent-only:
 | BR-04 | Confidence on every diagnostic | Yes | 1.0 |
 | BR-05 | Sample size gate | Yes | 1.0 |
 | BR-06 | 5-day auto-escalation to Governance | No | 2.5 |
-| BR-07 | DM approval for client narratives | No | 1.5 |
-| BR-08 | Lesson log on resolution | No | 2.0 |
+| BR-07 | DM approval for client narratives | **Yes** | 1.5 |
+| BR-08 | Lesson log on resolution | **Yes** | 2.0 |
 | BR-09 | No direct SOP modification | Yes | 1.0 |
-| BR-10 | Gold-set version tracking | No | 2.0 |
+| BR-10 | Gold-set version tracking | **Yes** | 2.0 |
 
 ---
 
@@ -646,9 +656,12 @@ Context sent per NL query: up to 6 `quality_snapshots` + error entries + 5 open 
 | POST | `/quality-snapshots/{id}/error-entries` | 1.0 ✅ |
 | POST | `/agent-queries` (`quality_intelligence_agent`) | 1.0 ✅ |
 | GET | `/agent-queries/{id}` | 1.0 ✅ |
-| GET | `/projects/{id}/quality-summary?period=W{n}` | 1.5 |
-| POST | `/internal/quality-scan` (cron trigger) | 1.5 |
-| GET | `/leadership/quality-portfolio` | 2.5 |
+| GET | `/projects/{id}/quality-summary?period=W{n}` | 1.5 ✅ |
+| POST | `/internal/quality-scan` (cron trigger) | 1.5 ✅ |
+| POST/GET | `/projects/{id}/gold-set-evaluation-logs` | 2.0 ✅ |
+| POST/GET | `/projects/{id}/rework-logs` | 2.0 ✅ |
+| POST | `/projects/{id}/sop-ambiguity/confirm` | 2.0 ✅ |
+| GET | `/leadership/quality-portfolio` | 2.0 ✅ (partial — no heatmap) |
 
 ---
 
@@ -656,65 +669,52 @@ Context sent per NL query: up to 6 `quality_snapshots` + error entries + 5 open 
 
 ---
 
-## Current Implementation State (as of 2026-06-25)
+## Current Implementation State (as of 2026-06-26)
 
 ### What is fully implemented and live
 
 | Area | Status | Key files |
 |------|--------|-----------|
-| Phase 1.0 — all capabilities | Complete | see §4 |
-| Phase 2.0 — all use cases (UC-01 through UC-05) | Complete | see below |
-| DB schema — all Phase 2 tables | Migrated | `supabase/migrations/20260625130000_quality_phase2_schema.sql` |
-| Inter-agent signal bus | Migrated | `supabase/migrations/20260625140000_inter_agent_signals.sql` |
-| Frontend — calibration brief panel, SOP ambiguity flags, reviewer scorecards table, resolve alert button | Complete | `frontend/src/routes/quality.tsx` |
+| Phase 1.0 — all capabilities | **Complete** | see §4 |
+| Phase 1.5 — connected agent | **Complete** | scheduler, signal consumption, comms §8.4, taxonomy |
+| Phase 2.0 — full reasoning | **Complete** | item-level logs, UC-02–05, NL maturity, acceptance tests |
+| DB schema — Phase 2 tables + `quality_sop_links` | Migrated | `supabase/migrations/20260625130000_quality_phase2_schema.sql`, `20260626100000_quality_sop_links.sql` |
+| Inter-agent signal bus + consumers | **Complete** | `signals.py`, `signal_dispatcher.py`, delivery + workforce consumers |
+| Frontend — calibration, SOP flags, scorecards, data-gap badge, rework target | **Complete** | `frontend/src/routes/quality.tsx` |
 
-#### Phase 2.0 backend modules
+#### Phase 2.0 backend modules (added in 1.5/2.0 completion)
 
-| Module | File | UC covered |
-|--------|------|------------|
-| Reviewer scorecard queries | `backend/app/agents/quality_intelligence/calibration.py` | UC-03 |
-| Calibration brief generation + skill-gap signal | `backend/app/agents/quality_intelligence/calibration.py` | UC-03 |
-| SOP ambiguity detection + amendment draft | `backend/app/agents/quality_intelligence/sop_ambiguity.py` | UC-04 |
-| SOP change correlation via `sop_version_history` | `backend/app/agents/quality_intelligence/sop_ambiguity.py` | UC-04 |
-| What-if engine (intent classify → rule projection → LLM narrative) | `backend/app/agents/quality_intelligence/what_if.py` | UC-05 |
-| OKA client placeholder (graceful fallback) | `backend/app/agents/quality_intelligence/oka_client.py` | BR-07 |
-| Lesson write-back on alert resolve | `backend/app/agents/knowledge/lesson_log.py` + `backend/app/services/quality.py` | BR-08 |
-| Root-cause v2 (6 hypotheses) | `backend/app/agents/quality_intelligence/root_cause.py` | UC-01 |
-| Inter-agent signal emission | `backend/app/agents/quality_intelligence/signals.py` | cross-agent |
+| Module | File | UC / BR |
+|--------|------|---------|
+| Rework impact from item-level logs | `rework_metrics.py` | §9.1 payload |
+| Signal consumption (Delivery) | `delivery/services/quality_signal_consumer.py` | §9.1 |
+| Signal consumption (Workforce) | `workforce/skill_gap_consumer.py` | §9.3 |
+| SOP ambiguity confirm + audit link | `sop_ambiguity.py`, `quality_sop_links` | UC-04, BR-09 |
+| Citation enforcement | `citations.py` | BR-02 |
+| Impact + historical NL intents | `query_handler.py` | UC-02 |
+| Client comms §8.4 wiring | `communications.py` route | UC-06, BR-03 |
+| Acceptance test suite | `tests/test_quality_acceptance.py` etc. | §16.4 |
 
-### What is blocked on other agents
+### Operational dependencies (pilot data, not code gaps)
 
-The following Phase 2 capabilities are code-complete but produce no data or degraded results until the dependent agents are implemented:
+| Capability | Needs | Impact if empty |
+|-----------|-------|-----------------|
+| UC-03 calibration brief | `reviewer_scorecards` populated from QA export | Empty brief until data ingested |
+| UC-04 SOP correlation | `sop_documents` + `sop_version_history` from Knowledge Agent | SOP hypothesis skipped |
+| UC-05 / historical queries | OKA lessons in `knowledge_lessons` | Graceful fallback, no lesson context |
+| Governance escalation | Governance Agent consumer (Phase 2.5) | Alerts stay open past SLA |
 
-| Capability | Blocked by | Impact |
-|-----------|------------|--------|
-| UC-03 calibration brief — annotator accuracy scoring | **Workforce Agent** must populate `reviewer_scorecards`; table exists, no data | Returns empty brief |
-| UC-04 SOP change correlation | **Knowledge Agent** must populate `sop_documents` + `sop_version_history`; tables exist, no data | SOP correlation always returns `None` |
-| UC-05 What-if — OKA lesson retrieval | **Knowledge Agent** (OKA) not implemented; `oka_client.py` falls back to empty lessons | Narrative generated without lesson context |
-| BR-08 lesson write-back | **Knowledge Agent** must own `knowledge_lessons` table; table exists, no data | Writes lessons, but no downstream Knowledge Agent queries them |
-| Skill-gap signal delivery | **Workforce Agent** must consume `inter_agent_signals`; table exists | Signals emitted to DB, no consumer reads them |
-| Quality escalation delivery | **Governance Agent** must consume `inter_agent_signals` | Same as above |
+### Remaining work (Phase 2.5 only)
 
-### Tables dropped — to be re-created by the responsible team
+- Governance auto-escalation (`check_quality_escalations` + scheduler)
+- Leadership vertical/task-type risk heatmap
+- Per-org / per-project / per-task-type threshold overrides + admin UI
 
-The following tables were applied by this session's migration scripts but belong to other agents. They have been **dropped** so each agent team can define their own schema. The Quality Intelligence agent has fallback code for all of them:
+### Pilot onboarding checklist
 
-| Table | Owned by | QI dependency |
-|-------|----------|--------------|
-| `workforce_skills` | Workforce Agent | None — QI reads `reviewer_scorecards` directly |
-| `workforce_utilization_snapshots` | Workforce Agent | Read by root-cause v2 fatigue hypothesis (graceful fallback if absent) |
-| `project_dependencies` | Governance Agent | None direct |
-| `governance_actions` | Governance Agent | None direct |
-| `knowledge_lessons` | Knowledge Agent | `quality_lesson_links` FKs to this; `lesson_log.py` writes here |
-| `sop_documents` | Knowledge Agent | `sop_version_history` FKs to this |
-
-> `quality_lesson_links` and `sop_version_history` were also dropped as a consequence of the FK dependency. They will need to be re-applied after the Knowledge Agent migration establishes `knowledge_lessons` and `sop_documents`.
-
-### How to resume
-
-1. Knowledge Agent team applies their migration (creates `knowledge_lessons`, `sop_documents`)
-2. Re-apply `supabase/migrations/20260625130000_quality_phase2_schema.sql` to restore `sop_version_history` and `quality_lesson_links`
-3. Workforce Agent team applies their migration and populates `reviewer_scorecards`
-4. Governance Agent team consumes `inter_agent_signals` where `target_agent = 'governance_agent'`
-5. Run `backend/scripts/apply_migrations.py` to verify all tables are present
-6. Phase 2.5 (portfolio heatmap, leadership escalation) can then proceed
+1. Apply all pending Supabase migrations (incl. `20260626100000_quality_sop_links.sql`)
+2. Seed `metric_configurations` threshold JSON and pilot QA export → weekly snapshots
+3. Ingest `reviewer_scorecards`, eval logs, and rework logs for pilot teams
+4. Configure `LLM_API_KEY`; optionally `LLM_INTENT_ROUTING=true`
+5. Verify scheduler + signal dispatch in staging (`scan_all_projects` → `dispatch_pending_signals`)
+6. Proceed to Phase 2.5 (governance escalation, leadership heatmap, threshold overrides)

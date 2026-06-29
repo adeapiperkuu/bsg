@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.quality_intelligence.drift import DriftResult
+from app.agents.quality_intelligence.rework_metrics import compute_rework_impact
 from app.agents.quality_intelligence.signals import mirror_quality_risk_signal
 from app.agents.quality_intelligence.root_cause import RootCauseResult
 from app.db.models import (
@@ -66,6 +67,20 @@ async def create_drift_risk_alert(
         "iso_week": snapshot.iso_week,
         "iso_year": snapshot.iso_year,
     }
+
+    rework_impact = await compute_rework_impact(
+        session,
+        snapshot.project_id,
+        iso_year=snapshot.iso_year,
+        iso_week=snapshot.iso_week,
+    )
+    contributing["quality_risk_payload"].update(
+        {
+            "rework_volume_units": rework_impact["rework_volume_units"],
+            "rework_time_estimate_days": rework_impact["rework_time_estimate_days"],
+            "affected_batch_ids": rework_impact["affected_batch_ids"],
+        }
+    )
 
     alert = RiskAlert(
         project_id=snapshot.project_id,

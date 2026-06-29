@@ -7,9 +7,12 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.knowledge.retrieval import keyword_search
+from app.agents.quality_intelligence.citations import append_evidence_index, strip_ungrounded_citations
 from app.agents.quality_intelligence.drift import evaluate_drift
 from app.agents.quality_intelligence.oka_client import OKAClient
 from app.agents.quality_intelligence.prompts import QUALITY_SYSTEM_PROMPT, build_user_prompt
+from app.agents.quality_intelligence.rework_metrics import compute_rework_impact
 from app.agents.quality_intelligence.root_cause import analyze_root_cause
 from app.agents.quality_intelligence.what_if import analyze_what_if, what_if_to_read
 from app.core.config import get_settings
@@ -19,6 +22,8 @@ from app.db.models import (
     AgentQueryEvidenceLink,
     AlertStatus,
     AlertType,
+    KnowledgeLesson,
+    Milestone,
     QualityErrorEntry,
     QualitySnapshot,
     RiskAlert,
@@ -34,11 +39,40 @@ def classify_intent(query_text: str) -> str:
     lower = query_text.lower()
     if any(w in lower for w in ("what if", "if we", "scenario", "would happen")):
         return "what_if"
+    if any(w in lower for w in ("schedule", "milestone", "slippage", "rework volume", "how many units", "days impact")):
+        return "impact"
+    if any(w in lower for w in ("resolved", "how was", "how did we", "last time", "historical", "lesson")):
+        return "historical"
     if any(w in lower for w in ("why", "driving", "root cause", "drop", "increasing")):
         return "diagnostic"
     if any(w in lower for w in ("focus", "fix", "recommend", "action", "should i")):
         return "action"
     return "status"
+
+
+async def classify_intent_llm(query_text: str) -> str | None:
+    settings = get_settings()
+    if not settings.llm_api_key or not settings.llm_intent_routing:
+        return None
+    try:
+        llm = LLMClient()
+        raw = await llm.generate_structured(
+            system=(
+                "Classify the user query into exactly one intent: "
+                "status, diagnostic, action, impact, historical, what_if. "
+                "Return JSON: {\"intent\": \"...\"}"
+            ),
+            user=query_text,
+            context="",
+            json_mode=True,
+        )
+        payload = json.loads(raw)
+        intent = str(payload.get("intent", "")).strip().lower()
+        if intent in {"status", "diagnostic", "action", "impact", "historical", "what_if"}:
+            return intent
+    except Exception:
+        return None
+    return None
 
 
 async def gather_quality_evidence(
@@ -117,6 +151,74 @@ async def gather_quality_evidence(
     return evidence, "\n".join(context_parts)
 
 
+async def _build_impact_summary(session: AsyncSession, project_id: UUID) -> str:
+    latest = (
+        await session.execute(
+            select(QualitySnapshot)
+            .where(QualitySnapshot.project_id == project_id)
+            .order_by(QualitySnapshot.iso_year.desc(), QualitySnapshot.iso_week.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    rework = await compute_rework_impact(session, project_id)
+    milestones = list(
+        (
+            await session.execute(
+                select(Milestone)
+                .where(Milestone.project_id == project_id)
+                .order_by(Milestone.planned_date.asc().nullslast())
+                .limit(5)
+            )
+        ).scalars()
+    )
+    at_risk = [m for m in milestones if m.status.value in {"at_risk", "delayed"}]
+    return json.dumps(
+        {
+            "rework_impact": rework,
+            "milestones_at_risk": [
+                {"id": str(m.id), "name": m.name, "status": m.status.value, "target_date": str(m.target_date)}
+                for m in at_risk
+            ],
+            "latest_week": f"W{latest.iso_week}/{latest.iso_year}" if latest else None,
+        },
+        default=str,
+    )
+
+
+async def _build_historical_summary(
+    session: AsyncSession,
+    project_id: UUID,
+    org_id: UUID,
+    query_text: str,
+) -> str:
+    oka = OKAClient()
+    lessons = await oka.retrieve_lessons(org_id=str(org_id), error_category="quality")
+    if not lessons:
+        lessons = await keyword_search(session, org_id, query_text, limit=5)
+
+    db_lessons = list(
+        (
+            await session.execute(
+                select(KnowledgeLesson)
+                .where(KnowledgeLesson.org_id == org_id)
+                .order_by(KnowledgeLesson.created_at.desc())
+                .limit(5)
+            )
+        ).scalars()
+    )
+
+    return json.dumps(
+        {
+            "oka_lessons": lessons,
+            "knowledge_lessons": [
+                {"id": str(lesson.id), "title": lesson.title, "body": lesson.body[:300]}
+                for lesson in db_lessons
+            ],
+        },
+        default=str,
+    )
+
+
 async def answer_quality_query(
     session: AsyncSession,
     current_user: CurrentUser,
@@ -134,7 +236,7 @@ async def answer_quality_query(
     evidence_list = list(merged.values())
     require_evidence(evidence_list)
 
-    intent = classify_intent(payload.query_text)
+    intent = await classify_intent_llm(payload.query_text) or classify_intent(payload.query_text)
     latest = (
         await session.execute(
             select(QualitySnapshot)
@@ -165,9 +267,12 @@ async def answer_quality_query(
 
     if intent == "what_if":
         what_if = await analyze_what_if(session, project, payload.query_text)
-        analysis_summary = json.dumps(
-            {"what_if": what_if_to_read(what_if).model_dump()},
-            default=str,
+        analysis_summary = json.dumps({"what_if": what_if_to_read(what_if).model_dump()}, default=str)
+    elif intent == "impact":
+        analysis_summary = await _build_impact_summary(session, project.id)
+    elif intent == "historical":
+        analysis_summary = await _build_historical_summary(
+            session, project.id, project.org_id, payload.query_text
         )
 
     oka = OKAClient()
@@ -192,6 +297,7 @@ async def answer_quality_query(
             system=QUALITY_SYSTEM_PROMPT,
             user=user_prompt,
             context=scoped_context,
+            json_mode=intent in {"impact", "historical"},
         )
     except Exception:
         answer_text = (
@@ -199,6 +305,8 @@ async def answer_quality_query(
             "LLM synthesis unavailable; showing pre-computed analysis only."
         )
 
+    answer_text = strip_ungrounded_citations(answer_text, evidence_list)
+    answer_text = append_evidence_index(answer_text, evidence_list)
     answer_text = filter_response_for_role(answer_text, current_user.role)
 
     query = AgentQuery(

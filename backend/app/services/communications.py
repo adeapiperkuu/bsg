@@ -20,7 +20,7 @@ from app.db.models import (
     RiskAlert,
     ThroughputSnapshot,
 )
-from app.schemas.domain import CommunicationApprove, CommunicationReview
+from app.schemas.domain import CommunicationApprove, CommunicationReview, QualitySummaryRead
 from app.services.evidence import EvidenceInput, require_evidence
 from app.services.llm.client import LLMClient
 
@@ -32,8 +32,10 @@ COMMS_PLACEHOLDER_BODY = (
 
 def build_comms_context(
     throughput_snap: ThroughputSnapshot,
-    quality_snaps: list[QualitySnapshot],
-    drift_alerts: list[RiskAlert],
+    quality_summary: QualitySummaryRead | None = None,
+    *,
+    quality_snaps: list[QualitySnapshot] | None = None,
+    drift_alerts: list[RiskAlert] | None = None,
 ) -> str:
     parts: list[str] = [
         json.dumps(
@@ -48,44 +50,61 @@ def build_comms_context(
             default=str,
         )
     ]
-    for snap in quality_snaps:
+    if quality_summary is not None:
         parts.append(
             json.dumps(
                 {
-                    "quality_snapshot": {
-                        "iso_week": snap.iso_week,
-                        "iso_year": snap.iso_year,
-                        "gold_set_accuracy_pct": str(snap.gold_set_accuracy_pct),
-                        "iaa": str(snap.iaa_krippendorff_alpha),
-                        "rework_rate_pct": str(snap.rework_rate_pct),
-                        "has_drift_alert": snap.has_drift_alert,
-                    }
+                    "quality_summary": quality_summary.model_dump(mode="json"),
                 },
                 default=str,
             )
         )
-    for alert in drift_alerts:
-        parts.append(
-            json.dumps(
-                {"drift_alert": {"title": alert.title, "detail": alert.detail, "risk_tier": alert.risk_tier.value}},
-                default=str,
+    else:
+        for snap in quality_snaps or []:
+            parts.append(
+                json.dumps(
+                    {
+                        "quality_snapshot": {
+                            "iso_week": snap.iso_week,
+                            "iso_year": snap.iso_year,
+                            "gold_set_accuracy_pct": str(snap.gold_set_accuracy_pct),
+                            "iaa": str(snap.iaa_krippendorff_alpha),
+                            "rework_rate_pct": str(snap.rework_rate_pct),
+                            "has_drift_alert": snap.has_drift_alert,
+                        }
+                    },
+                    default=str,
+                )
             )
-        )
+        for alert in drift_alerts or []:
+            parts.append(
+                json.dumps(
+                    {"drift_alert": {"title": alert.title, "detail": alert.detail, "risk_tier": alert.risk_tier.value}},
+                    default=str,
+                )
+            )
     return "\n".join(parts)
 
 
 async def generate_comms_draft_body(
     project: Project,
     throughput_snap: ThroughputSnapshot,
-    quality_snaps: list[QualitySnapshot],
-    drift_alerts: list[RiskAlert],
     comm_type: CommunicationType | str,
+    *,
+    quality_summary: QualitySummaryRead | None = None,
+    quality_snaps: list[QualitySnapshot] | None = None,
+    drift_alerts: list[RiskAlert] | None = None,
 ) -> str:
     settings = get_settings()
     if not settings.llm_api_key:
         return COMMS_PLACEHOLDER_BODY
 
-    context = build_comms_context(throughput_snap, quality_snaps, drift_alerts)
+    context = build_comms_context(
+        throughput_snap,
+        quality_summary,
+        quality_snaps=quality_snaps,
+        drift_alerts=drift_alerts,
+    )
     comm_label = comm_type.value if hasattr(comm_type, "value") else str(comm_type)
     try:
         llm = LLMClient()

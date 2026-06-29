@@ -33,6 +33,7 @@ from app.db.models.entities import (
     QualityLessonLink,
     QualityScanRun,
     QualitySnapshot,
+    QualitySopLink,
     ReviewerScorecard,
     ReworkLog,
     RiskAlert,
@@ -46,6 +47,8 @@ from app.db.models.entities import (
     Team,
     ThroughputSnapshot,
     User,
+    WorkforceSkill,
+    WorkforceUtilizationSnapshot,
 )
 
 __all__ = [
@@ -83,6 +86,7 @@ __all__ = [
     "QualityLessonLink",
     "QualityScanRun",
     "QualitySnapshot",
+    "QualitySopLink",
     "ReviewerScorecard",
     "ReworkLog",
     "RiskAlert",
@@ -96,4 +100,6 @@ __all__ = [
     "Team",
     "ThroughputSnapshot",
     "User",
+    "WorkforceSkill",
+    "WorkforceUtilizationSnapshot",
 ]

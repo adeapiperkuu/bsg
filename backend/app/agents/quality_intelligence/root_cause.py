@@ -5,6 +5,8 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
+from uuid import UUID
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,11 +17,12 @@ from app.agents.quality_intelligence.drift import (
     fetch_error_entries,
     fetch_prior_snapshot,
 )
+from app.db.optional_tables import query_optional_table
 from app.db.models import (
     Annotator,
+    GoldSetEvaluationLog,
     GoldSetMetadata,
     IaaMeasurementRecord,
-    OnboardingRecord,
     QualitySnapshot,
     ReviewerScorecard,
     SopVersionHistory,
@@ -42,6 +45,57 @@ def _dominant_error_category(entries) -> tuple[str | None, float]:
         return None, 0.0
     top = max(entries, key=lambda e: float(e.share_pct))
     return top.error_category, float(top.share_pct)
+
+
+async def _hypothesis_eval_log_reviewers(
+    session: AsyncSession,
+    snapshot: QualitySnapshot,
+    *,
+    accuracy_threshold: float = 85.0,
+    min_items: int = 50,
+) -> dict[str, Any] | None:
+    """Reviewer-level attribution from item-level gold-set evaluation logs."""
+    logs = list(
+        (
+            await session.execute(
+                select(GoldSetEvaluationLog).where(
+                    GoldSetEvaluationLog.project_id == snapshot.project_id,
+                )
+            )
+        ).scalars()
+    )
+    if not logs:
+        return None
+
+    team_annotators = {
+        a.id
+        for a in (
+            await session.execute(select(Annotator).where(Annotator.team_id == snapshot.team_id))
+        ).scalars()
+    }
+
+    by_annotator: dict[UUID, list[float]] = {}
+    for log in logs:
+        if log.annotator_id not in team_annotators or log.score is None:
+            continue
+        by_annotator.setdefault(log.annotator_id, []).append(float(log.score))
+
+    low_reviewers = [
+        aid for aid, scores in by_annotator.items()
+        if len(scores) >= min_items and (sum(scores) / len(scores)) < accuracy_threshold
+    ]
+    if not low_reviewers:
+        return None
+
+    avg_acc = sum(sum(by_annotator[aid]) / len(by_annotator[aid]) for aid in low_reviewers) / len(low_reviewers)
+    return {
+        "factor": "onboarding_gap",
+        "contribution_pct": min(90.0, 50.0 + len(low_reviewers) * 10.0),
+        "evidence": [
+            f"gold_set_evaluation_logs: {len(low_reviewers)} reviewer(s) below {accuracy_threshold}% "
+            f"over {min_items}+ items (avg {avg_acc:.1f}%)"
+        ],
+    }
 
 
 async def _hypothesis_onboarding_scorecards(
@@ -222,29 +276,49 @@ async def analyze_root_cause(session: AsyncSession, snapshot: QualitySnapshot) -
     prior = await fetch_prior_snapshot(session, snapshot)
     factors: list[dict[str, Any]] = []
 
-    scorecard_factor = await _hypothesis_onboarding_scorecards(session, snapshot)
-    if scorecard_factor:
-        factors.append(scorecard_factor)
+    eval_factor = await query_optional_table(
+        session,
+        lambda: _hypothesis_eval_log_reviewers(session, snapshot),
+        None,
+    )
+    if eval_factor:
+        factors.append(eval_factor)
     else:
-        new_annotators = await count_recent_annotators(session, snapshot.team_id)
-        dominant_cat, dominant_share = _dominant_error_category(entries)
-        if new_annotators > 0:
-            contribution = min(70.0, 40.0 + new_annotators * 10.0)
-            if dominant_share > 30:
-                contribution = min(85.0, contribution + 15.0)
-            factors.append(
-                {
-                    "factor": "onboarding_gap",
-                    "contribution_pct": contribution,
-                    "evidence": [f"{new_annotators} annotator(s) onboarded within last 14 days on team"],
-                }
-            )
+        scorecard_factor = await query_optional_table(
+            session,
+            lambda: _hypothesis_onboarding_scorecards(session, snapshot),
+            None,
+        )
+        if scorecard_factor:
+            factors.append(scorecard_factor)
+        else:
+            new_annotators = await count_recent_annotators(session, snapshot.team_id)
+            dominant_cat, dominant_share = _dominant_error_category(entries)
+            if new_annotators > 0:
+                contribution = min(70.0, 40.0 + new_annotators * 10.0)
+                if dominant_share > 30:
+                    contribution = min(85.0, contribution + 15.0)
+                factors.append(
+                    {
+                        "factor": "onboarding_gap",
+                        "contribution_pct": contribution,
+                        "evidence": [f"{new_annotators} annotator(s) onboarded within last 14 days on team"],
+                    }
+                )
 
-    sop_change = await _hypothesis_sop_change(session, snapshot)
+    sop_change = await query_optional_table(
+        session,
+        lambda: _hypothesis_sop_change(session, snapshot),
+        None,
+    )
     if sop_change:
         factors.append(sop_change)
 
-    gold_ver = await _hypothesis_gold_set_version(session, snapshot)
+    gold_ver = await query_optional_table(
+        session,
+        lambda: _hypothesis_gold_set_version(session, snapshot),
+        None,
+    )
     if gold_ver:
         factors.append(gold_ver)
 
@@ -252,7 +326,11 @@ async def analyze_root_cause(session: AsyncSession, snapshot: QualitySnapshot) -
     if workload:
         factors.append(workload)
 
-    systemic_iaa = await _hypothesis_systemic_iaa(session, snapshot)
+    systemic_iaa = await query_optional_table(
+        session,
+        lambda: _hypothesis_systemic_iaa(session, snapshot),
+        None,
+    )
     if systemic_iaa:
         factors.append(systemic_iaa)
     else:

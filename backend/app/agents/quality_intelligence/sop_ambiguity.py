@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+from datetime import datetime, timezone
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,19 +16,52 @@ from app.db.models import (
     AlertStatus,
     AlertType,
     AppRole,
+    IaaMeasurementRecord,
     Notification,
     NotificationType,
     Project,
     QualitySnapshot,
+    QualitySopLink,
     RiskAlert,
     SopVersionHistory,
     User,
 )
+from app.db.optional_tables import query_optional_table
 from app.schemas.domain import SopAmbiguityFlagRead
 from app.services.llm.client import LLMClient
 
 IAA_LOW_THRESHOLD = 0.80
 MIN_LOW_PAIRS = 3
+
+
+async def _dominant_task_type_from_iaa(
+    session: AsyncSession,
+    snapshot: QualitySnapshot,
+) -> str | None:
+    records = list(
+        (
+            await session.execute(
+                select(IaaMeasurementRecord).where(
+                    IaaMeasurementRecord.project_id == snapshot.project_id,
+                    IaaMeasurementRecord.iso_year == snapshot.iso_year,
+                    IaaMeasurementRecord.iso_week == snapshot.iso_week,
+                )
+            )
+        ).scalars()
+    )
+    low = [
+        r for r in records
+        if r.krippendorff_alpha is not None and float(r.krippendorff_alpha) < IAA_LOW_THRESHOLD
+    ]
+    if not low:
+        return None
+    counts: dict[str, int] = {}
+    for row in low:
+        if row.task_type:
+            counts[row.task_type] = counts.get(row.task_type, 0) + 1
+    if not counts:
+        return None
+    return max(counts, key=counts.get)
 
 
 async def detect_distributed_iaa_drop(session: AsyncSession, snapshot: QualitySnapshot) -> bool:
@@ -44,18 +79,22 @@ async def correlate_sop_change(
 ) -> SopVersionHistory | None:
     ref = reference_date or date.today()
     window_start = ref - timedelta(days=14)
-    return (
-        await session.execute(
-            select(SopVersionHistory)
-            .where(
-                SopVersionHistory.org_id == org_id,
-                SopVersionHistory.effective_date >= window_start,
-                SopVersionHistory.effective_date <= ref,
+
+    async def _query() -> SopVersionHistory | None:
+        return (
+            await session.execute(
+                select(SopVersionHistory)
+                .where(
+                    SopVersionHistory.org_id == org_id,
+                    SopVersionHistory.effective_date >= window_start,
+                    SopVersionHistory.effective_date <= ref,
+                )
+                .order_by(SopVersionHistory.effective_date.desc())
+                .limit(1)
             )
-            .order_by(SopVersionHistory.effective_date.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+        ).scalar_one_or_none()
+
+    return await query_optional_table(session, _query, None)
 
 
 async def draft_sop_amendment(
@@ -93,6 +132,8 @@ async def flag_sop_ambiguity(
     sop_version: SopVersionHistory | None,
     flag: SopAmbiguityFlag,
     draft_amendment: str,
+    *,
+    task_type: str | None = None,
 ) -> RiskAlert | None:
     if not flag.detected:
         return None
@@ -123,7 +164,7 @@ async def flag_sop_ambiguity(
         detail=flag.detail or "Distributed IAA drop detected",
         contributing_causes={
             "sop_ambiguity_flag": {
-                "task_type": None,
+                "task_type": task_type,
                 "affected_reviewer_count": flag.affected_reviewers,
                 "sop_version": sop_version.version if sop_version else flag.sop_version,
                 "draft_amendment": draft_amendment,
@@ -196,14 +237,17 @@ async def process_sop_ambiguity_for_snapshot(
     sop_version = await correlate_sop_change(
         session, snapshot.org_id, iso_year=snapshot.iso_year, iso_week=snapshot.iso_week
     )
+    task_type = await _dominant_task_type_from_iaa(session, snapshot)
     amendment = await draft_sop_amendment(session, project, sop_version, flag)
-    alert = await flag_sop_ambiguity(session, snapshot, sop_version, flag, amendment)
+    alert = await flag_sop_ambiguity(
+        session, snapshot, sop_version, flag, amendment, task_type=task_type
+    )
     if alert:
         await notify_sop_ambiguity(session, snapshot.org_id, alert)
 
     return SopAmbiguityFlagRead(
         alert_id=alert.id if alert else None,
-        task_type=None,
+        task_type=task_type,
         affected_reviewer_count=flag.affected_reviewers,
         sop_version=sop_version.version if sop_version else flag.sop_version,
         draft_amendment=amendment,
@@ -239,3 +283,55 @@ async def list_sop_ambiguity_flags(session: AsyncSession, project_id) -> list[So
             )
         )
     return flags
+
+
+async def confirm_sop_ambiguity_resolution(
+    session: AsyncSession,
+    project: Project,
+    *,
+    alert_id,
+    sop_version_id,
+    confirmed_by,
+) -> QualitySopLink:
+    """Link a resolved SOP version to the triggering quality alert (BR-09 audit trail)."""
+    alert = (
+        await session.execute(select(RiskAlert).where(RiskAlert.id == alert_id))
+    ).scalar_one_or_none()
+    if alert is None or alert.project_id != project.id:
+        from app.core.exceptions import ApiError
+        raise ApiError(404, "NOT_FOUND", "Risk alert was not found.")
+
+    sop_version = (
+        await session.execute(
+            select(SopVersionHistory).where(
+                SopVersionHistory.id == sop_version_id,
+                SopVersionHistory.org_id == project.org_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if sop_version is None:
+        from app.core.exceptions import ApiError
+        raise ApiError(404, "NOT_FOUND", "SOP version was not found.")
+
+    existing = (
+        await session.execute(
+            select(QualitySopLink).where(
+                QualitySopLink.risk_alert_id == alert.id,
+                QualitySopLink.sop_version_id == sop_version.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing:
+        return existing
+
+    link = QualitySopLink(
+        org_id=project.org_id,
+        risk_alert_id=alert.id,
+        sop_version_id=sop_version.id,
+        confirmed_by=confirmed_by,
+    )
+    session.add(link)
+    alert.status = AlertStatus.RESOLVED
+    alert.resolved_at = datetime.now(timezone.utc)
+    await session.flush()
+    return link
