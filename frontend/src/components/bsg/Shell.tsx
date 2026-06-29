@@ -68,11 +68,8 @@ const adminNav: { section: string; items: NavItem[] }[] = [
   { section: "Platform", items: [
     { to: "/admin", label: "Admin Console", icon: Settings2 },
     { to: "/admin/users", label: "Users", icon: Users },
-<<<<<<< HEAD
     { to: "/admin/projects", label: "Projects", icon: FolderKanban },
     { to: "/admin/agent-runs", label: "Agent Runs", icon: Bot },
-=======
->>>>>>> 5dbfdec1dd5fc32986d7d6d91b317bb9b4543a30
   ]},
 ];
 

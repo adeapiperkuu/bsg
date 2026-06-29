@@ -603,11 +603,6 @@ export async function deleteUser(userId: string): Promise<void> {
   await apiFetch<void>(`/users/${userId}`, { method: "DELETE" });
 }
 
-export async function listProjects(): Promise<ProjectRead[]> {
-  const body = await apiFetch<{ data: ProjectRead[] }>("/projects");
-  return body.data;
-}
-
 export type QualityDashboard = {
   kpis: {
     gold_set_accuracy_pct: number | null;
@@ -643,30 +638,6 @@ export type QualityDashboard = {
   }>;
   narrative: string | null;
   data_gap_teams: string[];
-};
-
-export type ProjectRead = {
-  id: string;
-  name: string;
-  org_id: string;
-  vertical: string;
-  status: string;
-};
-
-export type AgentQueryRead = {
-  id: string;
-  agent_name: string;
-  project_id: string | null;
-  query_text: string;
-  answer_text: string;
-  model_used: string | null;
-  latency_ms: number | null;
-  created_at: string;
-  evidence_links: Array<{
-    source_table: string;
-    source_row_id: string;
-    description: string;
-  }>;
 };
 
 export type AdminProject = {
@@ -739,19 +710,6 @@ export type ThroughputSnapshot = {
   units_completed: number;
   units_forecast: number | null;
   rolling_7day_units: number | null;
-};
-
-export type RiskAlertRead = {
-  id: string;
-  project_id: string;
-  title: string;
-  detail: string;
-  alert_type: string;
-  risk_tier: string;
-  status: string;
-  source_table: string | null;
-  source_row_id: string | null;
-  created_at: string;
 };
 
 export type QualityPortfolioProject = {
@@ -901,8 +859,6 @@ export function canAccessPath(role: AppRole, path: string): boolean {
   if (role === "client") return isClientPortalPath(path);
   if (role === "bsg_leadership") return path.startsWith("/leadership");
   return !isClientPortalPath(path) && !path.startsWith("/admin");
-<<<<<<< HEAD
-=======
 }
 
 export async function getKnowledgeBootstrap(): Promise<KnowledgeBootstrapApi> {
@@ -1228,5 +1184,4 @@ export async function resolveKnowledgeGap(gapId: string): Promise<KnowledgeGapTo
     method: "POST",
   });
   return body.data;
->>>>>>> 5dbfdec1dd5fc32986d7d6d91b317bb9b4543a30
 }
