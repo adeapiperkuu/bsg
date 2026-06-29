@@ -11,7 +11,7 @@ import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from decimal import Decimal
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -21,6 +21,7 @@ from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 
+from app.agents.knowledge.retrieval import keyword_search
 from app.core.config import get_settings
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
@@ -41,6 +42,7 @@ from app.db.models.entities import (
     KnowledgeGap,
     KnowledgeGapStatus,
     KnowledgeIndexingStatus,
+    KnowledgeLesson,
     KnowledgeProcessingStatus,
     KnowledgeQueryFeedback,
     KnowledgeSourceType,
@@ -71,11 +73,14 @@ from app.schemas.domain import (
     KnowledgeGapRead,
     KnowledgeGapTodoRead,
     KnowledgeLibraryHealthRead,
+    KnowledgeLessonCreate,
+    KnowledgeLessonRead,
     KnowledgeChunkRead,
     KnowledgeQualityCriterion,
     KnowledgeQualityScore,
     KnowledgeRetrievalSettingsRead,
     KnowledgeRetrievalSettingsUpdate,
+    KnowledgeSearchResult,
     KnowledgeStructuredAnswer,
     KnowledgeVersionCompareRead,
 )
@@ -85,6 +90,53 @@ from app.services.notifications import create_notification
 
 logger = logging.getLogger(__name__)
 KNOWLEDGE_AGENT_NAME = "operational_knowledge_agent"
+
+
+async def list_lessons(
+    session: AsyncSession,
+    org_id,
+    *,
+    limit: int = 50,
+) -> list[KnowledgeLesson]:
+    return list(
+        (
+            await session.execute(
+                select(KnowledgeLesson)
+                .where(KnowledgeLesson.org_id == org_id)
+                .order_by(KnowledgeLesson.created_at.desc())
+                .limit(limit)
+            )
+        ).scalars()
+    )
+
+
+async def create_lesson(
+    session: AsyncSession,
+    org_id,
+    payload: KnowledgeLessonCreate,
+    created_by: UUID,
+) -> KnowledgeLesson:
+    lesson = KnowledgeLesson(
+        org_id=org_id,
+        title=payload.title,
+        body=payload.body,
+        tags=payload.tags,
+        linked_quality_event_id=payload.linked_quality_event_id,
+        linked_alert_id=payload.linked_alert_id,
+        created_by=created_by,
+    )
+    session.add(lesson)
+    await session.flush()
+    return lesson
+
+
+async def search_knowledge(
+    session: AsyncSession,
+    org_id,
+    query: str,
+) -> list[KnowledgeSearchResult]:
+    hits = await keyword_search(session, org_id, query)
+    return [KnowledgeSearchResult.model_validate(h) for h in hits]
 
 
 def _is_missing_schema_error(exc: BaseException) -> bool:
@@ -509,7 +561,7 @@ async def update_document(
         doc.status = KnowledgeDocumentStatus(payload.status)
         if doc.status == KnowledgeDocumentStatus.APPROVED:
             doc.approved_by = current_user.id
-            doc.approved_at = datetime.now(UTC)
+            doc.approved_at = datetime.now(timezone.utc)
     if payload.owner_approver is not None:
         doc.owner_approver = payload.owner_approver.strip()
     if payload.effective_date is not None:
@@ -546,7 +598,7 @@ async def delete_document(session: AsyncSession, current_user: CurrentUser, docu
         raise ApiError(403, "FORBIDDEN", "You cannot delete knowledge documents.")
     if not can_access_visibility(current_user.role, doc.visibility):
         raise ApiError(403, "FORBIDDEN", "You cannot delete this document.")
-    doc.deleted_at = datetime.now(UTC)
+    doc.deleted_at = datetime.now(timezone.utc)
 
 
 async def create_document_from_upload(
@@ -639,7 +691,7 @@ async def create_document_from_upload(
         doc.file_size_bytes = len(file_bytes)
         doc.checksum_sha256 = checksum
         doc.uploaded_by = current_user.id
-        doc.upload_date = datetime.now(UTC)
+        doc.upload_date = datetime.now(timezone.utc)
         doc.description = description.strip() if description else doc.description
         doc.processing_status = KnowledgeProcessingStatus.UPLOADED
         doc.indexing_status = KnowledgeIndexingStatus.NOT_INDEXED
@@ -649,7 +701,7 @@ async def create_document_from_upload(
         session.add(doc)
     if status == KnowledgeDocumentStatus.APPROVED:
         doc.approved_by = current_user.id
-        doc.approved_at = datetime.now(UTC)
+        doc.approved_at = datetime.now(timezone.utc)
     session.add(doc)
     await session.flush()
 
@@ -662,7 +714,7 @@ async def create_document_from_upload(
         )
     ).scalar_one_or_none()
     if existing_version is not None:
-        version = f"{version}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
+        version = f"{version}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
 
     storage = await _store_upload(current_user.org_id, doc.id, version, file_name, file_bytes, file_mime_type)
     previous_versions = list(
@@ -737,7 +789,7 @@ async def reindex_document(session: AsyncSession, current_user: CurrentUser, doc
         raise ApiError(400, "VALIDATION_ERROR", "Document has no stored file to index.")
     source_version = version
     file_bytes = await _read_stored_file(source_version.storage_path)
-    reindex_version = f"{source_version.version}-reindex-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
+    reindex_version = f"{source_version.version}-reindex-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
     previous_versions = list(
         (await session.execute(select(KnowledgeDocumentVersion).where(KnowledgeDocumentVersion.document_id == doc.id))).scalars()
     )
@@ -789,7 +841,7 @@ async def ask_knowledge_agent(
     project: str | None = None,
     department: str | None = None,
 ) -> KnowledgeAskRead:
-    started = datetime.now(UTC)
+    started = datetime.now(timezone.utc)
     max_sources = max(1, min(max_sources, 10))
     min_relevance_score = max(0.0, min(min_relevance_score, 1.0))
     client_safe_mode = answer_mode == "client_safe"
@@ -1135,7 +1187,7 @@ async def ask_knowledge_agent(
         query_text=query_text,
         answer_text=answer_text,
         model_used=model_used,
-        latency_ms=int((datetime.now(UTC) - started).total_seconds() * 1000),
+        latency_ms=int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
         retrieval_params=retrieval_params,
     )
     session.add(agent_query)
@@ -1217,7 +1269,7 @@ async def stream_knowledge_ask(
     """
     import json as _json
 
-    started = datetime.now(UTC)
+    started = datetime.now(timezone.utc)
     max_sources = max(1, min(max_sources, 10))
     min_relevance_score = max(0.0, min(min_relevance_score, 1.0))
     client_safe_mode = answer_mode == "client_safe"
@@ -1355,7 +1407,7 @@ async def stream_knowledge_ask(
             user_id=current_user.id, org_id=current_user.org_id, project_id=None,
             agent_name=KNOWLEDGE_AGENT_NAME, query_text=query_text,
             answer_text=NO_APPROVED_ANSWER, model_used=None,
-            latency_ms=int((datetime.now(UTC) - started).total_seconds() * 1000),
+            latency_ms=int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
             retrieval_params=None,
         )
         session.add(agent_query)
@@ -1517,7 +1569,7 @@ async def stream_knowledge_ask(
             user_id=current_user.id, org_id=current_user.org_id, project_id=None,
             agent_name=KNOWLEDGE_AGENT_NAME, query_text=query_text, answer_text=answer_text,
             model_used=model_used,
-            latency_ms=int((datetime.now(UTC) - started).total_seconds() * 1000),
+            latency_ms=int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
             retrieval_params=retrieval_params,
         )
         session.add(agent_query)
@@ -1798,7 +1850,7 @@ async def record_knowledge_feedback(
         query_id=query_id,
         rating=feedback.rating.value,
         comment=feedback.comment,
-        created_at=feedback.created_at or datetime.now(UTC),
+        created_at=feedback.created_at or datetime.now(timezone.utc),
     )
 
 
@@ -2427,7 +2479,7 @@ async def _process_document_version(
         extraction.extracted_text = cleaned_text
         extraction.extraction_status = KnowledgeExtractionStatus.SUCCEEDED
         extraction.extraction_error = None
-        extraction.extracted_at = datetime.now(UTC)
+        extraction.extracted_at = datetime.now(timezone.utc)
         doc.extracted_text = cleaned_text
         doc.processing_status = KnowledgeProcessingStatus.EXTRACTED
         await session.flush()
@@ -2470,14 +2522,14 @@ async def _process_document_version(
 
         doc.processing_status = KnowledgeProcessingStatus.READY
         doc.indexing_status = KnowledgeIndexingStatus.INDEXED
-        doc.indexed_at = datetime.now(UTC)
+        doc.indexed_at = datetime.now(timezone.utc)
         doc.processing_error = None
         await session.flush()
     except Exception as exc:
         if processing_phase == "extraction":
             extraction.extraction_status = KnowledgeExtractionStatus.FAILED
             extraction.extraction_error = str(exc)
-            extraction.extracted_at = datetime.now(UTC)
+            extraction.extracted_at = datetime.now(timezone.utc)
         doc.processing_status = KnowledgeProcessingStatus.FAILED
         doc.indexing_status = KnowledgeIndexingStatus.FAILED
         doc.processing_error = str(exc)
@@ -3028,12 +3080,12 @@ def _recency_boost(doc: KnowledgeDocument) -> float:
         doc.approved_at or doc.indexed_at or doc.updated_at or doc.created_at
     )
     if reference is None and doc.effective_date is not None:
-        reference = datetime.combine(doc.effective_date, datetime.min.time(), tzinfo=UTC)
+        reference = datetime.combine(doc.effective_date, datetime.min.time(), tzinfo=timezone.utc)
     if reference is None:
         return 0.0
     if reference.tzinfo is None:
-        reference = reference.replace(tzinfo=UTC)
-    age_days = max(0, (datetime.now(UTC) - reference).days)
+        reference = reference.replace(tzinfo=timezone.utc)
+    age_days = max(0, (datetime.now(timezone.utc) - reference).days)
     return round(RECENCY_BOOST_MAX / (1 + (age_days / 90)), 4)
 
 
@@ -3508,7 +3560,7 @@ async def resolve_knowledge_gap(
     if gap is None:
         raise ApiError(404, "NOT_FOUND", "Knowledge gap not found.")
     gap.status = KnowledgeGapStatus.RESOLVED
-    gap.resolved_at = datetime.now(UTC)
+    gap.resolved_at = datetime.now(timezone.utc)
     gap.resolved_by = current_user.id
     await session.flush()
     return KnowledgeGapTodoRead(
@@ -3533,7 +3585,7 @@ def _compute_workflow_state(doc: KnowledgeDocument) -> str:
         and doc.status == KnowledgeDocumentStatus.APPROVED
         and doc.approved_at
         and doc.effective_date is None
-        and (datetime.now(UTC) - doc.approved_at).days > SOP_STALE_DAYS
+        and (datetime.now(timezone.utc) - doc.approved_at).days > SOP_STALE_DAYS
     ):
         return "expired"
     if (
@@ -3696,7 +3748,7 @@ async def _persist_empty_ask_response(
         query_text=query_text,
         answer_text=NO_APPROVED_ANSWER,
         model_used=None,
-        latency_ms=int((datetime.now(UTC) - started).total_seconds() * 1000),
+        latency_ms=int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
         retrieval_params=retrieval_params,
     )
     session.add(agent_query)

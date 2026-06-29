@@ -18,7 +18,6 @@ from app.schemas.common import DataResponse, ListResponse, Pagination
 from app.schemas.domain import (
     KnowledgeAskCreate,
     KnowledgeAskRead,
-    KnowledgeGapTodoRead,
     KnowledgeBootstrapRead,
     KnowledgeDocumentRead,
     KnowledgeDocumentUpdate,
@@ -32,16 +31,21 @@ from app.schemas.domain import (
     KnowledgeFeedbackRead,
     KnowledgeFolderCreate,
     KnowledgeFolderRead,
+    KnowledgeGapTodoRead,
+    KnowledgeLessonCreate,
+    KnowledgeLessonRead,
     KnowledgeRetrievalSettingsRead,
     KnowledgeRetrievalSettingsUpdate,
+    KnowledgeSearchResult,
     KnowledgeVersionCompareRead,
 )
 from app.services.knowledge import (
     ask_knowledge_agent,
     compare_document_versions,
+    create_document_from_upload,
     create_knowledge_eval_question,
     create_knowledge_folder_by_name,
-    create_document_from_upload,
+    create_lesson,
     delete_document,
     get_document,
     get_document_file_download,
@@ -50,13 +54,15 @@ from app.services.knowledge import (
     get_knowledge_query_answer,
     get_retrieval_settings,
     list_document_versions,
-    list_knowledge_eval_questions,
     list_documents,
+    list_knowledge_eval_questions,
     list_knowledge_folders,
+    list_lessons,
     record_knowledge_feedback,
     reindex_document,
     resolve_knowledge_gap,
     run_knowledge_eval,
+    search_knowledge,
     stream_knowledge_ask,
     update_document,
     update_knowledge_eval_question,
@@ -493,3 +499,37 @@ async def patch_knowledge_retrieval_settings(
     row = await update_retrieval_settings(session, current_user, payload)
     await session.commit()
     return DataResponse(data=row)
+
+
+@router.get("/knowledge/lessons", response_model=ListResponse[KnowledgeLessonRead])
+async def get_lessons(
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> ListResponse[KnowledgeLessonRead]:
+    rows = await list_lessons(session, current_user.org_id)
+    return ListResponse(
+        data=[KnowledgeLessonRead.model_validate(row) for row in rows],
+        pagination=Pagination(limit=50),
+    )
+
+
+@router.post("/knowledge/lessons", response_model=DataResponse[KnowledgeLessonRead])
+async def post_lesson(
+    payload: KnowledgeLessonCreate,
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
+) -> DataResponse[KnowledgeLessonRead]:
+    lesson = await create_lesson(session, current_user.org_id, payload, current_user.id)
+    await session.commit()
+    await session.refresh(lesson)
+    return DataResponse(data=KnowledgeLessonRead.model_validate(lesson))
+
+
+@router.get("/knowledge/search", response_model=ListResponse[KnowledgeSearchResult])
+async def search_knowledge_route(
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+    q: str = Query(default="", min_length=0),
+) -> ListResponse[KnowledgeSearchResult]:
+    results = await search_knowledge(session, current_user.org_id, q)
+    return ListResponse(data=results, pagination=Pagination(limit=20))

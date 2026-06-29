@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+﻿import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
   LineChart,
   Line,
@@ -314,26 +314,26 @@ function DeliveryPage() {
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           <KpiCard
             label="Throughput"
-            value={loading ? "—" : `${formatNumber(portfolioKpis.totalThroughput)}/d`}
+            value={loading ? "ΓÇö" : `${formatNumber(portfolioKpis.totalThroughput)}/d`}
             delta={portfolioKpis.throughputDelta}
             tone="success"
           />
           <KpiCard
             label="Schedule Confidence"
-            value={loading ? "—" : `${portfolioKpis.avgConfidence}%`}
+            value={loading ? "ΓÇö" : `${portfolioKpis.avgConfidence}%`}
             delta={portfolioKpis.confidenceDelta}
             tone="warning"
           />
           <KpiCard
             label="At-Risk Projects"
-            value={loading ? "—" : portfolioKpis.atRiskProjects}
+            value={loading ? "ΓÇö" : portfolioKpis.atRiskProjects}
             tone="danger"
           />
           <KpiCard
             label="Milestone Hit Rate"
             value={
               loading || portfolioKpis.milestoneHitRate === null
-                ? "—"
+                ? "ΓÇö"
                 : `${portfolioKpis.milestoneHitRate}%`
             }
             tone="success"
@@ -381,7 +381,7 @@ function DeliveryPage() {
                   key={attachment}
                   className="rounded border border-border bg-elevated px-2 py-0.5 text-muted-foreground"
                 >
-                  📎 {attachment}
+                  ≡ƒôÄ {attachment}
                 </span>
               ))}
             </div>
@@ -393,7 +393,7 @@ function DeliveryPage() {
         <Card>
           <SectionHeader
             title="Confidence Trend & 4-Week Forecast"
-            sub="Schedule confidence · historical + forecast"
+            sub="Schedule confidence ┬╖ historical + forecast"
           />
           {loading ? (
             <div className="h-[240px] animate-pulse rounded bg-elevated" />
@@ -468,7 +468,7 @@ function DeliveryPage() {
                             {formatNumber(latestThroughputUnits(dashboard))}/d
                           </td>
                           <td className="py-2.5 pr-3">
-                            {dashboard ? `${Math.round(dashboard.confidence)}%` : "—"}
+                            {dashboard ? `${Math.round(dashboard.confidence)}%` : "ΓÇö"}
                           </td>
                           <td className="py-2.5 pr-3">
                             {dashboard ? (
@@ -476,7 +476,7 @@ function DeliveryPage() {
                                 status={riskLabel(dashboard.traffic_light, tier)}
                               />
                             ) : (
-                              "—"
+                              "ΓÇö"
                             )}
                           </td>
                           <td className="py-2.5 pr-3 text-muted-foreground">

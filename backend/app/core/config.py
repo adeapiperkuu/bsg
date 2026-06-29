@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     llm_base_url: str | None = None
     llm_model: str | None = None
+    llm_intent_routing: bool = False
+    oka_base_url: str | None = None
     openai_model: str = "gpt-4o-mini"
     openai_api_key: str | None = None
     openai_base_url: str | None = None

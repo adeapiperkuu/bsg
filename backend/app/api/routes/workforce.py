@@ -41,6 +41,7 @@ from app.schemas.domain import (
     SkillMatrixRead,
     SkillRead,
     SkillUpdate,
+    SmeAllocationRead,
     TeamCreate,
     TeamRead,
     TeamUpdate,
@@ -54,6 +55,7 @@ from app.schemas.domain import (
     UtilizationSnapshotCreate,
     UtilizationSnapshotRead,
     UtilizationSnapshotUpdate,
+    WorkforceDashboardRead,
     WorkforceRecommendationGenerateResponse,
 )
 from app.services.scoping import get_visible_project
@@ -62,14 +64,24 @@ from app.services.workforce import (
     create_team,
     create_utilization_snapshot,
     get_annotator_or_404,
+    get_sme_allocation,
     get_team_or_404,
     get_utilization_snapshot_or_404,
+    get_workforce_dashboard,
     soft_delete_annotator,
     soft_delete_team,
     soft_delete_utilization_snapshot,
     update_annotator,
     update_team,
     update_utilization_snapshot,
+)
+from app.services.workforce_gaps import (
+    detect_and_persist_capability_gaps,
+    generate_workforce_recommendations,
+    get_capability_gap_or_404,
+    list_project_capability_gaps,
+    soft_delete_capability_gap,
+    update_capability_gap,
 )
 from app.services.workforce_skills import (
     build_project_skill_matrix,
@@ -108,16 +120,41 @@ from app.services.workforce_training import (
     update_training_program,
     update_training_record,
 )
-from app.services.workforce_gaps import (
-    detect_and_persist_capability_gaps,
-    generate_workforce_recommendations,
-    get_capability_gap_or_404,
-    list_project_capability_gaps,
-    soft_delete_capability_gap,
-    update_capability_gap,
-)
 
 router = APIRouter(tags=["workforce"])
+
+
+@router.get("/workforce/dashboard", response_model=DataResponse[WorkforceDashboardRead])
+async def workforce_dashboard(
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[WorkforceDashboardRead]:
+    dashboard = await get_workforce_dashboard(session, current_user)
+    return DataResponse(data=dashboard)
+
+
+@router.get("/workforce/skill-matrix", response_model=DataResponse[WorkforceDashboardRead])
+async def workforce_skill_matrix(
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[WorkforceDashboardRead]:
+    dashboard = await get_workforce_dashboard(session, current_user)
+    return DataResponse(
+        data=WorkforceDashboardRead(
+            kpis=dashboard.kpis,
+            skill_matrix=dashboard.skill_matrix,
+            skill_gap_signals=dashboard.skill_gap_signals,
+        )
+    )
+
+
+@router.get("/workforce/sme-allocation", response_model=ListResponse[SmeAllocationRead])
+async def workforce_sme_allocation(
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> ListResponse[SmeAllocationRead]:
+    rows = await get_sme_allocation(session, current_user.org_id)
+    return ListResponse(data=rows, pagination=Pagination(limit=100))
 
 
 @router.get("/projects/{project_id}/teams", response_model=ListResponse[TeamRead])

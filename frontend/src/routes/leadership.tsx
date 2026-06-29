@@ -1,7 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import { BarChart, Bar, LineChart, Line, ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from "recharts";
 import { Card, SectionHeader, KpiCard, AiBadge } from "@/components/bsg/widgets";
 import { healthDistribution } from "@/lib/bsg/data";
+import { fetchQualityPortfolio } from "@/lib/api";
 
 export const Route = createFileRoute("/leadership")({ component: Leadership });
 const axis = { tick: { fill: "#8b92a5", fontSize: 11 }, axisLine: { stroke: "#2a2d3a" }, tickLine: { stroke: "#2a2d3a" } };
@@ -16,6 +18,11 @@ const sites = [
 ];
 
 function Leadership() {
+  const { data: qualityPortfolio, isLoading: qualityLoading } = useQuery({
+    queryKey: ["quality-portfolio"],
+    queryFn: fetchQualityPortfolio,
+  });
+
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -24,6 +31,84 @@ function Leadership() {
         <KpiCard label="Operating Margin" value="24.6%" delta="+1.1 pts" tone="success" />
         <KpiCard label="Early-Warning Risks" value="3" delta="2 critical" tone="danger" />
       </div>
+
+      <Card>
+        <SectionHeader
+          title="Quality Portfolio"
+          sub={qualityLoading ? "Loading…" : `Week ${qualityPortfolio?.portfolio_week ?? "—"} · live from Quality Intelligence`}
+        />
+        {qualityPortfolio ? (
+          <>
+            <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4 text-xs">
+              <div className="rounded border border-border bg-elevated p-3">
+                <div className="text-[10px] uppercase text-muted-foreground">Projects</div>
+                <div className="mt-1 text-xl font-semibold">{qualityPortfolio.projects_total}</div>
+              </div>
+              <div className="rounded border border-border bg-elevated p-3">
+                <div className="text-[10px] uppercase text-muted-foreground">With Drift</div>
+                <div className="mt-1 text-xl font-semibold text-[color:var(--danger)]">
+                  {qualityPortfolio.projects_with_drift}
+                </div>
+              </div>
+              <div className="rounded border border-border bg-elevated p-3">
+                <div className="text-[10px] uppercase text-muted-foreground">Blended Gold Acc</div>
+                <div className="mt-1 text-xl font-semibold">
+                  {qualityPortfolio.blended_gold_accuracy != null
+                    ? `${qualityPortfolio.blended_gold_accuracy}%`
+                    : "—"}
+                </div>
+              </div>
+              <div className="rounded border border-border bg-elevated p-3">
+                <div className="text-[10px] uppercase text-muted-foreground">Blended Rework</div>
+                <div className="mt-1 text-xl font-semibold">
+                  {qualityPortfolio.blended_rework_rate != null
+                    ? `${qualityPortfolio.blended_rework_rate}%`
+                    : "—"}
+                </div>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="text-left text-muted-foreground">
+                  <tr className="border-b border-border">
+                    <th className="py-2 pr-3 font-medium">Project</th>
+                    <th className="py-2 pr-3 font-medium">Org</th>
+                    <th className="py-2 pr-3 font-medium">Status</th>
+                    <th className="py-2 pr-3 font-medium">Gold Acc</th>
+                    <th className="py-2 pr-3 font-medium">Drift</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {qualityPortfolio.per_project.map((p) => (
+                    <tr key={p.project_id} className="border-b border-border/50">
+                      <td className="py-2 pr-3 font-medium">{p.name}</td>
+                      <td className="py-2 pr-3">{p.org_name}</td>
+                      <td className="py-2 pr-3 capitalize">{p.status.replace("_", " ")}</td>
+                      <td className="py-2 pr-3">{p.latest_gold_accuracy != null ? `${p.latest_gold_accuracy}%` : "—"}</td>
+                      <td className="py-2 pr-3">
+                        {p.active_drift_alerts > 0 ? (
+                          <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-destructive">
+                            {p.active_drift_alerts}
+                          </span>
+                        ) : (
+                          "0"
+                        )}
+                        {p.data_gap && (
+                          <span className="ml-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-amber-600">gap</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : (
+          !qualityLoading && (
+            <p className="text-xs text-muted-foreground">Quality portfolio data unavailable.</p>
+          )
+        )}
+      </Card>
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <Card>
