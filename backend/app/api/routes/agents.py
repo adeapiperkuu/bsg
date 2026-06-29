@@ -11,6 +11,7 @@ from app.schemas.domain import AgentQueryCreate, AgentQueryRead
 from app.services.agent_queries import SUPPORTED_AGENTS, answer_query
 from app.services.evidence import EvidenceInput
 from app.services.scoping import get_visible_project
+from app.services.workforce_agent import WORKFORCE_AGENT_NAME, answer_workforce_query
 
 router = APIRouter(tags=["agent queries"])
 
@@ -21,6 +22,17 @@ async def create_agent_query(
 ) -> DataResponse[AgentQueryRead]:
     if payload.agent_name not in SUPPORTED_AGENTS:
         raise ApiError(400, "VALIDATION_ERROR", "Agent is not supported in MVP.")
+
+    if payload.agent_name == WORKFORCE_AGENT_NAME:
+        query = await answer_workforce_query(session, current_user, payload)
+        await session.commit()
+        await session.refresh(query)
+        data = AgentQueryRead.model_validate(query)
+        data.evidence_links = [
+            EvidenceLinkRead(**item.__dict__) for item in await _query_evidence(session, query.id)
+        ]
+        return DataResponse(data=data)
+
     evidence: list[EvidenceInput] = []
     if payload.project_id:
         project = await get_visible_project(session, payload.project_id, current_user)
@@ -83,14 +95,14 @@ async def list_agent_queries(
 async def get_agent_query(
     query_id: UUID, session: SessionDep, current_user: UserDep
 ) -> DataResponse[AgentQueryRead]:
-    row = (await session.execute(select(AgentQuery).where(AgentQuery.id == query_id))).scalar_one_or_none()
+    query = select(AgentQuery).where(AgentQuery.id == query_id)
+    if current_user.role.value == "client":
+        query = query.where(AgentQuery.user_id == current_user.id)
+    elif current_user.role.value == "delivery_manager":
+        query = query.where(AgentQuery.org_id == current_user.org_id)
+    row = (await session.execute(query)).scalar_one_or_none()
     if row is None:
         raise ApiError(404, "NOT_FOUND", "Agent query was not found.")
-    if current_user.role.value == "client" and row.user_id != current_user.id:
-        raise ApiError(404, "NOT_FOUND", "Agent query was not found.")
-    if current_user.role.value == "delivery_manager" and row.org_id != current_user.org_id:
-        raise ApiError(404, "NOT_FOUND", "Agent query was not found.")
-
     data = AgentQueryRead.model_validate(row)
     data.evidence_links = [EvidenceLinkRead(**item.__dict__) for item in await _query_evidence(session, row.id)]
     return DataResponse(data=data)
