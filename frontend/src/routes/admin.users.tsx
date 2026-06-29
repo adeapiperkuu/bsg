@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Mail, Pencil, Plus, RefreshCw, Search } from "lucide-react";
 
 import { Card } from "@/components/bsg/widgets";
+import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -39,7 +40,7 @@ function AdminUsersPage() {
   const user = useAuthStore((s) => s.user);
   const [users, setUsers] = useState<UserRead[]>([]);
   const [orgs, setOrgs] = useState<OrganisationRead[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [userSearch, setUserSearch] = useState("");
@@ -94,7 +95,10 @@ function AdminUsersPage() {
   const pageUsers = filteredUsers.slice(pageStart, pageStart + USERS_PER_PAGE);
 
   const load = async () => {
-    if (!canManageUsers) return;
+    if (!canManageUsers) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -200,21 +204,22 @@ function AdminUsersPage() {
         </Button>
       </div>
 
-      {error && (
+      {error && !loading && (
         <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
         </div>
       )}
 
+      {loading ? (
+        <PageLoadingScreen />
+      ) : (
       <Card className="overflow-hidden p-0">
         <div className="space-y-4 border-b border-border p-4 sm:p-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
               <h3 className="text-sm font-semibold tracking-tight text-foreground">All Users</h3>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                {loading
-                  ? "Loading accounts..."
-                  : `Showing ${pageUsers.length ? pageStart + 1 : 0}-${Math.min(pageStart + pageUsers.length, filteredUsers.length)} of ${filteredUsers.length} users`}
+                {`Showing ${pageUsers.length ? pageStart + 1 : 0}-${Math.min(pageStart + pageUsers.length, filteredUsers.length)} of ${filteredUsers.length} users`}
               </p>
             </div>
             <div className="flex w-full items-center gap-2 sm:w-auto">
@@ -337,7 +342,7 @@ function AdminUsersPage() {
             {pageUsers.length === 0 && (
               <TableRow>
                 <TableCell colSpan={6} className="h-28 text-center text-muted-foreground">
-                  {loading ? "Loading users..." : "No users match this search."}
+                  No users match this search.
                 </TableCell>
               </TableRow>
             )}
@@ -386,6 +391,7 @@ function AdminUsersPage() {
           </div>
         </div>
       </Card>
+      )}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="max-h-[calc(100svh-1rem)] w-[calc(100vw-1rem)] max-w-2xl gap-0 overflow-hidden p-0 sm:w-full">

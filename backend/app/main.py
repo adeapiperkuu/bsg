@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.agents.delivery.routes import chat as delivery_chat
 from app.agents.delivery.routes import dashboard as delivery_dashboard
+from app.agents.governance.routes import governance as governance_routes
 from app.api.routes import (
     agents,
     auth,
@@ -71,6 +72,7 @@ def create_app() -> FastAPI:
     app.include_router(metrics.router, prefix=api_prefix)
     app.include_router(csat.router, prefix=api_prefix)
     app.include_router(knowledge.router, prefix=api_prefix)
+    app.include_router(governance_routes.router, prefix=api_prefix)
     return app
 
 

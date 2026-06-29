@@ -366,7 +366,7 @@ function inferAnswerMode(question: string): "internal" | "client_safe" {
 }
 
 function shouldAnimateAnswer(text: string) {
-  return text.length <= TYPEWRITER_MAX_CHARS;
+  return text.trim().length > 0 && text.length <= TYPEWRITER_MAX_CHARS;
 }
 
 function buildAgentDisplayText(
@@ -787,6 +787,19 @@ function KnowledgePage() {
     setLiveAnnouncement(`Knowledge Agent: ${text}`);
   };
 
+  const finishAgentAnswer = (messageId: string, text: string) => {
+    const displayText = text.trim();
+    if (!displayText) {
+      announceAgentMessage(NO_KNOWLEDGE_ANSWER);
+      return;
+    }
+    if (shouldAnimateAnswer(displayText)) {
+      setAnimatingMessageId(messageId);
+      return;
+    }
+    announceAgentMessage(displayText);
+  };
+
   useEffect(() => {
     if (!liveAnnouncement) return;
     const timer = window.setTimeout(() => setLiveAnnouncement(""), 1500);
@@ -1053,32 +1066,22 @@ function KnowledgePage() {
           );
         } else if (event.type === "delta") {
           streamAnswer += event.text;
-          setMessages((current) =>
-            current.map((msg) =>
-              msg.id === agentMsgId ? { ...msg, text: msg.text + event.text } : msg,
-            ),
-          );
-          scrollChatToEnd();
         } else if (event.type === "replace") {
           streamAnswer = event.text;
-          setMessages((current) =>
-            current.map((msg) =>
-              msg.id === agentMsgId ? { ...msg, text: event.text } : msg,
-            ),
-          );
         } else if (event.type === "done") {
           gotDone = true;
           streamAnswer = event.answer_text?.trim() || streamAnswer;
+          const resolvedText = resolveAgentAnswerText(
+            { text: streamAnswer, structured_answer: event.structured_answer, next_step: event.next_step },
+            event.answer_text,
+          );
           setMessages((current) =>
             current.map((msg) => {
               if (msg.id !== agentMsgId) return msg;
               const sa = event.structured_answer;
-              const nextMessage = {
+              return {
                 ...msg,
-                text: resolveAgentAnswerText(
-                  { ...msg, text: streamAnswer },
-                  event.answer_text,
-                ),
+                text: resolvedText,
                 isStreaming: false,
                 query_id: event.query_id,
                 confidence_score: event.confidence_score,
@@ -1090,15 +1093,9 @@ function KnowledgePage() {
                 detailsExpanded:
                   (event.confidence_score ?? 1) < LOW_CONFIDENCE_THRESHOLD ? true : msg.detailsExpanded,
               };
-              return nextMessage;
             }),
           );
-          announceAgentMessage(
-            resolveAgentAnswerText(
-              { text: streamAnswer, structured_answer: event.structured_answer, next_step: event.next_step },
-              event.answer_text,
-            ),
-          );
+          finishAgentAnswer(agentMsgId, resolvedText);
           if ((event.confidence_score ?? 1) === 0) {
             try {
               const bootstrap = await getKnowledgeBootstrap();
@@ -1125,14 +1122,15 @@ function KnowledgePage() {
         setMessages((current) =>
           current.map((msg) => (msg.id === agentMsgId ? { ...agentMsg, id: agentMsgId, isStreaming: false } : msg)),
         );
-        announceAgentMessage(agentMsg.text);
+        finishAgentAnswer(agentMsgId, agentMsg.text);
       } else if (!gotDone && streamAnswer.trim()) {
+        const resolvedText = resolveAgentAnswerText({ text: streamAnswer }, streamAnswer);
         setMessages((current) =>
           current.map((msg) =>
-            msg.id === agentMsgId ? { ...msg, text: streamAnswer, isStreaming: false } : msg,
+            msg.id === agentMsgId ? { ...msg, text: resolvedText, isStreaming: false } : msg,
           ),
         );
-        announceAgentMessage(streamAnswer);
+        finishAgentAnswer(agentMsgId, resolvedText);
       }
     } catch {
       setMessages((current) =>
@@ -1182,11 +1180,7 @@ function KnowledgePage() {
         return next;
       });
       setSelectedAgentMessageId(agentMsg.id);
-      if (shouldAnimateAnswer(agentMsg.text)) {
-        setAnimatingMessageId(agentMsg.id);
-      } else {
-        announceAgentMessage(agentMsg.text);
-      }
+      finishAgentAnswer(agentMsg.id, agentMsg.text);
     } catch {
       const errorMsg: ChatMessage = {
         id: createChatMessageId(),
@@ -1267,7 +1261,7 @@ function KnowledgePage() {
       agentMsg.detailsExpanded = true;
       setMessages((current) => [...current, userMsg, agentMsg]);
       setSelectedAgentMessageId(agentMsg.id);
-      announceAgentMessage(agentMsg.text);
+      finishAgentAnswer(agentMsg.id, agentMsg.text);
     } catch {
       window.alert("Could not reopen that saved answer.");
     } finally {
@@ -2328,16 +2322,7 @@ function KnowledgePage() {
                         }}
                       />
                     ) : message.isStreaming ? (
-                      <p className="leading-5">
-                        {message.text ? (
-                          <>
-                            {message.text}
-                            <span className="ml-0.5 inline-block h-3.5 w-0.5 animate-pulse bg-current align-text-bottom opacity-70" aria-hidden="true" />
-                          </>
-                        ) : (
-                          <TypingIndicator />
-                        )}
-                      </p>
+                      <TypingIndicator />
                     ) : (
                       <p className={cn("leading-5", message.isServiceError && "text-foreground")}>
                         {buildAgentDisplayText(message) || NO_KNOWLEDGE_ANSWER}
@@ -2617,7 +2602,7 @@ function KnowledgePage() {
               {!canAsk && (
                 <p className="text-xs text-muted-foreground">Upload and approve documents first.</p>
               )}
-              <div className="flex items-end gap-2">
+              <div className="flex items-center gap-2">
               <Textarea
                 placeholder={canAsk ? "Ask about an SOP, guide, or historical issue..." : "Upload and approve documents first"}
                 value={askInput}
@@ -2629,13 +2614,13 @@ function KnowledgePage() {
                     void submitAsk();
                   }
                 }}
-                rows={2}
-                className="min-h-[4.5rem] flex-1 resize-none rounded-md border-border bg-card text-sm shadow-none focus-visible:border-[color:var(--brand)] focus-visible:ring-0"
+                rows={1}
+                className="min-h-10 flex-1 resize-none rounded-md border-border bg-card py-2.5 text-sm shadow-none focus-visible:border-[color:var(--brand)] focus-visible:ring-0"
               />
               <Button
                 type="submit"
                 disabled={asking || !canAsk}
-                className="h-10 gap-2 bg-[color:var(--brand)] px-4 text-xs text-[color:var(--brand-foreground)]"
+                className="h-10 shrink-0 gap-2 bg-[color:var(--brand)] px-4 text-xs text-[color:var(--brand-foreground)]"
               >
                 <Send className="h-3.5 w-3.5" />
                 {asking ? "Asking" : "Ask"}

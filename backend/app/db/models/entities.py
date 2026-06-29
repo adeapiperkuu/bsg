@@ -231,6 +231,57 @@ class KnowledgeGapStatus(StrEnum):
     RESOLVED = "resolved"
 
 
+class GovernanceScopeStatus(StrEnum):
+    APPROVED = "approved"
+    PENDING_REVISION = "pending_revision"
+    LOCKED = "locked"
+
+
+class GovernanceDependencyType(StrEnum):
+    CLIENT_ACTION = "client_action"
+    INTERNAL = "internal"
+    EXTERNAL = "external"
+
+
+class GovernanceDependencyStatus(StrEnum):
+    OPEN = "open"
+    BLOCKING = "blocking"
+    RESOLVED = "resolved"
+
+
+class GovernanceEscalationSeverity(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class GovernanceEscalationStatus(StrEnum):
+    OPEN = "open"
+    IN_PROGRESS = "in_progress"
+    RESOLVED = "resolved"
+
+
+class GovernanceActionStatus(StrEnum):
+    OPEN = "open"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    OVERDUE = "overdue"
+
+
+class GovernanceSummaryStatus(StrEnum):
+    DRAFT = "draft"
+    APPROVED = "approved"
+
+
+class GovernanceEvidenceSourceType(StrEnum):
+    DEPENDENCY = "dependency"
+    ESCALATION = "escalation"
+    ACTION = "action"
+    SCOPE_STATE = "scope_state"
+    KNOWLEDGE_DOCUMENT = "knowledge_document"
+
+
 app_role = Enum(AppRole, name="app_role", values_callable=lambda x: [e.value for e in x])
 delivery_site = Enum(DeliverySite, name="delivery_site", values_callable=lambda x: [e.value for e in x])
 project_status = Enum(ProjectStatus, name="project_status", values_callable=lambda x: [e.value for e in x])
@@ -307,6 +358,46 @@ knowledge_feedback_rating = Enum(
 knowledge_gap_status = Enum(
     KnowledgeGapStatus,
     name="knowledge_gap_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_scope_status = Enum(
+    GovernanceScopeStatus,
+    name="governance_scope_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_dependency_type = Enum(
+    GovernanceDependencyType,
+    name="governance_dependency_type",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_dependency_status = Enum(
+    GovernanceDependencyStatus,
+    name="governance_dependency_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_escalation_severity = Enum(
+    GovernanceEscalationSeverity,
+    name="governance_escalation_severity",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_escalation_status = Enum(
+    GovernanceEscalationStatus,
+    name="governance_escalation_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_action_status = Enum(
+    GovernanceActionStatus,
+    name="governance_action_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_summary_status = Enum(
+    GovernanceSummaryStatus,
+    name="governance_summary_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_evidence_source_type = Enum(
+    GovernanceEvidenceSourceType,
+    name="governance_evidence_source_type",
     values_callable=lambda x: [e.value for e in x],
 )
 
@@ -992,3 +1083,129 @@ class KnowledgeGap(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     status: Mapped[KnowledgeGapStatus] = mapped_column(knowledge_gap_status, default=KnowledgeGapStatus.OPEN)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resolved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class ProjectScopeState(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "project_scope_states"
+    __table_args__ = (
+        Index("project_scope_states_org_id_idx", "org_id"),
+        Index("project_scope_states_project_id_idx", "project_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    scope_status: Mapped[GovernanceScopeStatus] = mapped_column(
+        governance_scope_status,
+        default=GovernanceScopeStatus.APPROVED,
+    )
+    version_label: Mapped[str] = mapped_column(Text, default="v1")
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class ProjectDependency(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "project_dependencies"
+    __table_args__ = (
+        Index("project_dependencies_org_id_idx", "org_id"),
+        Index("project_dependencies_project_id_idx", "project_id"),
+        Index("project_dependencies_status_idx", "org_id", "status"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    dependency_type: Mapped[GovernanceDependencyType] = mapped_column(governance_dependency_type)
+    owner_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    due_date: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[GovernanceDependencyStatus] = mapped_column(
+        governance_dependency_status,
+        default=GovernanceDependencyStatus.OPEN,
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class GovernanceEscalation(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "governance_escalations"
+    __table_args__ = (
+        Index("governance_escalations_org_id_idx", "org_id"),
+        Index("governance_escalations_project_id_idx", "project_id"),
+        Index("governance_escalations_status_idx", "org_id", "status"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    severity: Mapped[GovernanceEscalationSeverity] = mapped_column(
+        governance_escalation_severity,
+        default=GovernanceEscalationSeverity.MEDIUM,
+    )
+    status: Mapped[GovernanceEscalationStatus] = mapped_column(
+        governance_escalation_status,
+        default=GovernanceEscalationStatus.OPEN,
+    )
+    raised_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    assigned_to: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    raised_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class GovernanceAction(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "governance_actions"
+    __table_args__ = (
+        Index("governance_actions_org_id_idx", "org_id"),
+        Index("governance_actions_project_id_idx", "project_id"),
+        Index("governance_actions_status_idx", "org_id", "status"),
+        Index("governance_actions_due_date_idx", "org_id", "due_date"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    owner_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    due_date: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[GovernanceActionStatus] = mapped_column(
+        governance_action_status,
+        default=GovernanceActionStatus.OPEN,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class GovernanceWeeklySummary(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "governance_weekly_summaries"
+    __table_args__ = (
+        Index("governance_weekly_summaries_org_id_idx", "org_id"),
+        Index("governance_weekly_summaries_week_idx", "org_id", "summary_week"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    summary_week: Mapped[date] = mapped_column(Date)
+    summary_text: Mapped[str] = mapped_column(Text)
+    status: Mapped[GovernanceSummaryStatus] = mapped_column(
+        governance_summary_status,
+        default=GovernanceSummaryStatus.DRAFT,
+    )
+    generated_by_ai: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    approved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class GovernanceEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "governance_evidence_links"
+    __table_args__ = (
+        Index("governance_evidence_links_summary_idx", "summary_id"),
+        Index("governance_evidence_links_org_idx", "org_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    summary_id: Mapped[UUID] = mapped_column(ForeignKey("governance_weekly_summaries.id", ondelete="CASCADE"))
+    source_type: Mapped[GovernanceEvidenceSourceType] = mapped_column(governance_evidence_source_type)
+    source_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
