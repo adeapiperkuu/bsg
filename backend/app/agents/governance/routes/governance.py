@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from sqlalchemy import select
 
 from app.agents.governance.analytics.sla import dependency_overdue_days, effective_action_status
@@ -13,6 +13,7 @@ from app.agents.governance.schemas.governance import (
     GovernanceEscalationRead,
     GovernanceEscalationUpdate,
     GovernanceEvidenceLinkRead,
+    PromoteRiskAlertRequest,
     GovernanceWeeklySummaryCreate,
     GovernanceWeeklySummaryRead,
     ProjectDependencyCreate,
@@ -21,6 +22,7 @@ from app.agents.governance.schemas.governance import (
     ProjectScopeStateRead,
     ProjectScopeStateUpdate,
 )
+from app.agents.governance.services.delivery_integration import promote_risk_alert_to_escalation
 from app.agents.governance.services.dashboard_service import get_governance_bootstrap
 from app.agents.governance.services.governance_service import (
     create_action,
@@ -35,6 +37,9 @@ from app.agents.governance.services.governance_service import (
     scoped_actions_query,
     scoped_dependencies_query,
     scoped_escalations_query,
+    soft_delete_action,
+    soft_delete_dependency,
+    soft_delete_escalation,
     update_action,
     update_dependency,
     update_escalation,
@@ -190,6 +195,8 @@ async def create_governance_escalation(
         severity=payload.severity,
         status=payload.status,
         assigned_to=payload.assigned_to,
+        source_type=payload.source_type,
+        source_id=payload.source_id,
     )
     return DataResponse(
         data=GovernanceEscalationRead.model_validate(escalation, from_attributes=True)
@@ -252,6 +259,7 @@ async def create_governance_action(
         owner_id=payload.owner_id,
         due_date=payload.due_date,
         status=payload.status,
+        linked_knowledge_document_id=payload.linked_knowledge_document_id,
     )
     return DataResponse(
         data=GovernanceActionRead.model_validate(action, from_attributes=True).model_copy(
@@ -304,6 +312,7 @@ async def patch_project_scope(
         scope_status=payload.scope_status,
         version_label=payload.version_label,
         notes=payload.notes,
+        linked_charter_document_id=payload.linked_charter_document_id,
     )
     return DataResponse(data=ProjectScopeStateRead.model_validate(scope, from_attributes=True))
 
@@ -341,6 +350,53 @@ async def get_weekly_summary(
             }
         )
     )
+
+
+@router.post(
+    "/governance/escalations/promote-from-risk-alert",
+    response_model=DataResponse[GovernanceEscalationRead],
+)
+async def promote_escalation_from_risk_alert(
+    payload: PromoteRiskAlertRequest,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*WRITE_ROLES)),
+) -> DataResponse[GovernanceEscalationRead]:
+    escalation = await promote_risk_alert_to_escalation(
+        session,
+        current_user,
+        risk_alert_id=payload.risk_alert_id,
+    )
+    return DataResponse(data=GovernanceEscalationRead.model_validate(escalation, from_attributes=True))
+
+
+@router.delete("/dependencies/{dependency_id}", status_code=204)
+async def delete_dependency(
+    dependency_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*WRITE_ROLES)),
+) -> Response:
+    await soft_delete_dependency(session, dependency_id, current_user)
+    return Response(status_code=204)
+
+
+@router.delete("/governance/escalations/{escalation_id}", status_code=204)
+async def delete_escalation(
+    escalation_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*WRITE_ROLES)),
+) -> Response:
+    await soft_delete_escalation(session, escalation_id, current_user)
+    return Response(status_code=204)
+
+
+@router.delete("/governance/actions/{action_id}", status_code=204)
+async def delete_action(
+    action_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*WRITE_ROLES)),
+) -> Response:
+    await soft_delete_action(session, action_id, current_user)
+    return Response(status_code=204)
 
 
 @router.post("/governance/weekly-summary", response_model=DataResponse[GovernanceWeeklySummaryRead])

@@ -282,6 +282,11 @@ class GovernanceEvidenceSourceType(StrEnum):
     KNOWLEDGE_DOCUMENT = "knowledge_document"
 
 
+class GovernanceEscalationSourceType(StrEnum):
+    DELIVERY_RISK = "delivery_risk"
+    KNOWLEDGE_DOCUMENT = "knowledge_document"
+
+
 app_role = Enum(AppRole, name="app_role", values_callable=lambda x: [e.value for e in x])
 delivery_site = Enum(DeliverySite, name="delivery_site", values_callable=lambda x: [e.value for e in x])
 project_status = Enum(ProjectStatus, name="project_status", values_callable=lambda x: [e.value for e in x])
@@ -398,6 +403,11 @@ governance_summary_status = Enum(
 governance_evidence_source_type = Enum(
     GovernanceEvidenceSourceType,
     name="governance_evidence_source_type",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_escalation_source_type = Enum(
+    GovernanceEscalationSourceType,
+    name="governance_escalation_source_type",
     values_callable=lambda x: [e.value for e in x],
 )
 
@@ -1100,6 +1110,9 @@ class ProjectScopeState(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     )
     version_label: Mapped[str] = mapped_column(Text, default="v1")
     notes: Mapped[str | None] = mapped_column(Text)
+    linked_charter_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="SET NULL")
+    )
     created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
 
@@ -1153,6 +1166,10 @@ class GovernanceEscalation(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelet
     assigned_to: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     raised_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_type: Mapped[GovernanceEscalationSourceType | None] = mapped_column(
+        governance_escalation_source_type
+    )
+    source_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
 
 
 class GovernanceAction(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
@@ -1175,6 +1192,9 @@ class GovernanceAction(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
         default=GovernanceActionStatus.OPEN,
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    linked_knowledge_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="SET NULL")
+    )
     created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
 

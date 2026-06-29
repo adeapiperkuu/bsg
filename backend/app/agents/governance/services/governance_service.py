@@ -343,6 +343,8 @@ async def create_escalation(
     severity,
     status,
     assigned_to: UUID | None,
+    source_type=None,
+    source_id: UUID | None = None,
 ) -> GovernanceEscalation:
     assert_can_write_governance(current_user)
     project = await get_visible_project(session, project_id, current_user)
@@ -355,6 +357,8 @@ async def create_escalation(
         status=status,
         raised_by=current_user.id,
         assigned_to=assigned_to,
+        source_type=source_type,
+        source_id=source_id,
     )
     session.add(escalation)
     await session.commit()
@@ -406,6 +410,7 @@ async def create_action(
     owner_id: UUID | None,
     due_date,
     status,
+    linked_knowledge_document_id: UUID | None = None,
 ) -> GovernanceAction:
     assert_can_write_governance(current_user)
     project = await get_visible_project(session, project_id, current_user)
@@ -417,6 +422,7 @@ async def create_action(
         owner_id=owner_id,
         due_date=due_date,
         status=status,
+        linked_knowledge_document_id=linked_knowledge_document_id,
         created_by=current_user.id,
         updated_by=current_user.id,
     )
@@ -434,7 +440,7 @@ async def update_action(
 ) -> GovernanceAction:
     action = await get_action_or_404(session, action_id, current_user, for_mutation=True)
     for key, value in fields.items():
-        if value is not None and hasattr(action, key):
+        if key in fields and hasattr(action, key):
             setattr(action, key, value)
     if fields.get("status") == GovernanceActionStatus.COMPLETED and action.completed_at is None:
         action.completed_at = datetime.now(UTC)
@@ -463,6 +469,7 @@ async def update_scope_state(
     scope_status=None,
     version_label: str | None = None,
     notes: str | None = None,
+    linked_charter_document_id: UUID | None = None,
 ) -> ProjectScopeState:
     assert_can_write_governance(current_user)
     project = await get_visible_project(session, project_id, current_user)
@@ -492,6 +499,8 @@ async def update_scope_state(
         scope.version_label = version_label
     if notes is not None:
         scope.notes = notes
+    if linked_charter_document_id is not None:
+        scope.linked_charter_document_id = linked_charter_document_id
     scope.updated_by = current_user.id
     await session.commit()
     await session.refresh(scope)

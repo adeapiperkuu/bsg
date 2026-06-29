@@ -1,3 +1,5 @@
+export type GovernanceEscalationSourceType = "delivery_risk" | "knowledge_document";
+
 export type GovernanceScopeStatus = "approved" | "pending_revision" | "locked";
 export type GovernanceDependencyType = "client_action" | "internal" | "external";
 export type GovernanceDependencyStatus = "open" | "blocking" | "resolved";
@@ -21,6 +23,9 @@ export type GovernanceKpis = {
   sla_adherence_pct: number;
 };
 
+/** Alias for KPI block in bootstrap responses. */
+export type GovernanceKpiSummary = GovernanceKpis;
+
 export type ProjectScopeState = {
   id: string;
   org_id: string;
@@ -28,6 +33,7 @@ export type ProjectScopeState = {
   scope_status: GovernanceScopeStatus;
   version_label: string;
   notes: string | null;
+  linked_charter_document_id?: string | null;
   created_by: string | null;
   updated_by: string | null;
   created_at: string;
@@ -72,6 +78,8 @@ export type GovernanceEscalation = {
   project_name: string | null;
   raised_by_name: string | null;
   assigned_to_name: string | null;
+  source_type?: GovernanceEscalationSourceType | null;
+  source_id?: string | null;
 };
 
 export type GovernanceAction = {
@@ -90,6 +98,7 @@ export type GovernanceAction = {
   updated_at: string;
   project_name: string | null;
   owner_name: string | null;
+  linked_knowledge_document_id?: string | null;
 };
 
 export type GovernanceEvidenceLink = {
@@ -134,6 +143,37 @@ export type GovernanceBootstrap = {
   charter_references: GovernanceCharterReference[];
 };
 
+/** Alias matching API response naming. */
+export type GovernanceBootstrapResponse = GovernanceBootstrap;
+
+export type ProjectDependencyUpdatePayload = {
+  title?: string;
+  description?: string | null;
+  dependency_type?: GovernanceDependencyType;
+  owner_id?: string | null;
+  due_date?: string | null;
+  status?: GovernanceDependencyStatus;
+};
+
+export type GovernanceEscalationUpdatePayload = {
+  title?: string;
+  description?: string | null;
+  severity?: GovernanceEscalationSeverity;
+  status?: GovernanceEscalationStatus;
+  assigned_to?: string | null;
+  source_type?: GovernanceEscalationSourceType | null;
+  source_id?: string | null;
+};
+
+export type GovernanceActionUpdatePayload = {
+  title?: string;
+  description?: string | null;
+  owner_id?: string | null;
+  due_date?: string | null;
+  status?: GovernanceActionStatus;
+  linked_knowledge_document_id?: string | null;
+};
+
 export type ProjectDependencyCreatePayload = {
   title: string;
   description?: string | null;
@@ -150,6 +190,8 @@ export type GovernanceEscalationCreatePayload = {
   severity?: GovernanceEscalationSeverity;
   status?: GovernanceEscalationStatus;
   assigned_to?: string | null;
+  source_type?: GovernanceEscalationSourceType | null;
+  source_id?: string | null;
 };
 
 export type GovernanceActionCreatePayload = {
@@ -159,12 +201,14 @@ export type GovernanceActionCreatePayload = {
   owner_id?: string | null;
   due_date?: string | null;
   status?: GovernanceActionStatus;
+  linked_knowledge_document_id?: string | null;
 };
 
 export type ProjectScopeStateUpdatePayload = {
   scope_status?: GovernanceScopeStatus;
   version_label?: string;
   notes?: string | null;
+  linked_charter_document_id?: string | null;
 };
 
 export type GovernanceWeeklySummaryCreatePayload = {

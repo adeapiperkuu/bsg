@@ -8,6 +8,7 @@ from app.db.models import (
     GovernanceDependencyStatus,
     GovernanceDependencyType,
     GovernanceEscalationSeverity,
+    GovernanceEscalationSourceType,
     GovernanceEscalationStatus,
     GovernanceEvidenceSourceType,
     GovernanceScopeStatus,
@@ -32,6 +33,7 @@ class ProjectScopeStateRead(ORMModel):
     scope_status: GovernanceScopeStatus
     version_label: str
     notes: str | None
+    linked_charter_document_id: UUID | None = None
     created_by: UUID | None
     updated_by: UUID | None
     created_at: datetime
@@ -42,6 +44,7 @@ class ProjectScopeStateUpdate(BaseModel):
     scope_status: GovernanceScopeStatus | None = None
     version_label: str | None = None
     notes: str | None = None
+    linked_charter_document_id: UUID | None = None
 
 
 class ProjectDependencyRead(ORMModel):
@@ -100,6 +103,8 @@ class GovernanceEscalationRead(ORMModel):
     project_name: str | None = None
     raised_by_name: str | None = None
     assigned_to_name: str | None = None
+    source_type: GovernanceEscalationSourceType | None = None
+    source_id: UUID | None = None
 
 
 class GovernanceEscalationCreate(BaseModel):
@@ -109,6 +114,8 @@ class GovernanceEscalationCreate(BaseModel):
     severity: GovernanceEscalationSeverity = GovernanceEscalationSeverity.MEDIUM
     status: GovernanceEscalationStatus = GovernanceEscalationStatus.OPEN
     assigned_to: UUID | None = None
+    source_type: GovernanceEscalationSourceType | None = None
+    source_id: UUID | None = None
 
 
 class GovernanceEscalationUpdate(BaseModel):
@@ -118,6 +125,12 @@ class GovernanceEscalationUpdate(BaseModel):
     status: GovernanceEscalationStatus | None = None
     assigned_to: UUID | None = None
     resolved_at: datetime | None = None
+    source_type: GovernanceEscalationSourceType | None = None
+    source_id: UUID | None = None
+
+
+class PromoteRiskAlertRequest(BaseModel):
+    risk_alert_id: UUID
 
 
 class GovernanceActionRead(ORMModel):
@@ -136,6 +149,7 @@ class GovernanceActionRead(ORMModel):
     updated_at: datetime
     project_name: str | None = None
     owner_name: str | None = None
+    linked_knowledge_document_id: UUID | None = None
 
 
 class GovernanceActionCreate(BaseModel):
@@ -145,6 +159,7 @@ class GovernanceActionCreate(BaseModel):
     owner_id: UUID | None = None
     due_date: date | None = None
     status: GovernanceActionStatus = GovernanceActionStatus.OPEN
+    linked_knowledge_document_id: UUID | None = None
 
 
 class GovernanceActionUpdate(BaseModel):
@@ -154,6 +169,7 @@ class GovernanceActionUpdate(BaseModel):
     due_date: date | None = None
     status: GovernanceActionStatus | None = None
     completed_at: datetime | None = None
+    linked_knowledge_document_id: UUID | None = None
 
 
 class GovernanceEvidenceLinkRead(ORMModel):
