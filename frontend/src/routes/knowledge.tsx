@@ -13,7 +13,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
   SelectContent,
@@ -56,6 +55,7 @@ import {
 } from "@/lib/api";
 import { TypewriterText } from "@/components/knowledge/TypewriterText";
 import { TypingIndicator } from "@/components/knowledge/TypingIndicator";
+import { KnowledgeLoadingScreen } from "@/components/knowledge/KnowledgeLoadingScreen";
 import { useAuthStore } from "@/stores/useAuthStore";
 import {
   documentFromApi,
@@ -1486,17 +1486,22 @@ function KnowledgePage() {
         <div className="min-w-0">
           <h1 className="text-xl font-semibold tracking-tight text-foreground">Knowledge workspace</h1>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            className="h-9 gap-2 bg-[color:var(--brand)] text-xs text-[color:var(--brand-foreground)]"
-            onClick={() => setIsUploadOpen(true)}
-          >
-            <Upload className="h-4 w-4" />
-            Upload Document
-          </Button>
-        </div>
+        {!libraryLoading && (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              className="h-9 gap-2 bg-[color:var(--brand)] text-xs text-[color:var(--brand-foreground)]"
+              onClick={() => setIsUploadOpen(true)}
+            >
+              <Upload className="h-4 w-4" />
+              Upload Document
+            </Button>
+          </div>
+        )}
       </div>
 
+      {libraryLoading ? (
+        <KnowledgeLoadingScreen />
+      ) : (
       <div className="grid grid-cols-12 items-stretch gap-5 xl:h-[calc(100vh-11.5rem)] xl:min-h-[44rem]">
         <div className="col-span-12 flex min-h-0 flex-col gap-5 xl:col-span-4">
           <Card className="shrink-0 border-transparent bg-card/80">
@@ -1566,11 +1571,7 @@ function KnowledgePage() {
         <Card className="flex min-h-0 flex-1 flex-col border-transparent bg-card/80">
           <SectionHeader
             title="Knowledge Library"
-            sub={
-              libraryLoading
-                ? "Loading library..."
-                : `${documents.length} governed documents`
-            }
+            sub={`${documents.length} governed documents`}
             right={
               <Button
                 type="button"
@@ -1780,30 +1781,6 @@ function KnowledgePage() {
           </div>
 
           <div className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-            {libraryLoading ? (
-              <div className="space-y-4" aria-busy="true" aria-label="Loading knowledge library">
-                {[0, 1, 2].map((section) => (
-                  <div key={section} className="space-y-2">
-                    <Skeleton className="h-4 w-28" />
-                    {[0, 1].map((row) => (
-                      <div key={row} className="rounded-md bg-secondary/40 p-3">
-                        <div className="flex items-start gap-3">
-                          <Skeleton className="h-8 w-8 shrink-0 rounded-md" />
-                          <div className="min-w-0 flex-1 space-y-2">
-                            <Skeleton className="h-4 w-3/4" />
-                            <Skeleton className="h-3 w-1/2" />
-                            <div className="flex gap-1.5">
-                              <Skeleton className="h-5 w-16 rounded-full" />
-                              <Skeleton className="h-5 w-14 rounded-full" />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            ) : (
             <>
             {groupedDocuments.map((group) => {
               const isCollapsed = collapsedFolders.has(group.id);
@@ -1913,7 +1890,6 @@ function KnowledgePage() {
               </div>
             )}
             </>
-            )}
           </div>
         </Card>
         </div>
@@ -2671,6 +2647,7 @@ function KnowledgePage() {
         </div>
 
       </div>
+      )}
 
       <Dialog open={isDocumentOpen && !!selectedDoc} onOpenChange={setIsDocumentOpen}>
         <DialogContent className="flex h-[86vh] w-[min(92vw,68rem)] max-w-none flex-col overflow-hidden">
