@@ -13,7 +13,14 @@ class LLMClient:
             context="",
         )
 
-    async def generate_structured(self, *, system: str, user: str, context: str) -> str:
+    async def generate_structured(
+        self,
+        *,
+        system: str,
+        user: str,
+        context: str,
+        json_mode: bool = False,
+    ) -> str:
         settings = get_settings()
         if not settings.llm_api_key:
             raise ApiError(503, "LLM_PROVIDER_UNAVAILABLE", "LLM provider is not configured.")
@@ -26,6 +33,14 @@ class LLMClient:
             messages.append({"role": "system", "content": f"Grounded context (cite only this data):\n{context}"})
         messages.append({"role": "user", "content": user})
 
+        body: dict = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.2,
+        }
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 f"{base_url}/chat/completions",
@@ -33,11 +48,7 @@ class LLMClient:
                     "Authorization": f"Bearer {settings.llm_api_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "temperature": 0.2,
-                },
+                json=body,
             )
 
         if response.status_code >= 400:

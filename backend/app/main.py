@@ -30,6 +30,7 @@ from app.core.exceptions import register_exception_handlers
 from app.db.session import AsyncSessionLocal, dispose_engine
 from app.db.models import ScanTrigger
 from app.services.quality import scan_all_projects
+from app.services.signal_dispatcher import dispatch_pending_signals
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,8 @@ async def _scheduled_quality_scan() -> None:
         try:
             run = await scan_all_projects(session, trigger=ScanTrigger.SCHEDULER)
             logger.info("Scheduled quality scan complete run_id=%s status=%s", run.id, run.status)
+            totals = await dispatch_pending_signals(session)
+            logger.info("Post-scan signal dispatch: %s", totals)
         except Exception:
             logger.exception("Scheduled quality scan failed")
 

@@ -39,9 +39,13 @@ async def test_onboarding_from_scorecards_when_present() -> None:
         items_evaluated=55,
     )
 
+    async def _passthrough(_s, query, default):
+        return await query()
+
     with (
         patch("app.agents.quality_intelligence.root_cause.fetch_error_entries", AsyncMock(return_value=[])),
         patch("app.agents.quality_intelligence.root_cause.fetch_prior_snapshot", AsyncMock(return_value=None)),
+        patch("app.agents.quality_intelligence.root_cause.query_optional_table", side_effect=_passthrough),
         patch(
             "app.agents.quality_intelligence.root_cause._hypothesis_onboarding_scorecards",
             AsyncMock(
@@ -56,6 +60,7 @@ async def test_onboarding_from_scorecards_when_present() -> None:
         patch("app.agents.quality_intelligence.root_cause._hypothesis_gold_set_version", AsyncMock(return_value=None)),
         patch("app.agents.quality_intelligence.root_cause._hypothesis_workload_fatigue", AsyncMock(return_value=None)),
         patch("app.agents.quality_intelligence.root_cause._hypothesis_systemic_iaa", AsyncMock(return_value=None)),
+        patch("app.agents.quality_intelligence.root_cause._hypothesis_eval_log_reviewers", AsyncMock(return_value=None)),
         patch("app.agents.quality_intelligence.root_cause.count_recent_annotators", AsyncMock(return_value=0)),
     ):
         result = await analyze_root_cause(AsyncMock(), snap)

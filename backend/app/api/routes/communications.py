@@ -29,7 +29,9 @@ from app.services.communications import (
     reject,
     send,
 )
-from app.services.evidence import EvidenceInput
+from datetime import datetime, timezone
+
+from app.services.quality import generate_quality_summary
 from app.services.scoping import get_visible_project
 
 router = APIRouter(tags=["communications"])
@@ -74,9 +76,23 @@ async def draft_communication(
 
     quality_snaps: list[QualitySnapshot] = []
     drift_alerts: list[RiskAlert] = []
+    quality_summary = None
 
-    # For weekly summaries, attach quality evidence when available.
+    # For weekly summaries, attach sanitized §8.4 quality summary when available.
     if payload.comm_type == CommunicationType.WEEKLY_SUMMARY:
+        now = datetime.now(timezone.utc)
+        iso_year, iso_week, _ = now.isocalendar()
+        quality_summary = await generate_quality_summary(
+            session, project, iso_year, iso_week, current_user
+        )
+        evidence.append(
+            EvidenceInput(
+                source_table="quality_summaries",
+                source_row_id=project.id,
+                description=f"Sanitized quality summary W{iso_week}/{iso_year}.",
+            )
+        )
+
         quality_snaps = list(
             (
                 await session.execute(
@@ -129,9 +145,10 @@ async def draft_communication(
     body = await generate_comms_draft_body(
         project,
         latest_throughput,
-        quality_snaps,
-        drift_alerts,
         payload.comm_type,
+        quality_summary=quality_summary,
+        quality_snaps=quality_snaps,
+        drift_alerts=drift_alerts,
     )
     communication = await create_draft(
         session,

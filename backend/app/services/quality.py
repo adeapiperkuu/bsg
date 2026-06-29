@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import select
@@ -15,14 +16,20 @@ from app.agents.quality_intelligence.calibration import (
 )
 from app.agents.quality_intelligence.drift import DriftResult, evaluate_drift  # noqa: F401 – re-exported
 from app.agents.quality_intelligence.oka_client import OKAClient
+from app.agents.quality_intelligence.rework_metrics import compute_rework_impact
 from app.agents.quality_intelligence.root_cause import analyze_root_cause, root_cause_to_json
-from app.agents.quality_intelligence.sop_ambiguity import list_sop_ambiguity_flags, process_sop_ambiguity_for_snapshot
+from app.agents.quality_intelligence.sop_ambiguity import (
+    confirm_sop_ambiguity_resolution,
+    list_sop_ambiguity_flags,
+    process_sop_ambiguity_for_snapshot,
+)
 from app.agents.knowledge.lesson_log import write_lesson_on_alert_resolve
 from app.core.security import CurrentUser
 from app.db.models import (
     AlertStatus,
     AlertType,
     AppRole,
+    GoldSetEvaluationLog,
     GoldSetMetadata,
     IaaMeasurementRecord,
     InterAgentSignal,
@@ -33,7 +40,9 @@ from app.db.models import (
     QualityErrorEntry,
     QualityScanRun,
     QualitySnapshot,
+    QualitySopLink,
     ReviewerScorecard,
+    ReworkLog,
     RiskAlert,
     RiskTier,
     ScanStatus,
@@ -44,6 +53,8 @@ from app.db.models import (
 from app.schemas.domain import (
     AdminProjectRead,
     CalibrationBriefRead,
+    GoldSetEvaluationLogCreate,
+    GoldSetEvaluationLogRead,
     GoldSetMetadataCreate,
     GoldSetMetadataRead,
     IaaMeasurementCreate,
@@ -64,11 +75,16 @@ from app.schemas.domain import (
     ReviewerScorecardCreate,
     ReviewerScorecardRead,
     RiskAlertRead,
+    ReworkLogCreate,
+    ReworkLogRead,
+    SopAmbiguityConfirm,
     SopAmbiguityFlagRead,
     SopVersionCreate,
     SopVersionRead,
+    QualitySopLinkRead,
 )
 from app.services.quality_scoping import filter_dashboard_for_role, team_status_label
+from app.services.quality_thresholds import load_thresholds
 
 logger = logging.getLogger(__name__)
 
@@ -521,6 +537,10 @@ async def build_quality_dashboard(
         rework_rate_pct=avg_metric(lambda s: s.rework_rate_pct),
         active_drift_alerts=active_drift,
     )
+    thresholds = await load_thresholds(session)
+    rework_cfg = thresholds.get("rework_rate")
+    if rework_cfg and rework_cfg.green_max is not None:
+        kpis = kpis.model_copy(update={"rework_rate_target_pct": Decimal(str(rework_cfg.green_max))})
 
     trend_snaps = sorted(snapshots, key=lambda s: (s.iso_year, s.iso_week))[-6:]
     trend = [
@@ -558,6 +578,11 @@ async def build_quality_dashboard(
                 rework_rate_pct=snap.rework_rate_pct,
                 status=team_status_label(snap),
                 has_drift_alert=snap.has_drift_alert,
+                has_data_gap=(
+                    snap.evaluated_item_count is not None
+                    and snap.evaluated_item_count < MIN_EVALUATED_ITEMS
+                ),
+                evaluated_item_count=snap.evaluated_item_count,
             )
         )
 
@@ -909,3 +934,92 @@ async def resolve_risk_alert(
 
 async def get_sop_ambiguity_flags(session: AsyncSession, project_id: UUID) -> list[SopAmbiguityFlagRead]:
     return await list_sop_ambiguity_flags(session, project_id)
+
+
+async def create_gold_set_evaluation_log(
+    session: AsyncSession,
+    project: Project,
+    payload: GoldSetEvaluationLogCreate,
+) -> GoldSetEvaluationLog:
+    row = GoldSetEvaluationLog(
+        annotator_id=payload.annotator_id,
+        project_id=project.id,
+        org_id=project.org_id,
+        item_id=payload.item_id,
+        score=payload.score,
+        error_category=payload.error_category,
+        evaluated_at=payload.evaluated_at or datetime.now(timezone.utc),
+    )
+    session.add(row)
+    await session.flush()
+    return row
+
+
+async def list_gold_set_evaluation_logs(
+    session: AsyncSession,
+    project_id: UUID,
+    *,
+    limit: int = 200,
+) -> list[GoldSetEvaluationLog]:
+    return list(
+        (
+            await session.execute(
+                select(GoldSetEvaluationLog)
+                .where(GoldSetEvaluationLog.project_id == project_id)
+                .order_by(GoldSetEvaluationLog.evaluated_at.desc())
+                .limit(limit)
+            )
+        ).scalars()
+    )
+
+
+async def create_rework_log(
+    session: AsyncSession,
+    project: Project,
+    payload: ReworkLogCreate,
+) -> ReworkLog:
+    row = ReworkLog(
+        project_id=project.id,
+        org_id=project.org_id,
+        annotator_id=payload.annotator_id,
+        item_id=payload.item_id,
+        reason=payload.reason,
+        rework_date=payload.rework_date,
+    )
+    session.add(row)
+    await session.flush()
+    return row
+
+
+async def list_rework_logs(
+    session: AsyncSession,
+    project_id: UUID,
+    *,
+    limit: int = 200,
+) -> list[ReworkLog]:
+    return list(
+        (
+            await session.execute(
+                select(ReworkLog)
+                .where(ReworkLog.project_id == project_id)
+                .order_by(ReworkLog.rework_date.desc())
+                .limit(limit)
+            )
+        ).scalars()
+    )
+
+
+async def confirm_sop_ambiguity(
+    session: AsyncSession,
+    project: Project,
+    payload: SopAmbiguityConfirm,
+    *,
+    confirmed_by: UUID,
+) -> QualitySopLink:
+    return await confirm_sop_ambiguity_resolution(
+        session,
+        project,
+        alert_id=payload.alert_id,
+        sop_version_id=payload.sop_version_id,
+        confirmed_by=confirmed_by,
+    )

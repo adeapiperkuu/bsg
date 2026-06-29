@@ -613,6 +613,7 @@ export type QualityDashboard = {
     gold_set_accuracy_pct: number | null;
     iaa_krippendorff_alpha: number | null;
     rework_rate_pct: number | null;
+    rework_rate_target_pct: number | null;
     active_drift_alerts: number;
   };
   trend: Array<{
@@ -630,6 +631,8 @@ export type QualityDashboard = {
     rework_rate_pct: number | null;
     status: string;
     has_drift_alert: boolean;
+    has_data_gap?: boolean;
+    evaluated_item_count?: number | null;
   }>;
   drift_alerts: Array<{
     id: string;

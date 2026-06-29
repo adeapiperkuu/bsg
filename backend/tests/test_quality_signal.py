@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
@@ -50,7 +50,11 @@ async def test_quality_risk_payload_on_new_alert() -> None:
 
         flush = AsyncMock()
 
-    await create_drift_risk_alert(_FakeSession(), snap, drift)
+    with patch(
+        "app.agents.quality_intelligence.alerts.compute_rework_impact",
+        AsyncMock(return_value={"rework_volume_units": 0, "rework_time_estimate_days": 0.0, "affected_batch_ids": []}),
+    ):
+        await create_drift_risk_alert(_FakeSession(), snap, drift)
 
     alerts = [a for a in added if isinstance(a, RiskAlert)]
     signals = [s for s in added if isinstance(s, InterAgentSignal)]
@@ -65,6 +69,48 @@ async def test_quality_risk_payload_on_new_alert() -> None:
     assert payload["affected_team_id"] == str(snap.team_id)
     assert payload["iso_week"] == 25
     assert payload["iso_year"] == 2026
+    assert "rework_volume_units" in payload
+    assert "rework_time_estimate_days" in payload
+    assert "affected_batch_ids" in payload
+
+
+@pytest.mark.asyncio
+async def test_quality_risk_payload_includes_rework_metrics() -> None:
+    snap = _make_snapshot()
+    drift = DriftResult(has_drift=True, severity=RiskTier.HIGH, detail="WoW drop")
+    added: list = []
+
+    async def _fake_execute(stmt):
+        class _Result:
+            def scalar_one_or_none(self):
+                return None
+        return _Result()
+
+    class _FakeSession:
+        execute = AsyncMock(side_effect=_fake_execute)
+
+        def add(self, obj):
+            added.append(obj)
+
+        flush = AsyncMock()
+
+    with patch(
+        "app.agents.quality_intelligence.alerts.compute_rework_impact",
+        AsyncMock(
+            return_value={
+                "rework_volume_units": 18,
+                "rework_time_estimate_days": 2.3,
+                "affected_batch_ids": ["item-1", "item-2"],
+            }
+        ),
+    ):
+        await create_drift_risk_alert(_FakeSession(), snap, drift)
+
+    alerts = [a for a in added if isinstance(a, RiskAlert)]
+    payload = alerts[0].contributing_causes["quality_risk_payload"]
+    assert payload["rework_volume_units"] == 18
+    assert payload["rework_time_estimate_days"] == 2.3
+    assert payload["affected_batch_ids"] == ["item-1", "item-2"]
 
 
 @pytest.mark.asyncio
@@ -87,7 +133,12 @@ async def test_quality_risk_hold_not_recommended_for_medium() -> None:
 
         flush = AsyncMock()
 
-    await create_drift_risk_alert(_FakeSession(), snap, drift)
+    with patch(
+        "app.agents.quality_intelligence.alerts.compute_rework_impact",
+        AsyncMock(return_value={"rework_volume_units": 0, "rework_time_estimate_days": 0.0, "affected_batch_ids": []}),
+    ):
+        await create_drift_risk_alert(_FakeSession(), snap, drift)
+
     alerts = [a for a in added if isinstance(a, RiskAlert)]
     payload = alerts[0].contributing_causes["quality_risk_payload"]
     assert payload["hold_recommended"] is False

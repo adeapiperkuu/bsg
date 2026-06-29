@@ -1,105 +1,117 @@
-# Quality Intelligence Agent — v1.0 Gaps (MVP vs Full Spec)
+# Quality Intelligence Agent — Remaining v1.0 Gaps
 
-This document lists features from [`docs/AI Agents/quality_intelligence_agent_v1_0.md`](../../docs/AI%20Agents/quality_intelligence_agent_v1_0.md) that are **not** included in the Phase 1 MVP implementation. Each gap notes the spec reference, blocking dependency, and recommended phase.
+**Last updated:** 2026-06-26  
+**Spec:** [`docs/AI Agents/quality_intelligence_agent_v1_0.md`](../../docs/AI%20Agents/quality_intelligence_agent_v1_0.md)  
+**Roadmap:** [`docs/agents/quality_intelligence_roadmap.md`](../../docs/agents/quality_intelligence_roadmap.md)
 
----
-
-## Use Cases Not Implemented
-
-| Gap | Spec | Blocked By | Phase |
-|-----|------|------------|-------|
-| UC-03 Reviewer calibration trigger | §5 UC-03 | `reviewer_scorecards` table (per-reviewer accuracy, 50+ item minimum) | Phase 2 |
-| UC-04 SOP ambiguity workflow + human authorship | §5 UC-04 | `sop_version_history` table, SOP document store | Phase 2 |
-| UC-05 What-if scenario analysis | §5 UC-05 | Historical recovery patterns, Operational Knowledge Agent | Phase 2 |
-| UC-06 Client quality narrative generation | §5 UC-06 | Client Interaction Agent integration, HITL approval flow | Phase 1.5 |
-| UC-07 Cross-project leadership heatmap | §5 UC-07 | Portfolio aggregation UI, leadership-specific API | Phase 2 |
+This document tracks **remaining** gaps after Phase 1.5 (Connected Agent) and Phase 2.0 (Full Reasoning) implementation. Earlier versions of this file were stale — most MVP/1.5/2.0 capabilities are now shipped.
 
 ---
 
-## Inter-Agent Signals Not Implemented
+## Phase status summary
 
-| Signal | Target Agent | Spec | Phase |
-|--------|-------------|------|-------|
-| `quality_risk` payload on drift/rework breach | Delivery Performance (01) | §9.1 | Phase 1.5 |
-| Weekly quality report JSON | Client Interaction (05) | §9.2 | Phase 1.5 |
-| `skill_gap` payload on onboarding gap | Workforce (03) | §9.3 | Phase 2 |
-| Lesson log write-back | Operational Knowledge (06) | §9.4, §8.5, BR-08 | Phase 2 |
-| Auto-escalation after 5 business days | Project Governance (04) | §9.5, BR-06 | Phase 2 |
-
-MVP logs drift events locally (`risk_alerts`, `notifications`) but does not emit cross-agent event bus messages.
+| Phase | Status | Notes |
+|-------|--------|-------|
+| **1.0 MVP** | **Complete** | Dashboard, drift-on-ingest, basic RCA, NL queries, alerts |
+| **1.5 Connected** | **Complete** | Scheduler, signal consumption, client §8.4 summary in comms, hard taxonomy, frontend polish |
+| **2.0 Full Reasoning** | **Complete** | Item-level logs, enriched signals, UC-02/03/04/05, NL maturity, acceptance tests |
+| **2.5 Portfolio & Governance** | **Deferred** | Auto-escalation, leadership heatmap, per-org thresholds |
 
 ---
 
-## Data Inputs Not in Schema
+## Implemented (do not rebuild)
 
-| Data Source | Spec §6.1 | MVP Proxy | Phase |
-|-------------|-----------|-----------|-------|
-| Gold-set evaluation logs (item-level) | Required | Team-level `quality_snapshots` only | Phase 2 |
-| IAA measurement records (per reviewer pair) | Required | Team-level IAA on snapshot | Phase 2 |
-| Reviewer scorecards | Required | `annotators.created_at` as onboarding proxy | Phase 2 |
-| Rework / correction logs | Required | `rework_rate_pct` on snapshot | Phase 2 |
-| Onboarding records | Required | `annotators.created_at` within 14 days | Phase 1.5 |
-| SOP version history | Required | Error taxonomy `guideline_ambiguity` share | Phase 2 |
-| Gold-set metadata | Required | Not tracked (BR-10) | Phase 2 |
-| Throughput / workforce allocation cross-ref | §6.1 | Not used in root-cause | Phase 2 |
+### Use cases
+| UC | Status | Key paths |
+|----|--------|-----------|
+| UC-01 Drift detection | **Done** | `drift.py`, scheduled `scan_all_projects()` in `main.py` |
+| UC-02 NL diagnostics | **Done** | `query_handler.py` — status/diagnostic/action/impact/historical/what_if |
+| UC-03 Calibration | **Done** | `calibration.py`, scorecard API |
+| UC-04 SOP ambiguity | **Done** | `sop_ambiguity.py`, `sop_workflow.py`, confirm → `quality_sop_links` |
+| UC-05 What-if | **Done** | `what_if.py` |
+| UC-06 Client narrative | **Done** | `generate_quality_summary()` wired into weekly comms draft |
+| UC-07 Leadership portfolio | **Done** | Leadership API + `frontend/src/routes/leadership.tsx` |
 
----
+### Inter-agent signals
+| Signal | Status | Consumer |
+|--------|--------|----------|
+| `quality_risk` emit + consume | **Done** | `signals.py` → `quality_signal_consumer.py` (Delivery) |
+| `skill_gap` emit + consume | **Done** | `signals.py` → `skill_gap_consumer.py` (Workforce) |
+| Weekly quality JSON (§8.4) | **Done** | `generate_quality_summary()` + communications route |
+| Lesson write-back (BR-08) | **Done** | `oka_client.py`, `lesson_log.py` |
+| Governance auto-escalation | **Deferred** | `check_quality_escalations` exists but not scheduled |
 
-## Reasoning Hypotheses Not Implemented
+### Data inputs
+| Table | Status |
+|-------|--------|
+| `quality_snapshots`, `quality_error_entries` | **Done** |
+| `reviewer_scorecards` | **Done** |
+| `gold_set_evaluation_logs` | **Done** — ingest API + RCA reviewer attribution |
+| `rework_logs` | **Done** — ingest API + `rework_metrics.py` in signal payload |
+| `iaa_measurement_records` | **Done** |
+| `onboarding_records` | **Done** |
+| `sop_version_history`, `sop_documents` | **Done** |
+| `gold_set_metadata` | **Done** |
+| `inter_agent_signals` | **Done** — PENDING → CONSUMED/FAILED lifecycle |
+| `quality_sop_links` | **Done** — UC-04 audit trail |
 
-| Hypothesis | Spec §7.2 | MVP Status |
-|------------|-----------|------------|
-| Onboarding gap | #1 | Implemented (annotator proxy) |
-| SOP change | #2 | Partial (ambiguity error share + IAA drop) |
-| Task complexity spike | #3 | Deferred |
-| Gold-set version change | #4 | Deferred |
-| Workload / fatigue | #5 | Deferred |
-| Systemic SOP ambiguity | #6 | Partial |
+### Root-cause hypotheses (§7.2)
+All six hypotheses implemented in `root_cause.py`:
+onboarding/scorecards, SOP change, gold-set version, workload/fatigue, systemic IAA, SOP ambiguity (+ eval-log reviewer attribution).
 
----
+### Business rules
+| Rule | Status |
+|------|--------|
+| BR-01 Drift + root-cause | **Met** |
+| BR-02 Evidence-backed conclusions | **Met** — citation enforcement in `citations.py` |
+| BR-03 No reviewer IDs to clients | **Met** — `quality_scoping.py` + sanitized §8.4 summary |
+| BR-04 Confidence on diagnostics | **Met** |
+| BR-05 Sample size gate (≥30) | **Met** — dashboard data-gap badge |
+| BR-06 5-day auto-escalation | **Deferred** (Phase 2.5) |
+| BR-07 DM approval for client narratives | **Met** |
+| BR-08 Lesson log on resolution | **Met** |
+| BR-09 No direct SOP modification | **Met** — human confirms SOP version link |
+| BR-10 Gold-set version tracking | **Met** |
 
-## Threshold & Configuration Gaps
-
-| Gap | Spec | MVP Status |
-|-----|------|------------|
-| Per-client / per-project / per-task-type thresholds | §12, §16.3 | Global defaults via `metric_configurations.threshold_config` only |
-| Threshold change permissions (DQ-032) | §16.3 | Super Admin via existing metrics API; no per-org overrides |
-
----
-
-## Infrastructure Gaps
-
-| Gap | Spec | MVP Status |
-|-----|------|------------|
-| Scheduled nightly drift scan | §5 UC-01 | Drift runs on snapshot POST only |
-| Real-time gold-set evaluation | §16.3 open question | Batch/cycle-based assumed |
-| RAG over unstructured SOPs / calibration decks | §6.2 | Structured DB evidence only |
-| Operational Knowledge Agent retrieval | §9.4 | Not available; responses note absence |
-| Full ERR-01–ERR-07 enum enforcement | §7.3 | Free-text `error_category` on entries |
-| Load test: 20 concurrent NL sessions | §16.4 | Not run in MVP |
-| 90% synthetic drift detection validation | §16.4 | Partial unit tests only |
-
----
-
-## Business Rules Partially Met
-
-| Rule | MVP Status |
-|------|------------|
-| BR-01 Drift alert includes root-cause | Met when sample size ≥ 30 |
-| BR-02 Evidence-backed conclusions | Met via evidence links + grounded context |
-| BR-03 No reviewer IDs to clients | Met via `quality_scoping` filters |
-| BR-04 Confidence on every diagnostic | Met on drift + NL queries |
-| BR-05 Sample size gate | Met (`evaluated_item_count < 30`) |
-| BR-06 5-day auto-escalation | Deferred |
-| BR-07 DM approval for client narratives | Deferred (UC-06) |
-| BR-08 Lesson log on resolution | Deferred |
-| BR-09 No direct SOP modification | Met (recommendations only) |
-| BR-10 Gold-set version tracking | Deferred |
+### Infrastructure & testing
+| Item | Status |
+|------|--------|
+| Scheduled nightly drift scan | **Done** — `main.py` lifespan + `dispatch_pending_signals()` |
+| ERR-01–ERR-07 hard enforcement | **Done** — `domain.py` validator; `ERR-OTHER` requires `error_note` |
+| Synthetic drift ≥90% gate | **Done** — `test_quality_acceptance.py` |
+| RBAC persona matrix | **Done** — `test_quality_acceptance.py` |
+| 20 concurrent NL sessions | **Done** — lightweight concurrency test |
+| Signal consumer integration | **Done** — `test_quality_signal_consumer.py` |
 
 ---
 
-## Recommended Build Order for Remaining v1.0
+## Remaining gaps (Phase 2.5+)
 
-1. **Phase 1.5:** Inter-agent signals to Delivery + Client Interaction; onboarding records table; scheduled drift re-scan
-2. **Phase 2:** Reviewer scorecards, SOP history, OKA integration, lesson write-back, what-if modeling
-3. **Phase 2+:** Governance auto-escalation, leadership heatmap, per-org threshold overrides
+### Governance & portfolio
+| Gap | Spec | Phase |
+|-----|------|-------|
+| Auto-escalation after 5 business days | §9.5, BR-06 | 2.5 |
+| Leadership vertical/task-type risk heatmap | UC-07 extension | 2.5 |
+| Per-org / per-project / per-task-type threshold overrides + admin UI | §12, §16.3 | 2.5 |
+
+### Reasoning & data (lower priority)
+| Gap | Spec | Phase |
+|-----|------|-------|
+| Task complexity spike hypothesis (#3) | §7.2 | 2.5+ |
+| RAG over unstructured SOPs / calibration decks | §6.2 | 2.5+ |
+| Real-time gold-set evaluation (vs batch) | §16.3 open question | Product decision |
+| PM project-assignment scoping hardening | §14.1 | 2.5 |
+
+### Operational (not code)
+- [ ] Apply migrations on staging/prod (`quality_sop_links`, workforce tables, item-level logs)
+- [ ] Seed pilot QA export → weekly snapshot + eval/rework log ingestion
+- [ ] Configure `LLM_API_KEY`; optionally `LLM_INTENT_ROUTING=true`
+
+---
+
+## Recommended next build order
+
+1. **Phase 2.5:** Wire `check_quality_escalations` to scheduler; emit `quality_escalation` signal to Governance
+2. **Phase 2.5:** Leadership heatmap (vertical × task-type risk matrix)
+3. **Phase 2.5:** Per-org threshold overrides + audit log
+4. **Ongoing:** Pilot data onboarding and DM/QA sign-off

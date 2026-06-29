@@ -574,14 +574,12 @@ class QualityErrorEntryCreate(BaseModel):
     error_category: str
     share_pct: Decimal = Field(ge=0, le=100)
     recommended_action: str | None = None
+    error_note: str | None = None
 
     @field_validator("error_category", mode="before")
     @classmethod
     def normalize_error_category(cls, v: str) -> str:
-        """Accept canonical code (ERR-01) or canonical name (Boundary precision).
-
-        Unknown values pass through with a warning; hard reject deferred to Phase 2.
-        """
+        """Accept canonical code (ERR-01) or canonical name; reject unknown categories."""
         raw = str(v).strip()
         upper = raw.upper()
         if upper in CANONICAL_ERROR_CODES:
@@ -590,8 +588,14 @@ class QualityErrorEntryCreate(BaseModel):
         for code, name in CANONICAL_ERROR_CODES.items():
             if lower == name:
                 return code
-        logger.warning("Unknown quality error category %r — passing through as free-text.", raw)
-        return raw
+        allowed = ", ".join(sorted(CANONICAL_ERROR_CODES.keys()))
+        raise ValueError(f"Unknown error category {raw!r}. Use one of: {allowed}")
+
+    @model_validator(mode="after")
+    def require_note_for_other(self) -> "QualityErrorEntryCreate":
+        if self.error_category == "ERR-OTHER" and not self.error_note:
+            raise ValueError("error_note is required when error_category is ERR-OTHER")
+        return self
 
 
 class QualitySnapshotRead(ORMModel):
@@ -778,6 +782,7 @@ class QualityDashboardKpis(BaseModel):
     gold_set_accuracy_pct: Decimal | None = None
     iaa_krippendorff_alpha: Decimal | None = None
     rework_rate_pct: Decimal | None = None
+    rework_rate_target_pct: Decimal | None = None
     active_drift_alerts: int = 0
 
 
@@ -801,6 +806,8 @@ class QualityTeamScorecard(BaseModel):
     rework_rate_pct: Decimal | None = None
     status: str
     has_drift_alert: bool = False
+    has_data_gap: bool = False
+    evaluated_item_count: int | None = None
 
 
 class QualityDashboardRead(BaseModel):
@@ -964,6 +971,137 @@ class ReviewerScorecardRead(ORMModel):
     error_breakdown: dict | None
     created_at: datetime
     updated_at: datetime
+
+
+class KnowledgeFolderRead(ORMModel):
+    id: UUID
+    name: str
+    folder_kind: str
+    display_order: int
+
+
+class KnowledgeFolderCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class KnowledgeQualityCriterion(BaseModel):
+    key: str
+    label: str
+    passed: bool
+
+
+class KnowledgeQualityScore(BaseModel):
+    score: int
+    max_score: int = 6
+    criteria: list[KnowledgeQualityCriterion]
+
+
+class KnowledgeChunkRead(BaseModel):
+    id: UUID
+    chunk_index: int
+    section_title: str | None = None
+    page_number: int | None = None
+    chunk_text: str
+    token_count: int | None = None
+
+
+class KnowledgeDocumentRead(ORMModel):
+    id: UUID
+    folder_id: UUID
+    folder_name: str
+    folder_kind: str
+    title: str
+    source_type: str
+    version: str
+    visibility: str
+    status: str
+    owner_approver: str
+    effective_date: date | None
+    file_name: str
+    file_mime_type: str
+    file_url: str | None = None
+    processing_status: str
+    processing_error: str | None = None
+    indexing_status: str
+    preview: list[str]
+    workflow_state: str = "needs_review"
+    quality_score: KnowledgeQualityScore | None = None
+    chunk_count: int = 0
+    citation_count: int = 0
+    approved_by_name: str | None = None
+    approved_at: datetime | None = None
+    chunks: list[KnowledgeChunkRead] = []
+    semantic_relevance: float | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class GoldSetEvaluationLogCreate(BaseModel):
+    annotator_id: UUID
+    item_id: str
+    score: Decimal | None = Field(default=None, ge=0, le=100)
+    error_category: str | None = None
+    evaluated_at: datetime | None = None
+
+    @field_validator("error_category", mode="before")
+    @classmethod
+    def normalize_eval_error_category(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        raw = str(v).strip()
+        upper = raw.upper()
+        if upper in CANONICAL_ERROR_CODES:
+            return upper
+        lower = raw.lower()
+        for code, name in CANONICAL_ERROR_CODES.items():
+            if lower == name:
+                return code
+        allowed = ", ".join(sorted(CANONICAL_ERROR_CODES.keys()))
+        raise ValueError(f"Unknown error category {raw!r}. Use one of: {allowed}")
+
+
+class GoldSetEvaluationLogRead(ORMModel):
+    id: UUID
+    annotator_id: UUID
+    project_id: UUID
+    org_id: UUID
+    item_id: str
+    score: Decimal | None
+    error_category: str | None
+    evaluated_at: datetime
+    created_at: datetime
+
+
+class ReworkLogCreate(BaseModel):
+    annotator_id: UUID | None = None
+    item_id: str
+    reason: str | None = None
+    rework_date: date
+
+
+class ReworkLogRead(ORMModel):
+    id: UUID
+    project_id: UUID
+    org_id: UUID
+    annotator_id: UUID | None
+    item_id: str
+    reason: str | None
+    rework_date: date
+    created_at: datetime
+
+
+class SopAmbiguityConfirm(BaseModel):
+    alert_id: UUID
+    sop_version_id: UUID
+
+
+class QualitySopLinkRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    risk_alert_id: UUID
+    sop_version_id: UUID
+    confirmed_by: UUID | None
+    created_at: datetime
 
 
 class IaaMeasurementCreate(BaseModel):
@@ -1427,3 +1565,55 @@ class KnowledgeEvalMetricsRead(BaseModel):
     eval_question_count: int
     eval_run_count: int
     citation_hit_rate: float
+
+
+# --- Workforce dashboard schemas ---
+
+
+class TeamUtilizationRead(BaseModel):
+    team_id: UUID
+    team_name: str
+    iso_year: int
+    iso_week: int
+    target_hours: Decimal | None = None
+    logged_hours: Decimal | None = None
+    utilization_pct: Decimal | None = None
+    status: str
+
+
+class SkillMatrixEntry(BaseModel):
+    skill_code: str
+    proficiency_counts: dict[str, int]
+
+
+class SkillGapSignal(BaseModel):
+    id: UUID
+    title: str
+    body: str
+    source_row_id: UUID | None = None
+    created_at: datetime
+    is_read: bool
+
+
+class WorkforceDashboardKpis(BaseModel):
+    teams_tracked: int = 0
+    avg_utilization_pct: str | None = None
+    sme_certified_count: int = 0
+    skill_records: int = 0
+    open_skill_gaps: int = 0
+
+
+class WorkforceDashboardRead(BaseModel):
+    kpis: WorkforceDashboardKpis
+    team_utilization: list[TeamUtilizationRead] = []
+    skill_matrix: list[SkillMatrixEntry] = []
+    skill_gap_signals: list[SkillGapSignal] = []
+
+
+class SmeAllocationRead(BaseModel):
+    annotator_id: UUID
+    team_id: UUID
+    team_name: str
+    site: str
+    skills: list[str] = []
+    utilization_pct: Decimal | None = None

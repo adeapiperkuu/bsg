@@ -104,7 +104,11 @@ async def test_new_alert_sets_source_fields() -> None:
         flush = AsyncMock()
 
     session = _FakeSession()
-    await create_drift_risk_alert(session, snap, drift)
+    with patch(
+        "app.agents.quality_intelligence.alerts.compute_rework_impact",
+        AsyncMock(return_value={"rework_volume_units": 0, "rework_time_estimate_days": 0.0, "affected_batch_ids": []}),
+    ):
+        await create_drift_risk_alert(session, snap, drift)
 
     alerts = [a for a in added if isinstance(a, RiskAlert)]
     assert len(alerts) == 1

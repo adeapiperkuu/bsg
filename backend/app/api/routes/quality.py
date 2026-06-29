@@ -11,6 +11,8 @@ from app.schemas.common import DataResponse, ListResponse, Pagination
 from app.schemas.domain import (
     AdminProjectRead,
     CalibrationBriefRead,
+    GoldSetEvaluationLogCreate,
+    GoldSetEvaluationLogRead,
     GoldSetMetadataCreate,
     GoldSetMetadataRead,
     IaaMeasurementCreate,
@@ -26,29 +28,38 @@ from app.schemas.domain import (
     QualitySnapshotRead,
     QualitySnapshotUpdate,
     QualitySummaryRead,
+    QualitySopLinkRead,
     ReviewerScorecardCreate,
     ReviewerScorecardRead,
     RiskAlertRead,
     RiskAlertResolve,
+    ReworkLogCreate,
+    ReworkLogRead,
+    SopAmbiguityConfirm,
     SopAmbiguityFlagRead,
     SopVersionCreate,
     SopVersionRead,
 )
 from app.services.quality import (
     build_quality_dashboard,
+    create_gold_set_evaluation_log,
     create_iaa_measurement,
     create_onboarding_record,
+    create_rework_log,
     create_reviewer_scorecard,
     create_sop_version,
+    confirm_sop_ambiguity,
     evaluate_snapshot,
     generate_quality_summary,
     get_calibration_brief_for_project,
     get_leadership_quality_portfolio,
     get_sop_ambiguity_flags,
     list_admin_projects,
+    list_gold_set_evaluation_logs,
     list_inter_agent_signals,
     list_quality_scan_runs,
     list_reviewer_scorecards,
+    list_rework_logs,
     load_snapshot_with_errors,
     resolve_risk_alert,
     scan_all_projects,
@@ -302,6 +313,76 @@ async def post_gold_set_metadata(
     await session.commit()
     await session.refresh(row)
     return DataResponse(data=GoldSetMetadataRead.model_validate(row))
+
+
+@router.post("/projects/{project_id}/gold-set-evaluation-logs", response_model=DataResponse[GoldSetEvaluationLogRead])
+async def post_gold_set_evaluation_log(
+    project_id: UUID,
+    payload: GoldSetEvaluationLogCreate,
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
+) -> DataResponse[GoldSetEvaluationLogRead]:
+    project = await get_visible_project(session, project_id, current_user)
+    row = await create_gold_set_evaluation_log(session, project, payload)
+    await session.commit()
+    await session.refresh(row)
+    return DataResponse(data=GoldSetEvaluationLogRead.model_validate(row))
+
+
+@router.get("/projects/{project_id}/gold-set-evaluation-logs", response_model=ListResponse[GoldSetEvaluationLogRead])
+async def get_gold_set_evaluation_logs(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: UserDep,
+) -> ListResponse[GoldSetEvaluationLogRead]:
+    project = await get_visible_project(session, project_id, current_user)
+    rows = await list_gold_set_evaluation_logs(session, project.id)
+    return ListResponse(
+        data=[GoldSetEvaluationLogRead.model_validate(r) for r in rows],
+        pagination=Pagination(limit=200),
+    )
+
+
+@router.post("/projects/{project_id}/rework-logs", response_model=DataResponse[ReworkLogRead])
+async def post_rework_log(
+    project_id: UUID,
+    payload: ReworkLogCreate,
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
+) -> DataResponse[ReworkLogRead]:
+    project = await get_visible_project(session, project_id, current_user)
+    row = await create_rework_log(session, project, payload)
+    await session.commit()
+    await session.refresh(row)
+    return DataResponse(data=ReworkLogRead.model_validate(row))
+
+
+@router.get("/projects/{project_id}/rework-logs", response_model=ListResponse[ReworkLogRead])
+async def get_rework_logs(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: UserDep,
+) -> ListResponse[ReworkLogRead]:
+    project = await get_visible_project(session, project_id, current_user)
+    rows = await list_rework_logs(session, project.id)
+    return ListResponse(
+        data=[ReworkLogRead.model_validate(r) for r in rows],
+        pagination=Pagination(limit=200),
+    )
+
+
+@router.post("/projects/{project_id}/sop-ambiguity/confirm", response_model=DataResponse[QualitySopLinkRead])
+async def confirm_sop_ambiguity_route(
+    project_id: UUID,
+    payload: SopAmbiguityConfirm,
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
+) -> DataResponse[QualitySopLinkRead]:
+    project = await get_visible_project(session, project_id, current_user)
+    link = await confirm_sop_ambiguity(session, project, payload, confirmed_by=current_user.id)
+    await session.commit()
+    await session.refresh(link)
+    return DataResponse(data=QualitySopLinkRead.model_validate(link))
 
 
 @router.post("/projects/{project_id}/onboarding-records", response_model=DataResponse[OnboardingRecordRead])

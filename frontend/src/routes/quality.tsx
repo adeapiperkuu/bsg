@@ -16,6 +16,7 @@ import { useState } from "react";
 import { Card, SectionHeader, KpiCard, AiBadge, EvidenceBadge, StatusPill } from "@/components/bsg/widgets";
 import { AgentQueryBox } from "@/components/bsg/AgentQueryBox";
 import {
+  ERROR_CATEGORY_LABELS,
   fetchCalibrationBrief,
   fetchQualityDashboard,
   fetchReviewerScorecards,
@@ -104,7 +105,7 @@ function QualityPage() {
 
   const errorCategories =
     dashboard?.error_breakdown.map((e) => ({
-      cat: e.error_category,
+      cat: ERROR_CATEGORY_LABELS[e.error_category] ?? e.error_category,
       count: Number(e.share_pct),
     })) ?? [];
 
@@ -146,6 +147,11 @@ function QualityPage() {
             <KpiCard
               label="Rework Rate"
               value={fmtPct(dashboard.kpis.rework_rate_pct)}
+              delta={
+                dashboard.kpis.rework_rate_target_pct != null && dashboard.kpis.rework_rate_pct != null
+                  ? `target ≤${Number(dashboard.kpis.rework_rate_target_pct).toFixed(1)}%`
+                  : undefined
+              }
               tone={kpiTone(dashboard.kpis.rework_rate_pct, "rework")}
             />
             <KpiCard
@@ -252,7 +258,14 @@ function QualityPage() {
                 <tbody>
                   {dashboard.team_scorecard.map((t) => (
                     <tr key={t.team_id} className="border-b border-border/50">
-                      <td className="py-2.5 pr-3 font-medium">{t.team_name}</td>
+                      <td className="py-2.5 pr-3 font-medium">
+                        {t.team_name}
+                        {t.has_data_gap && (
+                          <span className="ml-2 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-400">
+                            Data gap
+                          </span>
+                        )}
+                      </td>
                       <td className="py-2.5 pr-3">{fmtPct(t.gold_set_accuracy_pct)}</td>
                       <td className="py-2.5 pr-3">{fmtIaa(t.iaa_krippendorff_alpha)}</td>
                       <td className="py-2.5 pr-3">{fmtPct(t.rework_rate_pct)}</td>

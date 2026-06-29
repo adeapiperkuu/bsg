@@ -95,9 +95,7 @@ async def list_agent_queries(
 async def get_agent_query(
     query_id: UUID, session: SessionDep, current_user: UserDep
 ) -> DataResponse[AgentQueryRead]:
-    # Compose base query
     query = select(AgentQuery).where(AgentQuery.id == query_id)
-    # Apply access control based on user role
     if current_user.role.value == "client":
         query = query.where(AgentQuery.user_id == current_user.id)
     elif current_user.role.value == "delivery_manager":

@@ -6,6 +6,7 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.optional_tables import query_optional_table
 from app.db.models import IaaMeasurementRecord, QualitySnapshot, SopVersionHistory
 
 
@@ -17,12 +18,8 @@ class SopAmbiguityFlag:
     affected_reviewers: int = 0
 
 
-async def detect_sop_ambiguity(
-    session: AsyncSession,
-    snapshot: QualitySnapshot,
-) -> SopAmbiguityFlag:
-    """UC-04: detect distributed IAA drop correlated with recent SOP changes."""
-    iaa_records = list(
+async def _load_iaa_records(session: AsyncSession, snapshot: QualitySnapshot) -> list[IaaMeasurementRecord]:
+    return list(
         (
             await session.execute(
                 select(IaaMeasurementRecord).where(
@@ -34,14 +31,9 @@ async def detect_sop_ambiguity(
         ).scalars()
     )
 
-    if len(iaa_records) < 3:
-        return SopAmbiguityFlag(detected=False, detail="Insufficient IAA pair data")
 
-    low_alpha = [r for r in iaa_records if r.krippendorff_alpha is not None and float(r.krippendorff_alpha) < 0.75]
-    if len(low_alpha) < 3:
-        return SopAmbiguityFlag(detected=False)
-
-    recent_sop = (
+async def _load_recent_sop_version(session: AsyncSession, snapshot: QualitySnapshot) -> SopVersionHistory | None:
+    return (
         await session.execute(
             select(SopVersionHistory)
             .where(SopVersionHistory.org_id == snapshot.org_id)
@@ -49,6 +41,31 @@ async def detect_sop_ambiguity(
             .limit(1)
         )
     ).scalar_one_or_none()
+
+
+async def detect_sop_ambiguity(
+    session: AsyncSession,
+    snapshot: QualitySnapshot,
+) -> SopAmbiguityFlag:
+    """UC-04: detect distributed IAA drop correlated with recent SOP changes."""
+    iaa_records = await query_optional_table(
+        session,
+        lambda: _load_iaa_records(session, snapshot),
+        [],
+    )
+
+    if len(iaa_records) < 3:
+        return SopAmbiguityFlag(detected=False, detail="Insufficient IAA pair data")
+
+    low_alpha = [r for r in iaa_records if r.krippendorff_alpha is not None and float(r.krippendorff_alpha) < 0.75]
+    if len(low_alpha) < 3:
+        return SopAmbiguityFlag(detected=False)
+
+    recent_sop = await query_optional_table(
+        session,
+        lambda: _load_recent_sop_version(session, snapshot),
+        None,
+    )
 
     if recent_sop is None:
         return SopAmbiguityFlag(

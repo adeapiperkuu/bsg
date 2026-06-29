@@ -116,6 +116,7 @@ class SignalType(StrEnum):
 class SignalStatus(StrEnum):
     PENDING = "pending"
     CONSUMED = "consumed"
+    FAILED = "failed"
 
 
 class ScanTrigger(StrEnum):
@@ -982,6 +983,43 @@ class QualityLessonLink(Base, UuidPrimaryKey, CreatedAt):
     quality_snapshot_id: Mapped[UUID | None] = mapped_column(ForeignKey("quality_snapshots.id", ondelete="SET NULL"))
     risk_alert_id: Mapped[UUID | None] = mapped_column(ForeignKey("risk_alerts.id", ondelete="SET NULL"))
     knowledge_lesson_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_lessons.id", ondelete="CASCADE"), index=True)
+
+
+class QualitySopLink(Base, UuidPrimaryKey, CreatedAt):
+    """Audit trail linking a quality SOP ambiguity event to a resolved SOP version (BR-09)."""
+
+    __tablename__ = "quality_sop_links"
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    risk_alert_id: Mapped[UUID] = mapped_column(ForeignKey("risk_alerts.id", ondelete="CASCADE"), index=True)
+    sop_version_id: Mapped[UUID] = mapped_column(ForeignKey("sop_version_history.id", ondelete="CASCADE"), index=True)
+    confirmed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class WorkforceSkill(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "workforce_skills"
+    __table_args__ = (UniqueConstraint("annotator_id", "skill_code", name="workforce_skills_annotator_skill_key"),)
+
+    annotator_id: Mapped[UUID] = mapped_column(ForeignKey("annotators.id", ondelete="CASCADE"), index=True)
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
+    skill_code: Mapped[str] = mapped_column(Text)
+    proficiency_level: Mapped[str] = mapped_column(Text)
+    certified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WorkforceUtilizationSnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "workforce_utilization_snapshots"
+    __table_args__ = (
+        UniqueConstraint("team_id", "iso_year", "iso_week", name="workforce_utilization_team_week_key"),
+    )
+
+    team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"), index=True)
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
+    iso_year: Mapped[int] = mapped_column(Integer)
+    iso_week: Mapped[int] = mapped_column(Integer)
+    target_hours: Mapped[Decimal] = mapped_column(Numeric(6, 2))
+    logged_hours: Mapped[Decimal] = mapped_column(Numeric(6, 2))
+    utilization_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
 
 
 class InterAgentSignal(Base, UuidPrimaryKey, CreatedAt):
