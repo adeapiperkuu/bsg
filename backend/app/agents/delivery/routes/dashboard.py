@@ -34,5 +34,21 @@ async def get_delivery_dashboard(
         project_id=project_id,
         current_user=current_user,
     )
-    dashboard_data["daily_summary"] = await generate_daily_summary(dashboard_data)
+    dashboard_data["daily_summary"] = None
     return DashboardResponse.model_validate(dashboard_data)
+
+
+@router.get("/delivery/dashboard/{project_id}/summary")
+async def get_delivery_dashboard_summary(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: UserDep,
+) -> dict[str, str | None]:
+    """Return the AI-generated daily summary for one project's dashboard, computed on demand."""
+    dashboard_data = await get_dashboard_data(
+        session=session,
+        project_id=project_id,
+        current_user=current_user,
+    )
+    daily_summary = await generate_daily_summary(dashboard_data)
+    return {"daily_summary": daily_summary}

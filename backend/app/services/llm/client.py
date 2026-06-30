@@ -385,6 +385,22 @@ def _is_portfolio_question(query: str) -> bool:
     return any(signal in q for signal in portfolio_signals)
 
 
+_delivery_client: AsyncOpenAI | None = None
+
+
+def _get_delivery_client(api_key: str, settings) -> AsyncOpenAI:
+    """Return a cached AsyncOpenAI client for the delivery agent path."""
+    global _delivery_client
+    if _delivery_client is not None:
+        return _delivery_client
+    client_kwargs: dict[str, str] = {"api_key": api_key}
+    base_url = settings.openai_base_url or settings.llm_base_url
+    if base_url:
+        client_kwargs["base_url"] = base_url
+    _delivery_client = AsyncOpenAI(**client_kwargs)
+    return _delivery_client
+
+
 class LLMClient:
     async def generate(self, prompt: str) -> str:
         return await self.generate_structured(
@@ -625,7 +641,7 @@ class LLMClient:
             question_scope = "project"
 
         context_json = json.dumps(context, default=str, indent=2)
-        evidence_json = json.dumps(evidence_sources or [], default=str, indent=2)
+        evidence_json = json.dumps(evidence_sources or [], default=str, separators=(',', ':'))
         scope_instruction = (
             "Use the PORTFOLIO-LEVEL response structure."
             if question_scope == "portfolio"
@@ -648,12 +664,8 @@ class LLMClient:
                 messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user_message})
 
-        client_kwargs: dict[str, str] = {"api_key": api_key}
-        if settings.openai_base_url or settings.llm_base_url:
-            client_kwargs["base_url"] = (settings.openai_base_url or settings.llm_base_url or "")
-
         try:
-            client = AsyncOpenAI(**client_kwargs)
+            client = _get_delivery_client(api_key, settings)
             response = await client.chat.completions.create(
                 model=model,
                 messages=messages,

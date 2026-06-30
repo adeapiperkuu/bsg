@@ -208,8 +208,6 @@ async def list_project_recommendations(
     org_id: UUID,
 ) -> tuple[list[RecommendationRow], list[OwnerOption]]:
     """Return all recommendations and assignable owners without per-row queries."""
-    await sync_recommendations_for_project(session, project_id=project_id, org_id=org_id)
-
     user_owner = User.__table__.alias("owner_user")
     team_owner = Team.__table__.alias("owner_team")
 
@@ -242,7 +240,6 @@ async def list_project_recommendations(
                 MitigationRecommendation.deleted_at.is_(None),
             )
             .order_by(
-                MitigationRecommendation.severity.asc(),
                 MitigationRecommendation.confidence_score.desc(),
                 MitigationRecommendation.created_at.desc(),
             )

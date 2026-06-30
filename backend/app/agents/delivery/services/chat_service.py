@@ -5,19 +5,21 @@ from __future__ import annotations
 from collections import Counter
 from time import perf_counter
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.delivery.schemas.chat_schema import DeliveryChatRead, DeliveryChatSource
 from app.agents.delivery.services.dashboard_service import get_dashboard_data, get_portfolio_data
+from app.core.config import get_settings
 from app.core.security import CurrentUser
 from app.db.models import AgentQuery, AgentQueryEvidenceLink
 from app.services.llm.client import LLMClient
 
 AGENT_NAME = "delivery_performance_agent"
-MAX_HISTORY_TURNS = 6
+MAX_HISTORY_TURNS = 3
+MAX_HISTORY_ANSWER_CHARS = 450
 
 
 def _source_from_risk(risk: dict[str, Any]) -> DeliveryChatSource:
@@ -47,6 +49,9 @@ def _source_from_milestone(milestone: dict[str, Any]) -> DeliveryChatSource:
     )
 
 
+MILESTONE_EVIDENCE_STATUSES = {"at_risk", "missed"}
+
+
 def _collect_sources(dashboard: dict[str, Any]) -> list[DeliveryChatSource]:
     sources: list[DeliveryChatSource] = []
     for risk in dashboard.get("risks") or []:
@@ -56,7 +61,7 @@ def _collect_sources(dashboard: dict[str, Any]) -> list[DeliveryChatSource]:
         if isinstance(bottleneck, dict):
             sources.append(_source_from_bottleneck(bottleneck))
     for milestone in dashboard.get("milestones") or []:
-        if isinstance(milestone, dict):
+        if isinstance(milestone, dict) and milestone.get("status") in MILESTONE_EVIDENCE_STATUSES:
             sources.append(_source_from_milestone(milestone))
     return sources
 
@@ -225,6 +230,23 @@ def _detect_portfolio_patterns(portfolio: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _portfolio_patterns_summary(patterns: dict[str, Any]) -> str:
+    """Condense the full portfolio pattern breakdown into one brief sentence."""
+    red_count = int(patterns.get("red_status_project_count") or 0)
+    low_confidence_count = int(patterns.get("sub_15pct_confidence_count") or 0)
+    top_theme: str | None = None
+    for key in ("recurring_root_causes", "recurring_risk_themes", "recurring_bottleneck_themes"):
+        items = patterns.get(key) or []
+        if items and isinstance(items[0], dict) and items[0].get("theme"):
+            top_theme = str(items[0]["theme"])
+            break
+    theme_clause = f"; most recurring theme: {top_theme}" if top_theme else ""
+    return (
+        f"{red_count} project(s) are red-status and {low_confidence_count} are below 15% "
+        f"schedule confidence across the portfolio{theme_clause}."
+    )
+
+
 def _classify_question(message: str) -> str:
     q = message.lower()
     portfolio_signals = (
@@ -294,6 +316,9 @@ def _build_context(
             1 for entry in ranked if str(entry.get("traffic_light")) != "green"
         ),
     }
+    if context["question_scope"] == "project":
+        del context["portfolio_ranked_by_severity"]
+        context["portfolio_patterns"] = _portfolio_patterns_summary(context["portfolio_patterns"])
     if project_dashboard is not None:
         brief = _project_operational_brief(project_dashboard, None)
         context["focused_project"] = {
@@ -308,12 +333,8 @@ def _build_context(
 async def _load_conversation_history(
     session: AsyncSession,
     current_user: CurrentUser,
-    conversation_id: UUID | None,
+    anchor: AgentQuery | None,
 ) -> list[dict[str, str]]:
-    if conversation_id is None:
-        return []
-
-    anchor = await session.get(AgentQuery, conversation_id)
     if anchor is None or anchor.user_id != current_user.id or anchor.agent_name != AGENT_NAME:
         return []
 
@@ -331,7 +352,9 @@ async def _load_conversation_history(
     history: list[dict[str, str]] = []
     for row in rows.scalars():
         history.append({"role": "user", "content": row.query_text})
-        history.append({"role": "assistant", "content": row.answer_text})
+        history.append(
+            {"role": "assistant", "content": row.answer_text[:MAX_HISTORY_ANSWER_CHARS]}
+        )
     return history
 
 
@@ -344,14 +367,29 @@ async def answer_delivery_chat(
     conversation_id: UUID | None = None,
 ) -> DeliveryChatRead:
     """Answer a delivery operations question using live dashboard context."""
+    settings = get_settings()
+    if not (settings.openai_api_key or settings.llm_api_key):
+        return DeliveryChatRead(
+            answer=(
+                "## Executive Assessment\n"
+                "Delivery AI is not configured — leadership decision support is unavailable.\n\n"
+                "## Recommended Leadership Actions\n"
+                "1. Set OPENAI_API_KEY to enable the Delivery Agent."
+            ),
+            sources=[],
+            conversation_id=conversation_id or uuid4(),
+        )
+
     started = perf_counter()
     portfolio = await get_portfolio_data(session=session, current_user=current_user)
 
-    resolved_project_id = project_id
-    if resolved_project_id is None and conversation_id is not None:
+    anchor: AgentQuery | None = None
+    if conversation_id is not None:
         anchor = await session.get(AgentQuery, conversation_id)
-        if anchor is not None and anchor.user_id == current_user.id:
-            resolved_project_id = anchor.project_id
+
+    resolved_project_id = project_id
+    if resolved_project_id is None and anchor is not None and anchor.user_id == current_user.id:
+        resolved_project_id = anchor.project_id
 
     project_dashboard: dict[str, Any] | None = None
     if resolved_project_id is not None:
@@ -379,7 +417,7 @@ async def answer_delivery_chat(
         if isinstance(dashboard, dict):
             evidence_catalog.extend(_collect_sources(dashboard))
 
-    history = await _load_conversation_history(session, current_user, conversation_id)
+    history = await _load_conversation_history(session, current_user, anchor)
     llm_result = await LLMClient().generate_delivery_answer(
         query=message.strip(),
         context=context,

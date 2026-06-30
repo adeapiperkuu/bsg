@@ -490,14 +490,13 @@ async def get_portfolio_data(
     ).scalars()
     projects = list(project_rows)
     if not projects:
-        return {"projects": [], "milestones": []}
+        return {"projects": []}
 
     effective_date = as_of_date or date.today()
     project_ids = [project.id for project in projects]
     inputs = await _fetch_delivery_inputs_by_project(session, project_ids)
 
     portfolio_projects: list[dict[str, Any]] = []
-    all_milestones: list[dict[str, Any]] = []
 
     for project in projects:
         raw_data = _build_raw_data(
@@ -511,6 +510,5 @@ async def get_portfolio_data(
         )
         dashboard = build_dashboard_response(raw_data)
         portfolio_projects.append({"project_id": project.id, "dashboard": dashboard})
-        all_milestones.extend(dashboard["milestones"])
 
-    return {"projects": portfolio_projects, "milestones": all_milestones}
+    return {"projects": portfolio_projects}

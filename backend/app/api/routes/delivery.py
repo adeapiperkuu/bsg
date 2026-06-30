@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
@@ -19,12 +20,13 @@ from app.db.models import (
     AlertStatus,
     AppRole,
     DeliveryConfidenceScore,
+    MilestoneStatus,
     OwnerType,
     RecommendationStatus,
     RiskAlert,
     ThroughputSnapshot,
 )
-from app.schemas.common import DataResponse, ListResponse, Pagination
+from app.schemas.common import DataResponse, ListResponse, ORMModel, Pagination
 from app.schemas.domain import (
     MitigationRecommendationAssignOwner,
     MitigationRecommendationRead,
@@ -39,6 +41,17 @@ from app.services.ingestion import upsert_throughput_snapshot
 from app.services.scoping import get_visible_project
 
 router = APIRouter(tags=["delivery"])
+
+
+class DeliveryConfidenceScoreRead(ORMModel):
+    id: UUID
+    project_id: UUID
+    milestone_id: UUID
+    score_pct: Decimal
+    forecast_completion_date: date | None
+    status: MilestoneStatus
+    model_version: str | None
+    created_at: datetime
 
 
 @router.get("/projects/{project_id}/throughput", response_model=ListResponse[ThroughputSnapshotRead])
@@ -74,8 +87,16 @@ async def create_throughput(
     return DataResponse(data=ThroughputSnapshotRead.model_validate(snapshot))
 
 
-@router.get("/projects/{project_id}/delivery-confidence")
-async def list_delivery_confidence(project_id: UUID, session: SessionDep, current_user: UserDep, limit: LimitQuery = 100):
+@router.get(
+    "/projects/{project_id}/delivery-confidence",
+    response_model=ListResponse[DeliveryConfidenceScoreRead],
+)
+async def list_delivery_confidence(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: UserDep,
+    limit: LimitQuery = 100,
+) -> ListResponse[DeliveryConfidenceScoreRead]:
     project = await get_visible_project(session, project_id, current_user)
     rows = (
         await session.execute(
@@ -85,22 +106,10 @@ async def list_delivery_confidence(project_id: UUID, session: SessionDep, curren
             .limit(limit)
         )
     ).scalars()
-    return {
-        "data": [
-            {
-                "id": str(row.id),
-                "project_id": str(row.project_id),
-                "milestone_id": str(row.milestone_id),
-                "score_pct": str(row.score_pct),
-                "forecast_completion_date": row.forecast_completion_date,
-                "status": row.status,
-                "model_version": row.model_version,
-                "created_at": row.created_at,
-            }
-            for row in rows
-        ],
-        "pagination": {"limit": limit, "next_cursor": None},
-    }
+    return ListResponse(
+        data=[DeliveryConfidenceScoreRead.model_validate(row) for row in rows],
+        pagination=Pagination(limit=limit),
+    )
 
 
 @router.get("/projects/{project_id}/risk-alerts", response_model=ListResponse[RiskAlertRead])
