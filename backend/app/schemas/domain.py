@@ -693,8 +693,39 @@ class OwnerOptionRead(BaseModel):
     label: str
 
 
+class GroupedRecommendationRiskRead(BaseModel):
+    """One risk-level member within a GroupedMitigationRecommendationRead."""
+
+    recommendation_id: UUID
+    source_risk_id: UUID | None
+    source_risk_title: str | None = None
+    description: str | None
+    status: str
+    confidence_score: Decimal
+    owner_type: str | None = None
+    owner_id: UUID | None = None
+    owner_label: str | None = None
+
+
+class GroupedMitigationRecommendationRead(BaseModel):
+    """Recommendations sharing the same action title, grouped for display.
+
+    This is a read-time aggregation of MitigationRecommendationRead rows —
+    each linked risk keeps its own id/status/confidence in `risks` so
+    accept/reject/assign-owner continue to act on individual recommendations.
+    """
+
+    title: str
+    severity: str
+    confidence_score: Decimal
+    project_id: UUID
+    risks: list[GroupedRecommendationRiskRead]
+    statuses: list[str]
+    descriptions: list[str]
+
+
 class ProjectRecommendationsResponse(BaseModel):
-    data: list[MitigationRecommendationRead]
+    data: list[GroupedMitigationRecommendationRead]
     assignable_owners: list[OwnerOptionRead]
     pagination: Pagination
 

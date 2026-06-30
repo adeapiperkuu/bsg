@@ -123,6 +123,9 @@ def _top_contributing_cause(causes: dict[str, Any] | None) -> str | None:
 
 
 def generate_mitigation_copy(risk: RiskAlert) -> tuple[str, str]:
+    # Title is intentionally the shared, unqualified action template: distinct risks that
+    # resolve to the same template (e.g. two separate at-risk milestones) are expected to
+    # share a title, since list_project_recommendations groups by this exact title below.
     top_cause = _top_contributing_cause(risk.contributing_causes)
     if top_cause and top_cause in CAUSE_ACTIONS:
         title, description = CAUSE_ACTIONS[top_cause]
@@ -264,6 +267,87 @@ async def list_project_recommendations(
 
     assignable_owners = await _load_assignable_owners(session, project_id=project_id, org_id=org_id)
     return recommendations, assignable_owners
+
+
+@dataclass(frozen=True)
+class GroupedRecommendation:
+    """Read-time grouping of recommendation rows that share the same action title.
+
+    This is a display aggregation only: it does not change how recommendations
+    are generated, scored, or persisted. Each underlying row keeps its own id,
+    status, and confidence_score so accept/reject/assign-owner still operate
+    on individual recommendations.
+    """
+
+    title: str
+    severity: RecommendationSeverity
+    confidence_score: Decimal
+    project_id: UUID
+    members: list[RecommendationRow]
+
+
+def group_recommendations_by_title(rows: list[RecommendationRow]) -> list[GroupedRecommendation]:
+    """Aggregate recommendation rows by their shared action title.
+
+    Several open risks can independently produce the same static action title
+    (e.g. multiple at-risk milestones each generating "Protect at-risk
+    milestone"). Grouping here avoids showing visually identical cards while
+    preserving every linked risk's own id, status, confidence, and description.
+    """
+    order: list[str] = []
+    buckets: dict[str, list[RecommendationRow]] = {}
+    for row in rows:
+        title = row.recommendation.title
+        if title not in buckets:
+            buckets[title] = []
+            order.append(title)
+        buckets[title].append(row)
+
+    groups = [
+        GroupedRecommendation(
+            title=title,
+            severity=min(
+                (member.recommendation.severity for member in buckets[title]),
+                key=lambda severity: SEVERITY_ORDER.get(severity, 99),
+            ),
+            confidence_score=max(member.recommendation.confidence_score for member in buckets[title]),
+            project_id=buckets[title][0].recommendation.project_id,
+            members=buckets[title],
+        )
+        for title in order
+    ]
+    groups.sort(
+        key=lambda group: (SEVERITY_ORDER.get(group.severity, 99), -float(group.confidence_score))
+    )
+    return groups
+
+
+def grouped_recommendation_to_read(group: GroupedRecommendation) -> dict[str, Any]:
+    """Serialize a GroupedRecommendation into the GroupedMitigationRecommendationRead shape."""
+    return {
+        "title": group.title,
+        "severity": group.severity.value,
+        "confidence_score": group.confidence_score,
+        "project_id": group.project_id,
+        "risks": [
+            {
+                "recommendation_id": member.recommendation.id,
+                "source_risk_id": member.recommendation.source_risk_id,
+                "source_risk_title": member.source_risk_title,
+                "description": member.recommendation.description,
+                "status": member.recommendation.status.value,
+                "confidence_score": member.recommendation.confidence_score,
+                "owner_type": member.recommendation.owner_type.value if member.recommendation.owner_type else None,
+                "owner_id": member.recommendation.owner_id,
+                "owner_label": member.owner_label,
+            }
+            for member in group.members
+        ],
+        "statuses": [member.recommendation.status.value for member in group.members],
+        "descriptions": [
+            member.recommendation.description for member in group.members if member.recommendation.description
+        ],
+    }
 
 
 async def _load_assignable_owners(

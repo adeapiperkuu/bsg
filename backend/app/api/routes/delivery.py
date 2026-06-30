@@ -9,6 +9,8 @@ from app.agents.delivery.audit.audit_logger import AuditLogger
 from app.agents.delivery.services.recommendation_service import (
     fetch_recommendation_row,
     get_recommendation_for_mutation,
+    group_recommendations_by_title,
+    grouped_recommendation_to_read,
     list_project_recommendations,
     recommendation_row_to_read,
     validate_owner_assignment,
@@ -28,6 +30,7 @@ from app.db.models import (
 )
 from app.schemas.common import DataResponse, ListResponse, ORMModel, Pagination
 from app.schemas.domain import (
+    GroupedMitigationRecommendationRead,
     MitigationRecommendationAssignOwner,
     MitigationRecommendationRead,
     OwnerOptionRead,
@@ -158,8 +161,12 @@ async def list_mitigation_recommendations(
         project_id=project.id,
         org_id=project.org_id,
     )
+    grouped = group_recommendations_by_title(rows)
     return ProjectRecommendationsResponse(
-        data=[MitigationRecommendationRead.model_validate(recommendation_row_to_read(row)) for row in rows],
+        data=[
+            GroupedMitigationRecommendationRead.model_validate(grouped_recommendation_to_read(group))
+            for group in grouped
+        ],
         assignable_owners=[
             OwnerOptionRead(
                 owner_type=owner.owner_type.value,
