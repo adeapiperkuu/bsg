@@ -82,6 +82,13 @@ class RecommendationRow:
     owner_label: str | None
     source_risk_title: str | None
     source_risk_type: str | None
+    # None when the linked risk had no slippage_probability and confidence_score fell back
+    # to the static per-tier constant in _confidence_from_risk.
+    source_risk_slippage_probability: Decimal | None = None
+
+    @property
+    def is_estimated_confidence(self) -> bool:
+        return self.source_risk_slippage_probability is None
 
 
 @dataclass(frozen=True)
@@ -222,6 +229,7 @@ async def list_project_recommendations(
                 team_owner.c.name.label("owner_team_name"),
                 RiskAlert.title.label("source_risk_title"),
                 RiskAlert.alert_type.label("source_risk_type"),
+                RiskAlert.slippage_probability.label("source_risk_slippage_probability"),
             )
             .outerjoin(
                 user_owner,
@@ -255,6 +263,7 @@ async def list_project_recommendations(
             owner_label=row[1] if row[0].owner_type == OwnerType.USER else row[2],
             source_risk_title=row[3],
             source_risk_type=row[4].value if row[4] is not None else None,
+            source_risk_slippage_probability=row[5],
         )
         for row in rows
     ]
@@ -324,10 +333,14 @@ def group_recommendations_by_title(rows: list[RecommendationRow]) -> list[Groupe
 
 def grouped_recommendation_to_read(group: GroupedRecommendation) -> dict[str, Any]:
     """Serialize a GroupedRecommendation into the GroupedMitigationRecommendationRead shape."""
+    # The group-level confidence_score is the max across members (see group_recommendations_by_title),
+    # so its is_estimated flag should reflect whichever member that displayed value came from.
+    top_member = max(group.members, key=lambda member: member.recommendation.confidence_score)
     return {
         "title": group.title,
         "severity": group.severity.value,
         "confidence_score": group.confidence_score,
+        "is_estimated": top_member.is_estimated_confidence,
         "project_id": group.project_id,
         "risks": [
             {
@@ -337,6 +350,7 @@ def grouped_recommendation_to_read(group: GroupedRecommendation) -> dict[str, An
                 "description": member.recommendation.description,
                 "status": member.recommendation.status.value,
                 "confidence_score": member.recommendation.confidence_score,
+                "is_estimated": member.is_estimated_confidence,
                 "owner_type": member.recommendation.owner_type.value if member.recommendation.owner_type else None,
                 "owner_id": member.recommendation.owner_id,
                 "owner_label": member.owner_label,
@@ -481,6 +495,7 @@ async def fetch_recommendation_row(
                 team_owner.c.name.label("owner_team_name"),
                 RiskAlert.title.label("source_risk_title"),
                 RiskAlert.alert_type.label("source_risk_type"),
+                RiskAlert.slippage_probability.label("source_risk_slippage_probability"),
             )
             .outerjoin(
                 user_owner,
@@ -512,6 +527,7 @@ async def fetch_recommendation_row(
         owner_label=owner_label,
         source_risk_title=row[3],
         source_risk_type=row[4].value if row[4] is not None else None,
+        source_risk_slippage_probability=row[5],
     )
 
 

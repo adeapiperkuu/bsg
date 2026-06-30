@@ -327,7 +327,13 @@ function DeliveryPage() {
                 ? `Why is ${selectedProject.name} at risk?`
                 : "Root cause breakdown"
             }
-            right={<AiBadge confidence={Math.round(selectedDashboard?.confidence ?? 0)} />}
+            right={
+              <AiBadge
+                label="Risk score"
+                source="formula"
+                confidence={Math.round(selectedDashboard?.confidence ?? 0)}
+              />
+            }
           />
           {loading ? (
             <div className="h-2 overflow-hidden rounded bg-elevated">

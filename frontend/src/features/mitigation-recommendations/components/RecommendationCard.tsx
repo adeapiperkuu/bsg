@@ -40,7 +40,9 @@ function splitDescription(description: string | null): { lead: string | null; de
 
 const STATUS_BADGE_STYLES: Record<string, string> = {
   pending: "border-border bg-secondary text-muted-foreground",
-  accepted: "border-[color:var(--success)]/30 bg-[color:var(--success)]/10 text-[color:var(--success)]",
+  // Neutral, not success-green: accepting only flips a status flag, it does not
+  // change system behavior, so the badge shouldn't look like a resolved/success state.
+  accepted: "border-border bg-secondary text-muted-foreground",
   rejected: "border-border bg-elevated text-muted-foreground",
 };
 
@@ -91,7 +93,6 @@ function RiskRow({
     <div
       className={cn(
         "rounded border border-border/70 p-2",
-        isAccepted && "border-[color:var(--success)]/40 bg-[color:var(--success)]/5",
         isRejected && "bg-elevated/50 opacity-60",
       )}
     >
@@ -105,14 +106,22 @@ function RiskRow({
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <AiBadge label="Risk confidence" confidence={confidencePercent(risk.confidence_score)} />
+          <AiBadge
+            label="Slippage probability"
+            source="formula"
+            confidence={confidencePercent(risk.confidence_score)}
+            estimated={risk.is_estimated}
+          />
           {isAccepted && (
-            <span className="rounded-full border border-[color:var(--success)]/30 bg-[color:var(--success)]/10 px-2 py-0.5 text-[10px] font-medium text-[color:var(--success)]">
+            <span className="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
               Accepted
             </span>
           )}
           {isRejected && (
-            <span className="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+            <span
+              title="This recommendation may reappear if conditions persist"
+              className="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+            >
               Rejected
             </span>
           )}
@@ -138,7 +147,10 @@ function RiskRow({
         </select>
 
         {isPending && (
-          <div className="flex gap-1.5">
+          <div className="flex flex-wrap items-center justify-end gap-1.5">
+            <span className="text-[10px] text-muted-foreground">
+              Records a decision only — no automatic action is taken.
+            </span>
             <button
               type="button"
               disabled={isAccepting || isRejecting}
@@ -187,9 +199,16 @@ export function RecommendationCard({
       <div className="flex flex-wrap items-center gap-2">
         <StatusPill status={SEVERITY_LABELS[recommendation.severity]} />
         <AiBadge
-          label="Risk confidence"
+          label="Slippage probability"
+          source="formula"
           confidence={confidencePercent(recommendation.confidence_score)}
+          estimated={recommendation.is_estimated}
         />
+        {isGroup && (
+          <span className="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+            {recommendation.risks.length} risks
+          </span>
+        )}
         {isGroup &&
           (["pending", "accepted", "rejected"] as const)
             .filter((status) => statusCounts[status])

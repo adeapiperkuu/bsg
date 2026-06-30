@@ -702,6 +702,9 @@ class GroupedRecommendationRiskRead(BaseModel):
     description: str | None
     status: str
     confidence_score: Decimal
+    # True when confidence_score fell back to a static per-tier constant rather than
+    # being computed from the linked risk's slippage_probability.
+    is_estimated: bool = False
     owner_type: str | None = None
     owner_id: UUID | None = None
     owner_label: str | None = None
@@ -718,6 +721,7 @@ class GroupedMitigationRecommendationRead(BaseModel):
     title: str
     severity: str
     confidence_score: Decimal
+    is_estimated: bool = False
     project_id: UUID
     risks: list[GroupedRecommendationRiskRead]
     statuses: list[str]

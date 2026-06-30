@@ -35,6 +35,9 @@ export type GroupedRecommendationRisk = {
   description: string | null;
   status: RecommendationStatus;
   confidence_score: number;
+  // True when confidence_score is a static per-tier fallback rather than a computed
+  // slippage probability — surfaced in the UI as an "(est.)" marker.
+  is_estimated: boolean;
   owner_type: OwnerType | null;
   owner_id: string | null;
   owner_label: string | null;
@@ -46,6 +49,7 @@ export type GroupedMitigationRecommendation = {
   title: string;
   severity: RecommendationSeverity;
   confidence_score: number;
+  is_estimated: boolean;
   project_id: string;
   risks: GroupedRecommendationRisk[];
   statuses: RecommendationStatus[];

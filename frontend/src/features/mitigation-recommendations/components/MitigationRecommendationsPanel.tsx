@@ -128,8 +128,7 @@ export function MitigationRecommendationsPanel({ projectId }: MitigationRecommen
               Active recommendations
             </div>
             <p className="mb-2 text-[11px] text-muted-foreground">
-              Awaiting a decision, or accepted with an owner still expected to act — accepting/
-              rejecting does not change system behavior on its own.
+              Awaiting a decision, or accepted with an owner still expected to act.
             </p>
             {activeGrouped.length > 0 ? (
               renderGroups(activeGrouped)
