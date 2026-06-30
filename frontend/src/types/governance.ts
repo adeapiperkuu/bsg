@@ -7,12 +7,16 @@ export type GovernanceEscalationSeverity = "low" | "medium" | "high" | "critical
 export type GovernanceEscalationStatus = "open" | "in_progress" | "resolved";
 export type GovernanceActionStatus = "open" | "in_progress" | "completed" | "overdue";
 export type GovernanceSummaryStatus = "draft" | "approved";
+export type GovernanceCharterStatus = "draft" | "approved" | "archived";
+export type KnowledgeVisibility = "internal_only" | "leadership_only" | "client_safe";
 export type GovernanceEvidenceSourceType =
   | "dependency"
   | "escalation"
   | "action"
   | "scope_state"
-  | "knowledge_document";
+  | "knowledge_document"
+  | "delivery_signal"
+  | "weekly_summary";
 
 export type GovernanceKpis = {
   open_actions: number;
@@ -104,10 +108,14 @@ export type GovernanceAction = {
 export type GovernanceEvidenceLink = {
   id: string;
   org_id: string;
-  summary_id: string;
+  summary_id?: string | null;
+  charter_id?: string | null;
   source_type: GovernanceEvidenceSourceType;
   source_id: string;
   created_at: string;
+  label?: string | null;
+  detail?: string | null;
+  project_name?: string | null;
 };
 
 export type GovernanceWeeklySummary = {
@@ -122,6 +130,27 @@ export type GovernanceWeeklySummary = {
   created_at: string;
   updated_at: string;
   evidence_links: GovernanceEvidenceLink[];
+  approved_by_name?: string | null;
+};
+
+export type ProjectCharter = {
+  id: string;
+  org_id: string;
+  project_id: string;
+  version: string;
+  status: GovernanceCharterStatus;
+  generated_text: string;
+  generated_by_ai: boolean;
+  previous_version_id: string | null;
+  knowledge_document_id: string | null;
+  visibility: KnowledgeVisibility;
+  approved_by: string | null;
+  approved_at: string | null;
+  created_at: string;
+  updated_at: string;
+  evidence_links: GovernanceEvidenceLink[];
+  approved_by_name?: string | null;
+  project_name?: string | null;
 };
 
 export type GovernanceCharterReference = {
@@ -218,4 +247,14 @@ export type GovernanceWeeklySummaryCreatePayload = {
     source_type: GovernanceEvidenceSourceType;
     source_id: string;
   }>;
+};
+
+export type ProjectCharterGeneratePayload = {
+  project_id: string;
+  visibility?: KnowledgeVisibility;
+};
+
+export type ProjectCharterUpdatePayload = {
+  generated_text: string;
+  visibility?: KnowledgeVisibility;
 };

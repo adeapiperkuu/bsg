@@ -540,6 +540,81 @@ async def create_weekly_summary(
     return summary
 
 
+def _leadership_sees_summary_only_if_approved(current_user: CurrentUser, summary: GovernanceWeeklySummary) -> bool:
+    if current_user.role == AppRole.BSG_LEADERSHIP and summary.status != GovernanceSummaryStatus.APPROVED:
+        return False
+    if current_user.role == AppRole.CLIENT and summary.status != GovernanceSummaryStatus.APPROVED:
+        return False
+    return True
+
+
+async def get_weekly_summary_by_id(
+    session: AsyncSession,
+    summary_id: UUID,
+    current_user: CurrentUser,
+) -> GovernanceWeeklySummary:
+    assert_can_read_governance(current_user)
+    stmt = select(GovernanceWeeklySummary).where(GovernanceWeeklySummary.id == summary_id)
+    stmt = _apply_org_filter(stmt, GovernanceWeeklySummary.org_id, current_user)
+    summary = (await session.execute(stmt)).scalar_one_or_none()
+    if summary is None:
+        raise ApiError(404, "NOT_FOUND", "Weekly summary was not found.", {"summary_id": str(summary_id)})
+    if not _leadership_sees_summary_only_if_approved(current_user, summary):
+        raise ApiError(403, "FORBIDDEN", "Authenticated user lacks permission.")
+    return summary
+
+
+async def list_weekly_summaries(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    *,
+    limit: int = 20,
+) -> list[GovernanceWeeklySummary]:
+    assert_can_read_governance(current_user)
+    if current_user.role == AppRole.CLIENT:
+        return []
+    stmt = select(GovernanceWeeklySummary)
+    stmt = _apply_org_filter(stmt, GovernanceWeeklySummary.org_id, current_user)
+    if current_user.role == AppRole.BSG_LEADERSHIP:
+        stmt = stmt.where(GovernanceWeeklySummary.status == GovernanceSummaryStatus.APPROVED)
+    stmt = stmt.order_by(GovernanceWeeklySummary.summary_week.desc()).limit(limit)
+    return list((await session.execute(stmt)).scalars())
+
+
+async def update_weekly_summary_draft(
+    session: AsyncSession,
+    summary_id: UUID,
+    current_user: CurrentUser,
+    *,
+    summary_text: str,
+) -> GovernanceWeeklySummary:
+    assert_can_write_governance(current_user)
+    summary = await get_weekly_summary_by_id(session, summary_id, current_user)
+    if summary.status != GovernanceSummaryStatus.DRAFT:
+        raise ApiError(409, "SUMMARY_NOT_EDITABLE", "Only draft summaries can be edited.")
+    summary.summary_text = summary_text
+    await session.commit()
+    await session.refresh(summary)
+    return summary
+
+
+async def approve_weekly_summary(
+    session: AsyncSession,
+    summary_id: UUID,
+    current_user: CurrentUser,
+) -> GovernanceWeeklySummary:
+    assert_can_write_governance(current_user)
+    summary = await get_weekly_summary_by_id(session, summary_id, current_user)
+    if summary.status != GovernanceSummaryStatus.DRAFT:
+        raise ApiError(409, "SUMMARY_NOT_APPROVABLE", "Only draft summaries can be approved.")
+    summary.status = GovernanceSummaryStatus.APPROVED
+    summary.approved_by = current_user.id
+    summary.approved_at = datetime.now(UTC)
+    await session.commit()
+    await session.refresh(summary)
+    return summary
+
+
 async def get_latest_weekly_summary(
     session: AsyncSession,
     current_user: CurrentUser,
@@ -552,7 +627,7 @@ async def get_latest_weekly_summary(
     summary = (await session.execute(stmt.limit(1))).scalar_one_or_none()
     if summary is None:
         return None
-    if current_user.role == AppRole.CLIENT and summary.status != GovernanceSummaryStatus.APPROVED:
+    if not _leadership_sees_summary_only_if_approved(current_user, summary):
         return None
     return summary
 

@@ -301,12 +301,20 @@ class GovernanceSummaryStatus(StrEnum):
     APPROVED = "approved"
 
 
+class GovernanceCharterStatus(StrEnum):
+    DRAFT = "draft"
+    APPROVED = "approved"
+    ARCHIVED = "archived"
+
+
 class GovernanceEvidenceSourceType(StrEnum):
     DEPENDENCY = "dependency"
     ESCALATION = "escalation"
     ACTION = "action"
     SCOPE_STATE = "scope_state"
     KNOWLEDGE_DOCUMENT = "knowledge_document"
+    DELIVERY_SIGNAL = "delivery_signal"
+    WEEKLY_SUMMARY = "weekly_summary"
 
 
 class GovernanceEscalationSourceType(StrEnum):
@@ -425,6 +433,11 @@ governance_action_status = Enum(
 governance_summary_status = Enum(
     GovernanceSummaryStatus,
     name="governance_summary_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_charter_status = Enum(
+    GovernanceCharterStatus,
+    name="governance_charter_status",
     values_callable=lambda x: [e.value for e in x],
 )
 governance_evidence_source_type = Enum(
@@ -1456,10 +1469,47 @@ class GovernanceEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
     __tablename__ = "governance_evidence_links"
     __table_args__ = (
         Index("governance_evidence_links_summary_idx", "summary_id"),
+        Index("governance_evidence_links_charter_idx", "charter_id"),
         Index("governance_evidence_links_org_idx", "org_id"),
     )
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
-    summary_id: Mapped[UUID] = mapped_column(ForeignKey("governance_weekly_summaries.id", ondelete="CASCADE"))
+    summary_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("governance_weekly_summaries.id", ondelete="CASCADE")
+    )
+    charter_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("project_charters.id", ondelete="CASCADE")
+    )
     source_type: Mapped[GovernanceEvidenceSourceType] = mapped_column(governance_evidence_source_type)
     source_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
+
+
+class ProjectCharter(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "project_charters"
+    __table_args__ = (
+        UniqueConstraint("project_id", "version", name="project_charters_project_version_key"),
+        Index("project_charters_org_id_idx", "org_id"),
+        Index("project_charters_project_id_idx", "project_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    version: Mapped[str] = mapped_column(Text)
+    status: Mapped[GovernanceCharterStatus] = mapped_column(
+        governance_charter_status,
+        default=GovernanceCharterStatus.DRAFT,
+    )
+    generated_text: Mapped[str] = mapped_column(Text)
+    generated_by_ai: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    previous_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("project_charters.id", ondelete="SET NULL")
+    )
+    knowledge_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="SET NULL")
+    )
+    visibility: Mapped[KnowledgeVisibility] = mapped_column(
+        knowledge_visibility,
+        default=KnowledgeVisibility.INTERNAL_ONLY,
+    )
+    approved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

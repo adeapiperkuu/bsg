@@ -1,5 +1,5 @@
 import { queryOptions, useQuery } from "@tanstack/react-query";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, apiFetchBlob } from "@/lib/api";
 import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
 import type {
   GovernanceAction,
@@ -11,6 +11,9 @@ import type {
   GovernanceEscalationUpdatePayload,
   GovernanceWeeklySummary,
   GovernanceWeeklySummaryCreatePayload,
+  ProjectCharter,
+  ProjectCharterGeneratePayload,
+  ProjectCharterUpdatePayload,
   ProjectDependency,
   ProjectDependencyCreatePayload,
   ProjectDependencyUpdatePayload,
@@ -37,6 +40,105 @@ export async function promoteRiskAlertToEscalation(riskAlertId: string): Promise
       method: "POST",
       body: JSON.stringify({ risk_alert_id: riskAlertId }),
     },
+  );
+  return body.data;
+}
+
+export type GovernanceWeeklySummaryUpdatePayload = {
+  summary_text: string;
+};
+
+export async function listProjectCharters(projectId?: string): Promise<ProjectCharter[]> {
+  const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  const body = await apiFetch<{ data: ProjectCharter[] }>(`/governance/project-charters${qs}`);
+  return body.data;
+}
+
+export async function generateProjectCharter(
+  payload: ProjectCharterGeneratePayload,
+): Promise<ProjectCharter> {
+  const body = await apiFetch<{ data: ProjectCharter }>("/governance/project-charters/generate", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
+export async function updateProjectCharter(
+  charterId: string,
+  payload: ProjectCharterUpdatePayload,
+): Promise<ProjectCharter> {
+  const body = await apiFetch<{ data: ProjectCharter }>(
+    `/governance/project-charters/${charterId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+  );
+  return body.data;
+}
+
+export async function approveProjectCharter(charterId: string): Promise<ProjectCharter> {
+  const body = await apiFetch<{ data: ProjectCharter }>(
+    `/governance/project-charters/${charterId}/approve`,
+    { method: "POST" },
+  );
+  return body.data;
+}
+
+export async function archiveProjectCharter(charterId: string): Promise<ProjectCharter> {
+  const body = await apiFetch<{ data: ProjectCharter }>(
+    `/governance/project-charters/${charterId}/archive`,
+    { method: "POST" },
+  );
+  return body.data;
+}
+
+export async function exportProjectCharter(
+  charterId: string,
+  format: "pdf" | "docx",
+): Promise<Blob> {
+  return apiFetchBlob(`/governance/project-charters/${charterId}/export.${format}`);
+}
+
+export async function listGovernanceWeeklySummaries(): Promise<GovernanceWeeklySummary[]> {
+  const body = await apiFetch<{ data: GovernanceWeeklySummary[] }>("/governance/weekly-summaries");
+  return body.data;
+}
+
+export async function generateGovernanceWeeklySummary(
+  summaryWeek?: string,
+): Promise<GovernanceWeeklySummary> {
+  const body = await apiFetch<{ data: GovernanceWeeklySummary }>(
+    "/governance/weekly-summary/generate",
+    {
+      method: "POST",
+      body: JSON.stringify(summaryWeek ? { summary_week: summaryWeek } : {}),
+    },
+  );
+  return body.data;
+}
+
+export async function updateGovernanceWeeklySummary(
+  summaryId: string,
+  payload: GovernanceWeeklySummaryUpdatePayload,
+): Promise<GovernanceWeeklySummary> {
+  const body = await apiFetch<{ data: GovernanceWeeklySummary }>(
+    `/governance/weekly-summary/${summaryId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+  );
+  return body.data;
+}
+
+export async function approveGovernanceWeeklySummary(
+  summaryId: string,
+): Promise<GovernanceWeeklySummary> {
+  const body = await apiFetch<{ data: GovernanceWeeklySummary }>(
+    `/governance/weekly-summary/${summaryId}/approve`,
+    { method: "POST" },
   );
   return body.data;
 }

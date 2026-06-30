@@ -17,7 +17,9 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { GovernanceFiltersBar } from "@/features/governance/GovernanceFiltersBar";
+import { ProjectChartersPanel } from "@/features/governance/ProjectChartersPanel";
 import { ProjectGovernanceSheet } from "@/features/governance/ProjectGovernanceSheet";
+import { WeeklySummaryPanel } from "@/features/governance/WeeklySummaryPanel";
 import {
   GovernanceWorkflowDialogs,
   type WorkflowDialogState,
@@ -348,20 +350,45 @@ export function GovernanceDashboard() {
 
       {canWrite && (
         <div className="flex flex-wrap gap-2">
-          <Button type="button" size="sm" variant="outline" onClick={() => setDialog({ kind: "dependency", mode: "create" })}>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="shadow-none"
+            onClick={() => setDialog({ kind: "dependency", mode: "create" })}
+          >
             <Plus className="mr-1 h-3.5 w-3.5" />
             Dependency
           </Button>
-          <Button type="button" size="sm" variant="outline" onClick={() => setDialog({ kind: "action", mode: "create" })}>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="shadow-none"
+            onClick={() => setDialog({ kind: "action", mode: "create" })}
+          >
             <Plus className="mr-1 h-3.5 w-3.5" />
             Action
           </Button>
-          <Button type="button" size="sm" variant="outline" onClick={() => setDialog({ kind: "escalation", mode: "create" })}>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="shadow-none"
+            onClick={() => setDialog({ kind: "escalation", mode: "create" })}
+          >
             <Plus className="mr-1 h-3.5 w-3.5" />
             Escalation
           </Button>
         </div>
       )}
+
+      <ProjectChartersPanel
+        projects={projectOptions}
+        canWrite={canWrite}
+        isClient={isClient}
+        isReadOnly={isReadOnly}
+      />
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
         <div className="space-y-5 lg:col-span-2">
@@ -620,32 +647,12 @@ export function GovernanceDashboard() {
               </div>
             </>
           )}
-          <div className="mt-4 rounded-md border border-border bg-elevated p-3 text-xs">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Weekly summary
-            </div>
-            {weekly_summary ? (
-              <>
-                <div className="mb-2 flex items-center gap-2">
-                  <StatusPill status={weekly_summary.status === "approved" ? "Approved" : "Draft"} />
-                  <span className="text-[10px] text-muted-foreground">
-                    Week of {formatDate(weekly_summary.summary_week)}
-                  </span>
-                </div>
-                <p className="leading-5 text-foreground/90">{weekly_summary.summary_text}</p>
-              </>
-            ) : (
-              <p className="text-muted-foreground">No weekly summary available.</p>
-            )}
-            <button
-              type="button"
-              disabled
-              title="AI summary generation coming in Phase 4"
-              className="mt-3 cursor-not-allowed rounded border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground"
-            >
-              Generate summary (Phase 4)
-            </button>
-          </div>
+          <WeeklySummaryPanel
+            latestSummary={weekly_summary}
+            canWrite={canWrite}
+            isClient={isClient}
+            isReadOnly={isReadOnly}
+          />
         </Card>
       </div>
 

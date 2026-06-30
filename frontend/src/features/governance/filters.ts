@@ -29,6 +29,20 @@ export const emptyGovernanceFilters = (): GovernanceFilters => ({
   dueBefore: "",
 });
 
+export function countActiveGovernanceFilters(filters: GovernanceFilters): number {
+  let count = 0;
+  if (filters.search.trim()) count += 1;
+  if (filters.projectId !== "all") count += 1;
+  if (filters.status !== "all") count += 1;
+  if (filters.severity !== "all") count += 1;
+  if (filters.dependencyType !== "all") count += 1;
+  if (filters.ownerId !== "all") count += 1;
+  if (filters.assigneeId !== "all") count += 1;
+  if (filters.scopeStatus !== "all") count += 1;
+  if (filters.dueBefore) count += 1;
+  return count;
+}
+
 function matchesSearch(text: string, query: string): boolean {
   if (!query) return true;
   return text.toLowerCase().includes(query.toLowerCase());

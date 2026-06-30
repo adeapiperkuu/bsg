@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from app.db.models import (
     GovernanceActionStatus,
+    GovernanceCharterStatus,
     GovernanceDependencyStatus,
     GovernanceDependencyType,
     GovernanceEscalationSeverity,
@@ -13,6 +14,7 @@ from app.db.models import (
     GovernanceEvidenceSourceType,
     GovernanceScopeStatus,
     GovernanceSummaryStatus,
+    KnowledgeVisibility,
 )
 from app.schemas.common import ORMModel
 
@@ -175,10 +177,14 @@ class GovernanceActionUpdate(BaseModel):
 class GovernanceEvidenceLinkRead(ORMModel):
     id: UUID
     org_id: UUID
-    summary_id: UUID
+    summary_id: UUID | None = None
+    charter_id: UUID | None = None
     source_type: GovernanceEvidenceSourceType
     source_id: UUID
     created_at: datetime
+    label: str | None = None
+    detail: str | None = None
+    project_name: str | None = None
 
 
 class GovernanceWeeklySummaryRead(ORMModel):
@@ -193,6 +199,7 @@ class GovernanceWeeklySummaryRead(ORMModel):
     created_at: datetime
     updated_at: datetime
     evidence_links: list[GovernanceEvidenceLinkRead] = Field(default_factory=list)
+    approved_by_name: str | None = None
 
 
 class GovernanceEvidenceLinkCreate(BaseModel):
@@ -206,6 +213,44 @@ class GovernanceWeeklySummaryCreate(BaseModel):
     evidence_links: list[GovernanceEvidenceLinkCreate] = Field(default_factory=list)
 
 
+class GovernanceWeeklySummaryUpdate(BaseModel):
+    summary_text: str = Field(min_length=1)
+
+
+class GovernanceWeeklySummaryGenerateRequest(BaseModel):
+    summary_week: date | None = None
+
+
+class ProjectCharterGenerateRequest(BaseModel):
+    project_id: UUID
+    visibility: KnowledgeVisibility = KnowledgeVisibility.INTERNAL_ONLY
+
+
+class ProjectCharterUpdate(BaseModel):
+    generated_text: str = Field(min_length=1)
+    visibility: KnowledgeVisibility | None = None
+
+
+class ProjectCharterRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    project_id: UUID
+    version: str
+    status: GovernanceCharterStatus
+    generated_text: str
+    generated_by_ai: bool
+    previous_version_id: UUID | None
+    knowledge_document_id: UUID | None
+    visibility: KnowledgeVisibility
+    approved_by: UUID | None
+    approved_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    evidence_links: list[GovernanceEvidenceLinkRead] = Field(default_factory=list)
+    approved_by_name: str | None = None
+    project_name: str | None = None
+
+
 class GovernanceCharterReferenceRead(BaseModel):
     document_id: UUID
     title: str
@@ -213,6 +258,16 @@ class GovernanceCharterReferenceRead(BaseModel):
     version: str
     status: str
     visibility: str
+
+
+class GovernanceKnowledgeDocumentRef(BaseModel):
+    document_id: UUID
+    title: str
+    project: str | None
+    version: str
+    status: str
+    visibility: str
+    source_type: str
 
 
 class GovernanceBootstrapRead(BaseModel):

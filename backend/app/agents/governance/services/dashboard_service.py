@@ -118,34 +118,9 @@ async def get_governance_bootstrap(
     weekly_summary_model = await get_latest_weekly_summary(session, current_user)
     weekly_summary: GovernanceWeeklySummaryRead | None = None
     if weekly_summary_model is not None:
-        if (
-            current_user.role == AppRole.CLIENT
-            and weekly_summary_model.status != GovernanceSummaryStatus.APPROVED
-        ):
-            weekly_summary = None
-        else:
-            evidence_rows = (
-                (
-                    await session.execute(
-                        select(GovernanceEvidenceLink).where(
-                            GovernanceEvidenceLink.summary_id == weekly_summary_model.id
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            weekly_summary = GovernanceWeeklySummaryRead.model_validate(
-                weekly_summary_model,
-                from_attributes=True,
-            ).model_copy(
-                update={
-                    "evidence_links": [
-                        GovernanceEvidenceLinkRead.model_validate(row, from_attributes=True)
-                        for row in evidence_rows
-                    ],
-                }
-            )
+        from app.agents.governance.services.summary_service import build_weekly_summary_read
+
+        weekly_summary = await build_weekly_summary_read(session, weekly_summary_model)
 
     charter_references = []
     if can_read_internal_governance(current_user):
