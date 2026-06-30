@@ -381,7 +381,7 @@ async def answer_delivery_chat(
         )
 
     started = perf_counter()
-    portfolio = await get_portfolio_data(session=session, current_user=current_user)
+    question_scope = _classify_question(message.strip())
 
     anchor: AgentQuery | None = None
     if conversation_id is not None:
@@ -398,6 +398,13 @@ async def answer_delivery_chat(
             project_id=resolved_project_id,
             current_user=current_user,
         )
+
+    # Project-scoped questions already have the focused project's dashboard above —
+    # avoid recomputing the full portfolio (all-projects scoring) on every chat turn.
+    if question_scope == "portfolio" or resolved_project_id is None:
+        portfolio = await get_portfolio_data(session=session, current_user=current_user)
+    else:
+        portfolio = {"projects": []}
 
     context = _build_context(
         project_dashboard=project_dashboard,
@@ -418,11 +425,12 @@ async def answer_delivery_chat(
             evidence_catalog.extend(_collect_sources(dashboard))
 
     history = await _load_conversation_history(session, current_user, anchor)
+    evidence_catalog_sent = evidence_catalog[:20]
     llm_result = await LLMClient().generate_delivery_answer(
         query=message.strip(),
         context=context,
         history=history,
-        evidence_sources=[source.model_dump(mode="json") for source in evidence_catalog[:20]],
+        evidence_sources=[source.model_dump(mode="json") for source in evidence_catalog_sent],
     )
 
     answer = str(llm_result.get("answer", "")).strip()
@@ -436,7 +444,7 @@ async def answer_delivery_chat(
 
     cited_titles = llm_result.get("cited_source_titles")
     cited_title_list = [str(title) for title in cited_titles] if isinstance(cited_titles, list) else []
-    response_sources = _match_cited_sources(evidence_catalog, cited_title_list, answer)
+    response_sources = _match_cited_sources(evidence_catalog_sent, cited_title_list, answer)
 
     query = AgentQuery(
         user_id=current_user.id,

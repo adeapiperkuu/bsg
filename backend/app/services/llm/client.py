@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator
 
@@ -84,6 +85,7 @@ RAG_CONTEXT_CHUNK_CHARS = 1200
 RAG_MAX_OUTPUT_TOKENS = 700
 FAST_PATH_MAX_TOKENS = 400
 FAST_PATH_THRESHOLD = 0.85  # top chunk score above which fast path is used
+DELIVERY_ANSWER_TIMEOUT_SECONDS = 18.0
 
 
 def _truncate_chunk_text(text: str, limit: int = RAG_CONTEXT_CHUNK_CHARS) -> str:
@@ -357,34 +359,6 @@ def _sanitize_delivery_answer(text: str) -> str:
     return cleaned.strip()
 
 
-def _is_portfolio_question(query: str) -> bool:
-    q = query.lower()
-    portfolio_signals = (
-        "which project",
-        "at risk",
-        "portfolio",
-        "leadership",
-        "this week",
-        "focus",
-        "driving",
-        "confidence down",
-        "decline",
-        "blocking delivery",
-        "what's blocking",
-        "whats blocking",
-        "throughput",
-        "milestone",
-        "slip",
-        "attention",
-        "priorit",
-        "across",
-        "all project",
-        "where should",
-        "need attention",
-    )
-    return any(signal in q for signal in portfolio_signals)
-
-
 _delivery_client: AsyncOpenAI | None = None
 
 
@@ -634,11 +608,11 @@ class LLMClient:
 
         import json
 
-        question_scope = "portfolio"
-        if isinstance(context.get("question_scope"), str):
-            question_scope = str(context["question_scope"])
-        elif not _is_portfolio_question(query):
-            question_scope = "project"
+        question_scope = (
+            str(context["question_scope"])
+            if isinstance(context.get("question_scope"), str)
+            else "portfolio"
+        )
 
         context_json = json.dumps(context, default=str, indent=2)
         evidence_json = json.dumps(evidence_sources or [], default=str, separators=(',', ':'))
@@ -666,12 +640,15 @@ class LLMClient:
 
         try:
             client = _get_delivery_client(api_key, settings)
-            response = await client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0.2,
-                max_tokens=1300 if question_scope == "portfolio" else 900,
-                response_format={"type": "json_object"},
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    max_tokens=1300 if question_scope == "portfolio" else 900,
+                    response_format={"type": "json_object"},
+                ),
+                timeout=DELIVERY_ANSWER_TIMEOUT_SECONDS,
             )
             raw = response.choices[0].message.content or "{}"
             data = json.loads(raw)
