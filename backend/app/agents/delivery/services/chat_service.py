@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from collections import Counter
+import json
+import logging
+from collections import Counter, defaultdict
+from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
 from uuid import UUID, uuid4
@@ -10,16 +14,33 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.delivery.schemas.chat_schema import DeliveryChatRead, DeliveryChatSource
+from app.agents.delivery.schemas.chat_schema import (
+    DeliveryChatConversationRead,
+    DeliveryChatRead,
+    DeliveryChatSource,
+    DeliveryChatTurnRead,
+)
 from app.agents.delivery.services.dashboard_service import get_dashboard_data, get_portfolio_data
 from app.core.config import get_settings
 from app.core.security import CurrentUser
-from app.db.models import AgentQuery, AgentQueryEvidenceLink
+from app.db.models import AgentQuery, AgentQueryEvidenceLink, AppRole
 from app.services.llm.client import LLMClient
+
+logger = logging.getLogger(__name__)
 
 AGENT_NAME = "delivery_performance_agent"
 MAX_HISTORY_TURNS = 3
 MAX_HISTORY_ANSWER_CHARS = 450
+# Cap on turns returned by the conversation-restore endpoint — independent of
+# MAX_HISTORY_TURNS, which only bounds how much history is fed back into the LLM prompt.
+MAX_CONVERSATION_TURNS_RETURNED = 50
+
+EVIDENCE_SOURCE_TABLE_BY_TYPE = {
+    "risk": "risk_alerts",
+    "bottleneck": "bottlenecks",
+    "milestone": "milestones",
+}
+EVIDENCE_TYPE_BY_SOURCE_TABLE = {table: kind for kind, table in EVIDENCE_SOURCE_TABLE_BY_TYPE.items()}
 
 
 def _source_from_risk(risk: dict[str, Any]) -> DeliveryChatSource:
@@ -358,30 +379,49 @@ async def _load_conversation_history(
     return history
 
 
-async def answer_delivery_chat(
+def _not_configured_answer() -> str:
+    return (
+        "## Executive Assessment\n"
+        "Delivery AI is not configured — leadership decision support is unavailable.\n\n"
+        "## Recommended Leadership Actions\n"
+        "1. Set OPENAI_API_KEY to enable the Delivery Agent."
+    )
+
+
+def _empty_answer_fallback() -> str:
+    return (
+        "## Executive Assessment\n"
+        "Delivery analysis could not be generated from current data.\n\n"
+        "## Recommended Leadership Actions\n"
+        "1. Verify delivery data is loaded and retry."
+    )
+
+
+def _sse(data: dict[str, Any]) -> str:
+    """Format a dict as a single SSE line for the streaming chat endpoint."""
+    return f"data: {json.dumps(data, default=str)}\n\n"
+
+
+@dataclass(frozen=True)
+class _ChatRequestContext:
+    resolved_project_id: UUID | None
+    context: dict[str, Any]
+    history: list[dict[str, str]]
+    evidence_catalog_sent: list[DeliveryChatSource]
+    anchor: AgentQuery | None
+
+
+async def _prepare_chat_request(
     session: AsyncSession,
     current_user: CurrentUser,
     *,
     message: str,
-    project_id: UUID | None = None,
-    conversation_id: UUID | None = None,
-) -> DeliveryChatRead:
-    """Answer a delivery operations question using live dashboard context."""
-    settings = get_settings()
-    if not (settings.openai_api_key or settings.llm_api_key):
-        return DeliveryChatRead(
-            answer=(
-                "## Executive Assessment\n"
-                "Delivery AI is not configured — leadership decision support is unavailable.\n\n"
-                "## Recommended Leadership Actions\n"
-                "1. Set OPENAI_API_KEY to enable the Delivery Agent."
-            ),
-            sources=[],
-            conversation_id=conversation_id or uuid4(),
-        )
-
-    started = perf_counter()
-    question_scope = _classify_question(message.strip())
+    project_id: UUID | None,
+    conversation_id: UUID | None,
+) -> _ChatRequestContext:
+    """Shared grounding/context-building logic for both the streaming and
+    non-streaming chat paths. Does not call the LLM or persist anything."""
+    question_scope = _classify_question(message)
 
     anchor: AgentQuery | None = None
     if conversation_id is not None:
@@ -409,7 +449,7 @@ async def answer_delivery_chat(
     context = _build_context(
         project_dashboard=project_dashboard,
         portfolio=portfolio,
-        message=message.strip(),
+        message=message,
     )
 
     evidence_catalog: list[DeliveryChatSource] = []
@@ -425,47 +465,41 @@ async def answer_delivery_chat(
             evidence_catalog.extend(_collect_sources(dashboard))
 
     history = await _load_conversation_history(session, current_user, anchor)
-    evidence_catalog_sent = evidence_catalog[:20]
-    llm_result = await LLMClient().generate_delivery_answer(
-        query=message.strip(),
+
+    return _ChatRequestContext(
+        resolved_project_id=resolved_project_id,
         context=context,
         history=history,
-        evidence_sources=[source.model_dump(mode="json") for source in evidence_catalog_sent],
+        evidence_catalog_sent=evidence_catalog[:20],
+        anchor=anchor,
     )
 
-    answer = str(llm_result.get("answer", "")).strip()
-    if not answer:
-        answer = (
-            "## Executive Assessment\n"
-            "Delivery analysis could not be generated from current data.\n\n"
-            "## Recommended Leadership Actions\n"
-            "1. Verify delivery data is loaded and retry."
-        )
 
-    cited_titles = llm_result.get("cited_source_titles")
-    cited_title_list = [str(title) for title in cited_titles] if isinstance(cited_titles, list) else []
-    response_sources = _match_cited_sources(evidence_catalog_sent, cited_title_list, answer)
-
+def _persist_chat_turn(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    *,
+    resolved_project_id: UUID | None,
+    message: str,
+    answer: str,
+    model_used: str,
+    started: float,
+    response_sources: list[DeliveryChatSource],
+) -> AgentQuery:
     query = AgentQuery(
         user_id=current_user.id,
         org_id=current_user.org_id,
         project_id=resolved_project_id,
         agent_name=AGENT_NAME,
-        query_text=message.strip(),
+        query_text=message,
         answer_text=answer,
-        model_used=str(llm_result.get("model") or ""),
+        model_used=model_used,
         latency_ms=int((perf_counter() - started) * 1000),
     )
     session.add(query)
-    await session.flush()
-
     for source in response_sources:
         if source.id is not None:
-            table = {
-                "risk": "risk_alerts",
-                "bottleneck": "bottlenecks",
-                "milestone": "milestones",
-            }.get(source.type, "delivery_evidence")
+            table = EVIDENCE_SOURCE_TABLE_BY_TYPE.get(source.type, "delivery_evidence")
             session.add(
                 AgentQueryEvidenceLink(
                     agent_query_id=query.id,
@@ -474,9 +508,247 @@ async def answer_delivery_chat(
                     description=source.title,
                 )
             )
+    return query
+
+
+def _log_llm_failure(
+    current_user: CurrentUser,
+    *,
+    project_id: UUID | None,
+    conversation_id: UUID | None,
+    error_type: str,
+) -> None:
+    """Log an LLM call failure with identifying context only — never message content."""
+    logger.warning(
+        "Delivery chat LLM call failed user_id=%s org_id=%s project_id=%s conversation_id=%s exception_type=%s",
+        current_user.id,
+        current_user.org_id,
+        project_id,
+        conversation_id,
+        error_type,
+    )
+
+
+async def answer_delivery_chat(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    *,
+    message: str,
+    project_id: UUID | None = None,
+    conversation_id: UUID | None = None,
+) -> DeliveryChatRead:
+    """Answer a delivery operations question using live dashboard context."""
+    message = message.strip()
+    settings = get_settings()
+    if not (settings.openai_api_key or settings.llm_api_key):
+        return DeliveryChatRead(
+            answer=_not_configured_answer(),
+            sources=[],
+            conversation_id=conversation_id or uuid4(),
+        )
+
+    started = perf_counter()
+    prepared = await _prepare_chat_request(
+        session, current_user, message=message, project_id=project_id, conversation_id=conversation_id,
+    )
+
+    llm_result = await LLMClient().generate_delivery_answer(
+        query=message,
+        context=prepared.context,
+        history=prepared.history,
+        evidence_sources=[source.model_dump(mode="json") for source in prepared.evidence_catalog_sent],
+    )
+
+    error_type = llm_result.get("error_type")
+    if error_type:
+        _log_llm_failure(
+            current_user,
+            project_id=prepared.resolved_project_id,
+            conversation_id=conversation_id,
+            error_type=str(error_type),
+        )
+
+    answer = str(llm_result.get("answer", "")).strip() or _empty_answer_fallback()
+
+    cited_titles = llm_result.get("cited_source_titles")
+    cited_title_list = [str(title) for title in cited_titles] if isinstance(cited_titles, list) else []
+    response_sources = _match_cited_sources(prepared.evidence_catalog_sent, cited_title_list, answer)
+
+    query = _persist_chat_turn(
+        session,
+        current_user,
+        resolved_project_id=prepared.resolved_project_id,
+        message=message,
+        answer=answer,
+        model_used=str(llm_result.get("model") or ""),
+        started=started,
+        response_sources=response_sources,
+    )
+    await session.flush()
 
     return DeliveryChatRead(
         answer=answer,
         sources=response_sources,
         conversation_id=conversation_id or query.id,
+    )
+
+
+async def stream_delivery_chat(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    *,
+    message: str,
+    project_id: UUID | None = None,
+    conversation_id: UUID | None = None,
+) -> AsyncGenerator[str, None]:
+    """SSE-streaming counterpart to answer_delivery_chat.
+
+    Emits `delta` events as answer tokens arrive, then a single `done` event with the
+    final answer, sources, and conversation_id. The full turn is persisted once
+    streaming completes, exactly as the non-streaming path persists it.
+    """
+    message = message.strip()
+    settings = get_settings()
+    if not (settings.openai_api_key or settings.llm_api_key):
+        yield _sse(
+            {
+                "type": "done",
+                "answer": _not_configured_answer(),
+                "sources": [],
+                "conversation_id": str(conversation_id or uuid4()),
+            }
+        )
+        return
+
+    started = perf_counter()
+    prepared = await _prepare_chat_request(
+        session, current_user, message=message, project_id=project_id, conversation_id=conversation_id,
+    )
+
+    accumulated_answer = ""
+    final_answer = ""
+    model_used = ""
+    cited_title_list: list[str] = []
+    error_type: str | None = None
+
+    async for event in LLMClient().stream_delivery_answer(
+        query=message,
+        context=prepared.context,
+        history=prepared.history,
+        evidence_sources=[source.model_dump(mode="json") for source in prepared.evidence_catalog_sent],
+    ):
+        if event.get("type") == "delta":
+            text = str(event.get("text") or "")
+            if text:
+                accumulated_answer += text
+                yield _sse({"type": "delta", "text": text})
+        elif event.get("type") == "done":
+            model_used = str(event.get("model") or "")
+            error_type = event.get("error_type")
+            cited = event.get("cited_source_titles")
+            cited_title_list = [str(title) for title in cited] if isinstance(cited, list) else []
+            final_answer = str(event.get("answer") or "").strip()
+
+    if error_type:
+        _log_llm_failure(
+            current_user,
+            project_id=prepared.resolved_project_id,
+            conversation_id=conversation_id,
+            error_type=str(error_type),
+        )
+
+    # On success the deltas already form the full answer; `final_answer` is the
+    # parser's authoritative version (handles trailing JSON artifacts). On failure,
+    # no deltas were sent — `final_answer` is the only text and becomes the answer.
+    answer = (final_answer or accumulated_answer).strip() or _empty_answer_fallback()
+    response_sources = _match_cited_sources(prepared.evidence_catalog_sent, cited_title_list, answer)
+
+    query = _persist_chat_turn(
+        session,
+        current_user,
+        resolved_project_id=prepared.resolved_project_id,
+        message=message,
+        answer=answer,
+        model_used=model_used,
+        started=started,
+        response_sources=response_sources,
+    )
+    await session.flush()
+
+    yield _sse(
+        {
+            "type": "done",
+            "answer": answer,
+            "sources": [source.model_dump(mode="json") for source in response_sources],
+            "conversation_id": str(conversation_id or query.id),
+        }
+    )
+
+
+async def load_delivery_chat_conversation(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    conversation_id: UUID,
+) -> DeliveryChatConversationRead | None:
+    """Reload a persisted conversation thread for display after a page refresh.
+
+    Returns None if the conversation does not exist or does not belong to the
+    requesting user (super admins may read any conversation, matching the
+    elevated-access pattern used elsewhere, e.g. recommendation mutations).
+    """
+    anchor = await session.get(AgentQuery, conversation_id)
+    if anchor is None or anchor.agent_name != AGENT_NAME:
+        return None
+
+    is_super_admin = current_user.role == AppRole.SUPER_ADMIN
+    if not is_super_admin and anchor.user_id != current_user.id:
+        return None
+
+    rows = (
+        await session.execute(
+            select(AgentQuery)
+            .where(
+                AgentQuery.user_id == anchor.user_id,
+                AgentQuery.agent_name == AGENT_NAME,
+                AgentQuery.project_id == anchor.project_id,
+                AgentQuery.created_at >= anchor.created_at,
+            )
+            .order_by(AgentQuery.created_at.asc())
+            .limit(MAX_CONVERSATION_TURNS_RETURNED)
+        )
+    ).scalars().all()
+
+    query_ids = [row.id for row in rows]
+    evidence_by_query: dict[UUID, list[AgentQueryEvidenceLink]] = defaultdict(list)
+    if query_ids:
+        evidence_rows = (
+            await session.execute(
+                select(AgentQueryEvidenceLink).where(AgentQueryEvidenceLink.agent_query_id.in_(query_ids))
+            )
+        ).scalars().all()
+        for link in evidence_rows:
+            evidence_by_query[link.agent_query_id].append(link)
+
+    turns = [
+        DeliveryChatTurnRead(
+            id=row.id,
+            query_text=row.query_text,
+            answer_text=row.answer_text,
+            created_at=row.created_at,
+            sources=[
+                DeliveryChatSource(
+                    title=link.description,
+                    type=EVIDENCE_TYPE_BY_SOURCE_TABLE.get(link.source_table, link.source_table),
+                    id=link.source_row_id,
+                )
+                for link in evidence_by_query.get(row.id, [])
+            ],
+        )
+        for row in rows
+    ]
+
+    return DeliveryChatConversationRead(
+        conversation_id=anchor.id,
+        project_id=anchor.project_id,
+        turns=turns,
     )

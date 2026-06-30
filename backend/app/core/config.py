@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     email_from_address: str | None = None
     knowledge_storage_bucket: str = "knowledge-documents"
     knowledge_upload_dir: str = str(BACKEND_ROOT / "data" / "knowledge")
+    # Delivery chat hardening (see app/agents/delivery/routes/chat.py)
+    delivery_chat_user_rate_limit_per_minute: int = 10
+    delivery_chat_org_rate_limit_per_minute: int = 60
+    delivery_chat_max_message_length: int = 2000
+    delivery_chat_retry_max_attempts: int = 3
+    delivery_chat_retry_base_delay_seconds: float = 0.5
 
     model_config = SettingsConfigDict(
         env_file=(

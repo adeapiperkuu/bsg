@@ -228,13 +228,3 @@ function DeliveryMarkdownComponent({ content, className }: Props) {
 }
 
 export const DeliveryMarkdown = memo(DeliveryMarkdownComponent);
-
-/** Plain-text preview for typewriter animation. */
-export function deliveryMarkdownPreview(content: string): string {
-  return sanitizeDeliveryMarkdown(content)
-    .replace(/^#{1,3}\s+/gm, "")
-    .replace(/\*\*([^*]+)\*\*/g, "$1")
-    .replace(/^\|.*\|$/gm, "")
-    .replace(/^---+$/gm, "")
-    .trim();
-}
