@@ -4,6 +4,7 @@ from app.agents.governance.services.charter_service import (
     CharterEvidenceItem,
     build_template_charter,
     has_sufficient_charter_evidence,
+    sanitize_charter_text,
 )
 from app.db.models import GovernanceEvidenceSourceType
 
@@ -71,6 +72,27 @@ def test_build_template_charter_includes_required_sections_and_evidence() -> Non
     text = build_template_charter(context, [item])
     assert "## Executive Summary" in text
     assert "## Approval Section" in text
-    assert "## Evidence Appendix" in text
+    assert "## Evidence Appendix" not in text
     assert ref in text
     assert "- Version: v2" in text
+
+
+def test_sanitize_charter_text_removes_evidence_appendix_data() -> None:
+    text = "\n".join(
+        [
+            "## Executive Summary",
+            "Grounded summary [scope_state:11111111-1111-1111-1111-111111111111].",
+            "",
+            "## Approval Section",
+            "- Version: v1",
+            "",
+            "## Evidence Appendix",
+            "- [weekly_summary:22222222-2222-2222-2222-222222222222] noisy detail",
+        ]
+    )
+
+    sanitized = sanitize_charter_text(text)
+
+    assert "## Approval Section" in sanitized
+    assert "Evidence Appendix" not in sanitized
+    assert "weekly_summary:" not in sanitized

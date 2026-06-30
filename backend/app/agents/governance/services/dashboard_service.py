@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.governance.analytics.sla import (
@@ -17,16 +16,13 @@ from app.agents.governance.schemas.governance import (
     GovernanceActionRead,
     GovernanceBootstrapRead,
     GovernanceEscalationRead,
-    GovernanceEvidenceLinkRead,
     GovernanceKpisRead,
-    GovernanceWeeklySummaryRead,
     ProjectDependencyRead,
     ProjectScopeStateRead,
 )
 from app.agents.governance.services.governance_service import (
     assert_can_read_governance,
     can_read_internal_governance,
-    get_latest_weekly_summary,
     load_project_names,
     load_user_names,
     scoped_actions_query,
@@ -36,7 +32,6 @@ from app.agents.governance.services.governance_service import (
 )
 from app.agents.governance.services.knowledge_link_service import list_approved_charter_references
 from app.core.security import CurrentUser
-from app.db.models import AppRole, GovernanceEvidenceLink, GovernanceSummaryStatus
 
 
 async def get_governance_bootstrap(
@@ -115,13 +110,6 @@ async def get_governance_bootstrap(
         ProjectScopeStateRead.model_validate(s, from_attributes=True) for s in scope_states
     ]
 
-    weekly_summary_model = await get_latest_weekly_summary(session, current_user)
-    weekly_summary: GovernanceWeeklySummaryRead | None = None
-    if weekly_summary_model is not None:
-        from app.agents.governance.services.summary_service import build_weekly_summary_read
-
-        weekly_summary = await build_weekly_summary_read(session, weekly_summary_model)
-
     charter_references = []
     if can_read_internal_governance(current_user):
         charter_references = await list_approved_charter_references(session, current_user)
@@ -132,6 +120,5 @@ async def get_governance_bootstrap(
         escalations=esc_reads,
         actions=action_reads,
         scope_states=scope_reads,
-        weekly_summary=weekly_summary,
         charter_references=charter_references,
     )

@@ -38,7 +38,6 @@ import {
   archiveProjectCharter,
   exportProjectCharter,
   generateProjectCharter,
-  governanceBootstrapQueryOptions,
   listProjectCharters,
   updateProjectCharter,
 } from "@/lib/queries/governance";
@@ -126,13 +125,14 @@ export function ProjectChartersPanel({
     queryKey: ["governance", "project-charters", selectedProjectId],
     queryFn: () => listProjectCharters(selectedProjectId),
     enabled: Boolean(selectedProjectId),
+    staleTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 
   const refresh = async () => {
     await queryClient.invalidateQueries({
       queryKey: ["governance", "project-charters", selectedProjectId],
     });
-    await queryClient.invalidateQueries({ queryKey: governanceBootstrapQueryOptions.queryKey });
   };
 
   const generateMutation = useMutation({
@@ -241,7 +241,7 @@ export function ProjectChartersPanel({
                 <SelectTrigger className="h-8 text-xs">
                   <SelectValue placeholder="Select project" />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent data-governance-select-content>
                   {projects.map((project) => (
                     <SelectItem key={project.value} value={project.value}>
                       {project.label}
@@ -385,7 +385,7 @@ export function ProjectChartersPanel({
       </Card>
 
       <Dialog open={reviewOpen} onOpenChange={setReviewOpen}>
-        <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
+        <DialogContent className="governance-no-shadow max-h-[90vh] max-w-3xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Review project charter</DialogTitle>
           </DialogHeader>
@@ -409,7 +409,7 @@ export function ProjectChartersPanel({
                       <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
-                      <SelectContent>
+                      <SelectContent data-governance-select-content>
                         <SelectItem value="internal_only">Internal Only</SelectItem>
                         <SelectItem value="client_safe">Client Safe</SelectItem>
                       </SelectContent>
@@ -501,7 +501,7 @@ export function ProjectChartersPanel({
       </Dialog>
 
       <AlertDialog open={approveOpen} onOpenChange={setApproveOpen}>
-        <AlertDialogContent>
+        <AlertDialogContent className="governance-no-shadow">
           <AlertDialogHeader>
             <AlertDialogTitle>Approve project charter?</AlertDialogTitle>
             <AlertDialogDescription>
@@ -522,7 +522,7 @@ export function ProjectChartersPanel({
       </AlertDialog>
 
       <AlertDialog open={archiveOpen} onOpenChange={setArchiveOpen}>
-        <AlertDialogContent>
+        <AlertDialogContent className="governance-no-shadow">
           <AlertDialogHeader>
             <AlertDialogTitle>Archive charter version?</AlertDialogTitle>
             <AlertDialogDescription>

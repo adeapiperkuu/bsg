@@ -27,7 +27,6 @@ import { formatDate } from "@/lib/governance-utils";
 import {
   approveGovernanceWeeklySummary,
   generateGovernanceWeeklySummary,
-  governanceBootstrapQueryOptions,
   listGovernanceWeeklySummaries,
   updateGovernanceWeeklySummary,
 } from "@/lib/queries/governance";
@@ -63,10 +62,11 @@ export function WeeklySummaryPanel({
     queryKey: ["governance", "weekly-summaries"],
     queryFn: listGovernanceWeeklySummaries,
     enabled: !isClient,
+    staleTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 
   const refresh = async () => {
-    await queryClient.invalidateQueries({ queryKey: governanceBootstrapQueryOptions.queryKey });
     await queryClient.invalidateQueries({ queryKey: ["governance", "weekly-summaries"] });
   };
 
@@ -253,7 +253,7 @@ export function WeeklySummaryPanel({
       </div>
 
       <Dialog open={reviewOpen} onOpenChange={setReviewOpen}>
-        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+        <DialogContent className="governance-no-shadow max-h-[90vh] max-w-2xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Review weekly summary</DialogTitle>
           </DialogHeader>
@@ -319,7 +319,7 @@ export function WeeklySummaryPanel({
       </Dialog>
 
       <AlertDialog open={approveOpen} onOpenChange={setApproveOpen}>
-        <AlertDialogContent>
+        <AlertDialogContent className="governance-no-shadow">
           <AlertDialogHeader>
             <AlertDialogTitle>Approve weekly summary?</AlertDialogTitle>
             <AlertDialogDescription>

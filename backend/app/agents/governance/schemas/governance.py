@@ -276,5 +276,4 @@ class GovernanceBootstrapRead(BaseModel):
     escalations: list[GovernanceEscalationRead]
     actions: list[GovernanceActionRead]
     scope_states: list[ProjectScopeStateRead]
-    weekly_summary: GovernanceWeeklySummaryRead | None
     charter_references: list[GovernanceCharterReferenceRead] = Field(default_factory=list)

@@ -12,7 +12,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { countActiveGovernanceFilters, emptyGovernanceFilters, type GovernanceFilters } from "./filters";
+import {
+  countActiveGovernanceFilters,
+  emptyGovernanceFilters,
+  type GovernanceFilters,
+} from "./filters";
 
 type Option = { value: string; label: string };
 
@@ -52,7 +56,7 @@ function FilterSelect({
         <SelectTrigger className={fieldClass}>
           <SelectValue />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent data-governance-select-content>
           {options.map((opt) => (
             <SelectItem key={opt.value} value={opt.value} className="text-xs">
               {opt.label}
@@ -165,10 +169,7 @@ export function GovernanceFiltersBar({
               )}
             </Button>
           </PopoverTrigger>
-          <PopoverContent
-            align="end"
-            className="w-[min(92vw,32rem)] border-border p-4 shadow-none"
-          >
+          <PopoverContent align="end" className="w-[min(92vw,32rem)] border-border p-4 shadow-none">
             <div className="mb-3 flex items-center justify-between">
               <p className="text-xs font-medium">Filter governance data</p>
               {(activeFilterCount > 0 || hasSearch) && (

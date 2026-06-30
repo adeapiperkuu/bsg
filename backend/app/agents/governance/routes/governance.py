@@ -456,11 +456,6 @@ async def _charter_export_payload(
     ).scalar_one_or_none()
     project_name = project.name if project else read.project_name or "Project"
     title = f"{project_name} Project Charter {read.version}"
-    appendix = "\n\nEvidence Appendix\n" + "\n".join(
-        f"- [{link.source_type}] {link.label or link.source_id}"
-        f"{' - ' + link.detail if link.detail else ''}"
-        for link in read.evidence_links
-    )
     body = (
         f"Project: {project_name}\n"
         f"Version: {read.version}\n"
@@ -469,7 +464,6 @@ async def _charter_export_payload(
         f"Approved: {read.approved_at.isoformat() if read.approved_at else 'Pending'}\n"
         f"Approved by: {read.approved_by_name or 'Pending'}\n\n"
         f"{read.generated_text}"
-        f"{appendix if read.evidence_links else ''}"
     )
     return read, f"{title}\n\n{body}"
 

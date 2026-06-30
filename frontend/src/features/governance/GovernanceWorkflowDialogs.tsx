@@ -125,7 +125,7 @@ export function GovernanceWorkflowDialogs({
     const reset = () => {
       setTitle("");
       setDescription("");
-      setProjectId(dialog.kind !== "scope" ? dialog.projectId ?? "" : dialog.projectId);
+      setProjectId(dialog.kind !== "scope" ? (dialog.projectId ?? "") : dialog.projectId);
       setOwnerId("");
       setAssignedTo("");
       setDueDate("");
@@ -277,9 +277,7 @@ export function GovernanceWorkflowDialogs({
           },
         });
       } else if (dialog.kind === "escalation") {
-        const existing = dialog.id
-          ? data.escalations.find((e) => e.id === dialog.id)
-          : undefined;
+        const existing = dialog.id ? data.escalations.find((e) => e.id === dialog.id) : undefined;
         const sourceType: GovernanceEscalationSourceType | null =
           existing?.source_type === "delivery_risk"
             ? "delivery_risk"
@@ -288,7 +286,7 @@ export function GovernanceWorkflowDialogs({
               : null;
         const sourceId =
           existing?.source_type === "delivery_risk"
-            ? existing.source_id ?? null
+            ? (existing.source_id ?? null)
             : linkedDocId || null;
 
         await onSaveEscalation({
@@ -332,7 +330,7 @@ export function GovernanceWorkflowDialogs({
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent className="governance-no-shadow max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{titles[dialog.kind]}</DialogTitle>
         </DialogHeader>
@@ -366,7 +364,7 @@ export function GovernanceWorkflowDialogs({
                 <SelectTrigger>
                   <SelectValue placeholder="Select project" />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent data-governance-select-content>
                   {projects.map((p) => (
                     <SelectItem key={p.value} value={p.value}>
                       {p.label}
@@ -385,7 +383,7 @@ export function GovernanceWorkflowDialogs({
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent data-governance-select-content>
                     <SelectItem value="client_action">Client Action</SelectItem>
                     <SelectItem value="internal">Internal</SelectItem>
                     <SelectItem value="external">External</SelectItem>
@@ -394,11 +392,14 @@ export function GovernanceWorkflowDialogs({
               </div>
               <div>
                 <Label>Owner</Label>
-                <Select value={ownerId || "none"} onValueChange={(v) => setOwnerId(v === "none" ? "" : v)}>
+                <Select
+                  value={ownerId || "none"}
+                  onValueChange={(v) => setOwnerId(v === "none" ? "" : v)}
+                >
                   <SelectTrigger>
                     <SelectValue placeholder="Unassigned" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent data-governance-select-content>
                     <SelectItem value="none">Unassigned</SelectItem>
                     {users.map((u) => (
                       <SelectItem key={u.value} value={u.value}>
@@ -418,7 +419,7 @@ export function GovernanceWorkflowDialogs({
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent data-governance-select-content>
                     <SelectItem value="open">Open</SelectItem>
                     <SelectItem value="blocking">Blocking</SelectItem>
                     <SelectItem value="resolved">Resolved</SelectItem>
@@ -436,7 +437,7 @@ export function GovernanceWorkflowDialogs({
                   <SelectTrigger>
                     <SelectValue placeholder="Select owner" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent data-governance-select-content>
                     {users.map((u) => (
                       <SelectItem key={u.value} value={u.value}>
                         {u.label}
@@ -455,7 +456,7 @@ export function GovernanceWorkflowDialogs({
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent data-governance-select-content>
                     <SelectItem value="open">Open</SelectItem>
                     <SelectItem value="in_progress">In Progress</SelectItem>
                     <SelectItem value="completed">Completed</SelectItem>
@@ -472,7 +473,7 @@ export function GovernanceWorkflowDialogs({
                   <SelectTrigger>
                     <SelectValue placeholder="None" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent data-governance-select-content>
                     <SelectItem value="none">None</SelectItem>
                     {pmNoteDocs.map((doc) => (
                       <SelectItem key={doc.id} value={doc.id}>
@@ -496,7 +497,7 @@ export function GovernanceWorkflowDialogs({
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent data-governance-select-content>
                     <SelectItem value="low">Low</SelectItem>
                     <SelectItem value="medium">Medium</SelectItem>
                     <SelectItem value="high">High</SelectItem>
@@ -510,7 +511,7 @@ export function GovernanceWorkflowDialogs({
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent data-governance-select-content>
                     <SelectItem value="open">Open</SelectItem>
                     <SelectItem value="in_progress">In Progress</SelectItem>
                     <SelectItem value="resolved">Resolved</SelectItem>
@@ -526,7 +527,7 @@ export function GovernanceWorkflowDialogs({
                   <SelectTrigger>
                     <SelectValue placeholder="Unassigned" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent data-governance-select-content>
                     <SelectItem value="none">Unassigned</SelectItem>
                     {users.map((u) => (
                       <SelectItem key={u.value} value={u.value}>
@@ -549,7 +550,7 @@ export function GovernanceWorkflowDialogs({
                     <SelectTrigger>
                       <SelectValue placeholder="None" />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectContent data-governance-select-content>
                       <SelectItem value="none">None</SelectItem>
                       {escalationNoteDocs.map((doc) => (
                         <SelectItem key={doc.id} value={doc.id}>
@@ -571,7 +572,7 @@ export function GovernanceWorkflowDialogs({
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent data-governance-select-content>
                     <SelectItem value="approved">Approved</SelectItem>
                     <SelectItem value="pending_revision">Pending Revision</SelectItem>
                     <SelectItem value="locked">Locked</SelectItem>
@@ -595,7 +596,7 @@ export function GovernanceWorkflowDialogs({
                   <SelectTrigger>
                     <SelectValue placeholder="None" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent data-governance-select-content>
                     <SelectItem value="none">None</SelectItem>
                     {charterDocs.map((doc) => (
                       <SelectItem key={doc.id} value={doc.id}>

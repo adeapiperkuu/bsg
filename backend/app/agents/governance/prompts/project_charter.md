@@ -53,8 +53,5 @@ Governance meetings, reporting cadence, stakeholders, approval workflow — only
 - Approval date: (pending)
 - Version: (from context)
 
-## Evidence Appendix
-Bullet list citing each evidence_ref with type, label, and key detail.
-
 CHARTER CONTEXT JSON:
 {{CHARTER_CONTEXT_JSON}}

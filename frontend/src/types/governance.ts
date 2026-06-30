@@ -168,7 +168,6 @@ export type GovernanceBootstrap = {
   escalations: GovernanceEscalation[];
   actions: GovernanceAction[];
   scope_states: ProjectScopeState[];
-  weekly_summary: GovernanceWeeklySummary | null;
   charter_references: GovernanceCharterReference[];
 };
 

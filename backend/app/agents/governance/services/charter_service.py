@@ -82,6 +82,10 @@ GOVERNANCE_EVIDENCE_TYPES = {
     GovernanceEvidenceSourceType.WEEKLY_SUMMARY,
 }
 UNAVAILABLE = "Information not available in approved governance sources."
+EVIDENCE_APPENDIX_PATTERN = re.compile(
+    r"(?:\n{2,}|\A)\s*#{0,6}\s*Evidence Appendix\b[\s\S]*\Z",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +118,10 @@ def _truncate(text: str | None, limit: int = 900) -> str | None:
 
 def _section_or_unavailable(lines: list[str]) -> list[str]:
     return lines if lines else [UNAVAILABLE]
+
+
+def sanitize_charter_text(text: str) -> str:
+    return EVIDENCE_APPENDIX_PATTERN.sub("", text).rstrip()
 
 
 def _add_evidence(
@@ -692,14 +700,7 @@ def build_template_charter(context: dict[str, Any], evidence: list[CharterEviden
         "- Approved by: (pending)",
         "- Approval date: (pending)",
         f"- Version: {version}",
-        "",
-        "## Evidence Appendix",
     ]
-    for item in evidence:
-        lines.append(
-            f"- [{item.evidence_ref}] {item.category}: {item.label} - "
-            f"{item.project_name or 'Portfolio'} - {item.detail}"
-        )
     return "\n".join(lines)
 
 
@@ -844,6 +845,7 @@ async def generate_project_charter(
     generated_text = await _call_llm_charter(context)
     if not generated_text or not _grounding_ok(generated_text, evidence_items):
         generated_text = build_template_charter(context, evidence_items)
+    generated_text = sanitize_charter_text(generated_text)
 
     charter = ProjectCharter(
         org_id=project.org_id,
@@ -886,7 +888,7 @@ async def update_project_charter_draft(
     )
     if charter.status != GovernanceCharterStatus.DRAFT:
         raise ApiError(409, "CHARTER_NOT_EDITABLE", "Only draft charters can be edited.")
-    charter.generated_text = generated_text
+    charter.generated_text = sanitize_charter_text(generated_text)
     if visibility is not None:
         charter.visibility = visibility
     await session.commit()
@@ -957,6 +959,7 @@ async def build_project_charter_read(
             "evidence_links": [
                 GovernanceEvidenceLinkRead.model_validate(row) for row in enriched
             ],
+            "generated_text": sanitize_charter_text(charter.generated_text),
             "approved_by_name": names.get(charter.approved_by) if charter.approved_by else None,
             "project_name": project_names.get(charter.project_id),
         }

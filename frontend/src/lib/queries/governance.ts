@@ -33,7 +33,9 @@ export async function deleteGovernanceAction(actionId: string): Promise<void> {
   await apiFetch<void>(`/governance/actions/${actionId}`, { method: "DELETE" });
 }
 
-export async function promoteRiskAlertToEscalation(riskAlertId: string): Promise<GovernanceEscalation> {
+export async function promoteRiskAlertToEscalation(
+  riskAlertId: string,
+): Promise<GovernanceEscalation> {
   const body = await apiFetch<{ data: GovernanceEscalation }>(
     "/governance/escalations/promote-from-risk-alert",
     {
@@ -151,7 +153,10 @@ export async function getGovernanceBootstrap(): Promise<GovernanceBootstrap> {
 export const governanceBootstrapQueryOptions = queryOptions({
   queryKey: queryKeys.governanceBootstrap,
   queryFn: getGovernanceBootstrap,
-  staleTime: STALE_TIME_MS,
+  staleTime: Math.max(STALE_TIME_MS, 10 * 60 * 1000),
+  refetchOnMount: false,
+  refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
 });
 
 export function useGovernanceBootstrapQuery() {
@@ -186,9 +191,12 @@ export async function updateDependency(
 }
 
 export async function resolveDependency(dependencyId: string): Promise<ProjectDependency> {
-  const body = await apiFetch<{ data: ProjectDependency }>(`/dependencies/${dependencyId}/resolve`, {
-    method: "POST",
-  });
+  const body = await apiFetch<{ data: ProjectDependency }>(
+    `/dependencies/${dependencyId}/resolve`,
+    {
+      method: "POST",
+    },
+  );
   return body.data;
 }
 
@@ -264,7 +272,9 @@ export async function updateProjectScope(
 }
 
 export async function getWeeklySummary(): Promise<GovernanceWeeklySummary | null> {
-  const body = await apiFetch<{ data: GovernanceWeeklySummary | null }>("/governance/weekly-summary");
+  const body = await apiFetch<{ data: GovernanceWeeklySummary | null }>(
+    "/governance/weekly-summary",
+  );
   return body.data;
 }
 
