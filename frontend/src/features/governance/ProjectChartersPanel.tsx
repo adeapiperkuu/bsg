@@ -205,6 +205,7 @@ export function ProjectChartersPanel({
   const currentCharter = pickCurrentCharter(charters);
   const displayCharter = activeCharter ?? currentCharter;
   const canEditActive = canWrite && activeCharter?.status === "draft";
+  const selectedVersionId = displayCharter?.id ?? "";
 
   const openReview = (charter: ProjectCharter) => {
     setActiveCharter(charter);
@@ -236,9 +237,9 @@ export function ProjectChartersPanel({
           title="Project Charters"
           sub="AI-generated drafts, approval workflow, version history, and exports"
           right={
-            <div className="flex min-w-48 items-center gap-2">
+            <div className="flex min-w-48 flex-wrap items-center justify-end gap-2">
               <Select value={selectedProjectId} onValueChange={setSelectedProjectId}>
-                <SelectTrigger className="h-8 text-xs">
+                <SelectTrigger className="h-8 w-56 text-xs">
                   <SelectValue placeholder="Select project" />
                 </SelectTrigger>
                 <SelectContent data-governance-select-content>
@@ -249,11 +250,30 @@ export function ProjectChartersPanel({
                   ))}
                 </SelectContent>
               </Select>
+              <Select
+                value={selectedVersionId}
+                onValueChange={(charterId) => {
+                  const charter = charters.find((item) => item.id === charterId);
+                  setActiveCharter(charter ?? null);
+                }}
+                disabled={charters.length === 0}
+              >
+                <SelectTrigger className="h-8 w-40 text-xs">
+                  <SelectValue placeholder="Version history" />
+                </SelectTrigger>
+                <SelectContent data-governance-select-content>
+                  {charters.map((charter) => (
+                    <SelectItem key={charter.id} value={charter.id}>
+                      {charter.version} · {formatCharterStatus(charter.status)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           }
         />
 
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div>
           <div className="rounded-md border border-border bg-elevated p-3">
             {chartersQuery.isLoading ? (
               <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
@@ -351,35 +371,6 @@ export function ProjectChartersPanel({
                 </span>
               )}
             </div>
-          </div>
-
-          <div className="rounded-md border border-border p-3">
-            <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Version history
-            </div>
-            {charters.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No versions yet.</p>
-            ) : (
-              <ul className="space-y-2">
-                {charters.map((charter) => (
-                  <li key={charter.id}>
-                    <button
-                      type="button"
-                      className="flex w-full items-center justify-between gap-2 rounded border border-border px-2 py-2 text-left text-xs hover:bg-elevated"
-                      onClick={() => openReview(charter)}
-                    >
-                      <span className="min-w-0">
-                        <span className="font-medium">{charter.version}</span>
-                        <span className="ml-2 text-[10px] text-muted-foreground">
-                          {formatDate(charter.created_at)}
-                        </span>
-                      </span>
-                      <StatusPill status={formatCharterStatus(charter.status)} />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
           </div>
         </div>
       </Card>

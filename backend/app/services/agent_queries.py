@@ -2,6 +2,7 @@ from time import perf_counter
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.governance.query_handler import PROJECT_GOVERNANCE_AGENT_NAME, answer_governance_query
 from app.agents.quality_intelligence.query_handler import answer_quality_query
 from app.core.config import get_settings
 from app.core.security import CurrentUser
@@ -15,6 +16,7 @@ SUPPORTED_AGENTS = {
     "quality_intelligence_agent",
     "client_interaction_agent",
     "workforce_capability_agent",
+    PROJECT_GOVERNANCE_AGENT_NAME,
 }
 
 
@@ -26,6 +28,8 @@ async def answer_query(
 ) -> AgentQuery:
     if payload.agent_name == "quality_intelligence_agent":
         return await answer_quality_query(session, current_user, payload, evidence)
+    if payload.agent_name == PROJECT_GOVERNANCE_AGENT_NAME:
+        return await answer_governance_query(session, current_user, payload, evidence)
 
     require_evidence(evidence)
     started = perf_counter()

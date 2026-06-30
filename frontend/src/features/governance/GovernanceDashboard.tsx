@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { AlertCircle, FileText, Plus, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
-import { Card, KpiCard, SectionHeader, StatusPill } from "@/components/bsg/widgets";
+import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
 import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import {
   AlertDialog,
@@ -16,6 +16,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { AskGovernanceAgentPanel } from "@/features/governance/AskGovernanceAgentPanel";
+import { ExecutiveGovernanceDashboard } from "@/features/governance/ExecutiveGovernanceDashboard";
 import { GovernanceFiltersBar } from "@/features/governance/GovernanceFiltersBar";
 import { ProjectChartersPanel } from "@/features/governance/ProjectChartersPanel";
 import { ProjectGovernanceSheet } from "@/features/governance/ProjectGovernanceSheet";
@@ -33,7 +35,6 @@ import {
 } from "@/features/governance/filters";
 import { listUsers } from "@/lib/api";
 import {
-  actionsDueThisWeek,
   buildGovernanceRegister,
   dependencyRowClass,
   escalationRowClass,
@@ -54,6 +55,7 @@ import {
   deleteDependency,
   deleteGovernanceAction,
   deleteGovernanceEscalation,
+  governanceAnalyticsQueryOptions,
   governanceBootstrapQueryOptions,
   promoteRiskAlertToEscalation,
   resolveDependency,
@@ -307,6 +309,11 @@ export function GovernanceDashboard() {
     ...governanceBootstrapQueryOptions,
     placeholderData: keepPreviousData,
   });
+  const [analyticsRangeDays, setAnalyticsRangeDays] = useState(30);
+  const analyticsQuery = useQuery({
+    ...governanceAnalyticsQueryOptions(analyticsRangeDays),
+    placeholderData: keepPreviousData,
+  });
   const portfolioQuery = useQuery({
     ...deliveryPortfolioQueryOptions,
     enabled: showDelivery,
@@ -484,8 +491,6 @@ export function GovernanceDashboard() {
     [escalationPage, filteredEscalations],
   );
 
-  const dueThisWeek = useMemo(() => (data ? actionsDueThisWeek(data.actions) : []), [data]);
-
   const escalatedRiskIds = useMemo(() => {
     if (!data) return new Set<string>();
     return new Set(
@@ -591,6 +596,38 @@ export function GovernanceDashboard() {
     setSheetOpen(true);
   };
 
+  const openAnalyticsProjectSheet = (projectId: string) => {
+    const existingRow = registerRows.find((row) => row.projectId === projectId);
+    if (existingRow) {
+      openProjectSheet(existingRow);
+      return;
+    }
+
+    const project = analyticsQuery.data?.project_health.find((row) => row.project_id === projectId);
+    if (!project) return;
+
+    setSelectedRow({
+      projectId: project.project_id,
+      projectName: project.project_name,
+      scopeStatus: null,
+      scopeVersion: null,
+      openDependencies: project.open_dependencies,
+      blockingDependencies: project.blocking_dependencies,
+      openActions: project.overdue_actions,
+      openEscalations: project.open_escalations,
+      health: project.score < 40 ? "Red" : project.score < 75 ? "Amber" : "Green",
+      deliveryTrafficLight:
+        project.delivery_traffic_light === "green" ||
+        project.delivery_traffic_light === "yellow" ||
+        project.delivery_traffic_light === "red"
+          ? project.delivery_traffic_light
+          : null,
+      deliveryConfidence: project.delivery_confidence,
+      atRiskMilestones: 0,
+    });
+    setSheetOpen(true);
+  };
+
   if (!data && bootstrapQuery.isLoading) {
     return <PageLoadingScreen label="Loading governance…" />;
   }
@@ -610,9 +647,7 @@ export function GovernanceDashboard() {
     );
   }
 
-  const { kpis, charter_references } = data;
-  const openActionsDelta =
-    dueThisWeek.length > 0 ? `${dueThisWeek.length} due this week` : undefined;
+  const { charter_references } = data;
 
   return (
     <div className="governance-no-shadow space-y-5">
@@ -634,84 +669,82 @@ export function GovernanceDashboard() {
         </div>
       )}
 
-      <GovernanceFiltersBar
-        filters={filters}
-        onChange={setFilters}
-        projects={projectOptions}
-        users={userOptions}
-        showInternalFilters={!isClient}
-      />
+      {analyticsQuery.data ? (
+        <ExecutiveGovernanceDashboard
+          analytics={analyticsQuery.data}
+          isFetching={analyticsQuery.isFetching}
+          rangeDays={analyticsRangeDays}
+          onRangeChange={setAnalyticsRangeDays}
+          onRefresh={() => void analyticsQuery.refetch()}
+          onOpenProject={openAnalyticsProjectSheet}
+        />
+      ) : analyticsQuery.isLoading ? (
+        <Card>
+          <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+            <RefreshCw className="h-4 w-4 animate-spin" />
+            Loading executive governance intelligence...
+          </div>
+        </Card>
+      ) : analyticsQuery.isError ? (
+        <Card>
+          <SectionError
+            message={
+              analyticsQuery.error instanceof Error
+                ? analyticsQuery.error.message
+                : "Unable to load governance analytics."
+            }
+            onRetry={() => void analyticsQuery.refetch()}
+          />
+        </Card>
+      ) : null}
 
-      {canWrite && (
-        <div className="flex flex-wrap gap-2">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="shadow-none"
-            onClick={() => setDialog({ kind: "dependency", mode: "create" })}
-          >
-            <Plus className="mr-1 h-3.5 w-3.5" />
-            Dependency
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="shadow-none"
-            onClick={() => setDialog({ kind: "action", mode: "create" })}
-          >
-            <Plus className="mr-1 h-3.5 w-3.5" />
-            Action
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="shadow-none"
-            onClick={() => setDialog({ kind: "escalation", mode: "create" })}
-          >
-            <Plus className="mr-1 h-3.5 w-3.5" />
-            Escalation
-          </Button>
+      <div className="flex flex-wrap items-center gap-2">
+        {canWrite && (
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="shadow-none"
+              onClick={() => setDialog({ kind: "dependency", mode: "create" })}
+            >
+              <Plus className="mr-1 h-3.5 w-3.5" />
+              Dependency
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="shadow-none"
+              onClick={() => setDialog({ kind: "action", mode: "create" })}
+            >
+              <Plus className="mr-1 h-3.5 w-3.5" />
+              Action
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="shadow-none"
+              onClick={() => setDialog({ kind: "escalation", mode: "create" })}
+            >
+              <Plus className="mr-1 h-3.5 w-3.5" />
+              Escalation
+            </Button>
+          </div>
+        )}
+        <div className="min-w-0 flex-1">
+          <GovernanceFiltersBar
+            filters={filters}
+            onChange={setFilters}
+            projects={projectOptions}
+            users={userOptions}
+            showInternalFilters={!isClient}
+          />
         </div>
-      )}
+      </div>
 
       <div className="space-y-5">
-        <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
-          <KpiCard
-            label="Open Actions"
-            value={kpis.open_actions}
-            delta={openActionsDelta}
-            tone={kpis.open_actions > 0 ? "warning" : "default"}
-          />
-          <KpiCard
-            label="Overdue Actions"
-            value={kpis.overdue_actions}
-            tone={kpis.overdue_actions > 0 ? "danger" : "default"}
-          />
-          <KpiCard
-            label="At-Risk Items"
-            value={kpis.at_risk_items}
-            tone={kpis.at_risk_items > 0 ? "danger" : "success"}
-          />
-          <KpiCard
-            label="Open Escalations"
-            value={kpis.open_escalations}
-            tone={kpis.open_escalations > 0 ? "danger" : "default"}
-          />
-          <KpiCard
-            label="Blocking Dependencies"
-            value={kpis.blocking_dependencies}
-            tone={kpis.blocking_dependencies > 0 ? "danger" : "default"}
-          />
-          <KpiCard
-            label="SLA Adherence"
-            value={`${kpis.sla_adherence_pct}%`}
-            tone={kpis.sla_adherence_pct >= 90 ? "success" : "warning"}
-          />
-        </div>
-
         <Tabs
           value={selectedTable}
           onValueChange={(value) => setActiveTable(value as GovernanceTableTab)}
@@ -1113,6 +1146,8 @@ export function GovernanceDashboard() {
         isClient={isClient}
         isReadOnly={isReadOnly}
       />
+
+      {!isClient && <AskGovernanceAgentPanel projects={projectOptions} />}
 
       {!isClient && charter_references.length > 0 && (
         <Card>

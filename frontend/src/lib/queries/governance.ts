@@ -5,6 +5,7 @@ import type {
   GovernanceAction,
   GovernanceActionCreatePayload,
   GovernanceActionUpdatePayload,
+  GovernanceAnalytics,
   GovernanceBootstrap,
   GovernanceEscalation,
   GovernanceEscalationCreatePayload,
@@ -150,6 +151,13 @@ export async function getGovernanceBootstrap(): Promise<GovernanceBootstrap> {
   return body.data;
 }
 
+export async function getGovernanceAnalytics(days = 30): Promise<GovernanceAnalytics> {
+  const body = await apiFetch<{ data: GovernanceAnalytics }>(
+    `/governance/analytics?days=${encodeURIComponent(String(days))}`,
+  );
+  return body.data;
+}
+
 export const governanceBootstrapQueryOptions = queryOptions({
   queryKey: queryKeys.governanceBootstrap,
   queryFn: getGovernanceBootstrap,
@@ -161,6 +169,17 @@ export const governanceBootstrapQueryOptions = queryOptions({
 
 export function useGovernanceBootstrapQuery() {
   return useQuery(governanceBootstrapQueryOptions);
+}
+
+export function governanceAnalyticsQueryOptions(days: number) {
+  return queryOptions({
+    queryKey: queryKeys.governanceAnalytics(days),
+    queryFn: () => getGovernanceAnalytics(days),
+    staleTime: Math.max(STALE_TIME_MS, 10 * 60 * 1000),
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
 }
 
 export async function getProjectDependencies(projectId: string): Promise<ProjectDependency[]> {

@@ -8,6 +8,7 @@ from app.agents.governance.schemas.governance import (
     GovernanceActionCreate,
     GovernanceActionRead,
     GovernanceActionUpdate,
+    GovernanceAnalyticsRead,
     GovernanceBootstrapRead,
     GovernanceEscalationCreate,
     GovernanceEscalationRead,
@@ -26,6 +27,7 @@ from app.agents.governance.schemas.governance import (
     ProjectScopeStateUpdate,
     PromoteRiskAlertRequest,
 )
+from app.agents.governance.services.analytics_service import get_governance_analytics
 from app.agents.governance.services.charter_export import generate_simple_docx
 from app.agents.governance.services.charter_service import (
     approve_project_charter,
@@ -85,6 +87,15 @@ async def governance_bootstrap(
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
 ) -> DataResponse[GovernanceBootstrapRead]:
     return DataResponse(data=await get_governance_bootstrap(session, current_user))
+
+
+@router.get("/governance/analytics", response_model=DataResponse[GovernanceAnalyticsRead])
+async def governance_analytics(
+    session: SessionDep,
+    days: int = 30,
+    current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
+) -> DataResponse[GovernanceAnalyticsRead]:
+    return DataResponse(data=await get_governance_analytics(session, current_user, days=days))
 
 
 @router.get(

@@ -10,8 +10,10 @@ export const queryKeys = {
     ["projects", projectId, "recommendations"] as const,
   projectTeams: (projectId: string) => ["projects", projectId, "teams"] as const,
   teamAnnotators: (teamId: string) => ["teams", teamId, "annotators"] as const,
-  projectUtilization: (projectId: string, filters: Record<string, string | number | undefined> = {}) =>
-    ["projects", projectId, "utilization", filters] as const,
+  projectUtilization: (
+    projectId: string,
+    filters: Record<string, string | number | undefined> = {},
+  ) => ["projects", projectId, "utilization", filters] as const,
   workforceSkills: ["workforce", "skills"] as const,
   workforceCertifications: ["workforce", "certifications"] as const,
   workforceTrainingPrograms: ["workforce", "training-programs"] as const,
@@ -24,9 +26,9 @@ export const queryKeys = {
     ["projects", projectId, "skill-requirements"] as const,
   projectSkillMatrix: (projectId: string) => ["projects", projectId, "skill-matrix"] as const,
   projectTrainingGaps: (projectId: string) => ["projects", projectId, "training-gaps"] as const,
-  projectCapabilityGaps: (projectId: string) =>
-    ["projects", projectId, "capability-gaps"] as const,
+  projectCapabilityGaps: (projectId: string) => ["projects", projectId, "capability-gaps"] as const,
   governanceBootstrap: ["governance", "bootstrap"] as const,
+  governanceAnalytics: (days: number) => ["governance", "analytics", days] as const,
 };
 
 export const STALE_TIME_MS = 5 * 60 * 1000;

@@ -171,6 +171,111 @@ export type GovernanceBootstrap = {
   charter_references: GovernanceCharterReference[];
 };
 
+export type GovernanceAnalyticsEvidence = {
+  source_type: string;
+  source_id: string | null;
+  label: string;
+  detail: string | null;
+  project_id: string | null;
+  project_name: string | null;
+};
+
+export type GovernanceAnalyticsInsight = {
+  title: string;
+  detail: string;
+  severity: string;
+  evidence: GovernanceAnalyticsEvidence[];
+};
+
+export type GovernanceAnalyticsRecommendation = {
+  title: string;
+  detail: string;
+  priority: string;
+  project_id: string | null;
+  project_name: string | null;
+  evidence: GovernanceAnalyticsEvidence[];
+};
+
+export type GovernanceHealthProject = {
+  project_id: string;
+  project_name: string;
+  score: number;
+  risk_level: string;
+  priority: number;
+  blocking_dependencies: number;
+  open_dependencies: number;
+  open_escalations: number;
+  critical_escalations: number;
+  overdue_actions: number;
+  pending_scope_revisions: number;
+  delivery_confidence: number | null;
+  delivery_traffic_light: string | null;
+  quality_risk: string | null;
+  workforce_risk: string | null;
+  trend: string;
+  evidence: GovernanceAnalyticsEvidence[];
+};
+
+export type GovernanceChartPoint = {
+  label: string;
+  value: number;
+  secondary_value: number | null;
+};
+
+export type GovernanceTrendPoint = {
+  date: string;
+  open_dependencies: number;
+  resolved_dependencies: number;
+  blocking_dependencies: number;
+  escalations_created: number;
+  escalations_resolved: number;
+  critical_escalations: number;
+  actions_created: number;
+  actions_completed: number;
+  overdue_actions: number;
+  scope_revisions: number;
+  scope_approvals: number;
+  locked_scope: number;
+  portfolio_health: number;
+  sla_adherence_pct: number;
+};
+
+export type GovernanceAnalyticsKpis = {
+  portfolio_score: number;
+  projects_at_risk: number;
+  leadership_attention_projects: number;
+  blocking_dependencies: number;
+  critical_escalations: number;
+  pending_scope_approvals: number;
+  upcoming_governance_meetings: number;
+  governance_sla_pct: number;
+  avg_dependency_resolution_days: number | null;
+  avg_escalation_resolution_days: number | null;
+  avg_action_completion_days: number | null;
+  open_dependencies: number;
+  open_actions: number;
+  overdue_actions: number;
+  projects_red: number;
+  projects_amber: number;
+  projects_green: number;
+  weekly_trend: number;
+  monthly_trend: number;
+};
+
+export type GovernanceAnalytics = {
+  generated_at: string;
+  date_range_days: number;
+  kpis: GovernanceAnalyticsKpis;
+  project_health: GovernanceHealthProject[];
+  portfolio_risk_ranking: GovernanceHealthProject[];
+  insights: GovernanceAnalyticsInsight[];
+  recommendations: GovernanceAnalyticsRecommendation[];
+  trends: GovernanceTrendPoint[];
+  charts: Record<string, GovernanceChartPoint[]>;
+  recent_activity: GovernanceAnalyticsEvidence[];
+  export_sections: string[];
+};
+
 /** Alias matching API response naming. */
 export type GovernanceBootstrapResponse = GovernanceBootstrap;
 

@@ -277,3 +277,108 @@ class GovernanceBootstrapRead(BaseModel):
     actions: list[GovernanceActionRead]
     scope_states: list[ProjectScopeStateRead]
     charter_references: list[GovernanceCharterReferenceRead] = Field(default_factory=list)
+
+
+class GovernanceEvidenceRead(BaseModel):
+    source_type: str
+    source_id: str | None = None
+    label: str
+    detail: str | None = None
+    project_id: UUID | None = None
+    project_name: str | None = None
+
+
+class GovernanceInsightRead(BaseModel):
+    title: str
+    detail: str
+    severity: str
+    evidence: list[GovernanceEvidenceRead] = Field(default_factory=list)
+
+
+class GovernanceRecommendationRead(BaseModel):
+    title: str
+    detail: str
+    priority: str
+    project_id: UUID | None = None
+    project_name: str | None = None
+    evidence: list[GovernanceEvidenceRead] = Field(default_factory=list)
+
+
+class GovernanceHealthProjectRead(BaseModel):
+    project_id: UUID
+    project_name: str
+    score: int
+    risk_level: str
+    priority: int
+    blocking_dependencies: int
+    open_dependencies: int
+    open_escalations: int
+    critical_escalations: int
+    overdue_actions: int
+    pending_scope_revisions: int
+    delivery_confidence: float | None = None
+    delivery_traffic_light: str | None = None
+    quality_risk: str | None = None
+    workforce_risk: str | None = None
+    trend: str
+    evidence: list[GovernanceEvidenceRead] = Field(default_factory=list)
+
+
+class GovernanceChartPointRead(BaseModel):
+    label: str
+    value: float
+    secondary_value: float | None = None
+
+
+class GovernanceTrendPointRead(BaseModel):
+    date: date
+    open_dependencies: int
+    resolved_dependencies: int
+    blocking_dependencies: int
+    escalations_created: int
+    escalations_resolved: int
+    critical_escalations: int
+    actions_created: int
+    actions_completed: int
+    overdue_actions: int
+    scope_revisions: int
+    scope_approvals: int
+    locked_scope: int
+    portfolio_health: float
+    sla_adherence_pct: float
+
+
+class GovernanceAnalyticsKpisRead(BaseModel):
+    portfolio_score: int
+    projects_at_risk: int
+    leadership_attention_projects: int
+    blocking_dependencies: int
+    critical_escalations: int
+    pending_scope_approvals: int
+    upcoming_governance_meetings: int
+    governance_sla_pct: float
+    avg_dependency_resolution_days: float | None = None
+    avg_escalation_resolution_days: float | None = None
+    avg_action_completion_days: float | None = None
+    open_dependencies: int
+    open_actions: int
+    overdue_actions: int
+    projects_red: int
+    projects_amber: int
+    projects_green: int
+    weekly_trend: float
+    monthly_trend: float
+
+
+class GovernanceAnalyticsRead(BaseModel):
+    generated_at: datetime
+    date_range_days: int
+    kpis: GovernanceAnalyticsKpisRead
+    project_health: list[GovernanceHealthProjectRead]
+    portfolio_risk_ranking: list[GovernanceHealthProjectRead]
+    insights: list[GovernanceInsightRead]
+    recommendations: list[GovernanceRecommendationRead]
+    trends: list[GovernanceTrendPointRead]
+    charts: dict[str, list[GovernanceChartPointRead]]
+    recent_activity: list[GovernanceEvidenceRead] = Field(default_factory=list)
+    export_sections: list[str] = Field(default_factory=list)
