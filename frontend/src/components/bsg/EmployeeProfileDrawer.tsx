@@ -135,6 +135,7 @@ export function EmployeeProfileDrawer({
   team,
   projectId,
   canManage,
+  canRead = true,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -142,16 +143,20 @@ export function EmployeeProfileDrawer({
   team: TeamRead | undefined;
   projectId: string | null;
   canManage: boolean;
+  canRead?: boolean;
 }) {
+  const queriesEnabled = open && Boolean(annotator) && canRead;
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-lg">
-        {annotator ? (
+        {open && annotator ? (
           <EmployeeProfileBody
             annotator={annotator}
             team={team}
             projectId={projectId}
             canManage={canManage}
+            queriesEnabled={queriesEnabled}
           />
         ) : null}
       </SheetContent>
@@ -164,11 +169,13 @@ function EmployeeProfileBody({
   team,
   projectId,
   canManage,
+  queriesEnabled,
 }: {
   annotator: AnnotatorRead;
   team: TeamRead | undefined;
   projectId: string | null;
   canManage: boolean;
+  queriesEnabled: boolean;
 }) {
   return (
     <div className="space-y-6 pr-2">
@@ -210,11 +217,27 @@ function EmployeeProfileBody({
         </div>
       </dl>
 
-      <LatestUtilization annotatorId={annotator.id} projectId={projectId} />
+      <LatestUtilization
+        annotatorId={annotator.id}
+        projectId={projectId}
+        queriesEnabled={queriesEnabled}
+      />
 
-      <SkillsSection annotatorId={annotator.id} canManage={canManage} />
-      <CertificationsSection annotatorId={annotator.id} canManage={canManage} />
-      <TrainingSection annotatorId={annotator.id} canManage={canManage} />
+      <SkillsSection
+        annotatorId={annotator.id}
+        canManage={canManage}
+        queriesEnabled={queriesEnabled}
+      />
+      <CertificationsSection
+        annotatorId={annotator.id}
+        canManage={canManage}
+        queriesEnabled={queriesEnabled}
+      />
+      <TrainingSection
+        annotatorId={annotator.id}
+        canManage={canManage}
+        queriesEnabled={queriesEnabled}
+      />
 
       {!canManage ? (
         <p className="text-[11px] text-muted-foreground">
@@ -228,11 +251,13 @@ function EmployeeProfileBody({
 function LatestUtilization({
   annotatorId,
   projectId,
+  queriesEnabled,
 }: {
   annotatorId: string;
   projectId: string | null;
+  queriesEnabled: boolean;
 }) {
-  const query = useProjectUtilizationQuery(projectId, true, {
+  const query = useProjectUtilizationQuery(projectId, queriesEnabled, {
     annotator_id: annotatorId,
     limit: 5,
   });
@@ -266,13 +291,15 @@ function LatestUtilization({
 function SkillsSection({
   annotatorId,
   canManage,
+  queriesEnabled,
 }: {
   annotatorId: string;
   canManage: boolean;
+  queriesEnabled: boolean;
 }) {
   const queryClient = useQueryClient();
-  const skillsQuery = useAnnotatorSkillsQuery(annotatorId, true);
-  const catalogQuery = useWorkforceSkillsQuery(true);
+  const skillsQuery = useAnnotatorSkillsQuery(annotatorId, queriesEnabled);
+  const catalogQuery = useWorkforceSkillsQuery(queriesEnabled);
   const [skillId, setSkillId] = useState("");
   const [proficiency, setProficiency] = useState<ProficiencyLevel>("beginner");
   const [error, setError] = useState<string | null>(null);
@@ -430,13 +457,15 @@ function SkillsSection({
 function CertificationsSection({
   annotatorId,
   canManage,
+  queriesEnabled,
 }: {
   annotatorId: string;
   canManage: boolean;
+  queriesEnabled: boolean;
 }) {
   const queryClient = useQueryClient();
-  const certsQuery = useAnnotatorCertificationsQuery(annotatorId, true);
-  const catalogQuery = useWorkforceCertificationsQuery(true);
+  const certsQuery = useAnnotatorCertificationsQuery(annotatorId, queriesEnabled);
+  const catalogQuery = useWorkforceCertificationsQuery(queriesEnabled);
   const [certificationId, setCertificationId] = useState("");
   const [status, setStatus] = useState<CertificationStatus>("active");
   const [error, setError] = useState<string | null>(null);
@@ -599,13 +628,15 @@ function CertificationsSection({
 function TrainingSection({
   annotatorId,
   canManage,
+  queriesEnabled,
 }: {
   annotatorId: string;
   canManage: boolean;
+  queriesEnabled: boolean;
 }) {
   const queryClient = useQueryClient();
-  const recordsQuery = useAnnotatorTrainingRecordsQuery(annotatorId, true);
-  const catalogQuery = useWorkforceTrainingProgramsQuery(true);
+  const recordsQuery = useAnnotatorTrainingRecordsQuery(annotatorId, queriesEnabled);
+  const catalogQuery = useWorkforceTrainingProgramsQuery(queriesEnabled);
   const [programId, setProgramId] = useState("");
   const [status, setStatus] = useState<TrainingRecordStatus>("not_started");
   const [error, setError] = useState<string | null>(null);

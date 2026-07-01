@@ -47,6 +47,20 @@ export type UtilizationSnapshotRead = {
   updated_at: string;
 };
 
+export type UtilizationSnapshotCreatePayload = {
+  team_id?: string | null;
+  annotator_id?: string | null;
+  snapshot_date: string;
+  allocated_hours: number;
+  available_hours: number;
+  utilization_pct?: number | null;
+  billable_hours?: number | null;
+  non_billable_hours?: number | null;
+  notes?: string | null;
+};
+
+export type UtilizationSnapshotUpdatePayload = Partial<UtilizationSnapshotCreatePayload>;
+
 export type ProjectUtilizationFilters = {
   team_id?: string;
   annotator_id?: string;
@@ -93,24 +107,6 @@ export type ProjectSkillRequirementUpdatePayload = {
   required_headcount?: number;
   required_sme_count?: number;
   priority?: SkillRequirementPriority;
-};
-
-export type UtilizationSnapshotCreatePayload = {
-  snapshot_date: string;
-  team_id?: string | null;
-  allocated_hours: number;
-  available_hours: number;
-  utilization_pct?: number | null;
-  notes?: string | null;
-};
-
-export type UtilizationSnapshotUpdatePayload = {
-  snapshot_date?: string;
-  team_id?: string | null;
-  allocated_hours?: number;
-  available_hours?: number;
-  utilization_pct?: number | null;
-  notes?: string | null;
 };
 
 export type SkillMatrixSiteSummary = {
