@@ -43,13 +43,25 @@ from app.db.models import (
 )
 from app.services.scoping import scoped_project_query
 
-
 RANGE_DAY_OPTIONS = {7, 30, 90, 365}
 OPEN_ESCALATION_STATUSES = {
     GovernanceEscalationStatus.OPEN,
     GovernanceEscalationStatus.IN_PROGRESS,
 }
 OPEN_ACTION_STATUSES = {"open", "in_progress", "overdue"}
+ANALYTICS_CACHE_TTL = timedelta(minutes=3)
+_analytics_cache: dict[
+    tuple[UUID | None, str, UUID, int],
+    tuple[datetime, GovernanceAnalyticsRead],
+] = {}
+
+
+def _analytics_cache_key(
+    current_user: CurrentUser,
+    days: int,
+) -> tuple[UUID | None, str, UUID, int]:
+    org_id = None if current_user.role == AppRole.SUPER_ADMIN else current_user.org_id
+    return (org_id, current_user.role.value, current_user.id, days)
 
 
 def _clamp_range(days: int) -> int:
@@ -549,6 +561,12 @@ async def get_governance_analytics(
 ) -> GovernanceAnalyticsRead:
     assert_can_read_governance(current_user)
     effective_days = _clamp_range(days)
+    cache_key = _analytics_cache_key(current_user, effective_days)
+    now = datetime.now(UTC)
+    cached = _analytics_cache.get(cache_key)
+    if cached and now - cached[0] < ANALYTICS_CACHE_TTL:
+        return cached[1]
+
     projects = list(
         (
             await session.execute(scoped_project_query(current_user).order_by(Project.name.asc()))
@@ -732,7 +750,7 @@ async def get_governance_analytics(
         monthly_trend=0.0,
     )
 
-    return GovernanceAnalyticsRead(
+    analytics = GovernanceAnalyticsRead(
         generated_at=datetime.now(UTC),
         date_range_days=effective_days,
         kpis=kpis,
@@ -751,3 +769,5 @@ async def get_governance_analytics(
             "Evidence Appendix",
         ],
     )
+    _analytics_cache[cache_key] = (now, analytics)
+    return analytics

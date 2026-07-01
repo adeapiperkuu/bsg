@@ -2,7 +2,8 @@ import { Download, RefreshCw } from "lucide-react";
 
 import { Card, KpiCard, SectionHeader, StatusPill } from "@/components/bsg/widgets";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { exportGovernanceAnalytics } from "@/lib/queries/governance";
 import { cn } from "@/lib/utils";
 import type {
   GovernanceAnalytics,
@@ -34,41 +35,12 @@ function formatPriority(priority: string): string {
   return priority;
 }
 
-function csvEscape(value: string | number | null | undefined): string {
-  const text = value === null || value === undefined ? "" : String(value);
-  return `"${text.replace(/"/g, '""')}"`;
-}
-
-function exportAnalyticsCsv(analytics: GovernanceAnalytics) {
-  const rows = [
-    ["Section", "Project", "Metric", "Value", "Evidence"],
-    ...analytics.portfolio_risk_ranking.map((project) => [
-      "Portfolio Risk Ranking",
-      project.project_name,
-      "Governance Health Score",
-      project.score,
-      project.evidence.map((item) => item.label).join("; "),
-    ]),
-    ...analytics.insights.map((insight) => [
-      "Executive Insight",
-      "",
-      insight.title,
-      insight.detail,
-      insight.evidence.map((item) => item.label).join("; "),
-    ]),
-    ...analytics.recommendations.map((recommendation) => [
-      "Recommendation",
-      recommendation.project_name ?? "",
-      recommendation.title,
-      recommendation.detail,
-      recommendation.evidence.map((item) => item.label).join("; "),
-    ]),
-  ];
-  const csv = rows.map((row) => row.map(csvEscape).join(",")).join("\n");
-  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+async function exportAnalyticsCsv(days: number) {
+  const blob = await exportGovernanceAnalytics(days, "csv");
+  const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `governance-analytics-${analytics.date_range_days}d.csv`;
+  link.download = `governance-analytics-${days}d.csv`;
   link.click();
   URL.revokeObjectURL(url);
 }
@@ -81,7 +53,7 @@ function EvidenceList({ evidence }: { evidence: GovernanceAnalyticsEvidence[] })
         <li key={`${item.source_type}-${item.source_id ?? index}`} className="truncate">
           {item.project_name ? `${item.project_name}: ` : ""}
           {item.label}
-          {item.detail ? ` · ${item.detail}` : ""}
+          {item.detail ? ` - ${item.detail}` : ""}
         </li>
       ))}
     </ul>
@@ -178,7 +150,9 @@ export function ExecutiveGovernanceDashboard({
             variant="outline"
             size="sm"
             className="shadow-none"
-            onClick={() => exportAnalyticsCsv(analytics)}
+            onClick={() => {
+              void exportAnalyticsCsv(analytics.date_range_days);
+            }}
           >
             <Download className="h-4 w-4" />
             Export

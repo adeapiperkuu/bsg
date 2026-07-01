@@ -1,10 +1,9 @@
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AlertCircle, FileText, Plus, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
-import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,6 +25,7 @@ import {
   type WorkflowDialogState,
 } from "@/features/governance/GovernanceWorkflowDialogs";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   emptyGovernanceFilters,
   filterActions,
@@ -55,8 +55,12 @@ import {
   deleteDependency,
   deleteGovernanceAction,
   deleteGovernanceEscalation,
+  governanceActionsQueryOptions,
   governanceAnalyticsQueryOptions,
-  governanceBootstrapQueryOptions,
+  governanceCharterReferencesQueryOptions,
+  governanceDependenciesQueryOptions,
+  governanceEscalationsQueryOptions,
+  governanceScopeStatesQueryOptions,
   promoteRiskAlertToEscalation,
   resolveDependency,
   updateDependency,
@@ -64,6 +68,7 @@ import {
   updateGovernanceEscalation,
   updateProjectScope,
 } from "@/lib/queries/governance";
+import { queryKeys } from "@/lib/queries/keys";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import type { AppRole } from "@/types/auth";
@@ -97,6 +102,17 @@ function paginateRows<T>(rows: T[], page: number): T[] {
   const safePage = getSafePage(page, rows.length);
   const start = (safePage - 1) * TABLE_PAGE_SIZE;
   return rows.slice(start, start + TABLE_PAGE_SIZE);
+}
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedValue(value), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [delayMs, value]);
+
+  return debouncedValue;
 }
 
 function calculateSlaAdherence(actions: GovernanceAction[]): number {
@@ -176,6 +192,25 @@ type ConfirmState = {
   label: string;
 } | null;
 
+const EMPTY_GOVERNANCE_KPIS: GovernanceBootstrap["kpis"] = {
+  open_actions: 0,
+  overdue_actions: 0,
+  open_escalations: 0,
+  blocking_dependencies: 0,
+  at_risk_items: 0,
+  sla_adherence_pct: 100,
+};
+
+function LoadingRow({ colSpan }: { colSpan: number }) {
+  return (
+    <tr>
+      <td colSpan={colSpan} className="py-8 text-center text-sm text-muted-foreground">
+        Loading…
+      </td>
+    </tr>
+  );
+}
+
 function EmptyRow({ colSpan, message }: { colSpan: number; message: string }) {
   return (
     <tr>
@@ -196,6 +231,48 @@ function SectionError({ message, onRetry }: { message: string; onRetry: () => vo
         Retry
       </Button>
     </div>
+  );
+}
+
+function ExecutiveAnalyticsSkeleton() {
+  return (
+    <section className="space-y-4" aria-label="Loading executive governance intelligence">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <Skeleton className="h-4 w-56" />
+          <Skeleton className="mt-2 h-3 w-80 max-w-full" />
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Skeleton className="h-8 w-44" />
+          <Skeleton className="h-8 w-24" />
+          <Skeleton className="h-8 w-24" />
+        </div>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {["score", "risk", "dependencies", "sla"].map((item) => (
+          <Card key={item}>
+            <Skeleton className="h-3 w-28" />
+            <Skeleton className="mt-4 h-7 w-16" />
+            <Skeleton className="mt-3 h-3 w-24" />
+          </Card>
+        ))}
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
+        {[0, 1].map((index) => (
+          <Card key={index}>
+            <Skeleton className="h-4 w-40" />
+            <Skeleton className="mt-2 h-3 w-56" />
+            <div className="mt-5 space-y-2">
+              {[0, 1, 2, 3].map((row) => (
+                <Skeleton key={row} className="h-12 w-full" />
+              ))}
+            </div>
+          </Card>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -305,43 +382,88 @@ export function GovernanceDashboard() {
   const isClient = role === "client";
   const isReadOnly = role === "bsg_leadership";
 
-  const bootstrapQuery = useQuery({
-    ...governanceBootstrapQueryOptions,
-    placeholderData: keepPreviousData,
-  });
-  const [analyticsRangeDays, setAnalyticsRangeDays] = useState(30);
-  const analyticsQuery = useQuery({
-    ...governanceAnalyticsQueryOptions(analyticsRangeDays),
-    placeholderData: keepPreviousData,
-  });
-  const portfolioQuery = useQuery({
-    ...deliveryPortfolioQueryOptions,
-    enabled: showDelivery,
-  });
-  const projectsQuery = useQuery(projectsQueryOptions);
-  const usersQuery = useQuery({
-    queryKey: ["users"],
-    queryFn: listUsers,
-    enabled: canWrite,
-  });
-
-  const [filters, setFilters] = useState(emptyGovernanceFilters);
+  const [rawFilters, setRawFilters] = useState(emptyGovernanceFilters);
+  const filters = useDebouncedValue(rawFilters, 250);
   const [dialog, setDialog] = useState<WorkflowDialogState>(null);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [selectedRow, setSelectedRow] = useState<GovernanceRegisterRow | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [promotingRiskId, setPromotingRiskId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [activeTable, setActiveTable] = useState<GovernanceTableTab>("dependencies");
+  const [activeTable, setActiveTable] = useState<GovernanceTableTab>(
+    role === "client" ? "register" : "dependencies",
+  );
   const [dependencyPage, setDependencyPage] = useState(1);
   const [actionPage, setActionPage] = useState(1);
   const [registerPage, setRegisterPage] = useState(1);
   const [escalationPage, setEscalationPage] = useState(1);
 
-  const cachedBootstrap = queryClient.getQueryData<GovernanceBootstrap>(
-    governanceBootstrapQueryOptions.queryKey,
-  );
-  const data = bootstrapQuery.data ?? cachedBootstrap;
+  const wantsRegisterData = activeTable === "register" || isClient || sheetOpen;
+  const dependenciesQuery = useQuery({
+    ...governanceDependenciesQueryOptions,
+    enabled: !isClient && (activeTable === "dependencies" || wantsRegisterData),
+    placeholderData: keepPreviousData,
+  });
+  const actionsQuery = useQuery({
+    ...governanceActionsQueryOptions,
+    enabled: !isClient && (activeTable === "actions" || wantsRegisterData),
+    placeholderData: keepPreviousData,
+  });
+  const escalationsQuery = useQuery({
+    ...governanceEscalationsQueryOptions,
+    enabled: activeTable === "escalations" || wantsRegisterData,
+    placeholderData: keepPreviousData,
+  });
+  const scopeStatesQuery = useQuery({
+    ...governanceScopeStatesQueryOptions,
+    enabled: wantsRegisterData,
+    placeholderData: keepPreviousData,
+  });
+  const charterReferencesQuery = useQuery({
+    ...governanceCharterReferencesQueryOptions,
+    enabled: !isClient,
+    placeholderData: keepPreviousData,
+  });
+
+  const primaryTableQuery = isClient ? escalationsQuery : dependenciesQuery;
+  const primaryTableReady = primaryTableQuery.isSuccess;
+  const showExecutiveAnalytics = !isClient;
+
+  const [analyticsRangeDays, setAnalyticsRangeDays] = useState(30);
+  const analyticsQuery = useQuery({
+    ...governanceAnalyticsQueryOptions(analyticsRangeDays),
+    enabled: showExecutiveAnalytics && primaryTableReady,
+    placeholderData: keepPreviousData,
+  });
+  const portfolioQuery = useQuery({
+    ...deliveryPortfolioQueryOptions,
+    enabled: showDelivery && (activeTable === "register" || sheetOpen),
+    placeholderData: keepPreviousData,
+  });
+  const projectsQuery = useQuery(projectsQueryOptions);
+  const usersQuery = useQuery({
+    queryKey: ["users"],
+    queryFn: listUsers,
+    enabled: canWrite && Boolean(dialog),
+    staleTime: 10 * 60 * 1000,
+  });
+
+  const data = useMemo<GovernanceBootstrap>(() => {
+    return recalculateBootstrapKpis({
+      kpis: EMPTY_GOVERNANCE_KPIS,
+      dependencies: dependenciesQuery.data ?? [],
+      actions: actionsQuery.data ?? [],
+      escalations: escalationsQuery.data ?? [],
+      scope_states: scopeStatesQuery.data ?? [],
+      charter_references: charterReferencesQuery.data ?? [],
+    });
+  }, [
+    actionsQuery.data,
+    charterReferencesQuery.data,
+    dependenciesQuery.data,
+    escalationsQuery.data,
+    scopeStatesQuery.data,
+  ]);
 
   const projectOptions = useMemo(
     () =>
@@ -371,10 +493,22 @@ export function GovernanceDashboard() {
     [userOptions],
   );
 
-  const updateBootstrapCache = (updater: (current: GovernanceBootstrap) => GovernanceBootstrap) => {
-    queryClient.setQueryData<GovernanceBootstrap>(
-      governanceBootstrapQueryOptions.queryKey,
-      (current) => (current ? recalculateBootstrapKpis(updater(current)) : current),
+  const updateGovernanceDataCache = (
+    updater: (current: GovernanceBootstrap) => GovernanceBootstrap,
+  ) => {
+    const next = recalculateBootstrapKpis(updater(data));
+    queryClient.setQueryData<ProjectDependency[]>(
+      queryKeys.governanceDependencies,
+      next.dependencies,
+    );
+    queryClient.setQueryData<GovernanceAction[]>(queryKeys.governanceActions, next.actions);
+    queryClient.setQueryData<GovernanceEscalation[]>(
+      queryKeys.governanceEscalations,
+      next.escalations,
+    );
+    queryClient.setQueryData<GovernanceBootstrap["scope_states"]>(
+      queryKeys.governanceScopeStates,
+      next.scope_states,
     );
   };
 
@@ -419,21 +553,17 @@ export function GovernanceDashboard() {
   });
 
   const registerRows = useMemo(() => {
-    if (!data) return [];
     const rows = buildGovernanceRegister(data, portfolioQuery.data);
     return filterRegisterByScope(rows, filters);
   }, [data, portfolioQuery.data, filters]);
 
   const filteredDependencies = useMemo(
-    () => (data ? filterDependencies(data.dependencies, filters) : []),
+    () => filterDependencies(data.dependencies, filters),
     [data, filters],
   );
-  const filteredActions = useMemo(
-    () => (data ? filterActions(data.actions, filters) : []),
-    [data, filters],
-  );
+  const filteredActions = useMemo(() => filterActions(data.actions, filters), [data, filters]);
   const filteredEscalations = useMemo(
-    () => (data ? filterEscalations(data.escalations, filters) : []),
+    () => filterEscalations(data.escalations, filters),
     [data, filters],
   );
 
@@ -491,18 +621,43 @@ export function GovernanceDashboard() {
     [escalationPage, filteredEscalations],
   );
 
+  useEffect(() => {
+    setDependencyPage(1);
+    setActionPage(1);
+    setRegisterPage(1);
+    setEscalationPage(1);
+  }, [filters]);
+
   const escalatedRiskIds = useMemo(() => {
-    if (!data) return new Set<string>();
     return new Set(
       data.escalations
         .filter((e) => e.source_type === "delivery_risk" && e.source_id)
         .map((e) => e.source_id as string),
     );
-  }, [data]);
+  }, [data.escalations]);
 
   const refetchDashboardData = async () => {
-    await bootstrapQuery.refetch();
-    if (showDelivery) await portfolioQuery.refetch();
+    if (!isClient && (activeTable === "dependencies" || activeTable === "register")) {
+      await dependenciesQuery.refetch();
+    }
+    if (!isClient && (activeTable === "actions" || activeTable === "register")) {
+      await actionsQuery.refetch();
+    }
+    if (activeTable === "escalations" || activeTable === "register") {
+      await escalationsQuery.refetch();
+    }
+    if (activeTable === "register") {
+      await scopeStatesQuery.refetch();
+    }
+    if (showDelivery && (activeTable === "register" || sheetOpen)) {
+      await portfolioQuery.refetch();
+    }
+    if (showExecutiveAnalytics) {
+      await analyticsQuery.refetch();
+    }
+    if (!isClient) {
+      await charterReferencesQuery.refetch();
+    }
   };
 
   const runConfirm = async () => {
@@ -511,7 +666,7 @@ export function GovernanceDashboard() {
     try {
       if (confirm.kind === "resolve-dependency") {
         const dependency = await resolveDependency(confirm.id);
-        updateBootstrapCache((current) => {
+        updateGovernanceDataCache((current) => {
           const existing = current.dependencies.find((row) => row.id === dependency.id);
           return {
             ...current,
@@ -524,7 +679,7 @@ export function GovernanceDashboard() {
         toast.success("Dependency resolved.");
       } else if (confirm.kind === "resolve-escalation") {
         const escalation = await updateGovernanceEscalation(confirm.id, { status: "resolved" });
-        updateBootstrapCache((current) => {
+        updateGovernanceDataCache((current) => {
           const existing = current.escalations.find((row) => row.id === escalation.id);
           return {
             ...current,
@@ -537,7 +692,7 @@ export function GovernanceDashboard() {
         toast.success("Escalation resolved.");
       } else if (confirm.kind === "complete-action") {
         const action = await updateGovernanceAction(confirm.id, { status: "completed" });
-        updateBootstrapCache((current) => {
+        updateGovernanceDataCache((current) => {
           const existing = current.actions.find((row) => row.id === action.id);
           return {
             ...current,
@@ -547,21 +702,21 @@ export function GovernanceDashboard() {
         toast.success("Action completed.");
       } else if (confirm.kind === "delete-dependency") {
         await deleteDependency(confirm.id);
-        updateBootstrapCache((current) => ({
+        updateGovernanceDataCache((current) => ({
           ...current,
           dependencies: current.dependencies.filter((row) => row.id !== confirm.id),
         }));
         toast.success("Dependency archived.");
       } else if (confirm.kind === "delete-escalation") {
         await deleteGovernanceEscalation(confirm.id);
-        updateBootstrapCache((current) => ({
+        updateGovernanceDataCache((current) => ({
           ...current,
           escalations: current.escalations.filter((row) => row.id !== confirm.id),
         }));
         toast.success("Escalation archived.");
       } else if (confirm.kind === "delete-action") {
         await deleteGovernanceAction(confirm.id);
-        updateBootstrapCache((current) => ({
+        updateGovernanceDataCache((current) => ({
           ...current,
           actions: current.actions.filter((row) => row.id !== confirm.id),
         }));
@@ -579,7 +734,7 @@ export function GovernanceDashboard() {
     setPromotingRiskId(riskAlertId);
     try {
       const escalation = await promoteRiskAlertToEscalation(riskAlertId);
-      updateBootstrapCache((current) => ({
+      updateGovernanceDataCache((current) => ({
         ...current,
         escalations: replaceOrAddById(current.escalations, hydrateEscalation(escalation)),
       }));
@@ -628,17 +783,13 @@ export function GovernanceDashboard() {
     setSheetOpen(true);
   };
 
-  if (!data && bootstrapQuery.isLoading) {
-    return <PageLoadingScreen label="Loading governance…" />;
-  }
-
-  if (bootstrapQuery.isError || !data) {
+  if (primaryTableQuery.isError && !primaryTableQuery.data) {
     return (
       <Card>
         <SectionError
           message={
-            bootstrapQuery.error instanceof Error
-              ? bootstrapQuery.error.message
+            primaryTableQuery.error instanceof Error
+              ? primaryTableQuery.error.message
               : "Unable to load governance data."
           }
           onRetry={() => void refetchDashboardData()}
@@ -662,10 +813,10 @@ export function GovernanceDashboard() {
           summaries are hidden.
         </div>
       )}
-      {bootstrapQuery.isFetching && (
+      {primaryTableQuery.isFetching && (
         <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
           <RefreshCw className="h-3 w-3 animate-spin" />
-          Refreshing governance data...
+          Loading governance tables...
         </div>
       )}
 
@@ -679,12 +830,7 @@ export function GovernanceDashboard() {
           onOpenProject={openAnalyticsProjectSheet}
         />
       ) : analyticsQuery.isLoading ? (
-        <Card>
-          <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
-            <RefreshCw className="h-4 w-4 animate-spin" />
-            Loading executive governance intelligence...
-          </div>
-        </Card>
+        <ExecutiveAnalyticsSkeleton />
       ) : analyticsQuery.isError ? (
         <Card>
           <SectionError
@@ -735,8 +881,8 @@ export function GovernanceDashboard() {
         )}
         <div className="min-w-0 flex-1">
           <GovernanceFiltersBar
-            filters={filters}
-            onChange={setFilters}
+            filters={rawFilters}
+            onChange={setRawFilters}
             projects={projectOptions}
             users={userOptions}
             showInternalFilters={!isClient}
@@ -765,6 +911,12 @@ export function GovernanceDashboard() {
             {!isClient && selectedTable === "dependencies" && (
               <Card>
                 <SectionHeader title="Dependency Tracker" sub="Cross-project dependencies" />
+                {dependenciesQuery.isFetching && (
+                  <div className="mb-2 flex items-center gap-2 text-[10px] text-muted-foreground">
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                    Refreshing dependencies...
+                  </div>
+                )}
                 <div className={GOVERNANCE_TABLE_VIEWPORT_CLASS}>
                   <table className="w-full text-xs">
                     <thead className="text-left text-muted-foreground">
@@ -780,7 +932,9 @@ export function GovernanceDashboard() {
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredDependencies.length === 0 ? (
+                      {dependenciesQuery.isLoading && filteredDependencies.length === 0 ? (
+                        <LoadingRow colSpan={canWrite ? 8 : 7} />
+                      ) : filteredDependencies.length === 0 ? (
                         <EmptyRow
                           colSpan={canWrite ? 8 : 7}
                           message="No dependencies match filters."
@@ -866,6 +1020,12 @@ export function GovernanceDashboard() {
                   title="Governance Actions"
                   sub="Tracked follow-ups and commitments"
                 />
+                {actionsQuery.isFetching && (
+                  <div className="mb-2 flex items-center gap-2 text-[10px] text-muted-foreground">
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                    Refreshing actions...
+                  </div>
+                )}
                 <div className={GOVERNANCE_TABLE_VIEWPORT_CLASS}>
                   <table className="w-full text-xs">
                     <thead className="text-left text-muted-foreground">
@@ -879,7 +1039,9 @@ export function GovernanceDashboard() {
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredActions.length === 0 ? (
+                      {actionsQuery.isLoading && filteredActions.length === 0 ? (
+                        <LoadingRow colSpan={canWrite ? 6 : 5} />
+                      ) : filteredActions.length === 0 ? (
                         <EmptyRow colSpan={canWrite ? 6 : 5} message="No actions match filters." />
                       ) : (
                         pagedActions.map((action) => (
@@ -945,6 +1107,15 @@ export function GovernanceDashboard() {
             {selectedTable === "register" && (
               <Card>
                 <SectionHeader title="Governance Register" sub="Click a project for details" />
+                {(dependenciesQuery.isFetching ||
+                  actionsQuery.isFetching ||
+                  escalationsQuery.isFetching ||
+                  scopeStatesQuery.isFetching) && (
+                  <div className="mb-2 flex items-center gap-2 text-[10px] text-muted-foreground">
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                    Refreshing register...
+                  </div>
+                )}
                 <div className={GOVERNANCE_TABLE_VIEWPORT_CLASS}>
                   <table className="w-full text-xs">
                     <thead className="text-left text-muted-foreground">
@@ -960,7 +1131,14 @@ export function GovernanceDashboard() {
                       </tr>
                     </thead>
                     <tbody>
-                      {registerRows.length === 0 ? (
+                      {(escalationsQuery.isLoading ||
+                        scopeStatesQuery.isLoading ||
+                        (!isClient && (dependenciesQuery.isLoading || actionsQuery.isLoading))) &&
+                      registerRows.length === 0 ? (
+                        <LoadingRow
+                          colSpan={isClient ? (showDelivery ? 5 : 4) : showDelivery ? 8 : 7}
+                        />
+                      ) : registerRows.length === 0 ? (
                         <EmptyRow
                           colSpan={isClient ? (showDelivery ? 5 : 4) : showDelivery ? 8 : 7}
                           message="No governance register entries match filters."
@@ -1042,6 +1220,12 @@ export function GovernanceDashboard() {
             {selectedTable === "escalations" && (
               <Card>
                 <SectionHeader title="Escalation Register" />
+                {escalationsQuery.isFetching && (
+                  <div className="mb-2 flex items-center gap-2 text-[10px] text-muted-foreground">
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                    Refreshing escalations...
+                  </div>
+                )}
                 <div className={GOVERNANCE_TABLE_VIEWPORT_CLASS}>
                   <table className="w-full text-xs">
                     <thead className="text-left text-muted-foreground">
@@ -1058,7 +1242,9 @@ export function GovernanceDashboard() {
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredEscalations.length === 0 ? (
+                      {escalationsQuery.isLoading && filteredEscalations.length === 0 ? (
+                        <LoadingRow colSpan={isClient ? 7 : canWrite ? 9 : 8} />
+                      ) : filteredEscalations.length === 0 ? (
                         <EmptyRow
                           colSpan={isClient ? 7 : canWrite ? 9 : 8}
                           message="No escalations match filters."
@@ -1145,6 +1331,7 @@ export function GovernanceDashboard() {
         canWrite={canWrite}
         isClient={isClient}
         isReadOnly={isReadOnly}
+        loadCharters={primaryTableReady}
       />
 
       {!isClient && <AskGovernanceAgentPanel projects={projectOptions} />}
@@ -1206,7 +1393,7 @@ export function GovernanceDashboard() {
             });
             toast.success("Dependency created.");
           }
-          updateBootstrapCache((current) => {
+          updateGovernanceDataCache((current) => {
             const existing = current.dependencies.find((row) => row.id === dependency.id);
             return {
               ...current,
@@ -1241,7 +1428,7 @@ export function GovernanceDashboard() {
             });
             toast.success("Action created.");
           }
-          updateBootstrapCache((current) => {
+          updateGovernanceDataCache((current) => {
             const existing = current.actions.find((row) => row.id === action.id);
             return {
               ...current,
@@ -1275,7 +1462,7 @@ export function GovernanceDashboard() {
             });
             toast.success("Escalation created.");
           }
-          updateBootstrapCache((current) => {
+          updateGovernanceDataCache((current) => {
             const existing = current.escalations.find((row) => row.id === escalation.id);
             return {
               ...current,
@@ -1294,7 +1481,7 @@ export function GovernanceDashboard() {
             linked_charter_document_id: values.linked_charter_document_id,
           });
           toast.success("Scope updated.");
-          updateBootstrapCache((current) => ({
+          updateGovernanceDataCache((current) => ({
             ...current,
             scope_states: current.scope_states.some((row) => row.id === scope.id)
               ? current.scope_states.map((row) => (row.id === scope.id ? scope : row))

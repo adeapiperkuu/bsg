@@ -29,6 +29,11 @@ export const queryKeys = {
   projectCapabilityGaps: (projectId: string) => ["projects", projectId, "capability-gaps"] as const,
   governanceBootstrap: ["governance", "bootstrap"] as const,
   governanceAnalytics: (days: number) => ["governance", "analytics", days] as const,
+  governanceDependencies: ["governance", "dependencies"] as const,
+  governanceActions: ["governance", "actions"] as const,
+  governanceEscalations: ["governance", "escalations"] as const,
+  governanceScopeStates: ["governance", "scope-states"] as const,
+  governanceCharterReferences: ["governance", "charter-references"] as const,
 };
 
 export const STALE_TIME_MS = 5 * 60 * 1000;

@@ -74,7 +74,7 @@ export function ProjectGovernanceSheet({
   const riskQuery = useQuery({
     queryKey: ["projects", projectId, "risk-alerts"],
     queryFn: () => listProjectRiskAlerts(projectId!),
-    enabled: Boolean(projectId) && showDelivery && canWrite,
+    enabled: open && Boolean(projectId) && showDelivery && canWrite,
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
   });

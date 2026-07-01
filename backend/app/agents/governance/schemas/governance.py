@@ -272,10 +272,10 @@ class GovernanceKnowledgeDocumentRef(BaseModel):
 
 class GovernanceBootstrapRead(BaseModel):
     kpis: GovernanceKpisRead
-    dependencies: list[ProjectDependencyRead]
-    escalations: list[GovernanceEscalationRead]
-    actions: list[GovernanceActionRead]
-    scope_states: list[ProjectScopeStateRead]
+    dependencies: list[ProjectDependencyRead] = Field(default_factory=list)
+    escalations: list[GovernanceEscalationRead] = Field(default_factory=list)
+    actions: list[GovernanceActionRead] = Field(default_factory=list)
+    scope_states: list[ProjectScopeStateRead] = Field(default_factory=list)
     charter_references: list[GovernanceCharterReferenceRead] = Field(default_factory=list)
 
 
@@ -382,3 +382,15 @@ class GovernanceAnalyticsRead(BaseModel):
     charts: dict[str, list[GovernanceChartPointRead]]
     recent_activity: list[GovernanceEvidenceRead] = Field(default_factory=list)
     export_sections: list[str] = Field(default_factory=list)
+
+
+class GovernanceMonitoringRead(BaseModel):
+    generated_at: datetime
+    window_hours: int
+    audit_events: int
+    chatbot_queries: int
+    chatbot_latency_avg_ms: int | None = None
+    chatbot_latency_p95_ms: int | None = None
+    failed_or_empty_ai_answers: int
+    dashboard_exports: int
+    recent_event_types: dict[str, int] = Field(default_factory=dict)

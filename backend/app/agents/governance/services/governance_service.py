@@ -6,6 +6,11 @@ from uuid import UUID
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.governance.services.audit_service import (
+    governance_snapshot,
+    log_governance_event,
+)
+from app.agents.governance.services.notification_service import create_governance_notification
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
 from app.db.models import (
@@ -14,8 +19,10 @@ from app.db.models import (
     GovernanceActionStatus,
     GovernanceDependencyStatus,
     GovernanceEscalation,
+    GovernanceEscalationSeverity,
     GovernanceEscalationStatus,
     GovernanceEvidenceLink,
+    GovernanceScopeStatus,
     GovernanceSummaryStatus,
     GovernanceWeeklySummary,
     Project,
@@ -33,6 +40,52 @@ GOVERNANCE_READ_ROLES = {
     AppRole.CLIENT,
 }
 GOVERNANCE_WRITE_ROLES = {AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN}
+DEPENDENCY_AUDIT_FIELDS = (
+    "title",
+    "description",
+    "dependency_type",
+    "owner_id",
+    "due_date",
+    "status",
+    "resolved_at",
+    "resolved_by",
+    "deleted_at",
+)
+ESCALATION_AUDIT_FIELDS = (
+    "title",
+    "description",
+    "severity",
+    "status",
+    "assigned_to",
+    "resolved_at",
+    "source_type",
+    "source_id",
+    "deleted_at",
+)
+ACTION_AUDIT_FIELDS = (
+    "title",
+    "description",
+    "owner_id",
+    "due_date",
+    "status",
+    "completed_at",
+    "linked_knowledge_document_id",
+    "deleted_at",
+)
+SCOPE_AUDIT_FIELDS = (
+    "scope_status",
+    "version_label",
+    "notes",
+    "linked_charter_document_id",
+)
+SUMMARY_AUDIT_FIELDS = (
+    "summary_week",
+    "summary_text",
+    "status",
+    "generated_by_ai",
+    "approved_by",
+    "approved_at",
+)
 
 
 def assert_can_read_governance(current_user: CurrentUser) -> None:
@@ -286,6 +339,28 @@ async def create_dependency(
         updated_by=current_user.id,
     )
     session.add(dep)
+    await session.flush()
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="dependency.created",
+        org_id=dep.org_id,
+        project_id=dep.project_id,
+        source_table="project_dependencies",
+        source_id=dep.id,
+        new_values=governance_snapshot(dep, DEPENDENCY_AUDIT_FIELDS),
+    )
+    if dep.status == GovernanceDependencyStatus.BLOCKING:
+        await create_governance_notification(
+            session,
+            current_user,
+            org_id=dep.org_id,
+            project_id=dep.project_id,
+            title="Blocking dependency created",
+            body=dep.title,
+            source_table="project_dependencies",
+            source_row_id=dep.id,
+        )
     await session.commit()
     await session.refresh(dep)
     return dep
@@ -298,10 +373,22 @@ async def update_dependency(
     **fields,
 ) -> ProjectDependency:
     dep = await get_dependency_or_404(session, dependency_id, current_user, for_mutation=True)
+    previous = governance_snapshot(dep, DEPENDENCY_AUDIT_FIELDS)
     for key, value in fields.items():
         if value is not None and hasattr(dep, key):
             setattr(dep, key, value)
     dep.updated_by = current_user.id
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="dependency.updated",
+        org_id=dep.org_id,
+        project_id=dep.project_id,
+        source_table="project_dependencies",
+        source_id=dep.id,
+        previous_values=previous,
+        new_values=governance_snapshot(dep, DEPENDENCY_AUDIT_FIELDS),
+    )
     await session.commit()
     await session.refresh(dep)
     return dep
@@ -313,10 +400,22 @@ async def resolve_dependency(
     current_user: CurrentUser,
 ) -> ProjectDependency:
     dep = await get_dependency_or_404(session, dependency_id, current_user, for_mutation=True)
+    previous = governance_snapshot(dep, DEPENDENCY_AUDIT_FIELDS)
     dep.status = GovernanceDependencyStatus.RESOLVED
     dep.resolved_at = datetime.now(UTC)
     dep.resolved_by = current_user.id
     dep.updated_by = current_user.id
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="dependency.resolved",
+        org_id=dep.org_id,
+        project_id=dep.project_id,
+        source_table="project_dependencies",
+        source_id=dep.id,
+        previous_values=previous,
+        new_values=governance_snapshot(dep, DEPENDENCY_AUDIT_FIELDS),
+    )
     await session.commit()
     await session.refresh(dep)
     return dep
@@ -328,8 +427,20 @@ async def soft_delete_dependency(
     current_user: CurrentUser,
 ) -> None:
     dep = await get_dependency_or_404(session, dependency_id, current_user, for_mutation=True)
+    previous = governance_snapshot(dep, DEPENDENCY_AUDIT_FIELDS)
     dep.deleted_at = datetime.now(UTC)
     dep.updated_by = current_user.id
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="dependency.archived",
+        org_id=dep.org_id,
+        project_id=dep.project_id,
+        source_table="project_dependencies",
+        source_id=dep.id,
+        previous_values=previous,
+        new_values=governance_snapshot(dep, DEPENDENCY_AUDIT_FIELDS),
+    )
     await session.commit()
 
 
@@ -361,6 +472,28 @@ async def create_escalation(
         source_id=source_id,
     )
     session.add(escalation)
+    await session.flush()
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="escalation.created",
+        org_id=escalation.org_id,
+        project_id=escalation.project_id,
+        source_table="governance_escalations",
+        source_id=escalation.id,
+        new_values=governance_snapshot(escalation, ESCALATION_AUDIT_FIELDS),
+    )
+    if escalation.severity == GovernanceEscalationSeverity.CRITICAL:
+        await create_governance_notification(
+            session,
+            current_user,
+            org_id=escalation.org_id,
+            project_id=escalation.project_id,
+            title="Critical escalation created",
+            body=escalation.title,
+            source_table="governance_escalations",
+            source_row_id=escalation.id,
+        )
     await session.commit()
     await session.refresh(escalation)
     return escalation
@@ -375,6 +508,7 @@ async def update_escalation(
     escalation = await get_escalation_or_404(
         session, escalation_id, current_user, for_mutation=True
     )
+    previous = governance_snapshot(escalation, ESCALATION_AUDIT_FIELDS)
     for key, value in fields.items():
         if value is not None and hasattr(escalation, key):
             setattr(escalation, key, value)
@@ -383,6 +517,22 @@ async def update_escalation(
         and escalation.resolved_at is None
     ):
         escalation.resolved_at = datetime.now(UTC)
+    event_type = (
+        "escalation.resolved"
+        if fields.get("status") == GovernanceEscalationStatus.RESOLVED
+        else "escalation.updated"
+    )
+    await log_governance_event(
+        session,
+        current_user,
+        event_type=event_type,
+        org_id=escalation.org_id,
+        project_id=escalation.project_id,
+        source_table="governance_escalations",
+        source_id=escalation.id,
+        previous_values=previous,
+        new_values=governance_snapshot(escalation, ESCALATION_AUDIT_FIELDS),
+    )
     await session.commit()
     await session.refresh(escalation)
     return escalation
@@ -396,7 +546,19 @@ async def soft_delete_escalation(
     escalation = await get_escalation_or_404(
         session, escalation_id, current_user, for_mutation=True
     )
+    previous = governance_snapshot(escalation, ESCALATION_AUDIT_FIELDS)
     escalation.deleted_at = datetime.now(UTC)
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="escalation.archived",
+        org_id=escalation.org_id,
+        project_id=escalation.project_id,
+        source_table="governance_escalations",
+        source_id=escalation.id,
+        previous_values=previous,
+        new_values=governance_snapshot(escalation, ESCALATION_AUDIT_FIELDS),
+    )
     await session.commit()
 
 
@@ -427,6 +589,17 @@ async def create_action(
         updated_by=current_user.id,
     )
     session.add(action)
+    await session.flush()
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="action.created",
+        org_id=action.org_id,
+        project_id=action.project_id,
+        source_table="governance_actions",
+        source_id=action.id,
+        new_values=governance_snapshot(action, ACTION_AUDIT_FIELDS),
+    )
     await session.commit()
     await session.refresh(action)
     return action
@@ -439,12 +612,29 @@ async def update_action(
     **fields,
 ) -> GovernanceAction:
     action = await get_action_or_404(session, action_id, current_user, for_mutation=True)
+    previous = governance_snapshot(action, ACTION_AUDIT_FIELDS)
     for key, value in fields.items():
         if key in fields and hasattr(action, key):
             setattr(action, key, value)
     if fields.get("status") == GovernanceActionStatus.COMPLETED and action.completed_at is None:
         action.completed_at = datetime.now(UTC)
     action.updated_by = current_user.id
+    event_type = (
+        "action.completed"
+        if fields.get("status") == GovernanceActionStatus.COMPLETED
+        else "action.updated"
+    )
+    await log_governance_event(
+        session,
+        current_user,
+        event_type=event_type,
+        org_id=action.org_id,
+        project_id=action.project_id,
+        source_table="governance_actions",
+        source_id=action.id,
+        previous_values=previous,
+        new_values=governance_snapshot(action, ACTION_AUDIT_FIELDS),
+    )
     await session.commit()
     await session.refresh(action)
     return action
@@ -456,8 +646,20 @@ async def soft_delete_action(
     current_user: CurrentUser,
 ) -> None:
     action = await get_action_or_404(session, action_id, current_user, for_mutation=True)
+    previous = governance_snapshot(action, ACTION_AUDIT_FIELDS)
     action.deleted_at = datetime.now(UTC)
     action.updated_by = current_user.id
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="action.archived",
+        org_id=action.org_id,
+        project_id=action.project_id,
+        source_table="governance_actions",
+        source_id=action.id,
+        previous_values=previous,
+        new_values=governance_snapshot(action, ACTION_AUDIT_FIELDS),
+    )
     await session.commit()
 
 
@@ -492,6 +694,9 @@ async def update_scope_state(
             updated_by=current_user.id,
         )
         session.add(scope)
+        previous = None
+    else:
+        previous = governance_snapshot(scope, SCOPE_AUDIT_FIELDS)
 
     if scope_status is not None:
         scope.scope_status = scope_status
@@ -502,6 +707,29 @@ async def update_scope_state(
     if linked_charter_document_id is not None:
         scope.linked_charter_document_id = linked_charter_document_id
     scope.updated_by = current_user.id
+    await session.flush()
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="scope.updated",
+        org_id=scope.org_id,
+        project_id=scope.project_id,
+        source_table="project_scope_states",
+        source_id=scope.id,
+        previous_values=previous,
+        new_values=governance_snapshot(scope, SCOPE_AUDIT_FIELDS),
+    )
+    if scope.scope_status == GovernanceScopeStatus.PENDING_REVISION:
+        await create_governance_notification(
+            session,
+            current_user,
+            org_id=scope.org_id,
+            project_id=scope.project_id,
+            title="Scope awaiting approval",
+            body=f"Scope version {scope.version_label} is pending revision.",
+            source_table="project_scope_states",
+            source_row_id=scope.id,
+        )
     await session.commit()
     await session.refresh(scope)
     return scope
@@ -535,17 +763,27 @@ async def create_weekly_summary(
                 source_id=link.source_id,
             )
         )
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="weekly_summary.created",
+        org_id=summary.org_id,
+        source_table="governance_weekly_summaries",
+        source_id=summary.id,
+        new_values=governance_snapshot(summary, SUMMARY_AUDIT_FIELDS),
+        metadata={"evidence_link_count": len(evidence_links)},
+    )
     await session.commit()
     await session.refresh(summary)
     return summary
 
 
-def _leadership_sees_summary_only_if_approved(current_user: CurrentUser, summary: GovernanceWeeklySummary) -> bool:
-    if current_user.role == AppRole.BSG_LEADERSHIP and summary.status != GovernanceSummaryStatus.APPROVED:
-        return False
-    if current_user.role == AppRole.CLIENT and summary.status != GovernanceSummaryStatus.APPROVED:
-        return False
-    return True
+def _leadership_sees_summary_only_if_approved(
+    current_user: CurrentUser,
+    summary: GovernanceWeeklySummary,
+) -> bool:
+    restricted_to_approved = current_user.role in {AppRole.BSG_LEADERSHIP, AppRole.CLIENT}
+    return not (restricted_to_approved and summary.status != GovernanceSummaryStatus.APPROVED)
 
 
 async def get_weekly_summary_by_id(
@@ -558,7 +796,12 @@ async def get_weekly_summary_by_id(
     stmt = _apply_org_filter(stmt, GovernanceWeeklySummary.org_id, current_user)
     summary = (await session.execute(stmt)).scalar_one_or_none()
     if summary is None:
-        raise ApiError(404, "NOT_FOUND", "Weekly summary was not found.", {"summary_id": str(summary_id)})
+        raise ApiError(
+            404,
+            "NOT_FOUND",
+            "Weekly summary was not found.",
+            {"summary_id": str(summary_id)},
+        )
     if not _leadership_sees_summary_only_if_approved(current_user, summary):
         raise ApiError(403, "FORBIDDEN", "Authenticated user lacks permission.")
     return summary
@@ -592,7 +835,18 @@ async def update_weekly_summary_draft(
     summary = await get_weekly_summary_by_id(session, summary_id, current_user)
     if summary.status != GovernanceSummaryStatus.DRAFT:
         raise ApiError(409, "SUMMARY_NOT_EDITABLE", "Only draft summaries can be edited.")
+    previous = governance_snapshot(summary, SUMMARY_AUDIT_FIELDS)
     summary.summary_text = summary_text
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="weekly_summary.updated",
+        org_id=summary.org_id,
+        source_table="governance_weekly_summaries",
+        source_id=summary.id,
+        previous_values=previous,
+        new_values=governance_snapshot(summary, SUMMARY_AUDIT_FIELDS),
+    )
     await session.commit()
     await session.refresh(summary)
     return summary
@@ -607,9 +861,20 @@ async def approve_weekly_summary(
     summary = await get_weekly_summary_by_id(session, summary_id, current_user)
     if summary.status != GovernanceSummaryStatus.DRAFT:
         raise ApiError(409, "SUMMARY_NOT_APPROVABLE", "Only draft summaries can be approved.")
+    previous = governance_snapshot(summary, SUMMARY_AUDIT_FIELDS)
     summary.status = GovernanceSummaryStatus.APPROVED
     summary.approved_by = current_user.id
     summary.approved_at = datetime.now(UTC)
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="weekly_summary.approved",
+        org_id=summary.org_id,
+        source_table="governance_weekly_summaries",
+        source_id=summary.id,
+        previous_values=previous,
+        new_values=governance_snapshot(summary, SUMMARY_AUDIT_FIELDS),
+    )
     await session.commit()
     await session.refresh(summary)
     return summary

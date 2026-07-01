@@ -1,3 +1,5 @@
+import csv
+import io
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Response
@@ -10,9 +12,11 @@ from app.agents.governance.schemas.governance import (
     GovernanceActionUpdate,
     GovernanceAnalyticsRead,
     GovernanceBootstrapRead,
+    GovernanceCharterReferenceRead,
     GovernanceEscalationCreate,
     GovernanceEscalationRead,
     GovernanceEscalationUpdate,
+    GovernanceMonitoringRead,
     GovernanceWeeklySummaryCreate,
     GovernanceWeeklySummaryGenerateRequest,
     GovernanceWeeklySummaryRead,
@@ -28,7 +32,12 @@ from app.agents.governance.schemas.governance import (
     PromoteRiskAlertRequest,
 )
 from app.agents.governance.services.analytics_service import get_governance_analytics
-from app.agents.governance.services.charter_export import generate_simple_docx
+from app.agents.governance.services.audit_service import log_governance_event
+from app.agents.governance.services.charter_export import (
+    CharterExportDocument,
+    generate_charter_docx,
+    generate_charter_pdf,
+)
 from app.agents.governance.services.charter_service import (
     approve_project_charter,
     archive_project_charter,
@@ -39,9 +48,11 @@ from app.agents.governance.services.charter_service import (
     update_project_charter_draft,
 )
 from app.agents.governance.services.dashboard_service import get_governance_bootstrap
+from app.agents.governance.services.knowledge_link_service import list_approved_charter_references
 from app.agents.governance.services.delivery_integration import promote_risk_alert_to_escalation
 from app.agents.governance.services.governance_service import (
     approve_weekly_summary,
+    can_read_internal_governance,
     create_action,
     create_dependency,
     create_escalation,
@@ -56,6 +67,7 @@ from app.agents.governance.services.governance_service import (
     scoped_actions_query,
     scoped_dependencies_query,
     scoped_escalations_query,
+    scoped_scope_states_query,
     soft_delete_action,
     soft_delete_dependency,
     soft_delete_escalation,
@@ -65,6 +77,7 @@ from app.agents.governance.services.governance_service import (
     update_scope_state,
     update_weekly_summary_draft,
 )
+from app.agents.governance.services.monitoring_service import get_governance_monitoring
 from app.agents.governance.services.summary_service import (
     build_weekly_summary_read,
     generate_weekly_governance_summary,
@@ -79,6 +92,7 @@ router = APIRouter(tags=["governance"])
 
 READ_ROLES = (AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN, AppRole.CLIENT)
 WRITE_ROLES = (AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)
+MONITORING_ROLES = (AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
 
 
 @router.get("/governance/bootstrap", response_model=DataResponse[GovernanceBootstrapRead])
@@ -89,6 +103,20 @@ async def governance_bootstrap(
     return DataResponse(data=await get_governance_bootstrap(session, current_user))
 
 
+@router.get(
+    "/governance/charter-references",
+    response_model=ListResponse[GovernanceCharterReferenceRead],
+)
+async def list_governance_charter_references(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
+) -> ListResponse[GovernanceCharterReferenceRead]:
+    if not can_read_internal_governance(current_user):
+        return ListResponse(data=[], pagination=Pagination(limit=0))
+    refs = await list_approved_charter_references(session, current_user)
+    return ListResponse(data=refs, pagination=Pagination(limit=len(refs)))
+
+
 @router.get("/governance/analytics", response_model=DataResponse[GovernanceAnalyticsRead])
 async def governance_analytics(
     session: SessionDep,
@@ -96,6 +124,121 @@ async def governance_analytics(
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
 ) -> DataResponse[GovernanceAnalyticsRead]:
     return DataResponse(data=await get_governance_analytics(session, current_user, days=days))
+
+
+@router.get("/governance/monitoring", response_model=DataResponse[GovernanceMonitoringRead])
+async def governance_monitoring(
+    session: SessionDep,
+    window_hours: int = 24,
+    current_user: CurrentUser = Depends(require_role(*MONITORING_ROLES)),
+) -> DataResponse[GovernanceMonitoringRead]:
+    return DataResponse(
+        data=await get_governance_monitoring(
+            session,
+            current_user,
+            window_hours=window_hours,
+        )
+    )
+
+
+def _analytics_csv(data: GovernanceAnalyticsRead) -> str:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["section", "project", "metric", "value", "evidence"])
+    for project in data.portfolio_risk_ranking:
+        writer.writerow(
+            [
+                "portfolio_risk_ranking",
+                project.project_name,
+                "governance_health_score",
+                project.score,
+                "; ".join(item.label for item in project.evidence),
+            ]
+        )
+    for recommendation in data.recommendations:
+        writer.writerow(
+            [
+                "recommendation",
+                recommendation.project_name or "",
+                recommendation.title,
+                recommendation.detail,
+                "; ".join(item.label for item in recommendation.evidence),
+            ]
+        )
+    return output.getvalue()
+
+
+@router.get("/governance/analytics/export.csv")
+async def export_governance_analytics_csv(
+    session: SessionDep,
+    days: int = 30,
+    current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
+) -> Response:
+    data = await get_governance_analytics(session, current_user, days=days)
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="dashboard.exported",
+        org_id=current_user.org_id,
+        source_table="governance_analytics",
+        metadata={"format": "csv", "days": data.date_range_days},
+    )
+    await session.commit()
+    return Response(
+        content=_analytics_csv(data),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="governance_analytics_{data.date_range_days}d.csv"'
+            )
+        },
+    )
+
+
+@router.get("/governance/analytics/export.pdf")
+async def export_governance_analytics_pdf(
+    session: SessionDep,
+    days: int = 30,
+    current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
+) -> Response:
+    data = await get_governance_analytics(session, current_user, days=days)
+    body = (
+        f"Generated: {data.generated_at.isoformat()}\n"
+        f"Range: {data.date_range_days} days\n\n"
+        f"Portfolio Score: {data.kpis.portfolio_score}\n"
+        f"Projects at Risk: {data.kpis.projects_at_risk}\n"
+        f"Blocking Dependencies: {data.kpis.blocking_dependencies}\n"
+        f"Critical Escalations: {data.kpis.critical_escalations}\n"
+        f"Governance SLA: {data.kpis.governance_sla_pct}%\n\n"
+        "Portfolio Risk Ranking\n"
+        + "\n".join(
+            f"- {project.project_name}: score={project.score}, risk={project.risk_level}"
+            for project in data.portfolio_risk_ranking[:10]
+        )
+        + "\n\nRecommendations\n"
+        + "\n".join(
+            f"- {item.project_name or 'Portfolio'}: {item.title} ({item.priority})"
+            for item in data.recommendations
+        )
+    )
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="dashboard.exported",
+        org_id=current_user.org_id,
+        source_table="governance_analytics",
+        metadata={"format": "pdf", "days": data.date_range_days},
+    )
+    await session.commit()
+    return Response(
+        content=generate_simple_pdf("Governance Analytics", body),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="governance_analytics_{data.date_range_days}d.pdf"'
+            )
+        },
+    )
 
 
 @router.get(
@@ -118,6 +261,27 @@ async def list_project_dependencies(
             update={
                 "overdue_days": dependency_overdue_days(dep),
                 "project_name": project_names.get(project_id),
+                "owner_name": user_names.get(dep.owner_id) if dep.owner_id else None,
+            }
+        )
+        for dep in deps
+    ]
+    return ListResponse(data=data, pagination=Pagination(limit=len(data)))
+
+
+@router.get("/governance/dependencies", response_model=ListResponse[ProjectDependencyRead])
+async def list_governance_dependencies(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
+) -> ListResponse[ProjectDependencyRead]:
+    deps = await scoped_dependencies_query(session, current_user)
+    project_names = await load_project_names(session, {d.project_id for d in deps})
+    user_names = await load_user_names(session, {d.owner_id for d in deps if d.owner_id})
+    data = [
+        ProjectDependencyRead.model_validate(dep, from_attributes=True).model_copy(
+            update={
+                "overdue_days": dependency_overdue_days(dep),
+                "project_name": project_names.get(dep.project_id),
                 "owner_name": user_names.get(dep.owner_id) if dep.owner_id else None,
             }
         )
@@ -332,6 +496,16 @@ async def get_project_scope(
     return DataResponse(data=ProjectScopeStateRead.model_validate(scope, from_attributes=True))
 
 
+@router.get("/governance/scope-states", response_model=ListResponse[ProjectScopeStateRead])
+async def list_governance_scope_states(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
+) -> ListResponse[ProjectScopeStateRead]:
+    scopes = await scoped_scope_states_query(session, current_user)
+    data = [ProjectScopeStateRead.model_validate(scope, from_attributes=True) for scope in scopes]
+    return ListResponse(data=data, pagination=Pagination(limit=len(data)))
+
+
 @router.patch("/projects/{project_id}/scope", response_model=DataResponse[ProjectScopeStateRead])
 async def patch_project_scope(
     project_id: UUID,
@@ -399,6 +573,22 @@ async def generate_governance_project_charter(
         project_id=payload.project_id,
         visibility=payload.visibility,
     )
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="charter.generated",
+        org_id=charter.org_id,
+        project_id=charter.project_id,
+        source_table="project_charters",
+        source_id=charter.id,
+        new_values={
+            "version": charter.version,
+            "status": charter.status.value,
+            "generated_by_ai": charter.generated_by_ai,
+            "visibility": charter.visibility.value,
+        },
+    )
+    await session.commit()
     return DataResponse(data=await build_project_charter_read(session, charter))
 
 
@@ -419,6 +609,17 @@ async def patch_governance_project_charter(
         generated_text=payload.generated_text,
         visibility=payload.visibility,
     )
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="charter.updated",
+        org_id=charter.org_id,
+        project_id=charter.project_id,
+        source_table="project_charters",
+        source_id=charter.id,
+        new_values={"version": charter.version, "status": charter.status.value},
+    )
+    await session.commit()
     return DataResponse(data=await build_project_charter_read(session, charter))
 
 
@@ -432,6 +633,17 @@ async def approve_governance_project_charter(
     current_user: CurrentUser = Depends(require_role(*WRITE_ROLES)),
 ) -> DataResponse[ProjectCharterRead]:
     charter = await approve_project_charter(session, charter_id, current_user)
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="charter.approved",
+        org_id=charter.org_id,
+        project_id=charter.project_id,
+        source_table="project_charters",
+        source_id=charter.id,
+        new_values={"version": charter.version, "status": charter.status.value},
+    )
+    await session.commit()
     return DataResponse(data=await build_project_charter_read(session, charter))
 
 
@@ -445,6 +657,17 @@ async def archive_governance_project_charter(
     current_user: CurrentUser = Depends(require_role(*WRITE_ROLES)),
 ) -> DataResponse[ProjectCharterRead]:
     charter = await archive_project_charter(session, charter_id, current_user)
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="charter.archived",
+        org_id=charter.org_id,
+        project_id=charter.project_id,
+        source_table="project_charters",
+        source_id=charter.id,
+        new_values={"version": charter.version, "status": charter.status.value},
+    )
+    await session.commit()
     return DataResponse(data=await build_project_charter_read(session, charter))
 
 
@@ -459,7 +682,7 @@ async def _charter_export_payload(
     session: SessionDep,
     charter_id: UUID,
     current_user: CurrentUser,
-) -> tuple[ProjectCharterRead, str]:
+) -> tuple[ProjectCharterRead, CharterExportDocument]:
     charter = await get_project_charter_or_404(session, charter_id, current_user)
     read = await build_project_charter_read(session, charter)
     project = (
@@ -467,16 +690,26 @@ async def _charter_export_payload(
     ).scalar_one_or_none()
     project_name = project.name if project else read.project_name or "Project"
     title = f"{project_name} Project Charter {read.version}"
-    body = (
-        f"Project: {project_name}\n"
-        f"Version: {read.version}\n"
-        f"Status: {read.status.value}\n"
-        f"Generated: {read.created_at.isoformat()}\n"
-        f"Approved: {read.approved_at.isoformat() if read.approved_at else 'Pending'}\n"
-        f"Approved by: {read.approved_by_name or 'Pending'}\n\n"
-        f"{read.generated_text}"
+    metadata = [
+        ("Project", project_name),
+        ("Version", read.version),
+        ("Status", read.status.value.replace("_", " ").title()),
+        ("Generated", read.created_at.strftime("%b %d, %Y")),
+        ("Visibility", read.visibility.value.replace("_", " ").title()),
+    ]
+    if read.generated_by_ai:
+        metadata.append(("Generated By", "AI"))
+    metadata.extend(
+        [
+            ("Approved", read.approved_at.strftime("%b %d, %Y") if read.approved_at else "Pending"),
+            ("Approved By", read.approved_by_name or "Pending"),
+        ]
     )
-    return read, f"{title}\n\n{body}"
+    return read, CharterExportDocument(
+        title=title,
+        metadata=metadata,
+        markdown=read.generated_text,
+    )
 
 
 @router.get("/governance/project-charters/{charter_id}/export.pdf")
@@ -485,10 +718,21 @@ async def export_governance_project_charter_pdf(
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
 ) -> Response:
-    read, body = await _charter_export_payload(session, charter_id, current_user)
+    read, document = await _charter_export_payload(session, charter_id, current_user)
     filename = _safe_charter_filename(read.project_name or "project", read.version, "pdf")
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="charter.exported",
+        org_id=read.org_id,
+        project_id=read.project_id,
+        source_table="project_charters",
+        source_id=read.id,
+        metadata={"format": "pdf", "version": read.version},
+    )
+    await session.commit()
     return Response(
-        content=generate_simple_pdf(f"Project Charter {read.version}", body),
+        content=generate_charter_pdf(document),
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
@@ -500,10 +744,21 @@ async def export_governance_project_charter_docx(
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
 ) -> Response:
-    read, body = await _charter_export_payload(session, charter_id, current_user)
+    read, document = await _charter_export_payload(session, charter_id, current_user)
     filename = _safe_charter_filename(read.project_name or "project", read.version, "docx")
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="charter.exported",
+        org_id=read.org_id,
+        project_id=read.project_id,
+        source_table="project_charters",
+        source_id=read.id,
+        metadata={"format": "docx", "version": read.version},
+    )
+    await session.commit()
     return Response(
-        content=generate_simple_docx(f"Project Charter {read.version}", body),
+        content=generate_charter_docx(document),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
@@ -563,6 +818,20 @@ async def generate_governance_weekly_summary(
         current_user,
         summary_week=payload.summary_week,
     )
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="weekly_summary.generated",
+        org_id=summary.org_id,
+        source_table="governance_weekly_summaries",
+        source_id=summary.id,
+        new_values={
+            "summary_week": summary.summary_week.isoformat(),
+            "status": summary.status.value,
+            "generated_by_ai": summary.generated_by_ai,
+        },
+    )
+    await session.commit()
     return DataResponse(data=await build_weekly_summary_read(session, summary))
 
 
@@ -612,6 +881,23 @@ async def promote_escalation_from_risk_alert(
         current_user,
         risk_alert_id=payload.risk_alert_id,
     )
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="escalation.promoted_from_delivery_risk",
+        org_id=escalation.org_id,
+        project_id=escalation.project_id,
+        source_table="governance_escalations",
+        source_id=escalation.id,
+        new_values={
+            "title": escalation.title,
+            "severity": escalation.severity.value,
+            "status": escalation.status.value,
+            "source_type": escalation.source_type.value if escalation.source_type else None,
+            "source_id": str(escalation.source_id) if escalation.source_id else None,
+        },
+    )
+    await session.commit()
     return DataResponse(
         data=GovernanceEscalationRead.model_validate(escalation, from_attributes=True)
     )

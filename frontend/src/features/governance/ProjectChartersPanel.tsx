@@ -53,6 +53,7 @@ type ProjectChartersPanelProps = {
   canWrite: boolean;
   isClient: boolean;
   isReadOnly: boolean;
+  loadCharters?: boolean;
 };
 
 function formatCharterStatus(status: ProjectCharter["status"]): string {
@@ -99,6 +100,7 @@ export function ProjectChartersPanel({
   canWrite,
   isClient,
   isReadOnly,
+  loadCharters = true,
 }: ProjectChartersPanelProps) {
   const queryClient = useQueryClient();
   const [selectedProjectId, setSelectedProjectId] = useState("");
@@ -124,7 +126,7 @@ export function ProjectChartersPanel({
   const chartersQuery = useQuery({
     queryKey: ["governance", "project-charters", selectedProjectId],
     queryFn: () => listProjectCharters(selectedProjectId),
-    enabled: Boolean(selectedProjectId),
+    enabled: Boolean(selectedProjectId) && loadCharters,
     staleTime: 10 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
