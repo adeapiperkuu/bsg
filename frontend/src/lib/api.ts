@@ -47,7 +47,7 @@ import type {
 } from "@/types/knowledge";
 import type { DeliveryChatRequest, DeliveryChatResponse } from "@/types/delivery-chat";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
+export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
 /** Display labels for quality error taxonomy codes (spec §7.3). */
 export const ERROR_CATEGORY_LABELS: Record<string, string> = {
@@ -83,6 +83,11 @@ function getCsrfToken(): string | null {
   if (typeof document === "undefined") return null;
   const match = document.cookie.match(/(?:^|; )csrf_token=([^;]*)/);
   return match ? decodeURIComponent(match[1]) : null;
+}
+
+function clearSessionHintCookie() {
+  if (typeof document === "undefined") return;
+  document.cookie = "csrf_token=; Max-Age=0; path=/; SameSite=Lax";
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {
@@ -136,10 +141,46 @@ export async function apiFetch<T>(
     if (refreshed.ok) {
       return apiFetch<T>(path, init, true);
     }
+    if (refreshed.status === 401) {
+      clearSessionHintCookie();
+    }
     throw error;
   }
 
   return parseResponse<T>(response);
+}
+
+export async function apiFetchBlob(
+  path: string,
+  init: RequestInit = {},
+  retried = false,
+): Promise<Blob> {
+  const headers = new Headers(init.headers);
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers,
+    credentials: "include",
+  });
+
+  if (response.status === 401 && !path.startsWith("/auth/") && !retried) {
+    const error = await parseApiError(response);
+    const refreshed = await fetch(`${API_BASE}/auth/refresh`, {
+      method: "POST",
+      credentials: "include",
+    });
+    if (refreshed.ok) {
+      return apiFetchBlob(path, init, true);
+    }
+    if (refreshed.status === 401) {
+      clearSessionHintCookie();
+    }
+    throw error;
+  }
+
+  if (!response.ok) {
+    throw await parseApiError(response);
+  }
+  return response.blob();
 }
 
 export async function login(email: string, password: string): Promise<AuthSession> {

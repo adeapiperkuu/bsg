@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from app.db.models import (
     GovernanceActionStatus,
+    GovernanceCharterStatus,
     GovernanceDependencyStatus,
     GovernanceDependencyType,
     GovernanceEscalationSeverity,
@@ -13,6 +14,7 @@ from app.db.models import (
     GovernanceEvidenceSourceType,
     GovernanceScopeStatus,
     GovernanceSummaryStatus,
+    KnowledgeVisibility,
 )
 from app.schemas.common import ORMModel
 
@@ -175,10 +177,14 @@ class GovernanceActionUpdate(BaseModel):
 class GovernanceEvidenceLinkRead(ORMModel):
     id: UUID
     org_id: UUID
-    summary_id: UUID
+    summary_id: UUID | None = None
+    charter_id: UUID | None = None
     source_type: GovernanceEvidenceSourceType
     source_id: UUID
     created_at: datetime
+    label: str | None = None
+    detail: str | None = None
+    project_name: str | None = None
 
 
 class GovernanceWeeklySummaryRead(ORMModel):
@@ -193,6 +199,7 @@ class GovernanceWeeklySummaryRead(ORMModel):
     created_at: datetime
     updated_at: datetime
     evidence_links: list[GovernanceEvidenceLinkRead] = Field(default_factory=list)
+    approved_by_name: str | None = None
 
 
 class GovernanceEvidenceLinkCreate(BaseModel):
@@ -206,6 +213,44 @@ class GovernanceWeeklySummaryCreate(BaseModel):
     evidence_links: list[GovernanceEvidenceLinkCreate] = Field(default_factory=list)
 
 
+class GovernanceWeeklySummaryUpdate(BaseModel):
+    summary_text: str = Field(min_length=1)
+
+
+class GovernanceWeeklySummaryGenerateRequest(BaseModel):
+    summary_week: date | None = None
+
+
+class ProjectCharterGenerateRequest(BaseModel):
+    project_id: UUID
+    visibility: KnowledgeVisibility = KnowledgeVisibility.INTERNAL_ONLY
+
+
+class ProjectCharterUpdate(BaseModel):
+    generated_text: str = Field(min_length=1)
+    visibility: KnowledgeVisibility | None = None
+
+
+class ProjectCharterRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    project_id: UUID
+    version: str
+    status: GovernanceCharterStatus
+    generated_text: str
+    generated_by_ai: bool
+    previous_version_id: UUID | None
+    knowledge_document_id: UUID | None
+    visibility: KnowledgeVisibility
+    approved_by: UUID | None
+    approved_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    evidence_links: list[GovernanceEvidenceLinkRead] = Field(default_factory=list)
+    approved_by_name: str | None = None
+    project_name: str | None = None
+
+
 class GovernanceCharterReferenceRead(BaseModel):
     document_id: UUID
     title: str
@@ -215,11 +260,137 @@ class GovernanceCharterReferenceRead(BaseModel):
     visibility: str
 
 
+class GovernanceKnowledgeDocumentRef(BaseModel):
+    document_id: UUID
+    title: str
+    project: str | None
+    version: str
+    status: str
+    visibility: str
+    source_type: str
+
+
 class GovernanceBootstrapRead(BaseModel):
     kpis: GovernanceKpisRead
-    dependencies: list[ProjectDependencyRead]
-    escalations: list[GovernanceEscalationRead]
-    actions: list[GovernanceActionRead]
-    scope_states: list[ProjectScopeStateRead]
-    weekly_summary: GovernanceWeeklySummaryRead | None
+    dependencies: list[ProjectDependencyRead] = Field(default_factory=list)
+    escalations: list[GovernanceEscalationRead] = Field(default_factory=list)
+    actions: list[GovernanceActionRead] = Field(default_factory=list)
+    scope_states: list[ProjectScopeStateRead] = Field(default_factory=list)
     charter_references: list[GovernanceCharterReferenceRead] = Field(default_factory=list)
+
+
+class GovernanceEvidenceRead(BaseModel):
+    source_type: str
+    source_id: str | None = None
+    label: str
+    detail: str | None = None
+    project_id: UUID | None = None
+    project_name: str | None = None
+
+
+class GovernanceInsightRead(BaseModel):
+    title: str
+    detail: str
+    severity: str
+    evidence: list[GovernanceEvidenceRead] = Field(default_factory=list)
+
+
+class GovernanceRecommendationRead(BaseModel):
+    title: str
+    detail: str
+    priority: str
+    project_id: UUID | None = None
+    project_name: str | None = None
+    evidence: list[GovernanceEvidenceRead] = Field(default_factory=list)
+
+
+class GovernanceHealthProjectRead(BaseModel):
+    project_id: UUID
+    project_name: str
+    score: int
+    risk_level: str
+    priority: int
+    blocking_dependencies: int
+    open_dependencies: int
+    open_escalations: int
+    critical_escalations: int
+    overdue_actions: int
+    pending_scope_revisions: int
+    delivery_confidence: float | None = None
+    delivery_traffic_light: str | None = None
+    quality_risk: str | None = None
+    workforce_risk: str | None = None
+    trend: str
+    evidence: list[GovernanceEvidenceRead] = Field(default_factory=list)
+
+
+class GovernanceChartPointRead(BaseModel):
+    label: str
+    value: float
+    secondary_value: float | None = None
+
+
+class GovernanceTrendPointRead(BaseModel):
+    date: date
+    open_dependencies: int
+    resolved_dependencies: int
+    blocking_dependencies: int
+    escalations_created: int
+    escalations_resolved: int
+    critical_escalations: int
+    actions_created: int
+    actions_completed: int
+    overdue_actions: int
+    scope_revisions: int
+    scope_approvals: int
+    locked_scope: int
+    portfolio_health: float
+    sla_adherence_pct: float
+
+
+class GovernanceAnalyticsKpisRead(BaseModel):
+    portfolio_score: int
+    projects_at_risk: int
+    leadership_attention_projects: int
+    blocking_dependencies: int
+    critical_escalations: int
+    pending_scope_approvals: int
+    upcoming_governance_meetings: int
+    governance_sla_pct: float
+    avg_dependency_resolution_days: float | None = None
+    avg_escalation_resolution_days: float | None = None
+    avg_action_completion_days: float | None = None
+    open_dependencies: int
+    open_actions: int
+    overdue_actions: int
+    projects_red: int
+    projects_amber: int
+    projects_green: int
+    weekly_trend: float
+    monthly_trend: float
+
+
+class GovernanceAnalyticsRead(BaseModel):
+    generated_at: datetime
+    date_range_days: int
+    kpis: GovernanceAnalyticsKpisRead
+    project_health: list[GovernanceHealthProjectRead]
+    portfolio_risk_ranking: list[GovernanceHealthProjectRead]
+    insights: list[GovernanceInsightRead]
+    recommendations: list[GovernanceRecommendationRead]
+    trends: list[GovernanceTrendPointRead]
+    charts: dict[str, list[GovernanceChartPointRead]]
+    recent_activity: list[GovernanceEvidenceRead] = Field(default_factory=list)
+    export_sections: list[str] = Field(default_factory=list)
+
+
+class GovernanceMonitoringRead(BaseModel):
+    generated_at: datetime
+    window_hours: int
+    audit_events: int
+    chatbot_queries: int
+    chatbot_latency_avg_ms: int | None = None
+    chatbot_latency_p95_ms: int | None = None
+    failed_or_empty_ai_answers: int
+    dashboard_exports: int
+    recent_event_types: dict[str, int] = Field(default_factory=dict)

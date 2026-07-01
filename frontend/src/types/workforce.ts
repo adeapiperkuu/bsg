@@ -325,6 +325,11 @@ export type AgentQueryRead = {
   model_used: string | null;
   latency_ms: number | null;
   created_at: string;
+  retrieval_params?: Record<string, unknown> | null;
+  confidence_level?: string | null;
+  insufficient_evidence?: boolean;
+  related_records?: Array<Record<string, unknown>>;
+  source_agents_used?: string[];
   evidence_links: AgentQueryEvidenceLinkRead[];
 };
 
@@ -332,4 +337,5 @@ export type AgentQueryCreate = {
   agent_name: string;
   project_id?: string | null;
   query_text: string;
+  filters?: Record<string, unknown> | null;
 };

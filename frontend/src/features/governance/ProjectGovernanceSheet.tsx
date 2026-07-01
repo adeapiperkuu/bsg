@@ -74,7 +74,9 @@ export function ProjectGovernanceSheet({
   const riskQuery = useQuery({
     queryKey: ["projects", projectId, "risk-alerts"],
     queryFn: () => listProjectRiskAlerts(projectId!),
-    enabled: Boolean(projectId) && showDelivery && canWrite,
+    enabled: open && Boolean(projectId) && showDelivery && canWrite,
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 
   if (!row) return null;
@@ -90,7 +92,10 @@ export function ProjectGovernanceSheet({
 
   return (
     <Sheet open={open} onOpenChange={(next) => !next && onClose()}>
-      <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-2xl">
+      <SheetContent
+        side="right"
+        className="governance-no-shadow w-full overflow-y-auto sm:max-w-2xl"
+      >
         <SheetHeader>
           <SheetTitle>{row.projectName}</SheetTitle>
           <SheetDescription>Project governance details</SheetDescription>
@@ -103,7 +108,12 @@ export function ProjectGovernanceSheet({
                 Scope
               </h3>
               {canWrite && (
-                <Button type="button" variant="outline" size="sm" onClick={() => onEditScope(row.projectId)}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onEditScope(row.projectId)}
+                >
                   Edit scope
                 </Button>
               )}
@@ -159,10 +169,14 @@ export function ProjectGovernanceSheet({
                               <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-[color:var(--warning)]" />
                               {alert.title}
                             </div>
-                            <p className="mt-0.5 text-[10px] text-muted-foreground">{alert.detail}</p>
+                            <p className="mt-0.5 text-[10px] text-muted-foreground">
+                              {alert.detail}
+                            </p>
                           </div>
                           {promoted ? (
-                            <span className="shrink-0 text-[10px] text-muted-foreground">Promoted</span>
+                            <span className="shrink-0 text-[10px] text-muted-foreground">
+                              Promoted
+                            </span>
                           ) : (
                             <Button
                               type="button"

@@ -16,6 +16,18 @@ from app.services.workforce_agent import WORKFORCE_AGENT_NAME, answer_workforce_
 router = APIRouter(tags=["agent queries"])
 
 
+def _agent_query_read(row: AgentQuery) -> AgentQueryRead:
+    data = AgentQueryRead.model_validate(row)
+    params = row.retrieval_params or {}
+    data.confidence_level = params.get("confidence_level") if isinstance(params.get("confidence_level"), str) else None
+    data.insufficient_evidence = bool(params.get("insufficient_evidence", False))
+    related_records = params.get("related_records")
+    data.related_records = related_records if isinstance(related_records, list) else []
+    source_agents = params.get("source_agents_used")
+    data.source_agents_used = source_agents if isinstance(source_agents, list) else []
+    return data
+
+
 @router.post("/agent-queries", response_model=DataResponse[AgentQueryRead])
 async def create_agent_query(
     payload: AgentQueryCreate, session: SessionDep, current_user: UserDep
@@ -27,7 +39,7 @@ async def create_agent_query(
         query = await answer_workforce_query(session, current_user, payload)
         await session.commit()
         await session.refresh(query)
-        data = AgentQueryRead.model_validate(query)
+        data = _agent_query_read(query)
         data.evidence_links = [
             EvidenceLinkRead(**item.__dict__) for item in await _query_evidence(session, query.id)
         ]
@@ -73,7 +85,7 @@ async def create_agent_query(
     query = await answer_query(session, current_user, payload, evidence)
     await session.commit()
     await session.refresh(query)
-    data = AgentQueryRead.model_validate(query)
+    data = _agent_query_read(query)
     data.evidence_links = [EvidenceLinkRead(**item.__dict__) for item in await _query_evidence(session, query.id)]
     return DataResponse(data=data)
 
@@ -88,7 +100,7 @@ async def list_agent_queries(
     elif current_user.role.value == "delivery_manager":
         query = query.where(AgentQuery.org_id == current_user.org_id)
     rows = (await session.execute(query)).scalars()
-    return ListResponse(data=[AgentQueryRead.model_validate(row) for row in rows], pagination=Pagination(limit=limit))
+    return ListResponse(data=[_agent_query_read(row) for row in rows], pagination=Pagination(limit=limit))
 
 
 @router.get("/agent-queries/{query_id}", response_model=DataResponse[AgentQueryRead])
@@ -111,7 +123,7 @@ async def get_agent_query(
         raise ApiError(404, "NOT_FOUND", "Agent query was not found.")
     if current_user.role.value == "delivery_manager" and row.org_id != current_user.org_id:
         raise ApiError(404, "NOT_FOUND", "Agent query was not found.")
-    data = AgentQueryRead.model_validate(row)
+    data = _agent_query_read(row)
     data.evidence_links = [EvidenceLinkRead(**item.__dict__) for item in await _query_evidence(session, row.id)]
     return DataResponse(data=data)
 

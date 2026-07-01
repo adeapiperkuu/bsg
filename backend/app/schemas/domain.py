@@ -703,6 +703,7 @@ class AgentQueryCreate(BaseModel):
     agent_name: str
     project_id: UUID | None = None
     query_text: str = Field(min_length=1)
+    filters: dict[str, object] | None = None
 
 
 class AgentQueryRead(ORMModel):
@@ -716,6 +717,10 @@ class AgentQueryRead(ORMModel):
     created_at: datetime
     retrieval_params: dict[str, object] | None = None
     evidence_links: list[EvidenceLinkRead] = []
+    confidence_level: str | None = None
+    insufficient_evidence: bool = False
+    related_records: list[dict[str, object]] = []
+    source_agents_used: list[str] = []
 
 
 class CommunicationDraftCreate(BaseModel):

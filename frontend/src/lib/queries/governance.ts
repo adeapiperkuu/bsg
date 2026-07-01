@@ -1,16 +1,21 @@
 import { queryOptions, useQuery } from "@tanstack/react-query";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, apiFetchBlob } from "@/lib/api";
 import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
 import type {
   GovernanceAction,
   GovernanceActionCreatePayload,
   GovernanceActionUpdatePayload,
+  GovernanceAnalytics,
+  GovernanceCharterReference,
   GovernanceBootstrap,
   GovernanceEscalation,
   GovernanceEscalationCreatePayload,
   GovernanceEscalationUpdatePayload,
   GovernanceWeeklySummary,
   GovernanceWeeklySummaryCreatePayload,
+  ProjectCharter,
+  ProjectCharterGeneratePayload,
+  ProjectCharterUpdatePayload,
   ProjectDependency,
   ProjectDependencyCreatePayload,
   ProjectDependencyUpdatePayload,
@@ -30,7 +35,9 @@ export async function deleteGovernanceAction(actionId: string): Promise<void> {
   await apiFetch<void>(`/governance/actions/${actionId}`, { method: "DELETE" });
 }
 
-export async function promoteRiskAlertToEscalation(riskAlertId: string): Promise<GovernanceEscalation> {
+export async function promoteRiskAlertToEscalation(
+  riskAlertId: string,
+): Promise<GovernanceEscalation> {
   const body = await apiFetch<{ data: GovernanceEscalation }>(
     "/governance/escalations/promote-from-risk-alert",
     {
@@ -41,23 +48,164 @@ export async function promoteRiskAlertToEscalation(riskAlertId: string): Promise
   return body.data;
 }
 
+export type GovernanceWeeklySummaryUpdatePayload = {
+  summary_text: string;
+};
+
+export async function listProjectCharters(projectId?: string): Promise<ProjectCharter[]> {
+  const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  const body = await apiFetch<{ data: ProjectCharter[] }>(`/governance/project-charters${qs}`);
+  return body.data;
+}
+
+export async function generateProjectCharter(
+  payload: ProjectCharterGeneratePayload,
+): Promise<ProjectCharter> {
+  const body = await apiFetch<{ data: ProjectCharter }>("/governance/project-charters/generate", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
+export async function updateProjectCharter(
+  charterId: string,
+  payload: ProjectCharterUpdatePayload,
+): Promise<ProjectCharter> {
+  const body = await apiFetch<{ data: ProjectCharter }>(
+    `/governance/project-charters/${charterId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+  );
+  return body.data;
+}
+
+export async function approveProjectCharter(charterId: string): Promise<ProjectCharter> {
+  const body = await apiFetch<{ data: ProjectCharter }>(
+    `/governance/project-charters/${charterId}/approve`,
+    { method: "POST" },
+  );
+  return body.data;
+}
+
+export async function archiveProjectCharter(charterId: string): Promise<ProjectCharter> {
+  const body = await apiFetch<{ data: ProjectCharter }>(
+    `/governance/project-charters/${charterId}/archive`,
+    { method: "POST" },
+  );
+  return body.data;
+}
+
+export async function exportProjectCharter(
+  charterId: string,
+  format: "pdf" | "docx",
+): Promise<Blob> {
+  return apiFetchBlob(`/governance/project-charters/${charterId}/export.${format}`);
+}
+
+export async function listGovernanceWeeklySummaries(): Promise<GovernanceWeeklySummary[]> {
+  const body = await apiFetch<{ data: GovernanceWeeklySummary[] }>("/governance/weekly-summaries");
+  return body.data;
+}
+
+export async function generateGovernanceWeeklySummary(
+  summaryWeek?: string,
+): Promise<GovernanceWeeklySummary> {
+  const body = await apiFetch<{ data: GovernanceWeeklySummary }>(
+    "/governance/weekly-summary/generate",
+    {
+      method: "POST",
+      body: JSON.stringify(summaryWeek ? { summary_week: summaryWeek } : {}),
+    },
+  );
+  return body.data;
+}
+
+export async function updateGovernanceWeeklySummary(
+  summaryId: string,
+  payload: GovernanceWeeklySummaryUpdatePayload,
+): Promise<GovernanceWeeklySummary> {
+  const body = await apiFetch<{ data: GovernanceWeeklySummary }>(
+    `/governance/weekly-summary/${summaryId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+  );
+  return body.data;
+}
+
+export async function approveGovernanceWeeklySummary(
+  summaryId: string,
+): Promise<GovernanceWeeklySummary> {
+  const body = await apiFetch<{ data: GovernanceWeeklySummary }>(
+    `/governance/weekly-summary/${summaryId}/approve`,
+    { method: "POST" },
+  );
+  return body.data;
+}
+
+export async function getGovernanceCharterReferences(): Promise<GovernanceCharterReference[]> {
+  const body = await apiFetch<{ data: GovernanceCharterReference[] }>(
+    "/governance/charter-references",
+  );
+  return body.data;
+}
+
 export async function getGovernanceBootstrap(): Promise<GovernanceBootstrap> {
   const body = await apiFetch<{ data: GovernanceBootstrap }>("/governance/bootstrap");
   return body.data;
 }
 
+export async function getGovernanceAnalytics(days = 30): Promise<GovernanceAnalytics> {
+  const body = await apiFetch<{ data: GovernanceAnalytics }>(
+    `/governance/analytics?days=${encodeURIComponent(String(days))}`,
+  );
+  return body.data;
+}
+
+export async function exportGovernanceAnalytics(
+  days: number,
+  format: "csv" | "pdf",
+): Promise<Blob> {
+  return apiFetchBlob(
+    `/governance/analytics/export.${format}?days=${encodeURIComponent(String(days))}`,
+  );
+}
+
 export const governanceBootstrapQueryOptions = queryOptions({
   queryKey: queryKeys.governanceBootstrap,
   queryFn: getGovernanceBootstrap,
-  staleTime: STALE_TIME_MS,
+  staleTime: Math.max(STALE_TIME_MS, 10 * 60 * 1000),
+  refetchOnMount: false,
+  refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
 });
 
 export function useGovernanceBootstrapQuery() {
   return useQuery(governanceBootstrapQueryOptions);
 }
 
+export function governanceAnalyticsQueryOptions(days: number) {
+  return queryOptions({
+    queryKey: queryKeys.governanceAnalytics(days),
+    queryFn: () => getGovernanceAnalytics(days),
+    staleTime: Math.max(STALE_TIME_MS, 10 * 60 * 1000),
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+}
+
 export async function getProjectDependencies(projectId: string): Promise<ProjectDependency[]> {
   const body = await apiFetch<{ data: ProjectDependency[] }>(`/projects/${projectId}/dependencies`);
+  return body.data;
+}
+
+export async function getGovernanceDependencies(): Promise<ProjectDependency[]> {
+  const body = await apiFetch<{ data: ProjectDependency[] }>("/governance/dependencies");
   return body.data;
 }
 
@@ -84,9 +232,12 @@ export async function updateDependency(
 }
 
 export async function resolveDependency(dependencyId: string): Promise<ProjectDependency> {
-  const body = await apiFetch<{ data: ProjectDependency }>(`/dependencies/${dependencyId}/resolve`, {
-    method: "POST",
-  });
+  const body = await apiFetch<{ data: ProjectDependency }>(
+    `/dependencies/${dependencyId}/resolve`,
+    {
+      method: "POST",
+    },
+  );
   return body.data;
 }
 
@@ -123,6 +274,48 @@ export async function getGovernanceActions(): Promise<GovernanceAction[]> {
   const body = await apiFetch<{ data: GovernanceAction[] }>("/governance/actions");
   return body.data;
 }
+
+export async function getGovernanceScopeStates(): Promise<ProjectScopeState[]> {
+  const body = await apiFetch<{ data: ProjectScopeState[] }>("/governance/scope-states");
+  return body.data;
+}
+
+const governanceLazyQueryDefaults = {
+  staleTime: Math.max(STALE_TIME_MS, 10 * 60 * 1000),
+  refetchOnMount: false,
+  refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
+};
+
+export const governanceDependenciesQueryOptions = queryOptions({
+  queryKey: queryKeys.governanceDependencies,
+  queryFn: getGovernanceDependencies,
+  ...governanceLazyQueryDefaults,
+});
+
+export const governanceActionsQueryOptions = queryOptions({
+  queryKey: queryKeys.governanceActions,
+  queryFn: getGovernanceActions,
+  ...governanceLazyQueryDefaults,
+});
+
+export const governanceEscalationsQueryOptions = queryOptions({
+  queryKey: queryKeys.governanceEscalations,
+  queryFn: getGovernanceEscalations,
+  ...governanceLazyQueryDefaults,
+});
+
+export const governanceScopeStatesQueryOptions = queryOptions({
+  queryKey: queryKeys.governanceScopeStates,
+  queryFn: getGovernanceScopeStates,
+  ...governanceLazyQueryDefaults,
+});
+
+export const governanceCharterReferencesQueryOptions = queryOptions({
+  queryKey: queryKeys.governanceCharterReferences,
+  queryFn: getGovernanceCharterReferences,
+  ...governanceLazyQueryDefaults,
+});
 
 export async function createGovernanceAction(
   payload: GovernanceActionCreatePayload,
@@ -162,7 +355,9 @@ export async function updateProjectScope(
 }
 
 export async function getWeeklySummary(): Promise<GovernanceWeeklySummary | null> {
-  const body = await apiFetch<{ data: GovernanceWeeklySummary | null }>("/governance/weekly-summary");
+  const body = await apiFetch<{ data: GovernanceWeeklySummary | null }>(
+    "/governance/weekly-summary",
+  );
   return body.data;
 }
 
