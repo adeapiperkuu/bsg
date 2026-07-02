@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from app.db.models.entities import KnowledgeDocument, KnowledgeDocumentChunk, KnowledgeSourceType
@@ -33,7 +33,7 @@ def _doc(document_id, *, title: str, approved_days_ago: int) -> KnowledgeDocumen
         owner_approver="Ops",
         file_name="source.md",
         file_mime_type="text/markdown",
-        approved_at=datetime.now(UTC) - timedelta(days=approved_days_ago),
+        approved_at=datetime.now(timezone.utc) - timedelta(days=approved_days_ago),
     )
 
 

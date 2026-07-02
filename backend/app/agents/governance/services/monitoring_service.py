@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,7 +28,7 @@ async def get_governance_monitoring(
     window_hours: int = 24,
 ) -> GovernanceMonitoringRead:
     effective_hours = min(max(window_hours, 1), 168)
-    since = datetime.now(UTC) - timedelta(hours=effective_hours)
+    since = datetime.now(timezone.utc) - timedelta(hours=effective_hours)
 
     audit_stmt = select(AuditLog).where(
         AuditLog.event_type.like("governance.%"),
@@ -53,7 +53,7 @@ async def get_governance_monitoring(
     )
     event_counts = Counter(row.event_type for row in audit_rows)
     return GovernanceMonitoringRead(
-        generated_at=datetime.now(UTC),
+        generated_at=datetime.now(timezone.utc),
         window_hours=effective_hours,
         audit_events=len(audit_rows),
         chatbot_queries=len(query_rows),

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from app.db.models import (
     GovernanceAction,
@@ -15,7 +15,7 @@ from app.db.models import (
 
 
 def _today() -> date:
-    return datetime.now(UTC).date()
+    return datetime.now(timezone.utc).date()
 
 
 def effective_action_status(

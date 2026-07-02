@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -138,7 +138,7 @@ async def test_record_knowledge_feedback_updates_existing_row() -> None:
         id=uuid4(),
         rating=KnowledgeFeedbackRating.UP,
         comment=None,
-        created_at=datetime.now(UTC),
+        created_at=datetime.now(timezone.utc),
     )
     session = _FeedbackSession(agent_query, existing_feedback=existing)
 

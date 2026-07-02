@@ -1,4 +1,4 @@
-from datetime import date, datetime, UTC
+from datetime import date, datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -84,7 +84,7 @@ def test_sla_adherence_all_on_time() -> None:
             title="Done",
             due_date=date(2026, 6, 20),
             status=GovernanceActionStatus.COMPLETED,
-            completed_at=datetime(2026, 6, 18, tzinfo=UTC),
+            completed_at=datetime(2026, 6, 18, tzinfo=timezone.utc),
         )
     ]
     assert calculate_sla_adherence_pct(actions, today=date(2026, 6, 25)) == 100.0

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select
@@ -106,7 +106,7 @@ async def compute_governance_kpis(
     session: AsyncSession,
     current_user: CurrentUser,
 ) -> GovernanceKpisRead:
-    today = datetime.now(UTC).date()
+    today = datetime.now(timezone.utc).date()
     window_start = today - timedelta(days=90)
 
     open_actions = 0
@@ -207,7 +207,7 @@ async def get_governance_bootstrap(
 
     cache_key = _bootstrap_cache_key(current_user)
     cached = _bootstrap_kpi_cache.get(cache_key)
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     if cached and now - cached[0] < BOOTSTRAP_CACHE_TTL:
         return GovernanceBootstrapRead(kpis=cached[1])
 

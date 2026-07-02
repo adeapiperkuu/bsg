@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -908,7 +908,7 @@ async def approve_project_charter(
         raise ApiError(409, "CHARTER_NOT_APPROVABLE", "Only draft charters can be approved.")
     charter.status = GovernanceCharterStatus.APPROVED
     charter.approved_by = current_user.id
-    charter.approved_at = datetime.now(UTC)
+    charter.approved_at = datetime.now(timezone.utc)
     await session.commit()
     await session.refresh(charter)
     return charter

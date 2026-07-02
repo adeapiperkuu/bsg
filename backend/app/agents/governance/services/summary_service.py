@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -77,7 +77,7 @@ class SummaryEvidenceItem:
 
 
 def monday_of_week(ref: date | None = None) -> date:
-    today = ref or datetime.now(UTC).date()
+    today = ref or datetime.now(timezone.utc).date()
     return today - timedelta(days=today.weekday())
 
 

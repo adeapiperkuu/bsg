@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import Select, select
@@ -402,7 +402,7 @@ async def resolve_dependency(
     dep = await get_dependency_or_404(session, dependency_id, current_user, for_mutation=True)
     previous = governance_snapshot(dep, DEPENDENCY_AUDIT_FIELDS)
     dep.status = GovernanceDependencyStatus.RESOLVED
-    dep.resolved_at = datetime.now(UTC)
+    dep.resolved_at = datetime.now(timezone.utc)
     dep.resolved_by = current_user.id
     dep.updated_by = current_user.id
     await log_governance_event(
@@ -428,7 +428,7 @@ async def soft_delete_dependency(
 ) -> None:
     dep = await get_dependency_or_404(session, dependency_id, current_user, for_mutation=True)
     previous = governance_snapshot(dep, DEPENDENCY_AUDIT_FIELDS)
-    dep.deleted_at = datetime.now(UTC)
+    dep.deleted_at = datetime.now(timezone.utc)
     dep.updated_by = current_user.id
     await log_governance_event(
         session,
@@ -516,7 +516,7 @@ async def update_escalation(
         fields.get("status") == GovernanceEscalationStatus.RESOLVED
         and escalation.resolved_at is None
     ):
-        escalation.resolved_at = datetime.now(UTC)
+        escalation.resolved_at = datetime.now(timezone.utc)
     event_type = (
         "escalation.resolved"
         if fields.get("status") == GovernanceEscalationStatus.RESOLVED
@@ -547,7 +547,7 @@ async def soft_delete_escalation(
         session, escalation_id, current_user, for_mutation=True
     )
     previous = governance_snapshot(escalation, ESCALATION_AUDIT_FIELDS)
-    escalation.deleted_at = datetime.now(UTC)
+    escalation.deleted_at = datetime.now(timezone.utc)
     await log_governance_event(
         session,
         current_user,
@@ -617,7 +617,7 @@ async def update_action(
         if key in fields and hasattr(action, key):
             setattr(action, key, value)
     if fields.get("status") == GovernanceActionStatus.COMPLETED and action.completed_at is None:
-        action.completed_at = datetime.now(UTC)
+        action.completed_at = datetime.now(timezone.utc)
     action.updated_by = current_user.id
     event_type = (
         "action.completed"
@@ -647,7 +647,7 @@ async def soft_delete_action(
 ) -> None:
     action = await get_action_or_404(session, action_id, current_user, for_mutation=True)
     previous = governance_snapshot(action, ACTION_AUDIT_FIELDS)
-    action.deleted_at = datetime.now(UTC)
+    action.deleted_at = datetime.now(timezone.utc)
     action.updated_by = current_user.id
     await log_governance_event(
         session,
@@ -864,7 +864,7 @@ async def approve_weekly_summary(
     previous = governance_snapshot(summary, SUMMARY_AUDIT_FIELDS)
     summary.status = GovernanceSummaryStatus.APPROVED
     summary.approved_by = current_user.id
-    summary.approved_at = datetime.now(UTC)
+    summary.approved_at = datetime.now(timezone.utc)
     await log_governance_event(
         session,
         current_user,

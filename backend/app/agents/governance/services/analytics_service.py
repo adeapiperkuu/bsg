@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from statistics import mean
 from uuid import UUID
 
@@ -91,7 +91,7 @@ def _dt(value: datetime | date | None) -> datetime | None:
         return None
     if isinstance(value, datetime):
         return value
-    return datetime.combine(value, datetime.min.time(), tzinfo=UTC)
+    return datetime.combine(value, datetime.min.time(), tzinfo=timezone.utc)
 
 
 def _days_between(start: datetime | date | None, end: datetime | date | None) -> float | None:
@@ -562,7 +562,7 @@ async def get_governance_analytics(
     assert_can_read_governance(current_user)
     effective_days = _clamp_range(days)
     cache_key = _analytics_cache_key(current_user, effective_days)
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     cached = _analytics_cache.get(cache_key)
     if cached and now - cached[0] < ANALYTICS_CACHE_TTL:
         return cached[1]
@@ -751,7 +751,7 @@ async def get_governance_analytics(
     )
 
     analytics = GovernanceAnalyticsRead(
-        generated_at=datetime.now(UTC),
+        generated_at=datetime.now(timezone.utc),
         date_range_days=effective_days,
         kpis=kpis,
         project_health=project_health,

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from time import perf_counter
 
 from sqlalchemy import select
@@ -30,7 +30,7 @@ async def _cached_governance_query(
     current_user: CurrentUser,
     payload: AgentQueryCreate,
 ) -> AgentQuery | None:
-    since = datetime.now(UTC) - GOVERNANCE_CHAT_CACHE_TTL
+    since = datetime.now(timezone.utc) - GOVERNANCE_CHAT_CACHE_TTL
     rows = list(
         (
             await session.execute(
