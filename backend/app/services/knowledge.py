@@ -3,6 +3,7 @@ import csv
 import difflib
 import io
 import asyncio
+import json
 import logging
 import mimetypes
 import re
@@ -19,12 +20,14 @@ import httpx
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import load_only
 
 from app.core.config import get_settings
 from app.core.constants import SUPPORTED_KNOWLEDGE_EXTENSIONS
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
+from app.db.rls import set_rls_context
 from app.db.session import AsyncSessionLocal
 from app.db.models.entities import (
     AppRole,
@@ -252,6 +255,57 @@ class RetrievalResult:
     keyword_scores: dict[UUID, float]
     top_score: float
     empty_eligible_reason: str | None = None
+
+
+@dataclass
+class StreamKnowledgePrepared:
+    """Retrieval context for LLM streaming without holding a request DB session."""
+
+    current_user: CurrentUser
+    query_text: str
+    answer_mode: str
+    client_safe_mode: bool
+    history: list[KnowledgeConversationTurn]
+    matches: list[tuple[KnowledgeDocumentChunk | _VectorChunk, float]]
+    doc_map: dict[UUID, KnowledgeDocument]
+    folders_map: dict[UUID, KnowledgeFolder]
+    eligible_docs: list[KnowledgeDocument]
+    vector_scores: dict[UUID, float]
+    keyword_scores: dict[UUID, float]
+    top_score: float
+    retrieval_query: str
+    has_embeddings: bool
+    structured_context: str
+    include_histories: bool
+    max_sources: int
+    min_relevance_score: float
+    project: str | None
+    department: str | None
+    started: datetime
+
+
+def _build_context_chunks_from_matches(
+    matches: list[tuple[KnowledgeDocumentChunk | _VectorChunk, float]],
+    doc_map: dict[UUID, KnowledgeDocument],
+    folders_map: dict[UUID, KnowledgeFolder],
+    *,
+    neighbor_context: dict[UUID, str] | None = None,
+) -> list[dict[str, str]]:
+    neighbors = neighbor_context or {}
+    context_chunks: list[dict[str, str]] = []
+    for chunk, _score in matches:
+        doc = doc_map[chunk.document_id]
+        folder = folders_map.get(doc.folder_id)
+        raw_text = neighbors.get(chunk.id) or (chunk.chunk_text or chunk.content or "").strip()
+        context_chunks.append({
+            "title": doc.title,
+            "source_type": _source_label(doc.source_type),
+            "folder": folder.name if folder else doc.folder_id.hex,
+            "page": str(chunk.page_number) if chunk.page_number else "",
+            "text": raw_text if len(raw_text) <= RAG_CONTEXT_CHUNK_CHARS
+                    else raw_text[: RAG_CONTEXT_CHUNK_CHARS - 3].rstrip() + "...",
+        })
+    return context_chunks
 
 
 def _sse(data: dict[str, object]) -> str:
@@ -546,7 +600,7 @@ def _to_document_summary_read(doc: KnowledgeDocument, folder: KnowledgeFolder) -
         processing_error=doc.processing_error,
         indexing_status=doc.indexing_status.value,
         workflow_state=_compute_workflow_state(doc),
-        updated_at=doc.updated_at,
+        updated_at=_loaded_datetime(doc, "updated_at"),
     )
 
 
@@ -654,7 +708,7 @@ async def get_knowledge_bootstrap(
     )
     health = _health_counts_from_documents(visible_docs)
     document_counts = _document_counts_from_documents(visible_docs)
-    recent_docs = sorted(visible_docs, key=lambda doc: doc.updated_at, reverse=True)[
+    recent_docs = sorted(visible_docs, key=lambda doc: _loaded_datetime(doc, "updated_at"), reverse=True)[
         :BOOTSTRAP_RECENT_DOCUMENT_LIMIT
     ]
     recent_documents = [
@@ -1106,10 +1160,15 @@ async def _retrieve_knowledge_context(
     min_relevance_score: float = 0.25,
     project: str | None = None,
     department: str | None = None,
+    prefer_fast_retrieval: bool = False,
 ) -> RetrievalResult:
     client_safe_mode = answer_mode == "client_safe"
     history = conversation_history or []
-    retrieval_query = await _build_standalone_retrieval_query(query_text, history)
+    retrieval_query = await _build_retrieval_query_for_search(
+        query_text,
+        history,
+        prefer_fast=prefer_fast_retrieval,
+    )
     embedding_input = (
         retrieval_query[:EMBEDDING_INPUT_MAX_CHARS]
         if len(retrieval_query) > EMBEDDING_INPUT_MAX_CHARS
@@ -1242,18 +1301,20 @@ async def _retrieve_knowledge_context(
     chunk_filters = [KnowledgeDocumentChunk.document_id.in_(doc_ids)]
     if active_version_ids:
         chunk_filters.append(KnowledgeDocumentChunk.version_id.in_(active_version_ids))
-    keyword_pool = list(
-        (
-            await session.execute(
-                select(KnowledgeDocumentChunk).where(*chunk_filters).limit(TERM_FALLBACK_CHUNK_LIMIT)
-            )
-        ).scalars()
-    )
-    keyword_scores = {chunk.id: score for chunk, score in _rank_chunks_by_terms(retrieval_query, keyword_pool)}
-
-    keyword_by_id: dict[UUID, KnowledgeDocumentChunk] = {
-        chunk.id: chunk for chunk in keyword_pool if chunk.id in set(vector_scores) | set(keyword_scores)
-    }
+    keyword_scores: dict[UUID, float] = {}
+    keyword_by_id: dict[UUID, KnowledgeDocumentChunk] = {}
+    if not has_embeddings or len(vector_by_id) < max_sources:
+        keyword_pool = list(
+            (
+                await session.execute(
+                    select(KnowledgeDocumentChunk).where(*chunk_filters).limit(TERM_FALLBACK_CHUNK_LIMIT)
+                )
+            ).scalars()
+        )
+        keyword_scores = {chunk.id: score for chunk, score in _rank_chunks_by_terms(retrieval_query, keyword_pool)}
+        keyword_by_id = {
+            chunk.id: chunk for chunk in keyword_pool if chunk.id in set(vector_scores) | set(keyword_scores)
+        }
     candidate_by_id: dict[UUID, KnowledgeDocumentChunk | _VectorChunk] = {
         **vector_by_id,
         **keyword_by_id,
@@ -1558,7 +1619,7 @@ async def ask_knowledge_agent(
     )
 
 
-async def stream_knowledge_ask(
+async def prepare_stream_knowledge_ask(
     session: AsyncSession,
     current_user: CurrentUser,
     query_text: str,
@@ -1570,19 +1631,12 @@ async def stream_knowledge_ask(
     min_relevance_score: float = 0.25,
     project: str | None = None,
     department: str | None = None,
-) -> AsyncGenerator[str, None]:
+) -> tuple[list[str], StreamKnowledgePrepared | None]:
     """
-    Async generator that yields SSE-formatted lines for the streaming /knowledge/ask/stream endpoint.
-
-    Event shapes:
-      data: {"type": "meta",  "query_id": "...", "confidence_estimate": 0.7}
-      data: {"type": "delta", "text": "<token>"}
-      data: {"type": "done",  "answer_text": "...", "confidence_score": 0.82, "next_step": "...",
-                              "structured_answer": {...}|null, "model_used": "..."}
-      data: {"type": "error", "message": "..."}
+    Run retrieval and context assembly while the request session is open.
+    Returns (early_sse_events, prepared_context). When early events are returned,
+    the stream is complete and prepared_context is None.
     """
-    import json as _json
-
     started = datetime.now(timezone.utc)
     max_sources = max(1, min(max_sources, 10))
     min_relevance_score = max(0.0, min(min_relevance_score, 1.0))
@@ -1600,13 +1654,12 @@ async def stream_knowledge_ask(
         min_relevance_score=min_relevance_score,
         project=project,
         department=department,
+        prefer_fast_retrieval=True,
     )
     if retrieval.empty_eligible_reason == "no_accessible_docs":
-        yield _sse({"type": "error", "message": "No approved documents are available."})
-        return
+        return [_sse({"type": "error", "message": "No approved documents are available."})], None
     if retrieval.empty_eligible_reason == "no_filtered_docs":
-        yield _sse({"type": "error", "message": "No documents matched the filters."})
-        return
+        return [_sse({"type": "error", "message": "No documents matched the filters."})], None
 
     matches = retrieval.matches
     doc_map = retrieval.doc_map
@@ -1639,40 +1692,77 @@ async def stream_knowledge_ask(
             gap=gap,
             agent_query_id=agent_query.id,
         )
-        yield _sse({"type": "meta", "query_id": str(agent_query.id),
-                    "confidence_estimate": 0.0})
-        yield _sse({"type": "done", "answer_text": NO_APPROVED_ANSWER, "confidence_score": 0.0,
-                    "next_step": "", "structured_answer": None, "model_used": None})
-        return
+        return [
+            _sse({"type": "meta", "query_id": str(agent_query.id), "confidence_estimate": 0.0}),
+            _sse({
+                "type": "done",
+                "answer_text": NO_APPROVED_ANSWER,
+                "confidence_score": 0.0,
+                "next_step": "",
+                "structured_answer": None,
+                "model_used": None,
+            }),
+        ], None
 
-    # ── Build context chunks for the LLM ──────────────────────────────────────
-    neighbor_context = await _neighbor_context_for_matches(session, matches)
-    context_chunks: list[dict[str, str]] = []
-    for chunk, score in matches:
-        doc = doc_map[chunk.document_id]
-        folder = folders_map.get(doc.folder_id)
-        raw_text = neighbor_context.get(chunk.id) or (chunk.chunk_text or chunk.content or "").strip()
-        context_chunks.append({
-            "title": doc.title,
-            "source_type": _source_label(doc.source_type),
-            "folder": folder.name if folder else doc.folder_id.hex,
-            "page": str(chunk.page_number) if chunk.page_number else "",
-            "text": raw_text if len(raw_text) <= RAG_CONTEXT_CHUNK_CHARS
-                    else raw_text[: RAG_CONTEXT_CHUNK_CHARS - 3].rstrip() + "...",
-        })
+    structured_context = ""
+    if project:
+        structured_context = await _build_structured_operational_context(
+            session, current_user, query_text=query_text, explicit_project=project, client_safe=client_safe_mode,
+        )
+    return [], StreamKnowledgePrepared(
+        current_user=current_user,
+        query_text=query_text,
+        answer_mode=answer_mode,
+        client_safe_mode=client_safe_mode,
+        history=history,
+        matches=matches,
+        doc_map=doc_map,
+        folders_map=folders_map,
+        eligible_docs=eligible_docs,
+        vector_scores=vector_scores,
+        keyword_scores=keyword_scores,
+        top_score=top_score,
+        retrieval_query=retrieval_query,
+        has_embeddings=has_embeddings,
+        structured_context=structured_context,
+        include_histories=include_histories,
+        max_sources=max_sources,
+        min_relevance_score=min_relevance_score,
+        project=project,
+        department=department,
+        started=started,
+    )
 
-    # Yield meta immediately so the client can attach query state while the LLM streams.
+
+async def stream_prepared_knowledge_ask(
+    prepared: StreamKnowledgePrepared,
+) -> AsyncGenerator[str, None]:
+    """Stream LLM tokens and persist results using a short-lived DB session."""
+    current_user = prepared.current_user
+    query_text = prepared.query_text
+    client_safe_mode = prepared.client_safe_mode
+    history = prepared.history
+    matches = prepared.matches
+    doc_map = prepared.doc_map
+    folders_map = prepared.folders_map
+    eligible_docs = prepared.eligible_docs
+    vector_scores = prepared.vector_scores
+    keyword_scores = prepared.keyword_scores
+    top_score = prepared.top_score
+    retrieval_query = prepared.retrieval_query
+    has_embeddings = prepared.has_embeddings
+    structured_context = prepared.structured_context
+    started = prepared.started
+    answer_mode = prepared.answer_mode
+
     confidence_estimate = round(0.4 * min(top_score, 1.0), 4)
     yield _sse({"type": "meta", "confidence_estimate": confidence_estimate})
 
-    # ── Stream LLM answer ─────────────────────────────────────────────────────
+    context_chunks = _build_context_chunks_from_matches(matches, doc_map, folders_map)
+
     fast_path = top_score >= FAST_PATH_THRESHOLD
     settings_obj = get_settings()
     fast_model = settings_obj.openai_model or settings_obj.llm_model or "gpt-4o-mini"
-    strong_model = settings_obj.knowledge_strong_model
-    structured_context = await _build_structured_operational_context(
-        session, current_user, query_text=query_text, explicit_project=project, client_safe=client_safe_mode,
-    )
     llm_history = [{"role": turn.role, "content": turn.content} for turn in history]
 
     llm = LLMClient()
@@ -1696,33 +1786,6 @@ async def stream_knowledge_ask(
 
     raw_confidence = float(llm_done_event.get("confidence") or 0.0)
     model_used = str(llm_done_event.get("model") or fast_model)
-
-    # Low-confidence retry with strong model (non-streaming for simplicity)
-    if not fast_path and fast_model != strong_model and raw_confidence < LOW_CONFIDENCE_THRESHOLD:
-        retry = await llm.generate_rag_answer(
-            query_text, context_chunks,
-            model=strong_model,
-            conversation_history=llm_history,
-            answer_mode="client_safe" if client_safe_mode else "internal",
-            structured_context=structured_context,
-            fast_path=False,
-        )
-        if float(retry.get("confidence") or 0.0) > raw_confidence:
-            new_answer = str(retry.get("answer") or "")
-            if new_answer and new_answer != accumulated_answer:
-                # Emit a replace event so client can swap the streamed text
-                yield _sse({"type": "replace", "text": new_answer})
-                accumulated_answer = new_answer
-            llm_done_event = {
-                "type": "done",
-                "answer_text": new_answer,
-                "next_step": str(retry.get("next_step") or ""),
-                "confidence": float(retry.get("confidence") or 0.0),
-                "structured": retry.get("structured"),
-                "model": strong_model,
-            }
-            raw_confidence = float(llm_done_event["confidence"])
-            model_used = strong_model
 
     answer_text = accumulated_answer or str(llm_done_event.get("answer_text") or NO_APPROVED_ANSWER)
     next_step = str(llm_done_event.get("next_step") or "")
@@ -1753,38 +1816,41 @@ async def stream_knowledge_ask(
     if not answer_text.strip():
         answer_text = NO_APPROVED_ANSWER
 
-    # ── Persist (best-effort — still return answer if save fails) ─────────────
     query_id: str | None = None
+    retrieval_params: dict[str, object] | None = None
     try:
-        retrieval_params = _build_retrieval_params(
-            query_text=query_text, retrieval_query=retrieval_query, answer_mode=answer_mode,
-            include_histories=include_histories, max_sources=max_sources, min_relevance_score=min_relevance_score,
-            project=project, department=department, eligible_doc_count=len(eligible_docs),
-            has_embeddings=has_embeddings, matches=matches, doc_map=doc_map,
-            vector_scores=vector_scores, keyword_scores=keyword_scores, confidence_score=confidence_score,
-        )
-        agent_query = AgentQuery(
-            user_id=current_user.id, org_id=current_user.org_id, project_id=None,
-            agent_name=KNOWLEDGE_AGENT_NAME, query_text=query_text, answer_text=answer_text,
-            model_used=model_used,
-            latency_ms=int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
-            retrieval_params=retrieval_params,
-        )
-        session.add(agent_query)
-        await session.flush()
-        query_id = str(agent_query.id)
+        async with AsyncSessionLocal() as persist_session:
+            await set_rls_context(persist_session, json.dumps({"sub": str(current_user.id)}))
+            retrieval_params = _build_retrieval_params(
+                query_text=query_text, retrieval_query=retrieval_query, answer_mode=answer_mode,
+                include_histories=prepared.include_histories, max_sources=prepared.max_sources,
+                min_relevance_score=prepared.min_relevance_score,
+                project=prepared.project, department=prepared.department, eligible_doc_count=len(eligible_docs),
+                has_embeddings=has_embeddings, matches=matches, doc_map=doc_map,
+                vector_scores=vector_scores, keyword_scores=keyword_scores, confidence_score=confidence_score,
+            )
+            agent_query = AgentQuery(
+                user_id=current_user.id, org_id=current_user.org_id, project_id=None,
+                agent_name=KNOWLEDGE_AGENT_NAME, query_text=query_text, answer_text=answer_text,
+                model_used=model_used,
+                latency_ms=int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
+                retrieval_params=retrieval_params,
+            )
+            persist_session.add(agent_query)
+            await persist_session.flush()
+            query_id = str(agent_query.id)
 
-        for chunk, score in matches:
-            doc = doc_map[chunk.document_id]
-            label = f"{_source_label(doc.source_type)}: {doc.title} {doc.version}"
-            session.add(KnowledgeEvidenceLink(
-                org_id=current_user.org_id, agent_query_id=agent_query.id,
-                document_id=doc.id, chunk_id=chunk.id,
-                citation_label=label, relevance_score=Decimal(str(round(score, 4))),
-            ))
+            for chunk, score in matches:
+                doc = doc_map[chunk.document_id]
+                label = f"{_source_label(doc.source_type)}: {doc.title} {doc.version}"
+                persist_session.add(KnowledgeEvidenceLink(
+                    org_id=current_user.org_id, agent_query_id=agent_query.id,
+                    document_id=doc.id, chunk_id=chunk.id,
+                    citation_label=label, relevance_score=Decimal(str(round(score, 4))),
+                ))
+            await persist_session.commit()
     except Exception:
         logger.exception("Failed to persist streamed knowledge ask")
-        await session.rollback()
 
     confidence_reasons = _build_confidence_reasons(matches, eligible_docs, doc_map, query_text)
     if not grounding["grounded"]:
@@ -1816,6 +1882,49 @@ async def stream_knowledge_ask(
         "model_used": model_used,
         "retrieval_debug": retrieval_params,
     })
+
+
+async def stream_knowledge_ask(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    query_text: str,
+    *,
+    conversation_history: list[KnowledgeConversationTurn] | None = None,
+    answer_mode: str = "internal",
+    include_histories: bool = True,
+    max_sources: int = 5,
+    min_relevance_score: float = 0.25,
+    project: str | None = None,
+    department: str | None = None,
+) -> AsyncGenerator[str, None]:
+    """
+    Async generator that yields SSE-formatted lines for the streaming /knowledge/ask/stream endpoint.
+
+    Event shapes:
+      data: {"type": "meta",  "query_id": "...", "confidence_estimate": 0.7}
+      data: {"type": "delta", "text": "<token>"}
+      data: {"type": "done",  "answer_text": "...", "confidence_score": 0.82, "next_step": "...",
+                              "structured_answer": {...}|null, "model_used": "..."}
+      data: {"type": "error", "message": "..."}
+    """
+    early_events, prepared = await prepare_stream_knowledge_ask(
+        session,
+        current_user,
+        query_text,
+        conversation_history=conversation_history,
+        answer_mode=answer_mode,
+        include_histories=include_histories,
+        max_sources=max_sources,
+        min_relevance_score=min_relevance_score,
+        project=project,
+        department=department,
+    )
+    for event in early_events:
+        yield event
+    if prepared is None:
+        return
+    async for chunk in stream_prepared_knowledge_ask(prepared):
+        yield chunk
 
 
 async def list_document_versions(
@@ -2152,6 +2261,31 @@ class _DocumentListPreload:
     approved_by_name: str | None
 
 
+def _loaded_datetime(doc: KnowledgeDocument, attr: str) -> datetime:
+    """Read a timestamp without triggering async lazy-load (MissingGreenlet)."""
+    attr_state = sa_inspect(doc).attrs[attr]
+    value = attr_state.loaded_value
+    if isinstance(value, datetime):
+        return value
+    history = attr_state.history
+    if history.added:
+        return history.added[0]
+    if history.unchanged:
+        return history.unchanged[0]
+    return datetime.now(timezone.utc)
+
+
+async def _ensure_document_timestamps(session: AsyncSession, doc: KnowledgeDocument) -> None:
+    state = sa_inspect(doc)
+    missing = [
+        name
+        for name in ("created_at", "updated_at")
+        if not isinstance(state.attrs[name].loaded_value, datetime)
+    ]
+    if missing:
+        await session.refresh(doc, attribute_names=missing)
+
+
 def _build_document_read(
     doc: KnowledgeDocument,
     folder: KnowledgeFolder,
@@ -2189,8 +2323,8 @@ def _build_document_read(
         approved_by_name=approved_by_name,
         approved_at=doc.approved_at,
         chunks=chunks,
-        created_at=doc.created_at,
-        updated_at=doc.updated_at,
+        created_at=_loaded_datetime(doc, "created_at"),
+        updated_at=_loaded_datetime(doc, "updated_at"),
     )
 
 
@@ -2264,6 +2398,7 @@ async def _batch_document_list_stats(
 
 
 async def _to_document_read(session: AsyncSession, doc: KnowledgeDocument, folder: KnowledgeFolder) -> KnowledgeDocumentRead:
+    await _ensure_document_timestamps(session, doc)
     chunk_filters = [KnowledgeDocumentChunk.document_id == doc.id]
     if doc.active_version_id:
         chunk_filters.append(KnowledgeDocumentChunk.version_id == doc.active_version_id)
@@ -2742,20 +2877,60 @@ async def _embed_texts(texts: list[str]) -> list[list[float]]:
     return embeddings
 
 
+_FOLLOW_UP_PRONOUN_RE = re.compile(
+    r"\b(it|its|it's|this|that|these|those|they|them|their|there|above|previous|same)\b",
+    re.IGNORECASE,
+)
+
+
+def _needs_llm_query_rewrite(query_text: str, conversation_history: list[KnowledgeConversationTurn]) -> bool:
+    meaningful_history = [
+        turn
+        for turn in conversation_history[-4:]
+        if turn.content and turn.content.strip() and turn.role in {"user", "assistant"}
+    ]
+    if not meaningful_history:
+        return False
+    if _FOLLOW_UP_PRONOUN_RE.search(query_text):
+        return True
+    return len(query_text.split()) <= 4 and not _extract_exact_terms(query_text)
+
+
+def _fast_retrieval_query(query_text: str, conversation_history: list[KnowledgeConversationTurn]) -> str:
+    # Embed only the latest question for speed; conversation context is passed to the answer LLM.
+    return query_text.strip()
+
+
+async def _build_retrieval_query_for_search(
+    query_text: str,
+    conversation_history: list[KnowledgeConversationTurn],
+    *,
+    prefer_fast: bool = False,
+) -> str:
+    if prefer_fast and not _needs_llm_query_rewrite(query_text, conversation_history):
+        return _fast_retrieval_query(query_text, conversation_history)
+    return await _build_standalone_retrieval_query(query_text, conversation_history)
+
+
 async def _build_standalone_retrieval_query(
     query_text: str,
     conversation_history: list[KnowledgeConversationTurn],
 ) -> str:
     query = query_text.strip()
-    if not conversation_history:
+    meaningful_history = [
+        turn
+        for turn in conversation_history[-4:]
+        if turn.content and turn.content.strip() and turn.role in {"user", "assistant"}
+    ]
+    if not meaningful_history:
         return query
 
     settings = get_settings()
     api_key = settings.openai_api_key or settings.llm_api_key
     if not api_key:
-        return _build_retrieval_query(query, conversation_history)
+        return _build_retrieval_query(query, meaningful_history)
 
-    history_lines = [f"{turn.role}: {turn.content[:1000]}" for turn in conversation_history[-4:]]
+    history_lines = [f"{turn.role}: {turn.content.strip()[:1000]}" for turn in meaningful_history]
     prompt = (
         "Rewrite the user's latest question as a standalone search query for operational "
         "knowledge retrieval. "
@@ -2784,9 +2959,9 @@ async def _build_standalone_retrieval_query(
         )
         rewritten = (response.choices[0].message.content or "").strip().strip('"')
     except Exception:
-        return _build_retrieval_query(query, conversation_history)
+        return _build_retrieval_query(query, meaningful_history)
     if not rewritten:
-        return _build_retrieval_query(query, conversation_history)
+        return _build_retrieval_query(query, meaningful_history)
     return rewritten[:EMBEDDING_INPUT_MAX_CHARS]
 
 

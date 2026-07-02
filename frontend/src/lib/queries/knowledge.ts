@@ -93,9 +93,11 @@ export function seedKnowledgeDocumentsFromBootstrap(
   queryClient: QueryClient,
   bootstrap: KnowledgeBootstrapApi,
 ) {
+  const seeded = (bootstrap.recent_documents ?? []).map(documentSummaryFromApi);
+  if (seeded.length === 0) return;
   queryClient.setQueryData<KnowledgeDocument[]>(queryKeys.knowledgeDocuments, (current) => {
-    if (current) return current;
-    return (bootstrap.recent_documents ?? []).map(documentSummaryFromApi);
+    if (current && current.length >= seeded.length) return current;
+    return seeded;
   });
 }
 
@@ -221,9 +223,17 @@ export function useKnowledgeDocumentVersionsQuery(documentId: string, enabled = 
   });
 }
 
-export function useKnowledgeLibraryHealthQuery(enabled = true, poll = false) {
+export function useKnowledgeLibraryHealthQuery(
+  enabled = true,
+  poll = false,
+  initialData?: KnowledgeLibraryHealthApi,
+) {
   const sessionReady = useKnowledgeSessionReady();
-  return useQuery(knowledgeLibraryHealthQueryOptions(enabled && sessionReady, poll));
+  return useQuery({
+    ...knowledgeLibraryHealthQueryOptions(enabled && sessionReady, poll),
+    initialData,
+    initialDataUpdatedAt: initialData ? Date.now() : undefined,
+  });
 }
 
 export function useKnowledgeRetrievalSettingsQuery(enabled = true) {

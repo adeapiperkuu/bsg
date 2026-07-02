@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 type Options = {
   rootMargin?: string;
@@ -7,11 +7,14 @@ type Options = {
 
 export function useLazyWhenVisible(options: Options = {}) {
   const { rootMargin = "120px", once = true } = options;
-  const ref = useRef<HTMLDivElement | null>(null);
+  const [node, setNode] = useState<HTMLDivElement | null>(null);
   const [isVisible, setIsVisible] = useState(false);
 
+  const ref = useCallback((element: HTMLDivElement | null) => {
+    setNode(element);
+  }, []);
+
   useEffect(() => {
-    const node = ref.current;
     if (!node) return;
     if (isVisible && once) return;
 
@@ -48,7 +51,7 @@ export function useLazyWhenVisible(options: Options = {}) {
       window.cancelAnimationFrame(raf);
       observer.disconnect();
     };
-  }, [isVisible, once, rootMargin]);
+  }, [isVisible, node, once, rootMargin]);
 
   return { ref, isVisible };
 }

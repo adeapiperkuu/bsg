@@ -4,8 +4,12 @@ from uuid import uuid4
 from app.db.models.entities import KnowledgeDocument, KnowledgeDocumentChunk, KnowledgeSourceType
 from app.schemas.domain import KnowledgeConversationTurn
 from app.services.knowledge import (
+    _build_standalone_retrieval_query,
     _build_retrieval_query,
+    _fast_retrieval_query,
     _ground_generation,
+    _loaded_datetime,
+    _needs_llm_query_rewrite,
     _rank_chunks_by_terms,
     _rerank_hybrid_candidates,
 )
@@ -53,6 +57,76 @@ def test_retrieval_query_includes_recent_history_for_follow_up() -> None:
 
     assert "Project Alpha" in query
     assert "What about approvals?" in query
+
+
+async def test_standalone_retrieval_query_skips_rewrite_without_history(monkeypatch) -> None:
+    def fail_if_called():
+        raise AssertionError("OpenAI client should not be used for first-turn queries")
+
+    monkeypatch.setattr("app.services.knowledge.get_openai_client", fail_if_called)
+
+    query = await _build_standalone_retrieval_query("What is the escalation SOP?", [])
+
+    assert query == "What is the escalation SOP?"
+
+
+async def test_standalone_retrieval_query_preserves_follow_up_rewrite(monkeypatch) -> None:
+    class _Message:
+        content = "Project Alpha approval workflow"
+
+    class _Choice:
+        message = _Message()
+
+    class _Response:
+        choices = [_Choice()]
+
+    class _Completions:
+        async def create(self, **_kwargs):
+            return _Response()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    monkeypatch.setattr("app.services.knowledge.get_openai_client", lambda: _Client())
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    history = [
+        KnowledgeConversationTurn(
+            role="user",
+            content="How does Project Alpha handle client escalations?",
+        ),
+    ]
+
+    query = await _build_standalone_retrieval_query("What about approvals?", history)
+
+    assert query == "Project Alpha approval workflow"
+
+
+def test_fast_retrieval_skips_llm_rewrite_for_self_contained_follow_up() -> None:
+    history = [
+        KnowledgeConversationTurn(
+            role="user",
+            content="How does Project Alpha handle client escalations?",
+        ),
+    ]
+
+    assert _needs_llm_query_rewrite("What is the calibration SOP?", history) is False
+    query = _fast_retrieval_query("What is the calibration SOP?", history)
+    assert query == "What is the calibration SOP?"
+
+
+def test_fast_retrieval_rewrite_needed_for_pronoun_follow_up() -> None:
+    history = [
+        KnowledgeConversationTurn(
+            role="user",
+            content="How does Project Alpha handle client escalations?",
+        ),
+    ]
+
+    assert _needs_llm_query_rewrite("What about that?", history) is True
 
 
 def test_keyword_ranker_preserves_exact_operational_terms() -> None:
@@ -111,3 +185,13 @@ def test_grounding_check_flags_unsupported_claims() -> None:
 
     assert result["grounded"] is False
     assert result["support"] < 0.65
+
+
+def test_loaded_datetime_reads_explicit_in_memory_value() -> None:
+    now = datetime.now(UTC)
+    doc = _doc(uuid4(), title="Policy", approved_days_ago=3)
+    doc.created_at = now
+    doc.updated_at = now
+
+    assert _loaded_datetime(doc, "created_at") == now
+    assert _loaded_datetime(doc, "updated_at") == now

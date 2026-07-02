@@ -147,6 +147,7 @@ type ChatMessage = {
   feedbackComment?: string;
   isServiceError?: boolean;
   isStreaming?: boolean;
+  wasStreamed?: boolean;
   retryQuestion?: string;
   detailsExpanded?: boolean;
 };
@@ -196,7 +197,7 @@ const KNOWLEDGE_CHAT_STORAGE_PREFIX = "bsg:knowledge-chat";
 const KNOWLEDGE_LIBRARY_SNAPSHOT_KEY = "bsg:knowledge-library-snapshot";
 const KNOWLEDGE_LIBRARY_SNAPSHOT_TTL_MS = 30 * 60 * 1000;
 const CHAT_SCROLL_THRESHOLD_PX = 80;
-const LIBRARY_DEBOUNCE_MS = 350;
+const LIBRARY_DEBOUNCE_MS = 120;
 
 type KnowledgeChatSession = {
   messages: ChatMessage[];
@@ -521,13 +522,20 @@ function processingProgress(status: KnowledgeProcessingStatusApi): number {
 function KnowledgePage() {
   const user = useAuthStore((s) => s.user);
   const queryClient = useQueryClient();
-  const { ref: librarySectionRef, isVisible: librarySectionVisible } = useLazyWhenVisible();
+  const { ref: librarySectionRef } = useLazyWhenVisible();
   const { ref: askPanelRef, isVisible: askPanelVisible } = useLazyWhenVisible();
   const [retrievalSettingsRequested, setRetrievalSettingsRequested] = useState(false);
   const [processingPollActive, setProcessingPollActive] = useState(false);
 
   const bootstrapQuery = useKnowledgeBootstrapQuery();
-  const libraryHealthQuery = useKnowledgeLibraryHealthQuery(librarySectionVisible, processingPollActive);
+  const [librarySnapshot, setLibrarySnapshot] = useState<KnowledgeLibrarySnapshot | null>(() =>
+    loadKnowledgeLibrarySnapshot(),
+  );
+  const libraryHealthQuery = useKnowledgeLibraryHealthQuery(
+    true,
+    processingPollActive,
+    librarySnapshot?.libraryHealth,
+  );
   const retrievalSettingsQuery = useKnowledgeRetrievalSettingsQuery(
     Boolean(user?.id) && askPanelVisible && retrievalSettingsRequested,
   );
@@ -578,9 +586,6 @@ function KnowledgePage() {
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [pendingDocumentIds, setPendingDocumentIds] = useState<Set<string>>(new Set());
-  const [librarySnapshot, setLibrarySnapshot] = useState<KnowledgeLibrarySnapshot | null>(() =>
-    loadKnowledgeLibrarySnapshot(),
-  );
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
@@ -598,11 +603,11 @@ function KnowledgePage() {
   });
 
   const documentsQuery = useKnowledgeDocumentsQuery(
-    librarySectionVisible,
+    true,
     processingPollActive,
     librarySnapshot?.documents,
   );
-  const lessonsQuery = useKnowledgeLessonsQuery(librarySectionVisible && showLessonsPanel);
+  const lessonsQuery = useKnowledgeLessonsQuery(showLessonsPanel);
   const debouncedSearchTerm = useDebouncedValue(searchTerm, LIBRARY_DEBOUNCE_MS);
   const debouncedActiveFolder = useDebouncedValue(activeFolder, LIBRARY_DEBOUNCE_MS);
   const debouncedStatusFilter = useDebouncedValue(statusFilter, LIBRARY_DEBOUNCE_MS);
@@ -644,7 +649,8 @@ function KnowledgePage() {
     }
     return librarySnapshot?.libraryHealth ?? EMPTY_LIBRARY_HEALTH;
   }, [bootstrapQuery.data, libraryHealthQuery.data, librarySnapshot?.libraryHealth]);
-  const loadingDocs = bootstrapQuery.isLoading && !bootstrapQuery.data && !librarySnapshot;
+  const hasLibraryContent = documents.length > 0 || libraryFolders.length > 0;
+  const loadingDocs = bootstrapQuery.isLoading && !bootstrapQuery.data && !librarySnapshot && !hasLibraryContent;
   const showingLibrarySnapshot = Boolean(librarySnapshot && documents === librarySnapshot.documents);
   const docsLoadError = bootstrapQuery.isError
     ? bootstrapQuery.error instanceof Error
@@ -870,7 +876,9 @@ function KnowledgePage() {
   useEffect(() => {
     if (libraryFolders.length === 0) return;
     setForm((current) => (current.folderId ? current : { ...current, folderId: libraryFolders[0].id }));
-    setCollapsedFolders((current) => (current.size > 0 ? current : new Set(libraryFolders.map((folder) => folder.id))));
+    setCollapsedFolders((current) =>
+      current.size > 0 ? current : new Set(libraryFolders.map((folder) => folder.id)),
+    );
   }, [libraryFolders]);
 
   useEffect(() => {
@@ -913,13 +921,13 @@ function KnowledgePage() {
     setLiveAnnouncement(`Knowledge Agent: ${text}`);
   };
 
-  const finishAgentAnswer = (messageId: string, text: string) => {
+  const finishAgentAnswer = (messageId: string, text: string, options?: { skipAnimation?: boolean }) => {
     const displayText = text.trim();
     if (!displayText) {
       announceAgentMessage(NO_KNOWLEDGE_ANSWER);
       return;
     }
-    if (shouldAnimateAnswer(displayText)) {
+    if (!options?.skipAnimation && shouldAnimateAnswer(displayText)) {
       setAnimatingMessageId(messageId);
       return;
     }
@@ -1202,6 +1210,21 @@ function KnowledgePage() {
 
     let gotDone = false;
     let streamAnswer = "";
+    let streamFlushRaf: number | null = null;
+    const flushStreamToUi = () => {
+      streamFlushRaf = null;
+      const liveText = streamAnswer;
+      setMessages((current) =>
+        current.map((msg) =>
+          msg.id === agentMsgId ? { ...msg, text: liveText, wasStreamed: true } : msg,
+        ),
+      );
+      scrollChatToEnd();
+    };
+    const scheduleStreamFlush = () => {
+      if (streamFlushRaf !== null) return;
+      streamFlushRaf = window.requestAnimationFrame(flushStreamToUi);
+    };
     const askOptions = {
       conversationHistory,
       answerMode: inferAnswerMode(question),
@@ -1219,8 +1242,19 @@ function KnowledgePage() {
           );
         } else if (event.type === "delta") {
           streamAnswer += event.text;
+          scheduleStreamFlush();
         } else if (event.type === "replace") {
           streamAnswer = event.text;
+          if (streamFlushRaf !== null) {
+            window.cancelAnimationFrame(streamFlushRaf);
+            streamFlushRaf = null;
+          }
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId ? { ...msg, text: event.text, wasStreamed: true } : msg,
+            ),
+          );
+          scrollChatToEnd();
         } else if (event.type === "done") {
           gotDone = true;
           streamAnswer = event.answer_text?.trim() || streamAnswer;
@@ -1236,6 +1270,7 @@ function KnowledgePage() {
                 ...msg,
                 text: resolvedText,
                 isStreaming: false,
+                wasStreamed: true,
                 query_id: event.query_id,
                 confidence_score: event.confidence_score,
                 confidence_reasons: event.confidence_reasons,
@@ -1247,7 +1282,7 @@ function KnowledgePage() {
               };
             }),
           );
-          finishAgentAnswer(agentMsgId, resolvedText);
+          finishAgentAnswer(agentMsgId, resolvedText, { skipAnimation: true });
           if ((event.confidence_score ?? 1) === 0) {
             void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeLibraryHealth });
           }
@@ -1264,20 +1299,28 @@ function KnowledgePage() {
       }
 
       if (!gotDone && !streamAnswer.trim()) {
-        const response = await askKnowledgeAgent(question, askOptions);
-        const agentMsg = agentMessageFromResponse(response);
         setMessages((current) =>
-          current.map((msg) => (msg.id === agentMsgId ? { ...agentMsg, id: agentMsgId, isStreaming: false } : msg)),
+          current.map((msg) =>
+            msg.id === agentMsgId
+              ? {
+                  ...msg,
+                  text: "Couldn't reach the agent — retry?",
+                  isStreaming: false,
+                  isServiceError: true,
+                  retryQuestion: question,
+                }
+              : msg,
+          ),
         );
-        finishAgentAnswer(agentMsgId, agentMsg.text);
+        announceAgentMessage("Couldn't reach the agent — retry?");
       } else if (!gotDone && streamAnswer.trim()) {
         const resolvedText = resolveAgentAnswerText({ text: streamAnswer }, streamAnswer);
         setMessages((current) =>
           current.map((msg) =>
-            msg.id === agentMsgId ? { ...msg, text: resolvedText, isStreaming: false } : msg,
+            msg.id === agentMsgId ? { ...msg, text: resolvedText, isStreaming: false, wasStreamed: true } : msg,
           ),
         );
-        finishAgentAnswer(agentMsgId, resolvedText);
+        finishAgentAnswer(agentMsgId, resolvedText, { skipAnimation: true });
       }
     } catch {
       setMessages((current) =>
@@ -1288,6 +1331,9 @@ function KnowledgePage() {
         ),
       );
     } finally {
+      if (streamFlushRaf !== null) {
+        window.cancelAnimationFrame(streamFlushRaf);
+      }
       setMessages((current) =>
         current.map((msg) =>
           msg.id === agentMsgId && msg.isStreaming ? { ...msg, isStreaming: false } : msg,
@@ -1620,6 +1666,22 @@ function KnowledgePage() {
             </div>
           )}
 
+          {loadingDocs && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Loading library...
+              </div>
+              {Array.from({ length: 3 }).map((_, index) => (
+                <div key={index} className="space-y-2 rounded-md border border-border/60 bg-card/70 p-3">
+                  <Skeleton className="h-4 w-2/5" />
+                  <Skeleton className="h-3 w-full" />
+                  <Skeleton className="h-3 w-4/5" />
+                </div>
+              ))}
+            </div>
+          )}
+
           {!loadingDocs && hasLibraryTodos && (
             <div className="space-y-2 rounded-md border border-[color:var(--brand)]/20 bg-[color:var(--brand)]/5 p-3">
               <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
@@ -1927,7 +1989,7 @@ function KnowledgePage() {
                             </span>
                           </div>
                           <div className="mt-2 flex flex-wrap items-center gap-1">
-                            <DocBadge label={item.workflowState} />
+                            {item.workflowState !== item.status && <DocBadge label={item.workflowState} />}
                             <DocBadge label={item.status} />
                             {item.qualityScore && <QualityScoreBadge score={item.qualityScore} />}
                             {item.semanticRelevance != null && item.semanticRelevance > 0 && (
@@ -2252,7 +2314,17 @@ function KnowledgePage() {
                         }}
                       />
                     ) : message.isStreaming ? (
-                      <TypingIndicator />
+                      message.text ? (
+                        <p className="leading-5">
+                          {buildAgentDisplayText(message)}
+                          <span
+                            className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-foreground/70 align-middle"
+                            aria-hidden
+                          />
+                        </p>
+                      ) : (
+                        <TypingIndicator />
+                      )
                     ) : (
                       <p className={cn("leading-5", message.isServiceError && "text-foreground")}>
                         {buildAgentDisplayText(message) || NO_KNOWLEDGE_ANSWER}
@@ -2523,8 +2595,10 @@ function KnowledgePage() {
                       {selectedDoc.folder} | {selectedDoc.fileName}
                     </DialogDescription>
                   </div>
-                  <DocBadge label={selectedDoc.workflowState} />
-                  <DocBadge label={selectedDoc.status} />
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {selectedDoc.workflowState !== selectedDoc.status && <DocBadge label={selectedDoc.workflowState} />}
+                    <DocBadge label={selectedDoc.status} />
+                  </div>
                 </div>
               </DialogHeader>
 

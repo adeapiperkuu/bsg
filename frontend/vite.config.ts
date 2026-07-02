@@ -41,7 +41,7 @@ export default defineConfig(({ command, mode }) => {
     },
     server: {
       host: "::",
-      port: 8080,
+      port: 3000,
       strictPort: true,
     },
     plugins: [

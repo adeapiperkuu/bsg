@@ -1,4 +1,5 @@
 from datetime import date
+import json
 from urllib.parse import quote
 from uuid import UUID
 
@@ -9,6 +10,8 @@ from app.api.deps import ExplicitUserActionDep, SessionDep
 from app.core.constants import SUPPORTED_KNOWLEDGE_EXTENSIONS
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser, require_role
+from app.db.rls import set_rls_context
+from app.db.session import AsyncSessionLocal
 from app.db.models import AppRole
 from app.db.models.entities import (
     KnowledgeDocumentStatus,
@@ -57,7 +60,8 @@ from app.services.knowledge import (
     record_knowledge_feedback,
     reindex_document,
     resolve_knowledge_gap,
-    stream_knowledge_ask,
+    prepare_stream_knowledge_ask,
+    stream_prepared_knowledge_ask,
     update_document,
     update_retrieval_settings,
 )
@@ -330,27 +334,44 @@ async def ask_knowledge(
 @router.post("/knowledge/ask/stream")
 async def stream_knowledge(
     payload: KnowledgeAskCreate,
-    session: SessionDep,
     current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
     _user_action: ExplicitUserActionDep = None,
 ) -> StreamingResponse:
-    org_settings = await get_retrieval_settings(session, current_user.org_id)
+    query_text = payload.query_text.strip()
 
     async def _generate():
-        async for chunk in stream_knowledge_ask(
-            session,
-            current_user,
-            payload.query_text.strip(),
-            conversation_history=payload.conversation_history,
-            answer_mode=payload.answer_mode,
-            include_histories=payload.include_histories if payload.include_histories is not None else org_settings.include_histories,
-            max_sources=payload.max_sources or org_settings.max_sources,
-            min_relevance_score=payload.min_relevance_score if payload.min_relevance_score is not None else org_settings.min_confidence,
-            project=payload.project or org_settings.project,
-            department=payload.department or org_settings.department,
-        ):
+        async with AsyncSessionLocal() as prep_session:
+            await set_rls_context(prep_session, json.dumps({"sub": str(current_user.id)}))
+            org_settings = await get_retrieval_settings(prep_session, current_user.org_id)
+            include_histories = (
+                payload.include_histories if payload.include_histories is not None else org_settings.include_histories
+            )
+            max_sources = payload.max_sources or org_settings.max_sources
+            min_relevance_score = (
+                payload.min_relevance_score
+                if payload.min_relevance_score is not None
+                else org_settings.min_confidence
+            )
+            project = payload.project or org_settings.project
+            department = payload.department or org_settings.department
+            early_events, prepared = await prepare_stream_knowledge_ask(
+                prep_session,
+                current_user,
+                query_text,
+                conversation_history=payload.conversation_history,
+                answer_mode=payload.answer_mode,
+                include_histories=include_histories,
+                max_sources=max_sources,
+                min_relevance_score=min_relevance_score,
+                project=project,
+                department=department,
+            )
+            await prep_session.commit()
+        for chunk in early_events:
             yield chunk
-        await session.commit()
+        if prepared is not None:
+            async for chunk in stream_prepared_knowledge_ask(prepared):
+                yield chunk
 
     return StreamingResponse(
         _generate(),

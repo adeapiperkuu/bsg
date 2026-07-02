@@ -4,6 +4,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from sqlalchemy.exc import DBAPIError, OperationalError, ProgrammingError
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,11 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
         return error_response(422, "VALIDATION_ERROR", "Request validation failed.", {"errors": exc.errors()})
+
+    @app.exception_handler(ValidationError)
+    async def handle_pydantic_validation_error(_: Request, exc: ValidationError) -> JSONResponse:
+        logger.exception("Response validation failed")
+        return error_response(500, "INTERNAL_SERVER_ERROR", "An unexpected server error occurred.")
 
     @app.exception_handler(OperationalError)
     @app.exception_handler(DBAPIError)
