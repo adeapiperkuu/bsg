@@ -791,7 +791,7 @@ async def _prepare_chat_request(
     )
 
 
-def _persist_chat_turn(
+async def _persist_chat_turn(
     session: AsyncSession,
     current_user: CurrentUser,
     *,
@@ -813,6 +813,8 @@ def _persist_chat_turn(
         latency_ms=int((perf_counter() - started) * 1000),
     )
     session.add(query)
+    # agent_queries.id is assigned by the DB (server_default); flush before linking evidence.
+    await session.flush()
     for source in response_sources:
         if source.id is not None:
             table = EVIDENCE_SOURCE_TABLE_BY_TYPE.get(source.type, "delivery_evidence")
@@ -913,7 +915,7 @@ async def answer_delivery_chat(
     cited_title_list = [str(title) for title in cited_titles] if isinstance(cited_titles, list) else []
     response_sources = _match_cited_sources(prepared.evidence_catalog_sent, cited_title_list, answer)
 
-    query = _persist_chat_turn(
+    query = await _persist_chat_turn(
         session,
         current_user,
         resolved_project_id=prepared.resolved_project_id,
@@ -1034,7 +1036,7 @@ async def stream_delivery_chat(
     answer = (final_answer or accumulated_answer).strip() or _empty_answer_fallback()
     response_sources = _match_cited_sources(prepared.evidence_catalog_sent, cited_title_list, answer)
 
-    query = _persist_chat_turn(
+    query = await _persist_chat_turn(
         session,
         current_user,
         resolved_project_id=prepared.resolved_project_id,
