@@ -24,6 +24,7 @@ class HandlerExecutionResult:
     success: bool
     result: Any | None
     error: str | None
+    error_type: str | None = None
 
 
 class EventBus:
@@ -57,6 +58,8 @@ class EventBus:
                     )
                 )
             except Exception as exc:
+                # Full exception (with traceback) goes to the server log only — never to the
+                # API response, which only carries the sanitized handler name + exception type.
                 logger.exception(
                     "Handler %s raised for event %s",
                     handler.__name__,
@@ -68,6 +71,7 @@ class EventBus:
                         success=False,
                         result=None,
                         error=str(exc),
+                        error_type=type(exc).__name__,
                     )
                 )
         return results

@@ -45,7 +45,12 @@ import type {
   KnowledgeRetrievalSettingsApi,
   KnowledgeVersionCompareApi,
 } from "@/types/knowledge";
-import type { DeliveryChatRequest, DeliveryChatResponse } from "@/types/delivery-chat";
+import type {
+  DeliveryChatConversation,
+  DeliveryChatRequest,
+  DeliveryChatResponse,
+  DeliveryChatSource,
+} from "@/types/delivery-chat";
 
 export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
@@ -1102,6 +1107,75 @@ export async function sendDeliveryChatMessage(
       conversation_id: payload.conversation_id ?? null,
     }),
   });
+  return body.data;
+}
+
+export type DeliveryChatStreamEvent =
+  | { type: "delta"; text: string }
+  | { type: "done"; answer: string; sources: DeliveryChatSource[]; conversation_id: string };
+
+export async function* streamDeliveryChatMessage(
+  payload: DeliveryChatRequest,
+): AsyncGenerator<DeliveryChatStreamEvent> {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  const csrf = getCsrfToken();
+  if (csrf) headers.set("X-CSRF-Token", csrf);
+
+  const response = await fetch(`${API_BASE}/delivery/chat/stream`, {
+    method: "POST",
+    headers,
+    credentials: "include",
+    body: JSON.stringify({
+      message: payload.message,
+      project_id: payload.project_id ?? null,
+      conversation_id: payload.conversation_id ?? null,
+    }),
+  });
+
+  if (!response.ok || !response.body) {
+    throw await parseApiError(response);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+
+  const parseLine = (line: string): DeliveryChatStreamEvent | null => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data: ")) return null;
+    const raw = trimmed.slice(6).trim();
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as DeliveryChatStreamEvent;
+    } catch {
+      return null;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split(/\r?\n/);
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      const event = parseLine(line);
+      if (event) yield event;
+    }
+  }
+
+  if (buf.trim()) {
+    const event = parseLine(buf);
+    if (event) yield event;
+  }
+}
+
+export async function getDeliveryChatConversation(
+  conversationId: string,
+): Promise<DeliveryChatConversation> {
+  const body = await apiFetch<{ data: DeliveryChatConversation }>(
+    `/delivery/chat/conversations/${conversationId}`,
+  );
   return body.data;
 }
 

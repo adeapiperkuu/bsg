@@ -4,7 +4,6 @@ from uuid import UUID
 
 from fastapi import APIRouter
 
-from app.agents.delivery.ai.summary_service import generate_daily_summary
 from app.agents.delivery.schemas.dashboard_schema import DashboardResponse, DeliveryPortfolioResponse
 from app.agents.delivery.services.dashboard_service import get_dashboard_data, get_portfolio_data
 from app.api.deps import SessionDep, UserDep
@@ -34,5 +33,8 @@ async def get_delivery_dashboard(
         project_id=project_id,
         current_user=current_user,
     )
-    dashboard_data["daily_summary"] = await generate_daily_summary(dashboard_data)
+    # TODO(cleanup): daily_summary is always forced to None — app.agents.delivery.ai.summary_service
+    # (generate_daily_summary) is never called from this route. Either wire it up or remove the
+    # field/service; left as-is since deciding which is a product call, not a hardening fix.
+    dashboard_data["daily_summary"] = None
     return DashboardResponse.model_validate(dashboard_data)

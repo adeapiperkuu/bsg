@@ -94,6 +94,17 @@ def calculate_confidence_score(
     return calculate_confidence(rolling_7day_units, daily_target_units, rolling_windows)
 
 
+def has_sufficient_throughput_data(rolling_7day_units: int | None) -> bool:
+    """Return False when a project has no throughput snapshot history at all.
+
+    `rolling_7day_units` is None only when there are zero throughput snapshots
+    (see `latest_rolling_units`), which is distinct from a low but real score —
+    callers must not present a 0% confidence / red status as a health signal
+    when this returns False.
+    """
+    return rolling_7day_units is not None
+
+
 def classify_confidence_status(
     score_pct: Decimal,
     *,

@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
@@ -8,6 +9,8 @@ from app.agents.delivery.audit.audit_logger import AuditLogger
 from app.agents.delivery.services.recommendation_service import (
     fetch_recommendation_row,
     get_recommendation_for_mutation,
+    group_recommendations_by_title,
+    grouped_recommendation_to_read,
     list_project_recommendations,
     recommendation_row_to_read,
     validate_owner_assignment,
@@ -19,13 +22,15 @@ from app.db.models import (
     AlertStatus,
     AppRole,
     DeliveryConfidenceScore,
+    MilestoneStatus,
     OwnerType,
     RecommendationStatus,
     RiskAlert,
     ThroughputSnapshot,
 )
-from app.schemas.common import DataResponse, ListResponse, Pagination
+from app.schemas.common import DataResponse, ListResponse, ORMModel, Pagination
 from app.schemas.domain import (
+    GroupedMitigationRecommendationRead,
     MitigationRecommendationAssignOwner,
     MitigationRecommendationRead,
     OwnerOptionRead,
@@ -39,6 +44,17 @@ from app.services.ingestion import upsert_throughput_snapshot
 from app.services.scoping import get_visible_project
 
 router = APIRouter(tags=["delivery"])
+
+
+class DeliveryConfidenceScoreRead(ORMModel):
+    id: UUID
+    project_id: UUID
+    milestone_id: UUID
+    score_pct: Decimal
+    forecast_completion_date: date | None
+    status: MilestoneStatus
+    model_version: str | None
+    created_at: datetime
 
 
 @router.get("/projects/{project_id}/throughput", response_model=ListResponse[ThroughputSnapshotRead])
@@ -68,14 +84,25 @@ async def create_throughput(
     current_user = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
 ) -> DataResponse[ThroughputSnapshotRead]:
     project = await get_visible_project(session, project_id, current_user)
-    snapshot = await upsert_throughput_snapshot(session, project, payload)
+    ingest_result = await upsert_throughput_snapshot(session, project, payload)
     await session.commit()
-    await session.refresh(snapshot)
-    return DataResponse(data=ThroughputSnapshotRead.model_validate(snapshot))
+    await session.refresh(ingest_result.snapshot)
+    response = ThroughputSnapshotRead.model_validate(ingest_result.snapshot)
+    response.scoring_status = ingest_result.scoring_status
+    response.scoring_error = ingest_result.scoring_error
+    return DataResponse(data=response)
 
 
-@router.get("/projects/{project_id}/delivery-confidence")
-async def list_delivery_confidence(project_id: UUID, session: SessionDep, current_user: UserDep, limit: LimitQuery = 100):
+@router.get(
+    "/projects/{project_id}/delivery-confidence",
+    response_model=ListResponse[DeliveryConfidenceScoreRead],
+)
+async def list_delivery_confidence(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: UserDep,
+    limit: LimitQuery = 100,
+) -> ListResponse[DeliveryConfidenceScoreRead]:
     project = await get_visible_project(session, project_id, current_user)
     rows = (
         await session.execute(
@@ -85,35 +112,29 @@ async def list_delivery_confidence(project_id: UUID, session: SessionDep, curren
             .limit(limit)
         )
     ).scalars()
-    return {
-        "data": [
-            {
-                "id": str(row.id),
-                "project_id": str(row.project_id),
-                "milestone_id": str(row.milestone_id),
-                "score_pct": str(row.score_pct),
-                "forecast_completion_date": row.forecast_completion_date,
-                "status": row.status,
-                "model_version": row.model_version,
-                "created_at": row.created_at,
-            }
-            for row in rows
-        ],
-        "pagination": {"limit": limit, "next_cursor": None},
-    }
+    return ListResponse(
+        data=[DeliveryConfidenceScoreRead.model_validate(row) for row in rows],
+        pagination=Pagination(limit=limit),
+    )
 
 
 @router.get("/projects/{project_id}/risk-alerts", response_model=ListResponse[RiskAlertRead])
-async def list_risk_alerts(project_id: UUID, session: SessionDep, current_user: UserDep) -> ListResponse[RiskAlertRead]:
+async def list_risk_alerts(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: UserDep,
+    limit: LimitQuery = 50,
+) -> ListResponse[RiskAlertRead]:
     project = await get_visible_project(session, project_id, current_user)
     rows = (
         await session.execute(
             select(RiskAlert)
             .where(RiskAlert.project_id == project.id, RiskAlert.deleted_at.is_(None))
             .order_by(RiskAlert.created_at.desc())
+            .limit(limit)
         )
     ).scalars()
-    return ListResponse(data=[RiskAlertRead.model_validate(row) for row in rows], pagination=Pagination(limit=50))
+    return ListResponse(data=[RiskAlertRead.model_validate(row) for row in rows], pagination=Pagination(limit=limit))
 
 
 @router.patch("/risk-alerts/{alert_id}", response_model=DataResponse[RiskAlertRead])
@@ -124,8 +145,17 @@ async def update_risk_alert(
     current_user = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
 ) -> DataResponse[RiskAlertRead]:
     alert = (await session.execute(select(RiskAlert).where(RiskAlert.id == alert_id))).scalar_one_or_none()
-    if alert is None or (current_user.role != AppRole.SUPER_ADMIN and alert.org_id != current_user.org_id):
+    if alert is None:
         raise ApiError(404, "NOT_FOUND", "Risk alert was not found.")
+    try:
+        await get_visible_project(session, alert.project_id, current_user)
+    except ApiError as exc:
+        # Only DELIVERY_MANAGER/SUPER_ADMIN can reach this route (require_role above), so
+        # get_visible_project's org-scoping is equivalent to the prior manual org_id check —
+        # normalized to 404 (not 403) to avoid confirming a cross-org alert's existence.
+        if exc.status_code in (403, 404):
+            raise ApiError(404, "NOT_FOUND", "Risk alert was not found.") from exc
+        raise
     if alert.status in {AlertStatus.RESOLVED, AlertStatus.DISMISSED}:
         raise ApiError(400, "INVALID_STATUS_TRANSITION", "Risk alert is already closed.")
     alert.status = payload.status
@@ -149,8 +179,12 @@ async def list_mitigation_recommendations(
         project_id=project.id,
         org_id=project.org_id,
     )
+    grouped = group_recommendations_by_title(rows)
     return ProjectRecommendationsResponse(
-        data=[MitigationRecommendationRead.model_validate(recommendation_row_to_read(row)) for row in rows],
+        data=[
+            GroupedMitigationRecommendationRead.model_validate(grouped_recommendation_to_read(group))
+            for group in grouped
+        ],
         assignable_owners=[
             OwnerOptionRead(
                 owner_type=owner.owner_type.value,
