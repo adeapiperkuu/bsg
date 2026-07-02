@@ -18,13 +18,25 @@ import pytest
 
 from app.agents.delivery.services.chat_service import (
     MILESTONE_EVIDENCE_STATUSES,
+    _AvailableProject,
+    _best_window_ratio,
     _build_context,
+    _check_ambiguous_token,
     _classify_question,
     _collect_sources,
     _detect_portfolio_patterns,
+    _distinctive_tokens,
+    _extract_proper_noun_candidate,
     _extract_root_causes,
+    _fuzzy_match_prefix,
+    _list_available_projects,
     _match_cited_sources,
+    _normalize_for_matching,
     _portfolio_summary,
+    _project_ambiguous_answer,
+    _project_not_found_answer,
+    _resolve_project_references,
+    _score_project_match,
     _severity_score,
 )
 from app.agents.delivery.schemas.chat_schema import DeliveryChatSource
@@ -572,3 +584,319 @@ def test_detect_portfolio_patterns_recurring_themes_from_data_only() -> None:
         if item["theme"] == "review queue backlog"
     )
     assert count == 2
+
+
+# ===========================================================================
+# Project-reference resolution
+# ===========================================================================
+
+def _proj(name: str) -> _AvailableProject:
+    return _AvailableProject(name=name)
+
+
+# ---------------------------------------------------------------------------
+# _normalize_for_matching
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_strips_punctuation_and_lowercases() -> None:
+    # Punctuation becomes spaces, multiple spaces are collapsed, leading/trailing stripped
+    assert _normalize_for_matching("Annotation-Sprint #13!") == "annotation sprint 13"
+    assert _normalize_for_matching("  Hello, World  ") == "hello world"
+
+
+def test_normalize_collapses_whitespace() -> None:
+    result = _normalize_for_matching("Alpha   Beta")
+    assert "  " not in result
+
+
+# ---------------------------------------------------------------------------
+# _distinctive_tokens
+# ---------------------------------------------------------------------------
+
+
+def test_distinctive_tokens_excludes_stopwords() -> None:
+    tokens = _distinctive_tokens("the annotation sprint")
+    assert "the" not in tokens
+    assert "sprint" not in tokens  # generic delivery term
+    assert "annotation" in tokens
+
+
+def test_distinctive_tokens_excludes_short_words() -> None:
+    tokens = _distinctive_tokens("api project")
+    assert "api" not in tokens   # length 3 — too short
+    assert "project" not in tokens  # generic term
+
+
+def test_distinctive_tokens_includes_long_non_generic_words() -> None:
+    tokens = _distinctive_tokens("medical imaging pipeline")
+    assert "medical" in tokens
+    assert "imaging" in tokens
+    assert "pipeline" not in tokens  # generic
+
+
+# ---------------------------------------------------------------------------
+# _score_project_match — exact / fuzzy / no-match
+# ---------------------------------------------------------------------------
+
+
+def test_score_exact_substring_returns_one() -> None:
+    assert _score_project_match("status of annotation sprint 13", "annotation sprint 13") == 1.0
+
+
+def test_score_all_distinctive_tokens_present_returns_high() -> None:
+    # "annotation" is distinctive; "sprint" is generic → only "annotation" checked
+    score = _score_project_match("tell me about annotation sprint 13", "annotation sprint 13")
+    assert score >= 0.82
+
+
+def test_score_no_shared_tokens_returns_low() -> None:
+    score = _score_project_match("which projects need attention", "zeta imaging suite")
+    assert score < 0.55
+
+
+def test_score_typo_returns_high_confidence() -> None:
+    # One-character typo in a long name: "annotaton" vs "annotation"
+    score = _score_project_match("status of annotaton sprint 13", "annotation sprint 13")
+    assert score >= 0.82
+
+
+def test_score_completely_different_name_returns_low() -> None:
+    score = _score_project_match("tell me about zeta", "annotation sprint 13")
+    assert score < 0.55
+
+
+# ---------------------------------------------------------------------------
+# _best_window_ratio
+# ---------------------------------------------------------------------------
+
+
+def test_best_window_ratio_empty_name_returns_zero() -> None:
+    assert _best_window_ratio(["hello", "world"], []) == 0.0
+
+
+def test_best_window_ratio_empty_query_returns_zero() -> None:
+    assert _best_window_ratio([], ["alpha"]) == 0.0
+
+
+def test_best_window_ratio_exact_window_returns_one() -> None:
+    ratio = _best_window_ratio(["tell", "me", "about", "alpha"], ["alpha"])
+    assert ratio == 1.0
+
+
+# ---------------------------------------------------------------------------
+# _check_ambiguous_token
+# ---------------------------------------------------------------------------
+
+
+def test_check_ambiguous_finds_token_in_two_projects() -> None:
+    available = [_proj("Apollo API"), _proj("Apollo Dashboard")]
+    result = _check_ambiguous_token("tell me about apollo", available)
+    assert result is not None
+    token, candidates = result
+    assert token == "apollo"
+    assert set(candidates) == {"Apollo API", "Apollo Dashboard"}
+
+
+def test_check_ambiguous_single_project_returns_none() -> None:
+    available = [_proj("Apollo API"), _proj("Beta Service")]
+    result = _check_ambiguous_token("tell me about apollo", available)
+    assert result is None  # "apollo" only appears in one project
+
+
+def test_check_ambiguous_ignores_generic_terms() -> None:
+    # "project" is a generic term — must not trigger ambiguity
+    available = [_proj("Alpha Project"), _proj("Beta Project")]
+    result = _check_ambiguous_token("which project is at risk", available)
+    assert result is None
+
+
+def test_check_ambiguous_ignores_short_tokens() -> None:
+    available = [_proj("AB System"), _proj("AB Platform")]
+    result = _check_ambiguous_token("status of ab", available)
+    assert result is None  # "ab" is length 2 — ignored
+
+
+# ---------------------------------------------------------------------------
+# _extract_proper_noun_candidate
+# ---------------------------------------------------------------------------
+
+
+def test_extract_proper_noun_returns_mid_sentence_capital() -> None:
+    candidate = _extract_proper_noun_candidate("What is the status of Zephyr?")
+    assert candidate == "Zephyr"
+
+
+def test_extract_proper_noun_ignores_sentence_start() -> None:
+    # "What" is the first word — excluded
+    candidate = _extract_proper_noun_candidate("What is the status?")
+    assert candidate is None
+
+
+def test_extract_proper_noun_ignores_short_words() -> None:
+    candidate = _extract_proper_noun_candidate("Tell me about API")
+    assert candidate is None  # "API" is length 3
+
+
+def test_extract_proper_noun_ignores_generic_terms() -> None:
+    candidate = _extract_proper_noun_candidate("Tell me about the Project")
+    assert candidate is None  # "Project" is a generic delivery term
+
+
+# ---------------------------------------------------------------------------
+# _resolve_project_references — full resolution scenarios
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_exact_match_proceeds_silently() -> None:
+    available = [_proj("Annotation Sprint 13")]
+    result = _resolve_project_references("status of annotation sprint 13", available)
+    assert result.status == "exact"
+    assert result.matched_project == "Annotation Sprint 13"
+
+
+def test_resolve_fuzzy_match_single_high_confidence() -> None:
+    available = [_proj("Annotation Sprint 13")]
+    # One-char typo: "Annotatn" — still high-confidence
+    result = _resolve_project_references("status of annotatn sprint 13", available)
+    assert result.status in ("exact", "fuzzy")
+    assert result.matched_project == "Annotation Sprint 13"
+
+
+def test_resolve_ambiguous_asks_for_clarification() -> None:
+    available = [_proj("Apollo API"), _proj("Apollo Dashboard")]
+    result = _resolve_project_references("tell me about apollo", available)
+    assert result.status == "ambiguous"
+    assert "Apollo API" in result.candidates
+    assert "Apollo Dashboard" in result.candidates
+
+
+def test_resolve_not_found_when_proper_noun_unmatched() -> None:
+    available = [_proj("Alpha Delivery"), _proj("Beta Delivery")]
+    # "Zephyr" is a proper noun that matches nothing
+    result = _resolve_project_references("What is the status of Zephyr?", available)
+    assert result.status == "not_found"
+    assert result.reference == "Zephyr"
+
+
+def test_resolve_no_reference_for_portfolio_question() -> None:
+    available = [_proj("Alpha"), _proj("Beta")]
+    result = _resolve_project_references("which projects are at risk this week?", available)
+    assert result.status == "no_reference"
+
+
+def test_resolve_no_reference_when_no_projects_available() -> None:
+    result = _resolve_project_references("tell me about annotation sprint 13", [])
+    assert result.status == "no_reference"
+
+
+def test_resolve_exact_wins_over_ambiguity() -> None:
+    # "Apollo API" is in both projects, but one matches EXACTLY
+    available = [_proj("Apollo"), _proj("Apollo Plus")]
+    result = _resolve_project_references("status of apollo", available)
+    # "apollo" exactly matches the project named "Apollo"
+    assert result.status == "exact"
+    assert result.matched_project == "Apollo"
+
+
+# ---------------------------------------------------------------------------
+# _list_available_projects
+# ---------------------------------------------------------------------------
+
+
+def _make_dashboard_with_name(name: str) -> dict:
+    return {
+        "overview": {"project": {"name": name}},
+        "traffic_light": "green",
+        "confidence": 90,
+        "risks": [],
+        "bottlenecks": [],
+        "milestones": [],
+    }
+
+
+def test_list_available_projects_empty_portfolio() -> None:
+    projects = _list_available_projects({"projects": []}, None, None)
+    assert projects == []
+
+
+def test_list_available_projects_from_portfolio() -> None:
+    portfolio = {
+        "projects": [
+            {"project_id": "p1", "dashboard": _make_dashboard_with_name("Alpha")},
+            {"project_id": "p2", "dashboard": _make_dashboard_with_name("Beta")},
+        ]
+    }
+    projects = _list_available_projects(portfolio, None, None)
+    names = [p.name for p in projects]
+    assert "Alpha" in names
+    assert "Beta" in names
+
+
+def test_list_available_projects_focused_project_first() -> None:
+    portfolio = {
+        "projects": [
+            {"project_id": "p1", "dashboard": _make_dashboard_with_name("Portfolio Project")},
+        ]
+    }
+    focused = _make_dashboard_with_name("Focused Project")
+    projects = _list_available_projects(portfolio, focused, None)
+    assert projects[0].name == "Focused Project"
+
+
+def test_list_available_projects_deduplicates_by_id() -> None:
+    from uuid import uuid4
+    pid = uuid4()
+    portfolio = {
+        "projects": [
+            {"project_id": pid, "dashboard": _make_dashboard_with_name("Alpha")},
+        ]
+    }
+    focused = _make_dashboard_with_name("Alpha")
+    projects = _list_available_projects(portfolio, focused, pid)
+    # "Alpha" with the same ID must appear only once
+    assert len(projects) == 1
+
+
+def test_list_available_projects_skips_missing_name() -> None:
+    portfolio = {
+        "projects": [
+            {"project_id": "p1", "dashboard": {"overview": {"project": {}}}},
+            {"project_id": "p2", "dashboard": _make_dashboard_with_name("Valid")},
+        ]
+    }
+    projects = _list_available_projects(portfolio, None, None)
+    assert len(projects) == 1
+    assert projects[0].name == "Valid"
+
+
+# ---------------------------------------------------------------------------
+# Response generators
+# ---------------------------------------------------------------------------
+
+
+def test_project_not_found_answer_mentions_reference() -> None:
+    available = [_proj("Alpha"), _proj("Beta")]
+    answer = _project_not_found_answer("Zephyr", available)
+    assert "Zephyr" in answer
+    assert "Alpha" in answer
+    assert "Beta" in answer
+
+
+def test_project_not_found_answer_empty_portfolio() -> None:
+    answer = _project_not_found_answer("Zephyr", [])
+    assert "Zephyr" in answer
+    assert "No project data" in answer
+
+
+def test_project_ambiguous_answer_lists_candidates() -> None:
+    answer = _project_ambiguous_answer("apollo", ["Apollo API", "Apollo Dashboard"])
+    assert "Apollo API" in answer
+    assert "Apollo Dashboard" in answer
+    assert "clarify" in answer.lower()
+
+
+def test_fuzzy_match_prefix_contains_project_name() -> None:
+    prefix = _fuzzy_match_prefix("Annotation Sprint 13")
+    assert "Annotation Sprint 13" in prefix
+    assert prefix.startswith(">")
