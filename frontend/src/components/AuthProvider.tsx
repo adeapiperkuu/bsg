@@ -1,15 +1,24 @@
 import { useEffect } from "react";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { Navigate, useNavigate, useRouterState } from "@tanstack/react-router";
 
 import { canAccessPath, defaultRouteForRole } from "@/lib/api";
 import { useAuthStore } from "@/stores/useAuthStore";
 
 const PUBLIC_PATHS = ["/login", "/unauthorized"];
 
+function SessionLoadingScreen() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">
+      Loading session...
+    </div>
+  );
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const { bootstrap, isLoading, isAuthenticated, user } = useAuthStore();
+  const isPublicPath = PUBLIC_PATHS.includes(pathname);
 
   useEffect(() => {
     void bootstrap();
@@ -18,7 +27,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (isLoading) return;
 
-    if (!isAuthenticated && !PUBLIC_PATHS.includes(pathname)) {
+    if (!isAuthenticated && !isPublicPath) {
       void navigate({ to: "/login", replace: true });
       return;
     }
@@ -28,17 +37,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    if (isAuthenticated && user && !PUBLIC_PATHS.includes(pathname) && !canAccessPath(user.role, pathname)) {
+    if (isAuthenticated && user && !isPublicPath && !canAccessPath(user.role, pathname)) {
       void navigate({ to: "/unauthorized", replace: true });
     }
-  }, [isLoading, isAuthenticated, pathname, user, navigate]);
+  }, [isLoading, isAuthenticated, isPublicPath, pathname, user, navigate]);
 
-  if (!PUBLIC_PATHS.includes(pathname) && (isLoading || !isAuthenticated)) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">
-        Loading session...
-      </div>
-    );
+  if (!isPublicPath && isLoading) {
+    return <SessionLoadingScreen />;
+  }
+
+  if (!isPublicPath && !isAuthenticated) {
+    return <Navigate to="/login" replace />;
   }
 
   return <>{children}</>;

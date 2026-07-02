@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-import { fetchMe, login as apiLogin, logout as apiLogout } from "@/lib/api";
+import { fetchMe, login as apiLogin, logout as apiLogout, resetAuthSession } from "@/lib/api";
 import type { MeUser } from "@/types/auth";
 
 type AuthState = {
@@ -39,6 +39,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       set({ user, isAuthenticated: true, isLoading: false });
     } catch {
       if (requestId !== sessionRequestId) return;
+      resetAuthSession();
       set({ user: null, isAuthenticated: false, isLoading: false });
     }
   },

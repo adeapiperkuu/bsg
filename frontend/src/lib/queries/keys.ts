@@ -34,6 +34,16 @@ export const queryKeys = {
   governanceEscalations: ["governance", "escalations"] as const,
   governanceScopeStates: ["governance", "scope-states"] as const,
   governanceCharterReferences: ["governance", "charter-references"] as const,
+  knowledgeBootstrap: ["knowledge", "bootstrap"] as const,
+  knowledgeDocuments: ["knowledge", "documents"] as const,
+  knowledgeLibraryHealth: ["knowledge", "library-health"] as const,
+  knowledgeRetrievalSettings: ["knowledge", "retrieval-settings"] as const,
+  knowledgeDocument: (documentId: string) => ["knowledge", "document", documentId] as const,
+  knowledgeDocumentVersions: (documentId: string) =>
+    ["knowledge", "document", documentId, "versions"] as const,
+  knowledgeAgentQueries: ["knowledge", "agent-queries"] as const,
+  knowledgeLessons: ["knowledge", "lessons"] as const,
 };
 
 export const STALE_TIME_MS = 5 * 60 * 1000;
+export const KNOWLEDGE_BOOTSTRAP_STALE_TIME_MS = 10 * 60 * 1000;

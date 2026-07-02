@@ -63,6 +63,7 @@ export async function generateProjectCharter(
 ): Promise<ProjectCharter> {
   const body = await apiFetch<{ data: ProjectCharter }>("/governance/project-charters/generate", {
     method: "POST",
+    headers: { "X-BSG-User-Action": "true" },
     body: JSON.stringify(payload),
   });
   return body.data;
@@ -117,6 +118,7 @@ export async function generateGovernanceWeeklySummary(
     "/governance/weekly-summary/generate",
     {
       method: "POST",
+      headers: { "X-BSG-User-Action": "true" },
       body: JSON.stringify(summaryWeek ? { summary_week: summaryWeek } : {}),
     },
   );

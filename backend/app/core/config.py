@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     supabase_service_role_key: str
     secret_key: str
     environment: Literal["dev", "staging", "prod"] = "dev"
-    allowed_origins: str = "http://localhost:5173,http://localhost:3000,http://localhost:8080"
+    allowed_origins: str = "http://localhost:5173,http://localhost:3000,http://localhost:8080,http://localhost:8081"
     supabase_jwt_secret: str | None = None
     auth_cookie_secure: bool = False
     auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"

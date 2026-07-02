@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import KnowledgeLesson, SopDocument
+from app.db.models import KnowledgeLesson
 
 
 async def keyword_search(
@@ -13,7 +13,7 @@ async def keyword_search(
     *,
     limit: int = 20,
 ) -> list[dict]:
-    """Simple keyword search over lessons and SOPs. Returns [] when no matches."""
+    """Simple keyword search over knowledge lessons. Returns [] when no matches."""
     if not query or not query.strip():
         return []
 
@@ -36,24 +36,6 @@ async def keyword_search(
         ).scalars()
     )
 
-    sops = list(
-        (
-            await session.execute(
-                select(SopDocument)
-                .where(
-                    SopDocument.org_id == org_id,
-                    SopDocument.is_active.is_(True),
-                    or_(
-                        SopDocument.title.ilike(term),
-                        SopDocument.content_text.ilike(term),
-                    ),
-                )
-                .order_by(SopDocument.effective_date.desc())
-                .limit(limit)
-            )
-        ).scalars()
-    )
-
     results: list[dict] = []
     for lesson in lessons:
         results.append(
@@ -63,17 +45,6 @@ async def keyword_search(
                 "title": lesson.title,
                 "snippet": lesson.body[:200],
                 "tags": lesson.tags or [],
-            }
-        )
-    for sop in sops:
-        results.append(
-            {
-                "type": "sop",
-                "id": str(sop.id),
-                "title": sop.title,
-                "version": sop.version,
-                "snippet": sop.content_text[:200],
-                "tags": sop.tags or [],
             }
         )
     return results[:limit]

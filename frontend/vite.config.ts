@@ -42,6 +42,7 @@ export default defineConfig(({ command, mode }) => {
     server: {
       host: "::",
       port: 8080,
+      strictPort: true,
     },
     plugins: [
       tailwindcss(),

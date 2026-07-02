@@ -2,10 +2,12 @@ from datetime import date
 from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
-from app.api.deps import SessionDep
+from app.api.deps import ExplicitUserActionDep, SessionDep
+from app.core.constants import SUPPORTED_KNOWLEDGE_EXTENSIONS
+from app.core.exceptions import ApiError
 from app.core.security import CurrentUser, require_role
 from app.db.models import AppRole
 from app.db.models.entities import (
@@ -22,56 +24,46 @@ from app.schemas.domain import (
     KnowledgeDocumentRead,
     KnowledgeDocumentUpdate,
     KnowledgeDocumentVersionRead,
-    KnowledgeEvalMetricsRead,
-    KnowledgeEvalQuestionCreate,
-    KnowledgeEvalQuestionRead,
-    KnowledgeEvalQuestionUpdate,
-    KnowledgeEvalRunRead,
     KnowledgeFeedbackCreate,
     KnowledgeFeedbackRead,
     KnowledgeFolderCreate,
     KnowledgeFolderRead,
     KnowledgeGapTodoRead,
+    KnowledgeLibraryHealthRead,
     KnowledgeLessonCreate,
     KnowledgeLessonRead,
     KnowledgeRetrievalSettingsRead,
     KnowledgeRetrievalSettingsUpdate,
-    KnowledgeSearchResult,
     KnowledgeVersionCompareRead,
 )
 from app.services.knowledge import (
     ask_knowledge_agent,
     compare_document_versions,
     create_document_from_upload,
-    create_knowledge_eval_question,
     create_knowledge_folder_by_name,
     create_lesson,
     delete_document,
     get_document,
     get_document_file_download,
     get_knowledge_bootstrap,
-    get_knowledge_eval_metrics,
+    get_knowledge_library_health,
     get_knowledge_query_answer,
     get_retrieval_settings,
     list_document_versions,
     list_documents,
-    list_knowledge_eval_questions,
     list_knowledge_folders,
     list_lessons,
+    process_knowledge_document_job,
     record_knowledge_feedback,
     reindex_document,
     resolve_knowledge_gap,
-    run_knowledge_eval,
-    search_knowledge,
     stream_knowledge_ask,
     update_document,
-    update_knowledge_eval_question,
     update_retrieval_settings,
 )
 
 router = APIRouter(tags=["knowledge"])
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".csv"}
 MIME_BY_EXT = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -95,23 +87,19 @@ async def knowledge_bootstrap(
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
 ) -> DataResponse[KnowledgeBootstrapRead]:
-    folders, documents, library_health = await get_knowledge_bootstrap(session, current_user)
+    data = await get_knowledge_bootstrap(session, current_user)
     await session.commit()
-    return DataResponse(
-        data=KnowledgeBootstrapRead(
-            folders=[
-                KnowledgeFolderRead(
-                    id=folder.id,
-                    name=folder.name,
-                    folder_kind=folder.folder_kind.value,
-                    display_order=folder.display_order,
-                )
-                for folder in folders
-            ],
-            documents=documents,
-            library_health=library_health,
-        )
-    )
+    return DataResponse(data=data)
+
+
+@router.get("/knowledge/library-health", response_model=DataResponse[KnowledgeLibraryHealthRead])
+async def knowledge_library_health(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[KnowledgeLibraryHealthRead]:
+    row = await get_knowledge_library_health(session, current_user)
+    await session.commit()
+    return DataResponse(data=row)
 
 
 @router.get("/knowledge/folders", response_model=ListResponse[KnowledgeFolderRead])
@@ -168,7 +156,11 @@ async def list_knowledge_documents(
     effective_date_from: date | None = None,
     effective_date_to: date | None = None,
     semantic_query: str | None = None,
+    ai_rank: bool = False,
+    user_action: str | None = Header(default=None, alias="X-BSG-User-Action"),
 ) -> ListResponse[KnowledgeDocumentRead]:
+    if ai_rank and user_action != "true":
+        raise ApiError(400, "USER_ACTION_REQUIRED", "AI document ranking requires an explicit user action.")
     rows = await list_documents(
         session,
         current_user,
@@ -180,6 +172,7 @@ async def list_knowledge_documents(
         effective_date_from=effective_date_from,
         effective_date_to=effective_date_to,
         semantic_query=semantic_query,
+        ai_rank=ai_rank,
     )
     await session.commit()
     return ListResponse(data=rows, pagination=Pagination(limit=len(rows)))
@@ -214,6 +207,7 @@ async def download_knowledge_document(
 
 @router.post("/knowledge/documents", response_model=DataResponse[KnowledgeDocumentRead])
 async def upload_knowledge_document(
+    background_tasks: BackgroundTasks,
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
     file: UploadFile = File(...),
@@ -235,7 +229,7 @@ async def upload_knowledge_document(
 
     file_name = file.filename or "document.txt"
     suffix = "." + file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
-    if suffix not in ALLOWED_EXTENSIONS:
+    if suffix not in SUPPORTED_KNOWLEDGE_EXTENSIONS:
         raise ApiError(400, "VALIDATION_ERROR", "Unsupported file type. Use PDF, DOCX, TXT, MD, or CSV.")
     file_bytes = await file.read()
     if not file_bytes:
@@ -269,6 +263,7 @@ async def upload_knowledge_document(
         file_bytes=file_bytes,
     )
     await session.commit()
+    background_tasks.add_task(process_knowledge_document_job, row.id, row.active_version_id)
     return DataResponse(data=row)
 
 
@@ -297,11 +292,14 @@ async def delete_knowledge_document(
 @router.post("/knowledge/documents/{document_id}/index", response_model=DataResponse[KnowledgeDocumentRead])
 async def index_knowledge_document(
     document_id: UUID,
+    background_tasks: BackgroundTasks,
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+    _user_action: ExplicitUserActionDep = None,
 ) -> DataResponse[KnowledgeDocumentRead]:
     row = await reindex_document(session, current_user, document_id)
     await session.commit()
+    background_tasks.add_task(process_knowledge_document_job, row.id, row.active_version_id)
     return DataResponse(data=row)
 
 
@@ -310,6 +308,7 @@ async def ask_knowledge(
     payload: KnowledgeAskCreate,
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+    _user_action: ExplicitUserActionDep = None,
 ) -> DataResponse[KnowledgeAskRead]:
     org_settings = await get_retrieval_settings(session, current_user.org_id)
     row = await ask_knowledge_agent(
@@ -333,6 +332,7 @@ async def stream_knowledge(
     payload: KnowledgeAskCreate,
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+    _user_action: ExplicitUserActionDep = None,
 ) -> StreamingResponse:
     org_settings = await get_retrieval_settings(session, current_user.org_id)
 
@@ -401,61 +401,6 @@ async def get_knowledge_query(
     return DataResponse(data=row)
 
 
-@router.get("/knowledge/eval/metrics", response_model=DataResponse[KnowledgeEvalMetricsRead])
-async def read_knowledge_eval_metrics(
-    session: SessionDep,
-    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
-    days: int = Query(30, ge=1, le=365),
-) -> DataResponse[KnowledgeEvalMetricsRead]:
-    row = await get_knowledge_eval_metrics(session, current_user, days=days)
-    await session.commit()
-    return DataResponse(data=row)
-
-
-@router.get("/knowledge/eval/questions", response_model=ListResponse[KnowledgeEvalQuestionRead])
-async def list_knowledge_eval_questions_route(
-    session: SessionDep,
-    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
-) -> ListResponse[KnowledgeEvalQuestionRead]:
-    rows = await list_knowledge_eval_questions(session, current_user)
-    await session.commit()
-    return ListResponse(data=rows, pagination=Pagination(limit=len(rows)))
-
-
-@router.post("/knowledge/eval/questions", response_model=DataResponse[KnowledgeEvalQuestionRead])
-async def create_knowledge_eval_question_route(
-    payload: KnowledgeEvalQuestionCreate,
-    session: SessionDep,
-    current_user: CurrentUser = Depends(require_role(AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
-) -> DataResponse[KnowledgeEvalQuestionRead]:
-    row = await create_knowledge_eval_question(session, current_user, payload)
-    await session.commit()
-    return DataResponse(data=row)
-
-
-@router.patch("/knowledge/eval/questions/{question_id}", response_model=DataResponse[KnowledgeEvalQuestionRead])
-async def patch_knowledge_eval_question_route(
-    question_id: UUID,
-    payload: KnowledgeEvalQuestionUpdate,
-    session: SessionDep,
-    current_user: CurrentUser = Depends(require_role(AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
-) -> DataResponse[KnowledgeEvalQuestionRead]:
-    row = await update_knowledge_eval_question(session, current_user, question_id, payload)
-    await session.commit()
-    return DataResponse(data=row)
-
-
-@router.post("/knowledge/eval/run", response_model=DataResponse[KnowledgeEvalRunRead])
-async def run_knowledge_eval_route(
-    session: SessionDep,
-    current_user: CurrentUser = Depends(require_role(AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
-    limit: int = Query(50, ge=1, le=50),
-) -> DataResponse[KnowledgeEvalRunRead]:
-    row = await run_knowledge_eval(session, current_user, limit=limit)
-    await session.commit()
-    return DataResponse(data=row)
-
-
 @router.get("/knowledge/documents/{document_id}/versions", response_model=ListResponse[KnowledgeDocumentVersionRead])
 async def get_knowledge_document_versions(
     document_id: UUID,
@@ -509,7 +454,7 @@ async def get_lessons(
     rows = await list_lessons(session, current_user.org_id)
     return ListResponse(
         data=[KnowledgeLessonRead.model_validate(row) for row in rows],
-        pagination=Pagination(limit=50),
+        pagination=Pagination(limit=len(rows)),
     )
 
 
@@ -523,13 +468,3 @@ async def post_lesson(
     await session.commit()
     await session.refresh(lesson)
     return DataResponse(data=KnowledgeLessonRead.model_validate(lesson))
-
-
-@router.get("/knowledge/search", response_model=ListResponse[KnowledgeSearchResult])
-async def search_knowledge_route(
-    session: SessionDep,
-    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
-    q: str = Query(default="", min_length=0),
-) -> ListResponse[KnowledgeSearchResult]:
-    results = await search_knowledge(session, current_user.org_id, q)
-    return ListResponse(data=results, pagination=Pagination(limit=20))
