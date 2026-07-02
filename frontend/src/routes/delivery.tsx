@@ -9,16 +9,8 @@ import {
   Tooltip,
 } from "recharts";
 import { useEffect, useMemo, useRef } from "react";
-import {
-  Card,
-  SectionHeader,
-  KpiCard,
-  AiBadge,
-  StatusPill,
-} from "@/components/bsg/widgets";
-import {
-  type DeliveryDashboardResponse,
-} from "@/lib/api";
+import { Card, SectionHeader, KpiCard, AiBadge, StatusPill } from "@/components/bsg/widgets";
+import { type DeliveryDashboardResponse } from "@/lib/api";
 import {
   useDeliveryDashboardQuery,
   useDeliveryPortfolioQuery,
@@ -173,8 +165,8 @@ function DeliveryPage() {
   const organisationsQuery = useOrganisationsQuery();
   const portfolioQuery = useDeliveryPortfolioQuery();
 
-  const projects = projectsQuery.data ?? [];
-  const organisations = organisationsQuery.data ?? [];
+  const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
+  const organisations = useMemo(() => organisationsQuery.data ?? [], [organisationsQuery.data]);
 
   const resolvedProjectId = useMemo(() => {
     if (projects.length === 0) return null;
@@ -218,7 +210,10 @@ function DeliveryPage() {
 
   const selectedProject = projects.find((project) => project.id === resolvedProjectId);
   const selectedDashboard = resolvedProjectId ? dashboards[resolvedProjectId] : undefined;
-  const portfolioMilestones = portfolioQuery.data?.milestones ?? [];
+  const portfolioMilestones = useMemo(
+    () => portfolioQuery.data?.milestones ?? [],
+    [portfolioQuery.data?.milestones],
+  );
 
   const loading =
     projectsQuery.isLoading || organisationsQuery.isLoading || portfolioQuery.isLoading;
@@ -344,9 +339,7 @@ function DeliveryPage() {
           <SectionHeader
             title="Root Cause Analysis"
             sub={
-              selectedProject
-                ? `Why is ${selectedProject.name} at risk?`
-                : "Root cause breakdown"
+              selectedProject ? `Why is ${selectedProject.name} at risk?` : "Root cause breakdown"
             }
             right={<AiBadge confidence={Math.round(selectedDashboard?.confidence ?? 0)} />}
           />
@@ -472,9 +465,7 @@ function DeliveryPage() {
                           </td>
                           <td className="py-2.5 pr-3">
                             {dashboard ? (
-                              <StatusPill
-                                status={riskLabel(dashboard.traffic_light, tier)}
-                              />
+                              <StatusPill status={riskLabel(dashboard.traffic_light, tier)} />
                             ) : (
                               "—"
                             )}

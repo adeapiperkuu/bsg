@@ -1,6 +1,7 @@
 import { Bot } from "lucide-react";
 import { TypewriterText } from "@/components/knowledge/TypewriterText";
-import { DeliveryMarkdown, deliveryMarkdownPreview } from "@/components/delivery/delivery-markdown";
+import { DeliveryMarkdown } from "@/components/delivery/delivery-markdown";
+import { deliveryMarkdownPreview } from "@/components/delivery/delivery-markdown-utils";
 import { cn } from "@/lib/utils";
 import type { DeliveryChatMessage, DeliveryChatSource } from "@/types/delivery-chat";
 
@@ -48,12 +49,7 @@ export function DeliveryMessage({
   const showAgentDetails = message.role === "agent" && !isAnimating;
 
   return (
-    <div
-      className={cn(
-        "flex gap-3",
-        message.role === "user" ? "justify-end" : "justify-start",
-      )}
-    >
+    <div className={cn("flex gap-3", message.role === "user" ? "justify-end" : "justify-start")}>
       {message.role === "agent" && (
         <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-card text-muted-foreground">
           <Bot className="h-3.5 w-3.5" />

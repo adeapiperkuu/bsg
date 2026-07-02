@@ -60,7 +60,7 @@ const fieldClass =
 function ProjectsPage() {
   const queryClient = useQueryClient();
   const projectsQuery = useProjectsQuery();
-  const projects = projectsQuery.data ?? [];
+  const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
   const loading = projectsQuery.isLoading;
   const [query, setQuery] = useState("");
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -199,7 +199,9 @@ function ProjectsPage() {
             placeholder="Search projects..."
             className={cn(
               "min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none transition-all duration-300 ease-out placeholder:text-muted-foreground/80",
-              isSearchOpen ? "w-full translate-x-0 opacity-100" : "pointer-events-none w-0 -translate-x-1 opacity-0",
+              isSearchOpen
+                ? "w-full translate-x-0 opacity-100"
+                : "pointer-events-none w-0 -translate-x-1 opacity-0",
             )}
             tabIndex={isSearchOpen ? 0 : -1}
           />
@@ -265,7 +267,9 @@ function ProjectsPage() {
                     id="project-vertical"
                     required
                     value={createForm.vertical}
-                    onChange={(event) => setCreateForm({ ...createForm, vertical: event.target.value })}
+                    onChange={(event) =>
+                      setCreateForm({ ...createForm, vertical: event.target.value })
+                    }
                     placeholder="Vertical"
                     className="h-10 shadow-none"
                   />
@@ -294,7 +298,9 @@ function ProjectsPage() {
                     required
                     type="date"
                     value={createForm.start_date}
-                    onChange={(event) => setCreateForm({ ...createForm, start_date: event.target.value })}
+                    onChange={(event) =>
+                      setCreateForm({ ...createForm, start_date: event.target.value })
+                    }
                     className="h-10 shadow-none"
                   />
                 </div>
@@ -333,7 +339,9 @@ function ProjectsPage() {
                   <textarea
                     id="project-description"
                     value={createForm.description ?? ""}
-                    onChange={(event) => setCreateForm({ ...createForm, description: event.target.value })}
+                    onChange={(event) =>
+                      setCreateForm({ ...createForm, description: event.target.value })
+                    }
                     placeholder="Description"
                     rows={3}
                     className="w-full resize-none rounded-sm border border-input bg-background px-3 py-2 text-sm shadow-none outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -342,7 +350,12 @@ function ProjectsPage() {
               </div>
             </div>
             <DialogFooter className="gap-2 border-t border-border bg-elevated/60 px-4 py-4 sm:justify-end sm:space-x-0 sm:px-6">
-              <Button type="button" variant="outline" className="shadow-none" onClick={closeCreateDialog}>
+              <Button
+                type="button"
+                variant="outline"
+                className="shadow-none"
+                onClick={closeCreateDialog}
+              >
                 Cancel
               </Button>
               <Button
@@ -422,7 +435,9 @@ function ProjectsPage() {
           <DialogHeader className="border-b border-border bg-elevated/60 px-4 py-4 sm:px-6">
             <DialogTitle>Edit Project</DialogTitle>
             <DialogDescription>
-              {editingProject ? `Update details for ${editingProject.name}.` : "Update project details."}
+              {editingProject
+                ? `Update details for ${editingProject.name}.`
+                : "Update project details."}
             </DialogDescription>
           </DialogHeader>
           {editingProject && (
@@ -489,7 +504,10 @@ function ProjectsPage() {
                       type="date"
                       value={editingProject.target_end_date}
                       onChange={(event) =>
-                        setEditingProject({ ...editingProject, target_end_date: event.target.value })
+                        setEditingProject({
+                          ...editingProject,
+                          target_end_date: event.target.value,
+                        })
                       }
                       className="h-10 shadow-none"
                     />
@@ -519,7 +537,9 @@ function ProjectsPage() {
                       onChange={(event) =>
                         setEditingProject({
                           ...editingProject,
-                          daily_target_units: event.target.value ? Number(event.target.value) : null,
+                          daily_target_units: event.target.value
+                            ? Number(event.target.value)
+                            : null,
                         })
                       }
                       placeholder="Daily target units"
@@ -542,7 +562,12 @@ function ProjectsPage() {
                 </div>
               </div>
               <DialogFooter className="gap-2 border-t border-border bg-elevated/60 px-4 py-4 sm:justify-end sm:space-x-0 sm:px-6">
-                <Button type="button" variant="outline" className="shadow-none" onClick={closeEditDialog}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="shadow-none"
+                  onClick={closeEditDialog}
+                >
                   Cancel
                 </Button>
                 <Button

@@ -30,6 +30,12 @@ export type AnnotatorRead = {
   updated_at: string;
 };
 
+export type ProjectWorkforceSummaryRead = {
+  project_id: string;
+  teams: TeamRead[];
+  annotators: AnnotatorRead[];
+};
+
 export type UtilizationSnapshotRead = {
   id: string;
   org_id: string;

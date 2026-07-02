@@ -12,9 +12,7 @@ import { WorkforceUtilizationSection } from "@/components/bsg/workforce/Workforc
 import { WorkforceAgentSection } from "@/components/bsg/workforce/WorkforceAgentSection";
 import { WorkforceKpiStrip } from "@/components/bsg/workforce/WorkforceKpiStrip";
 import { WorkforceRecommendationsPanel } from "@/components/bsg/WorkforceRecommendationsPanel";
-import {
-  createAgentQuery,
-} from "@/lib/api";
+import { createAgentQuery } from "@/lib/api";
 import { useProjectsQuery } from "@/lib/queries/delivery";
 import {
   UTILIZATION_CAPACITY_THRESHOLD,
@@ -31,10 +29,7 @@ import {
   type WorkforceSiteFilter,
 } from "@/hooks/useWorkforceDashboardFilters";
 import { useWorkforceCapabilityGapActions } from "@/hooks/useWorkforceCapabilityGapActions";
-import {
-  SITE_LABELS,
-  WORKFORCE_EMPTY_VALUE,
-} from "@/lib/workforceLabels";
+import { SITE_LABELS, WORKFORCE_EMPTY_VALUE } from "@/lib/workforceLabels";
 import {
   canManageWorkforce as canManageWorkforceRole,
   canReadInternalWorkforce as canReadInternalWorkforceRole,
@@ -156,7 +151,10 @@ function WorkforcePage() {
     [skillMatrixRows],
   );
 
-  const trainingGapsQuery = useProjectTrainingGapsQuery(resolvedProjectId, canReadInternalWorkforce);
+  const trainingGapsQuery = useProjectTrainingGapsQuery(
+    resolvedProjectId,
+    canReadInternalWorkforce,
+  );
   const trainingGaps = trainingGapsQuery.data;
   const trainingGapRows = trainingGaps?.rows ?? EMPTY_LIST;
   const trainingGapsLoading = canReadInternalWorkforce && trainingGapsQuery.isLoading;
@@ -307,37 +305,33 @@ function WorkforcePage() {
       : canReadInternalWorkforce
         ? "No SMEs yet"
         : "Internal only";
-  const teamsAtCapacityValue =
-    !canReadInternalWorkforce
+  const teamsAtCapacityValue = !canReadInternalWorkforce
+    ? WORKFORCE_EMPTY_VALUE
+    : utilizationLoading
       ? WORKFORCE_EMPTY_VALUE
-      : utilizationLoading
-        ? WORKFORCE_EMPTY_VALUE
-        : filteredUtilizationStats.total > 0
-          ? `${filteredUtilizationStats.overloaded} / ${filteredUtilizationStats.total}`
-          : WORKFORCE_EMPTY_VALUE;
-  const teamsAtCapacityDelta =
-    !canReadInternalWorkforce
-      ? "Internal only"
-      : utilizationLoading
-        ? undefined
-        : filteredUtilizationStats.total > 0
-          ? `${filteredUtilizationStats.underutilized} under ${filteredUtilizationStats.underutilizedThreshold}%`
-          : "No utilization snapshots yet";
+      : filteredUtilizationStats.total > 0
+        ? `${filteredUtilizationStats.overloaded} / ${filteredUtilizationStats.total}`
+        : WORKFORCE_EMPTY_VALUE;
+  const teamsAtCapacityDelta = !canReadInternalWorkforce
+    ? "Internal only"
+    : utilizationLoading
+      ? undefined
+      : filteredUtilizationStats.total > 0
+        ? `${filteredUtilizationStats.underutilized} under ${filteredUtilizationStats.underutilizedThreshold}%`
+        : "No utilization snapshots yet";
 
-  const trainingGapsValue =
-    !canReadInternalWorkforce
+  const trainingGapsValue = !canReadInternalWorkforce
+    ? WORKFORCE_EMPTY_VALUE
+    : trainingGapsLoading
       ? WORKFORCE_EMPTY_VALUE
-      : trainingGapsLoading
-        ? WORKFORCE_EMPTY_VALUE
-        : trainingGaps !== undefined
-          ? trainingGaps.total_training_gaps
-          : WORKFORCE_EMPTY_VALUE;
-  const trainingGapsDelta =
-    !canReadInternalWorkforce
-      ? "Internal only"
-      : trainingGapsLoading
-        ? undefined
-        : summarizeTrainingGapsDelta(trainingGaps);
+      : trainingGaps !== undefined
+        ? trainingGaps.total_training_gaps
+        : WORKFORCE_EMPTY_VALUE;
+  const trainingGapsDelta = !canReadInternalWorkforce
+    ? "Internal only"
+    : trainingGapsLoading
+      ? undefined
+      : summarizeTrainingGapsDelta(trainingGaps);
   const trainingGapsTone =
     !canReadInternalWorkforce || trainingGapsLoading
       ? "default"
@@ -351,7 +345,8 @@ function WorkforcePage() {
         <div className="text-xs text-muted-foreground">
           {selectedProject ? (
             <>
-              Project focus / <span className="font-medium text-foreground">{selectedProject.name}</span>
+              Project focus /{" "}
+              <span className="font-medium text-foreground">{selectedProject.name}</span>
             </>
           ) : (
             "Project focus"
@@ -367,7 +362,9 @@ function WorkforcePage() {
               >
                 <option value="all">All sites</option>
                 {WORKFORCE_ALL_SITES.map((site) => (
-                  <option key={site} value={site}>{SITE_LABELS[site]}</option>
+                  <option key={site} value={site}>
+                    {SITE_LABELS[site]}
+                  </option>
                 ))}
               </select>
               <select
@@ -377,7 +374,9 @@ function WorkforcePage() {
               >
                 <option value="all">All domains</option>
                 {domainOptions.map((domain) => (
-                  <option key={domain} value={domain}>{domain}</option>
+                  <option key={domain} value={domain}>
+                    {domain}
+                  </option>
                 ))}
               </select>
               <select
@@ -387,7 +386,9 @@ function WorkforcePage() {
               >
                 <option value="all">All skills</option>
                 {categoryOptions.map((category) => (
-                  <option key={category} value={category}>{category}</option>
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
                 ))}
               </select>
             </>

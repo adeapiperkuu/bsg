@@ -92,9 +92,7 @@ export function RecommendationCard({
           disabled={isRejected || isAssigning}
           onChange={(event) => handleOwnerChange(event.target.value)}
         >
-          <option value="">
-            Owner: {recommendation.owner_label ?? "Unassigned"}
-          </option>
+          <option value="">Owner: {recommendation.owner_label ?? "Unassigned"}</option>
           {assignableOwners.map((owner) => (
             <option
               key={`${owner.owner_type}:${owner.owner_id}`}

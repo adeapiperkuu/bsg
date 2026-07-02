@@ -108,7 +108,9 @@ export function KnowledgeRetrievalPanel({ canManage, onChange }: Props) {
             </SelectTrigger>
             <SelectContent>
               {[3, 5, 7, 10].map((n) => (
-                <SelectItem key={n} value={String(n)}>{n}</SelectItem>
+                <SelectItem key={n} value={String(n)}>
+                  {n}
+                </SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -135,7 +137,9 @@ export function KnowledgeRetrievalPanel({ canManage, onChange }: Props) {
         </label>
       </div>
       {canManage && (
-        <p className="mt-2 text-[10px] text-muted-foreground">Leadership and super admins can update org-wide retrieval defaults.</p>
+        <p className="mt-2 text-[10px] text-muted-foreground">
+          Leadership and super admins can update org-wide retrieval defaults.
+        </p>
       )}
     </div>
   );

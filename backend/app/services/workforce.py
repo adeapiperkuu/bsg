@@ -12,8 +12,11 @@ from app.core.security import CurrentUser
 from app.db.models import Annotator, AppRole, Project, Team, UtilizationSnapshot
 from app.schemas.domain import (
     AnnotatorCreate,
+    AnnotatorRead,
     AnnotatorUpdate,
+    ProjectWorkforceSummaryRead,
     TeamCreate,
+    TeamRead,
     TeamUpdate,
     UtilizationSnapshotCreate,
     UtilizationSnapshotUpdate,
@@ -129,6 +132,47 @@ async def get_annotator_or_404(
             {"annotator_id": str(annotator_id)},
         )
     return annotator
+
+
+async def get_project_workforce_summary(
+    session: AsyncSession,
+    project: Project,
+    current_user: CurrentUser,
+    *,
+    teams_limit: int = 100,
+) -> ProjectWorkforceSummaryRead:
+    """Return project teams and annotators in one query batch (matches per-team list limits)."""
+    team_rows = (
+        await session.execute(
+            select(Team)
+            .where(Team.project_id == project.id, Team.deleted_at.is_(None))
+            .order_by(Team.name)
+            .limit(teams_limit),
+        )
+    ).scalars()
+    teams = list(team_rows)
+
+    annotators: list[Annotator] = []
+    if teams:
+        annotator_limit = len(teams) * 100
+        annotator_rows = (
+            await session.execute(
+                select(Annotator)
+                .where(
+                    Annotator.team_id.in_([team.id for team in teams]),
+                    Annotator.deleted_at.is_(None),
+                )
+                .order_by(Annotator.full_name)
+                .limit(annotator_limit),
+            )
+        ).scalars()
+        annotators = list(annotator_rows)
+
+    return ProjectWorkforceSummaryRead(
+        project_id=project.id,
+        teams=[TeamRead.model_validate(team) for team in teams],
+        annotators=[AnnotatorRead.model_validate(annotator) for annotator in annotators],
+    )
 
 
 async def create_team(session: AsyncSession, project: Project, payload: TeamCreate) -> Team:

@@ -149,7 +149,11 @@ export function documentToApiPatch(patch: Partial<KnowledgeDocument>) {
   return {
     title: patch.title,
     folder_id: patch.folderId,
-    folder_kind: patch.folderKind ? patch.folderKind : patch.folder ? folderNameToApi(patch.folder) : undefined,
+    folder_kind: patch.folderKind
+      ? patch.folderKind
+      : patch.folder
+        ? folderNameToApi(patch.folder)
+        : undefined,
     source_type: patch.sourceType ? sourceToApi[patch.sourceType] : undefined,
     version: patch.version,
     visibility: patch.visibility ? visibilityToApi[patch.visibility] : undefined,
@@ -160,9 +164,14 @@ export function documentToApiPatch(patch: Partial<KnowledgeDocument>) {
 }
 
 export function documentFromApi(row: KnowledgeDocumentApi): KnowledgeDocument {
-  const indexing = ["uploaded", "extracting", "extracted", "chunking", "chunked", "embedding"].includes(
-    row.processing_status,
-  );
+  const indexing = [
+    "uploaded",
+    "extracting",
+    "extracted",
+    "chunking",
+    "chunked",
+    "embedding",
+  ].includes(row.processing_status);
   const indexed = row.processing_status === "ready" || row.indexing_status === "indexed";
   const fileType = row.file_name.split(".").pop()?.toUpperCase() ?? "DOC";
   return {
@@ -220,7 +229,9 @@ export function uploadFormToApi(form: {
 }
 
 export function isRetrievalReady(doc: KnowledgeDocument): boolean {
-  return doc.status === "Approved" && doc.processingStatus === "ready" && doc.indexed && !doc.indexing;
+  return (
+    doc.status === "Approved" && doc.processingStatus === "ready" && doc.indexed && !doc.indexing
+  );
 }
 
 export function processingStatusLabel(status: KnowledgeProcessingStatusApi): string {

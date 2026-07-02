@@ -43,18 +43,35 @@ function LoginPage() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
-      <form onSubmit={onSubmit} className="w-full max-w-sm space-y-4 rounded-lg border border-border bg-card p-6 shadow-sm">
+      <form
+        onSubmit={onSubmit}
+        className="w-full max-w-sm space-y-4 rounded-lg border border-border bg-card p-6 shadow-sm"
+      >
         <div>
           <h1 className="text-lg font-semibold text-foreground">Sign in</h1>
           <p className="mt-1 text-sm text-muted-foreground">Operations Tower — BSG Insights Hub</p>
         </div>
         <div className="space-y-2">
           <Label htmlFor="email">Email</Label>
-          <Input id="email" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          <Input
+            id="email"
+            type="email"
+            autoComplete="username"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+          />
         </div>
         <div className="space-y-2">
           <Label htmlFor="password">Password</Label>
-          <Input id="password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+          <Input
+            id="password"
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
         </div>
         {error && <p className="text-sm text-destructive">{error}</p>}
         <Button type="submit" className="w-full" disabled={submitting}>
@@ -65,7 +82,8 @@ function LoginPage() {
             <div>
               <p className="text-sm font-medium text-foreground">Dev accounts</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Password for all: <span className="font-mono">{DEV_LOGIN_ACCOUNTS[0]?.password}</span>
+                Password for all:{" "}
+                <span className="font-mono">{DEV_LOGIN_ACCOUNTS[0]?.password}</span>
               </p>
             </div>
             <div className="space-y-2">

@@ -10,10 +10,7 @@ import type {
   MitigationRecommendation,
   RecommendationSeverity,
 } from "@/features/mitigation-recommendations/types";
-import {
-  SEVERITY_LABELS,
-  SEVERITY_ORDER,
-} from "@/features/mitigation-recommendations/types";
+import { SEVERITY_LABELS, SEVERITY_ORDER } from "@/features/mitigation-recommendations/types";
 import { cn } from "@/lib/utils";
 
 const WORKFORCE_SOURCE_RISK_TYPE = "workforce_imbalance";
@@ -49,9 +46,7 @@ export function WorkforceRecommendationsPanel({
   const recommendations = useMemo(
     () =>
       sortRecommendations(
-        (data?.data ?? []).filter(
-          (item) => item.source_risk_type === WORKFORCE_SOURCE_RISK_TYPE,
-        ),
+        (data?.data ?? []).filter((item) => item.source_risk_type === WORKFORCE_SOURCE_RISK_TYPE),
       ),
     [data?.data],
   );

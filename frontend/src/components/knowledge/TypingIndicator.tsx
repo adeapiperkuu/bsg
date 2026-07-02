@@ -7,7 +7,10 @@ type Props = {
 
 export function TypingIndicator({ label, className }: Props) {
   return (
-    <span className={cn("inline-flex items-center gap-1.5", className)} aria-label={label ?? "Typing"}>
+    <span
+      className={cn("inline-flex items-center gap-1.5", className)}
+      aria-label={label ?? "Typing"}
+    >
       {label ? <span>{label}</span> : null}
       <span className="inline-flex items-center gap-0.5" aria-hidden="true">
         {[0, 1, 2].map((index) => (

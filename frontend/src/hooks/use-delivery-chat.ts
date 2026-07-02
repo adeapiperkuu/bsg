@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { sendDeliveryChatMessage } from "@/lib/api";
-import { sanitizeDeliveryMarkdown } from "@/components/delivery/delivery-markdown";
+import { sanitizeDeliveryMarkdown } from "@/components/delivery/delivery-markdown-utils";
 import { generateDeliverySuggestions } from "@/types/delivery-chat";
 import type { DeliveryChatMessage } from "@/types/delivery-chat";
 
@@ -68,7 +68,9 @@ export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
         });
       } catch (err) {
         const message =
-          err instanceof Error ? err.message : "The delivery agent could not complete your request.";
+          err instanceof Error
+            ? err.message
+            : "The delivery agent could not complete your request.";
         setError(message);
         setMessages((current) => {
           const next: DeliveryChatMessage[] = [

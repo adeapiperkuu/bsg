@@ -19,9 +19,46 @@ USER_CLIENT_A = uuid4()
 USER_SUPER = uuid4()
 
 
+class FakeScalars:
+    def __init__(self, items: list[Any] | None = None) -> None:
+        self._items = items or []
+
+    def all(self) -> list[Any]:
+        return self._items
+
+    def __iter__(self):
+        return iter(self._items)
+
+
+class FakeResult:
+    def __init__(self, value: Any = None, items: list[Any] | None = None) -> None:
+        self._value = value
+        self._items = items or []
+
+    def scalar_one_or_none(self) -> Any:
+        return self._value
+
+    def scalars(self) -> FakeScalars:
+        return FakeScalars(self._items)
+
+
 class FakeSession:
-    async def execute(self, *_args: Any, **_kwargs: Any) -> Any:
-        raise NotImplementedError("Override execute in test")
+    """Minimal async session for HTTP tests; returns empty / not-found DB results."""
+
+    def add(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def execute(self, *_args: Any, **_kwargs: Any) -> FakeResult:
+        return FakeResult()
+
+    async def commit(self) -> None:
+        return None
+
+    async def refresh(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def flush(self) -> None:
+        return None
 
 
 @pytest.fixture
@@ -63,6 +100,7 @@ async def _override_session() -> AsyncIterator[AsyncSession]:
 
 @pytest.fixture
 async def api_client() -> AsyncIterator[AsyncClient]:
+    app.dependency_overrides[get_db_session] = _override_session
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client

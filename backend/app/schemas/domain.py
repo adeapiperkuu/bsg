@@ -204,6 +204,12 @@ class AnnotatorUpdate(BaseModel):
     team_id: UUID | None = None
 
 
+class ProjectWorkforceSummaryRead(BaseModel):
+    project_id: UUID
+    teams: list[TeamRead]
+    annotators: list[AnnotatorRead]
+
+
 class UtilizationSnapshotRead(ORMModel):
     id: UUID
     org_id: UUID

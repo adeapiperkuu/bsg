@@ -42,10 +42,7 @@ export function MitigationRecommendationsPanel({ projectId }: MitigationRecommen
   const rejectMutation = useRejectRecommendationMutation(projectId);
   const assignMutation = useAssignRecommendationOwnerMutation(projectId);
 
-  const grouped = useMemo(
-    () => groupBySeverity(data?.data ?? []),
-    [data?.data],
-  );
+  const grouped = useMemo(() => groupBySeverity(data?.data ?? []), [data?.data]);
 
   const assignableOwners = data?.assignable_owners ?? [];
 
@@ -86,12 +83,10 @@ export function MitigationRecommendationsPanel({ projectId }: MitigationRecommen
                       })
                     }
                     isAccepting={
-                      acceptMutation.isPending &&
-                      acceptMutation.variables === recommendation.id
+                      acceptMutation.isPending && acceptMutation.variables === recommendation.id
                     }
                     isRejecting={
-                      rejectMutation.isPending &&
-                      rejectMutation.variables === recommendation.id
+                      rejectMutation.isPending && rejectMutation.variables === recommendation.id
                     }
                     isAssigning={
                       assignMutation.isPending &&

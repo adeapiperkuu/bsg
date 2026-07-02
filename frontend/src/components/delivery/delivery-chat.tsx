@@ -55,8 +55,12 @@ export function DeliveryChat({ projectId }: Props) {
               <Bot className="h-4 w-4" />
             </div>
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold tracking-tight text-foreground">Ask Delivery Agent</h3>
-              <p className="mt-0.5 text-xs text-muted-foreground">Evidence-backed delivery operations</p>
+              <h3 className="text-sm font-semibold tracking-tight text-foreground">
+                Ask Delivery Agent
+              </h3>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Evidence-backed delivery operations
+              </p>
             </div>
           </div>
           <AiBadge />

@@ -1,11 +1,31 @@
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
-  LayoutDashboard, Activity, ShieldCheck, Users, GitBranch, Briefcase,
-  BookOpen, FolderKanban, ListChecks, Settings2, FileText, Folder, BarChart3, Settings,
-  Bell, Sun, Moon, Search, Crown, Signal, LogOut, ChevronDown, Menu,
+  LayoutDashboard,
+  Activity,
+  ShieldCheck,
+  Users,
+  GitBranch,
+  Briefcase,
+  BookOpen,
+  FolderKanban,
+  ListChecks,
+  Settings2,
+  FileText,
+  Folder,
+  BarChart3,
+  Settings,
+  Bell,
+  Sun,
+  Moon,
+  Search,
+  Crown,
+  Signal,
+  LogOut,
+  ChevronDown,
+  Menu,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import { useRole } from "@/lib/bsg/role";
+import { useRole } from "@/lib/bsg/use-role";
 import { cn } from "@/lib/utils";
 import { notifications } from "@/lib/bsg/data";
 import { StatusPill } from "./widgets";
@@ -25,49 +45,63 @@ import { PageTransition } from "@/components/PageTransition";
 type NavItem = { to: string; label: string; icon: React.ComponentType<{ className?: string }> };
 
 const internalNav: { section: string; items: NavItem[] }[] = [
-  { section: "Agents", items: [
-    { to: "/dashboard", label: "Operational Tower", icon: LayoutDashboard },
-    { to: "/delivery", label: "Delivery Performance", icon: Activity },
-    { to: "/quality", label: "Quality Intelligence", icon: ShieldCheck },
-    { to: "/workforce", label: "Workforce & Capability", icon: Users },
-    { to: "/governance", label: "Project Governance", icon: GitBranch },
-    { to: "/client-intelligence", label: "Client Intelligence", icon: Briefcase },
-  ]},
-  { section: "Workspace", items: [
-    { to: "/knowledge", label: "Knowledge Agent", icon: BookOpen },
-    { to: "/projects", label: "Projects", icon: FolderKanban },
-    { to: "/pm-console", label: "PM Console", icon: ListChecks },
-  ]},
-  { section: "Reporting", items: [
-    { to: "/reports", label: "Reports", icon: FileText },
-    { to: "/documents", label: "Documents", icon: Folder },
-    { to: "/analytics", label: "Analytics", icon: BarChart3 },
-  ]},
-  { section: "System", items: [
-    { to: "/settings", label: "Settings", icon: Settings },
-  ]},
+  {
+    section: "Agents",
+    items: [
+      { to: "/dashboard", label: "Operational Tower", icon: LayoutDashboard },
+      { to: "/delivery", label: "Delivery Performance", icon: Activity },
+      { to: "/quality", label: "Quality Intelligence", icon: ShieldCheck },
+      { to: "/workforce", label: "Workforce & Capability", icon: Users },
+      { to: "/governance", label: "Project Governance", icon: GitBranch },
+      { to: "/client-intelligence", label: "Client Intelligence", icon: Briefcase },
+    ],
+  },
+  {
+    section: "Workspace",
+    items: [
+      { to: "/knowledge", label: "Knowledge Agent", icon: BookOpen },
+      { to: "/projects", label: "Projects", icon: FolderKanban },
+      { to: "/pm-console", label: "PM Console", icon: ListChecks },
+    ],
+  },
+  {
+    section: "Reporting",
+    items: [
+      { to: "/reports", label: "Reports", icon: FileText },
+      { to: "/documents", label: "Documents", icon: Folder },
+      { to: "/analytics", label: "Analytics", icon: BarChart3 },
+    ],
+  },
+  { section: "System", items: [{ to: "/settings", label: "Settings", icon: Settings }] },
 ];
 
 const clientNav: { section: string; items: NavItem[] }[] = [
-  { section: "Client Portal", items: [
-    { to: "/client", label: "My Projects", icon: LayoutDashboard },
-    { to: "/client/status", label: "Delivery Status", icon: Activity },
-    { to: "/client/reports", label: "Reports", icon: FileText },
-    { to: "/client/ask", label: "Ask Agent", icon: BookOpen },
-  ]},
+  {
+    section: "Client Portal",
+    items: [
+      { to: "/client", label: "My Projects", icon: LayoutDashboard },
+      { to: "/client/status", label: "Delivery Status", icon: Activity },
+      { to: "/client/reports", label: "Reports", icon: FileText },
+      { to: "/client/ask", label: "Ask Agent", icon: BookOpen },
+    ],
+  },
 ];
 
 const leadershipNav: { section: string; items: NavItem[] }[] = [
-  { section: "Portfolio", items: [
-    { to: "/leadership", label: "Leadership Cockpit", icon: Crown },
-  ]},
+  {
+    section: "Portfolio",
+    items: [{ to: "/leadership", label: "Leadership Cockpit", icon: Crown }],
+  },
 ];
 
 const adminNav: { section: string; items: NavItem[] }[] = [
-  { section: "Platform", items: [
-    { to: "/admin", label: "Admin Console", icon: Settings2 },
-    { to: "/admin/users", label: "Users", icon: Users },
-  ]},
+  {
+    section: "Platform",
+    items: [
+      { to: "/admin", label: "Admin Console", icon: Settings2 },
+      { to: "/admin/users", label: "Users", icon: Users },
+    ],
+  },
 ];
 
 function navForUser(user: MeUser | null) {
@@ -102,7 +136,14 @@ function roleLabel(role: AppRole): string {
 function initials(name: string | null, email: string): string {
   if (name) {
     const parts = name.trim().split(/\s+/);
-    return parts.slice(0, 2).map((p) => p[0]?.toUpperCase() ?? "").join("") || email[0]?.toUpperCase() || "?";
+    return (
+      parts
+        .slice(0, 2)
+        .map((p) => p[0]?.toUpperCase() ?? "")
+        .join("") ||
+      email[0]?.toUpperCase() ||
+      "?"
+    );
   }
   return email[0]?.toUpperCase() ?? "?";
 }
@@ -120,8 +161,14 @@ export function Shell({ children }: { children: ReactNode }) {
   const nav = navForUser(user);
 
   const currentTitle =
-    [...internalNav, ...clientNav, ...leadershipNav, ...adminNav].flatMap((s) => s.items).find((i) => i.to === pathname)?.label ??
-    (pathname === "/leadership" ? "Leadership Cockpit" : pathname === "/client" ? "My Projects" : "BSG Insights Hub");
+    [...internalNav, ...clientNav, ...leadershipNav, ...adminNav]
+      .flatMap((s) => s.items)
+      .find((i) => i.to === pathname)?.label ??
+    (pathname === "/leadership"
+      ? "Leadership Cockpit"
+      : pathname === "/client"
+        ? "My Projects"
+        : "BSG Insights Hub");
 
   async function handleLogout() {
     await logout();
@@ -137,7 +184,9 @@ export function Shell({ children }: { children: ReactNode }) {
         {(!collapsed || mobile) && (
           <div className="min-w-0">
             <div className="text-sm font-semibold tracking-tight">BSG</div>
-            <div className="-mt-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">Insights Hub</div>
+            <div className="-mt-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+              Insights Hub
+            </div>
           </div>
         )}
       </div>
@@ -145,7 +194,9 @@ export function Shell({ children }: { children: ReactNode }) {
         {nav.map((sec) => (
           <div key={sec.section} className="mb-4">
             {(!collapsed || mobile) && (
-              <div className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{sec.section}</div>
+              <div className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                {sec.section}
+              </div>
             )}
             <ul className="space-y-0.5">
               {sec.items.map((item) => {
@@ -203,13 +254,21 @@ export function Shell({ children }: { children: ReactNode }) {
       </aside>
 
       <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
-        <SheetContent side="left" className="flex w-[min(20rem,85vw)] flex-col bg-sidebar p-0 text-sidebar-foreground">
+        <SheetContent
+          side="left"
+          className="flex w-[min(20rem,85vw)] flex-col bg-sidebar p-0 text-sidebar-foreground"
+        >
           <SheetTitle className="sr-only">Navigation menu</SheetTitle>
           {navContent(true)}
         </SheetContent>
       </Sheet>
 
-      <div className={cn("flex min-h-screen w-full flex-col transition-[padding] duration-200", collapsed ? "md:pl-16" : "md:pl-60")}>
+      <div
+        className={cn(
+          "flex min-h-screen w-full flex-col transition-[padding] duration-200",
+          collapsed ? "md:pl-16" : "md:pl-60",
+        )}
+      >
         <header className="sticky top-0 z-20 flex h-14 items-center gap-2 border-b border-border bg-background/95 px-3 backdrop-blur sm:gap-3 sm:px-4 md:px-6">
           <button
             type="button"
@@ -230,18 +289,26 @@ export function Shell({ children }: { children: ReactNode }) {
             <Search className="h-3.5 w-3.5" /> Search projects, alerts, docs…
           </div>
 
-          <button onClick={toggleTheme} className="grid h-8 w-8 place-items-center rounded-md border border-border bg-card hover:bg-elevated">
+          <button
+            onClick={toggleTheme}
+            className="grid h-8 w-8 place-items-center rounded-md border border-border bg-card hover:bg-elevated"
+          >
             {theme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
           </button>
 
           <div className="relative">
-            <button onClick={() => setNotifOpen((o) => !o)} className="relative grid h-8 w-8 place-items-center rounded-md border border-border bg-card hover:bg-elevated">
+            <button
+              onClick={() => setNotifOpen((o) => !o)}
+              className="relative grid h-8 w-8 place-items-center rounded-md border border-border bg-card hover:bg-elevated"
+            >
               <Bell className="h-3.5 w-3.5" />
               <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[color:var(--danger)]" />
             </button>
             {notifOpen && (
               <div className="absolute right-0 top-full z-30 mt-1 w-[min(20rem,calc(100vw-1rem))] rounded-md border border-border bg-popover p-2 text-sm">
-                <div className="px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Recent alerts</div>
+                <div className="px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Recent alerts
+                </div>
                 <ul className="space-y-1">
                   {notifications.map((n) => (
                     <li key={n.title} className="rounded p-2 hover:bg-elevated">
@@ -263,23 +330,29 @@ export function Shell({ children }: { children: ReactNode }) {
                 type="button"
                 className="flex items-center gap-2 rounded-md border border-border bg-card px-2 py-1 text-left hover:bg-elevated"
               >
-            <div className="grid h-6 w-6 place-items-center rounded-full bg-[color:var(--brand)]/20 text-[10px] font-semibold text-[color:var(--brand)]">
-              {user ? initials(user.full_name, user.email) : "?"}
-            </div>
-            <div className="hidden text-xs sm:block">
-              <div className="font-medium leading-none">{user?.full_name ?? user?.email ?? "User"}</div>
-              <div className="text-[10px] text-muted-foreground">
-                {user ? roleLabel(user.role) : "—"}
-                {user?.organisation ? ` · ${user.organisation.name}` : ""}
-              </div>
-            </div>
+                <div className="grid h-6 w-6 place-items-center rounded-full bg-[color:var(--brand)]/20 text-[10px] font-semibold text-[color:var(--brand)]">
+                  {user ? initials(user.full_name, user.email) : "?"}
+                </div>
+                <div className="hidden text-xs sm:block">
+                  <div className="font-medium leading-none">
+                    {user?.full_name ?? user?.email ?? "User"}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">
+                    {user ? roleLabel(user.role) : "—"}
+                    {user?.organisation ? ` · ${user.organisation.name}` : ""}
+                  </div>
+                </div>
                 <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-64">
               <DropdownMenuLabel className="space-y-1">
-                <div className="truncate text-sm font-medium">{user?.full_name ?? user?.email ?? "User"}</div>
-                <div className="truncate text-xs font-normal text-muted-foreground">{user?.email}</div>
+                <div className="truncate text-sm font-medium">
+                  {user?.full_name ?? user?.email ?? "User"}
+                </div>
+                <div className="truncate text-xs font-normal text-muted-foreground">
+                  {user?.email}
+                </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
               <DropdownMenuItem asChild>

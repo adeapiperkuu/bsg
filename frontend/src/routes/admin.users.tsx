@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { Mail, Pencil, Plus, RefreshCw, Search } from "lucide-react";
 
 import { Card } from "@/components/bsg/widgets";
@@ -15,7 +15,14 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import {
   editControlClass,
   formatRole,
@@ -93,7 +100,7 @@ function AdminUsersPage() {
   const pageStart = (currentPage - 1) * USERS_PER_PAGE;
   const pageUsers = filteredUsers.slice(pageStart, pageStart + USERS_PER_PAGE);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     if (!canManageUsers) return;
     setLoading(true);
     setError(null);
@@ -101,17 +108,17 @@ function AdminUsersPage() {
       const [userRows, orgRows] = await Promise.all([listUsers(), listOrganisations()]);
       setUsers(userRows);
       setOrgs(orgRows);
-      if (!form.org_id && orgRows[0]) setForm((f) => ({ ...f, org_id: orgRows[0].id }));
+      if (orgRows[0]) setForm((f) => (f.org_id ? f : { ...f, org_id: orgRows[0].id }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load users.");
     } finally {
       setLoading(false);
     }
-  };
+  }, [canManageUsers]);
 
   useEffect(() => {
     void load();
-  }, [canManageUsers]);
+  }, [load]);
 
   useEffect(() => {
     setPage(1);
@@ -278,7 +285,12 @@ function AdminUsersPage() {
                 </option>
               ))}
             </select>
-            <Button type="button" variant="outline" className="h-10 w-full lg:w-auto" onClick={clearFilters}>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-10 w-full lg:w-auto"
+              onClick={clearFilters}
+            >
               Clear Filters
             </Button>
           </div>
@@ -302,11 +314,17 @@ function AdminUsersPage() {
                 <TableRow key={u.id}>
                   <TableCell className="min-w-36 pl-5 font-medium text-foreground">
                     <div>{u.full_name ?? "No name set"}</div>
-                    <div className="mt-1 text-xs font-normal text-muted-foreground md:hidden">{formatRole(u.role)}</div>
+                    <div className="mt-1 text-xs font-normal text-muted-foreground md:hidden">
+                      {formatRole(u.role)}
+                    </div>
                   </TableCell>
-                  <TableCell className="max-w-[12rem] truncate text-muted-foreground sm:max-w-none">{u.email}</TableCell>
+                  <TableCell className="max-w-[12rem] truncate text-muted-foreground sm:max-w-none">
+                    {u.email}
+                  </TableCell>
                   <TableCell className="hidden md:table-cell">{formatRole(u.role)}</TableCell>
-                  <TableCell className="hidden text-muted-foreground lg:table-cell">{org?.name ?? "Unassigned"}</TableCell>
+                  <TableCell className="hidden text-muted-foreground lg:table-cell">
+                    {org?.name ?? "Unassigned"}
+                  </TableCell>
                   <TableCell className="hidden sm:table-cell">
                     <span
                       className={cn(
@@ -402,7 +420,9 @@ function AdminUsersPage() {
                 <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
                   <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-1 text-muted-foreground">
                     <Mail className="h-3.5 w-3.5" />
-                    <span className="max-w-[180px] truncate sm:max-w-[260px]">{form.email || "Email not set"}</span>
+                    <span className="max-w-[180px] truncate sm:max-w-[260px]">
+                      {form.email || "Email not set"}
+                    </span>
                   </span>
                   <span className="inline-flex rounded-full border border-[color:var(--brand)]/25 bg-[color:var(--brand)]/10 px-2 py-1 font-medium text-[color:var(--brand)]">
                     New account
@@ -497,10 +517,19 @@ function AdminUsersPage() {
               </section>
             </div>
             <DialogFooter className="gap-2 border-t border-border bg-elevated/60 px-4 py-4 sm:px-6">
-              <Button type="button" variant="outline" className="w-full sm:w-auto" onClick={() => setCreateOpen(false)}>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full sm:w-auto"
+                onClick={() => setCreateOpen(false)}
+              >
                 Cancel
               </Button>
-              <Button type="submit" className="w-full sm:w-auto" disabled={creating || !form.org_id}>
+              <Button
+                type="submit"
+                className="w-full sm:w-auto"
+                disabled={creating || !form.org_id}
+              >
                 {creating ? "Creating..." : "Create User"}
               </Button>
             </DialogFooter>
@@ -523,7 +552,9 @@ function AdminUsersPage() {
                 <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
                   <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-1 text-muted-foreground">
                     <Mail className="h-3.5 w-3.5" />
-                    <span className="max-w-[180px] truncate sm:max-w-[260px]">{editingUser?.email}</span>
+                    <span className="max-w-[180px] truncate sm:max-w-[260px]">
+                      {editingUser?.email}
+                    </span>
                   </span>
                   <span
                     className={cn(
@@ -580,7 +611,9 @@ function AdminUsersPage() {
                     onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
                     className="h-10 shadow-none"
                   />
-                  <p className="text-xs text-muted-foreground">Leave this empty to keep the current password.</p>
+                  <p className="text-xs text-muted-foreground">
+                    Leave this empty to keep the current password.
+                  </p>
                 </div>
               </section>
 
@@ -592,7 +625,9 @@ function AdminUsersPage() {
                       id="edit_role"
                       className={`${editControlClass} w-full`}
                       value={editForm.role}
-                      onChange={(e) => setEditForm({ ...editForm, role: e.target.value as AppRole })}
+                      onChange={(e) =>
+                        setEditForm({ ...editForm, role: e.target.value as AppRole })
+                      }
                     >
                       {roles.map((role) => (
                         <option key={role} value={role}>
@@ -623,16 +658,22 @@ function AdminUsersPage() {
               <section className="space-y-3">
                 <div className="flex flex-col gap-3 rounded-md border border-border bg-background px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
                   <div className="min-w-0">
-                    <div className="text-sm font-medium">{editForm.is_active ? "Active account" : "Inactive account"}</div>
+                    <div className="text-sm font-medium">
+                      {editForm.is_active ? "Active account" : "Inactive account"}
+                    </div>
                     <div className="mt-0.5 text-xs text-muted-foreground">
                       Inactive users cannot sign in or access protected pages.
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center justify-between gap-2 sm:justify-start">
-                    <span className="text-xs text-muted-foreground">{editForm.is_active ? "Active" : "Inactive"}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {editForm.is_active ? "Active" : "Inactive"}
+                    </span>
                     <Switch
                       checked={editForm.is_active}
-                      onCheckedChange={(checked) => setEditForm({ ...editForm, is_active: checked })}
+                      onCheckedChange={(checked) =>
+                        setEditForm({ ...editForm, is_active: checked })
+                      }
                       aria-label="Toggle account status"
                     />
                   </div>
@@ -640,10 +681,19 @@ function AdminUsersPage() {
               </section>
             </div>
             <DialogFooter className="gap-2 border-t border-border bg-elevated/60 px-4 py-4 sm:px-6">
-              <Button type="button" variant="outline" className="w-full sm:w-auto" onClick={() => setEditOpen(false)}>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full sm:w-auto"
+                onClick={() => setEditOpen(false)}
+              >
                 Cancel
               </Button>
-              <Button type="submit" className="w-full sm:w-auto" disabled={savingEdit || !editForm.org_id}>
+              <Button
+                type="submit"
+                className="w-full sm:w-auto"
+                disabled={savingEdit || !editForm.org_id}
+              >
                 {savingEdit ? "Saving..." : "Save Changes"}
               </Button>
             </DialogFooter>
