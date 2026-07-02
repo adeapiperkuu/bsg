@@ -218,6 +218,10 @@ async def list_project_recommendations(
     org_id: UUID,
 ) -> tuple[list[RecommendationRow], list[OwnerOption]]:
     """Return all recommendations and assignable owners without per-row queries."""
+    # TODO(cleanup): this owner_user/owner_team aliased-join query is duplicated almost
+    # verbatim in fetch_recommendation_row below (list vs. single-row variant). Worth
+    # extracting into a shared query builder, but left as-is here since both are covered
+    # by existing behavior and a refactor risks subtly changing one of the two paths.
     user_owner = User.__table__.alias("owner_user")
     team_owner = Team.__table__.alias("owner_team")
 

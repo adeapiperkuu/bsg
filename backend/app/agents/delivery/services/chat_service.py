@@ -22,9 +22,11 @@ from app.agents.delivery.schemas.chat_schema import (
 )
 from app.agents.delivery.services.dashboard_service import get_dashboard_data, get_portfolio_data
 from app.core.config import get_settings
+from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
 from app.db.models import AgentQuery, AgentQueryEvidenceLink, AppRole
 from app.services.llm.client import LLMClient
+from app.services.scoping import get_visible_project
 
 logger = logging.getLogger(__name__)
 
@@ -356,6 +358,11 @@ async def _load_conversation_history(
     current_user: CurrentUser,
     anchor: AgentQuery | None,
 ) -> list[dict[str, str]]:
+    # TODO(perf): agent_queries only has an index on org_id (see
+    # 20260622090000_initial_backend_schema.sql); this query and
+    # load_delivery_chat_conversation's equivalent filter on
+    # (user_id, agent_name, project_id, created_at). A composite index would help once a
+    # user accumulates a large conversation history. Not added here — needs a migration.
     if anchor is None or anchor.user_id != current_user.id or anchor.agent_name != AGENT_NAME:
         return []
 
@@ -703,6 +710,16 @@ async def load_delivery_chat_conversation(
     is_super_admin = current_user.role == AppRole.SUPER_ADMIN
     if not is_super_admin and anchor.user_id != current_user.id:
         return None
+
+    # Conversation ownership alone is not enough: the user (or a project reassignment
+    # since the conversation was recorded) may mean they no longer have access to the
+    # project this conversation is scoped to. Reuse the shared project-visibility helper
+    # rather than duplicating org/assignment logic here.
+    if anchor.project_id is not None:
+        try:
+            await get_visible_project(session, anchor.project_id, current_user)
+        except ApiError:
+            return None
 
     rows = (
         await session.execute(

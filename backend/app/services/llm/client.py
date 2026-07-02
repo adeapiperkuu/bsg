@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import TypeVar
 
@@ -381,6 +382,9 @@ def _sanitize_delivery_answer(text: str) -> str:
 
 
 _delivery_client: AsyncOpenAI | None = None
+# See app.services.llm.openai_client for why a plain threading.Lock is sufficient here
+# (client construction is synchronous — nothing is awaited while the lock is held).
+_delivery_client_lock = threading.Lock()
 
 
 def _get_delivery_client(api_key: str, settings) -> AsyncOpenAI:
@@ -388,12 +392,15 @@ def _get_delivery_client(api_key: str, settings) -> AsyncOpenAI:
     global _delivery_client
     if _delivery_client is not None:
         return _delivery_client
-    client_kwargs: dict[str, str] = {"api_key": api_key}
-    base_url = settings.openai_base_url or settings.llm_base_url
-    if base_url:
-        client_kwargs["base_url"] = base_url
-    _delivery_client = AsyncOpenAI(**client_kwargs)
-    return _delivery_client
+    with _delivery_client_lock:
+        if _delivery_client is not None:
+            return _delivery_client
+        client_kwargs: dict[str, str] = {"api_key": api_key}
+        base_url = settings.openai_base_url or settings.llm_base_url
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        _delivery_client = AsyncOpenAI(**client_kwargs)
+        return _delivery_client
 
 
 # ── Retry / failure classification ─────────────────────────────────────────────

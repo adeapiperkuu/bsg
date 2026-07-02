@@ -109,6 +109,9 @@ class OverviewSchema(BaseModel):
     open_risk_count: int
     open_bottleneck_count: int
     calculated_risk: CalculatedRiskSchema
+    # False only when the project has no throughput history yet — clients must render
+    # "Insufficient data" rather than treating confidence/traffic_light as a real signal.
+    has_sufficient_data: bool = True
 
 
 class DashboardResponse(BaseModel):

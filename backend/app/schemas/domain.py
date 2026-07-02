@@ -554,6 +554,11 @@ class ThroughputSnapshotRead(ORMModel):
     rolling_7day_units: int | None
     created_at: datetime
     updated_at: datetime
+    # Populated only by the create endpoint (never by list reads, where scoring already
+    # ran previously). "failed" means the snapshot was stored but confidence/risk scoring
+    # did not complete — never silently hidden from the caller.
+    scoring_status: str | None = None
+    scoring_error: str | None = None
 
 
 class ThroughputSnapshotCreate(BaseModel):

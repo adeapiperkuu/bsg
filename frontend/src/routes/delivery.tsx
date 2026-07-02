@@ -87,6 +87,11 @@ function riskLabel(tier?: string): string {
   return "Medium";
 }
 
+function hasSufficientData(dashboard: DeliveryDashboardResponse | undefined): boolean {
+  const overview = asRecord(dashboard?.overview);
+  return overview?.has_sufficient_data !== false;
+}
+
 function avgDailyThroughputUnits(dashboard: DeliveryDashboardResponse | undefined): number {
   const overview = asRecord(dashboard?.overview);
   const latest = asRecord(overview?.latest_throughput);
@@ -208,21 +213,22 @@ function DeliveryPage() {
 
   const portfolioKpis = useMemo(() => {
     const dashboardList = Object.values(portfolioDashboards);
+    const scoredDashboards = dashboardList.filter((dashboard) => hasSufficientData(dashboard));
     const totalThroughput = dashboardList.reduce(
       (sum, dashboard) => sum + avgDailyThroughputUnits(dashboard),
       0,
     );
     const avgConfidence =
-      dashboardList.length > 0
-        ? dashboardList.reduce((sum, dashboard) => sum + dashboard.confidence, 0) /
-          dashboardList.length
+      scoredDashboards.length > 0
+        ? scoredDashboards.reduce((sum, dashboard) => sum + dashboard.confidence, 0) /
+          scoredDashboards.length
         : 0;
-    const atRiskProjects = dashboardList.filter(
+    const atRiskProjects = scoredDashboards.filter(
       (dashboard) => dashboard.traffic_light !== "green",
     ).length;
     const milestoneHitRate = computeMilestoneHitRate(portfolioMilestones);
 
-    const confidenceValues = dashboardList.map((dashboard) => dashboard.confidence);
+    const confidenceValues = scoredDashboards.map((dashboard) => dashboard.confidence);
     const confidenceDelta =
       confidenceValues.length >= 2
         ? `${(confidenceValues[confidenceValues.length - 1] - confidenceValues[0]).toFixed(1)} pts`
@@ -328,11 +334,15 @@ function DeliveryPage() {
                 : "Root cause breakdown"
             }
             right={
-              <AiBadge
-                label="Risk score"
-                source="formula"
-                confidence={Math.round(selectedDashboard?.confidence ?? 0)}
-              />
+              selectedDashboard && !hasSufficientData(selectedDashboard) ? (
+                <AiBadge label="Insufficient data" source="formula" />
+              ) : (
+                <AiBadge
+                  label="Risk score"
+                  source="formula"
+                  confidence={Math.round(selectedDashboard?.confidence ?? 0)}
+                />
+              )
             }
           />
           {loading ? (
@@ -453,12 +463,20 @@ function DeliveryPage() {
                             {formatNumber(avgDailyThroughputUnits(dashboard))}/d
                           </td>
                           <td className="py-2.5 pr-3">
-                            {dashboard ? `${Math.round(dashboard.confidence)}%` : "—"}
+                            {!dashboard
+                              ? "—"
+                              : hasSufficientData(dashboard)
+                                ? `${Math.round(dashboard.confidence)}%`
+                                : "Insufficient data"}
                           </td>
                           <td className="py-2.5 pr-3">
                             {dashboard ? (
                               <StatusPill
-                                status={riskLabel(tier)}
+                                status={
+                                  hasSufficientData(dashboard)
+                                    ? riskLabel(tier)
+                                    : "Insufficient data"
+                                }
                               />
                             ) : (
                               "—"

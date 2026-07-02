@@ -15,6 +15,11 @@ from app.core.exceptions import ApiError
 
 
 class SlidingWindowRateLimiter:
+    # Once the key count crosses this, `check` sweeps out keys whose bucket is fully
+    # expired. Keeps `_buckets` from growing forever as new users/orgs appear, without
+    # doing a full scan on every call (only past the threshold).
+    _EVICTION_KEY_THRESHOLD = 10_000
+
     def __init__(self) -> None:
         self._buckets: dict[str, deque[float]] = defaultdict(deque)
 
@@ -34,3 +39,10 @@ class SlidingWindowRateLimiter:
                 details={"retry_after_seconds": retry_after},
             )
         bucket.append(now)
+        if len(self._buckets) >= self._EVICTION_KEY_THRESHOLD:
+            self._evict_stale_keys(cutoff)
+
+    def _evict_stale_keys(self, cutoff: float) -> None:
+        stale_keys = [k for k, bucket in self._buckets.items() if not bucket or bucket[-1] < cutoff]
+        for stale_key in stale_keys:
+            del self._buckets[stale_key]

@@ -25,6 +25,10 @@ from app.db.models import (
 from app.services.scoping import get_visible_project, scoped_project_query
 
 THROUGHPUT_HISTORY_LIMIT = 30
+# Upper bound on projects scored in one portfolio request. Each project runs the full
+# scoring pipeline in-process, so this keeps a single request from loading/scoring an
+# unbounded number of rows for very large orgs (super admins see every org's projects).
+PORTFOLIO_PROJECT_LIMIT = 200
 
 # Single authoritative filter for active risk/bottleneck statuses.
 OPEN_STATUSES = [AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED]
@@ -227,6 +231,12 @@ async def _fetch_open_risks_by_project(
     project_ids: list[UUID],
 ) -> dict[UUID, list[dict[str, Any]]]:
     """Load open delivery risks for many projects in one query."""
+    # TODO(perf): risk_alerts only has an index on project_id (see
+    # 20260622090000_initial_backend_schema.sql). This query (and the equivalent one in
+    # _fetch_orm_open_risks / sync_recommendations_for_project) filters on
+    # (project_id, status, deleted_at) — a composite index on those columns would avoid a
+    # filter scan once row counts grow. Not added here: requires a new migration and
+    # verification against production row counts, which is out of scope for this pass.
     if not project_ids:
         return {}
 
@@ -483,10 +493,13 @@ async def get_portfolio_data(
     session: AsyncSession,
     current_user: CurrentUser,
     as_of_date: date | None = None,
+    limit: int = PORTFOLIO_PROJECT_LIMIT,
 ) -> dict[str, Any]:
     """Return delivery dashboard summaries for every visible project in one payload."""
     project_rows = (
-        await session.execute(scoped_project_query(current_user).order_by(Project.name.asc()))
+        await session.execute(
+            scoped_project_query(current_user).order_by(Project.name.asc()).limit(limit)
+        )
     ).scalars()
     projects = list(project_rows)
     if not projects:
