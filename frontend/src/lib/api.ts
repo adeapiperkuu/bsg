@@ -825,6 +825,18 @@ export type ReviewerScorecard = {
   error_breakdown: Record<string, number> | null;
 };
 
+export type QualityPage = {
+  dashboard: QualityDashboard;
+  calibration_brief: CalibrationBrief;
+  sop_ambiguity_flags: SopAmbiguityFlag[];
+  reviewer_scorecards: ReviewerScorecard[];
+};
+
+export async function fetchQualityPage(projectId: string): Promise<QualityPage> {
+  const body = await apiFetch<{ data: QualityPage }>(`/projects/${projectId}/quality-page`);
+  return body.data;
+}
+
 export async function fetchCalibrationBrief(projectId: string): Promise<CalibrationBrief> {
   const body = await apiFetch<{ data: CalibrationBrief }>(`/projects/${projectId}/calibration-brief`);
   return body.data;

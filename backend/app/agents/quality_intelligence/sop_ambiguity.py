@@ -267,6 +267,10 @@ async def list_sop_ambiguity_flags(session: AsyncSession, project_id) -> list[So
             )
         ).scalars()
     )
+    return sop_ambiguity_flags_from_alerts(alerts)
+
+
+def sop_ambiguity_flags_from_alerts(alerts: list[RiskAlert]) -> list[SopAmbiguityFlagRead]:
     flags: list[SopAmbiguityFlagRead] = []
     for alert in alerts:
         payload = (alert.contributing_causes or {}).get("sop_ambiguity_flag")

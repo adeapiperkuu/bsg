@@ -1023,6 +1023,23 @@ class ReviewerScorecard(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     error_breakdown: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
 
+class CalibrationBrief(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "calibration_briefs"
+    __table_args__ = (
+        UniqueConstraint("project_id", "iso_year", "iso_week", name="calibration_briefs_unique_week"),
+        Index("calibration_briefs_project_idx", "project_id"),
+    )
+
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    iso_year: Mapped[int] = mapped_column(Integer)
+    iso_week: Mapped[int] = mapped_column(Integer)
+    candidates: Mapped[list[Any]] = mapped_column(JSONB, default=list, server_default="[]")
+    brief_text: Mapped[str | None] = mapped_column(Text)
+    signal_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class GoldSetEvaluationLog(Base, UuidPrimaryKey, CreatedAt):
     __tablename__ = "gold_set_evaluation_logs"
 

@@ -3,14 +3,18 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal
+from time import perf_counter
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.session import AsyncSessionLocal
+
 from app.agents.quality_intelligence.alerts import create_drift_risk_alert, notify_quality_drift
 from app.agents.quality_intelligence.calibration import (
-    generate_calibration_brief,
+    build_template_calibration_brief,
+    get_cached_calibration_brief,
     identify_calibration_candidates,
     process_calibration_for_snapshot,
 )
@@ -22,6 +26,7 @@ from app.agents.quality_intelligence.sop_ambiguity import (
     confirm_sop_ambiguity_resolution,
     list_sop_ambiguity_flags,
     process_sop_ambiguity_for_snapshot,
+    sop_ambiguity_flags_from_alerts,
 )
 from app.agents.knowledge.lesson_log import write_lesson_on_alert_resolve
 from app.core.security import CurrentUser
@@ -66,6 +71,7 @@ from app.schemas.domain import (
     QualityDashboardRead,
     QualityDriftEvent,
     QualityErrorBreakdown,
+    QualityPageRead,
     QualityPortfolioProjectRead,
     QualityPortfolioRead,
     QualitySnapshotCreate,
@@ -89,6 +95,24 @@ from app.services.quality_thresholds import load_thresholds
 logger = logging.getLogger(__name__)
 
 MIN_EVALUATED_ITEMS = 30
+
+
+def _quality_page_step_start(project_id: UUID, step: str) -> float:
+    wall = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    logger.info("quality_page START project_id=%s step=%s at=%s", project_id, step, wall)
+    return perf_counter()
+
+
+def _quality_page_step_end(project_id: UUID, step: str, started: float, **extra: object) -> None:
+    elapsed_ms = (perf_counter() - started) * 1000
+    suffix = " ".join(f"{key}={value}" for key, value in extra.items())
+    logger.info(
+        "quality_page END project_id=%s step=%s elapsed_ms=%.1f %s",
+        project_id,
+        step,
+        elapsed_ms,
+        suffix,
+    )
 
 
 async def upsert_quality_snapshot(
@@ -489,28 +513,15 @@ async def get_leadership_quality_portfolio(session: AsyncSession) -> QualityPort
     )
 
 
-async def build_quality_dashboard(
-    session: AsyncSession,
-    project: Project,
+def _assemble_quality_dashboard(
+    *,
+    snapshots: list[QualitySnapshot],
+    teams: dict[UUID, Team],
+    thresholds: dict,
+    drift_alerts: list[RiskAlert],
+    error_entries: list[QualityErrorEntry],
     current_user: CurrentUser,
 ) -> QualityDashboardRead:
-    snapshots = list(
-        (
-            await session.execute(
-                select(QualitySnapshot)
-                .where(QualitySnapshot.project_id == project.id)
-                .order_by(QualitySnapshot.iso_year.desc(), QualitySnapshot.iso_week.desc())
-            )
-        ).scalars()
-    )
-
-    teams = {
-        t.id: t
-        for t in (
-            await session.execute(select(Team).where(Team.project_id == project.id))
-        ).scalars()
-    }
-
     latest_by_team: dict[UUID, QualitySnapshot] = {}
     for snap in snapshots:
         if snap.team_id not in latest_by_team:
@@ -537,7 +548,6 @@ async def build_quality_dashboard(
         rework_rate_pct=avg_metric(lambda s: s.rework_rate_pct),
         active_drift_alerts=active_drift,
     )
-    thresholds = await load_thresholds(session)
     rework_cfg = thresholds.get("rework_rate")
     if rework_cfg and rework_cfg.green_max is not None:
         kpis = kpis.model_copy(update={"rework_rate_target_pct": Decimal(str(rework_cfg.green_max))})
@@ -553,18 +563,10 @@ async def build_quality_dashboard(
         for s in trend_snaps
     ]
 
-    error_breakdown: list[QualityErrorBreakdown] = []
-    if snapshots:
-        current = snapshots[0]
-        entries = (
-            await session.execute(
-                select(QualityErrorEntry).where(QualityErrorEntry.quality_snapshot_id == current.id)
-            )
-        ).scalars()
-        error_breakdown = [
-            QualityErrorBreakdown(error_category=e.error_category, share_pct=e.share_pct)
-            for e in entries
-        ]
+    error_breakdown = [
+        QualityErrorBreakdown(error_category=e.error_category, share_pct=e.share_pct)
+        for e in error_entries
+    ]
 
     team_scorecard: list[QualityTeamScorecard] = []
     for team_id, snap in latest_by_team.items():
@@ -586,21 +588,6 @@ async def build_quality_dashboard(
             )
         )
 
-    drift_alerts = list(
-        (
-            await session.execute(
-                select(RiskAlert).where(
-                    RiskAlert.project_id == project.id,
-                    RiskAlert.alert_type == AlertType.QUALITY_DRIFT,
-                    RiskAlert.deleted_at.is_(None),
-                    RiskAlert.status.in_([AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED]),
-                )
-                .order_by(RiskAlert.created_at.desc())
-                .limit(10)
-            )
-        ).scalars()
-    )
-
     narrative = None
     if current_user.role == AppRole.CLIENT and snapshots:
         latest = snapshots[0]
@@ -621,6 +608,242 @@ async def build_quality_dashboard(
         data_gap_teams=data_gap_teams,
     )
     return filter_dashboard_for_role(dashboard, current_user.role)
+
+
+async def build_quality_dashboard(
+    session: AsyncSession,
+    project: Project,
+    current_user: CurrentUser,
+) -> QualityDashboardRead:
+    snapshots = list(
+        (
+            await session.execute(
+                select(QualitySnapshot)
+                .where(QualitySnapshot.project_id == project.id)
+                .order_by(QualitySnapshot.iso_year.desc(), QualitySnapshot.iso_week.desc())
+            )
+        ).scalars()
+    )
+
+    teams = {
+        t.id: t
+        for t in (
+            await session.execute(select(Team).where(Team.project_id == project.id))
+        ).scalars()
+    }
+
+    thresholds = await load_thresholds(session)
+
+    drift_alerts = list(
+        (
+            await session.execute(
+                select(RiskAlert).where(
+                    RiskAlert.project_id == project.id,
+                    RiskAlert.alert_type == AlertType.QUALITY_DRIFT,
+                    RiskAlert.deleted_at.is_(None),
+                    RiskAlert.status.in_([AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED]),
+                )
+                .order_by(RiskAlert.created_at.desc())
+                .limit(10)
+            )
+        ).scalars()
+    )
+
+    error_entries: list[QualityErrorEntry] = []
+    if snapshots:
+        error_entries = list(
+            (
+                await session.execute(
+                    select(QualityErrorEntry).where(
+                        QualityErrorEntry.quality_snapshot_id == snapshots[0].id
+                    )
+                )
+            ).scalars()
+        )
+
+    return _assemble_quality_dashboard(
+        snapshots=snapshots,
+        teams=teams,
+        thresholds=thresholds,
+        drift_alerts=drift_alerts,
+        error_entries=error_entries,
+        current_user=current_user,
+    )
+
+
+async def build_quality_page(
+    session: AsyncSession,
+    project: Project,
+    current_user: CurrentUser,
+) -> QualityPageRead:
+    request_started = _quality_page_step_start(project.id, "build_quality_page.total")
+    now = datetime.now(timezone.utc)
+    cal = now.isocalendar()
+    iso_year = cal[0]
+    iso_week = cal[1]
+
+    t = _quality_page_step_start(project.id, "load_snapshots")
+    snapshots = list(
+        (
+            await session.execute(
+                select(QualitySnapshot)
+                .where(QualitySnapshot.project_id == project.id)
+                .order_by(QualitySnapshot.iso_year.desc(), QualitySnapshot.iso_week.desc())
+            )
+        ).scalars()
+    )
+    _quality_page_step_end(project.id, "load_snapshots", t, rows=len(snapshots))
+
+    t = _quality_page_step_start(project.id, "load_teams")
+    teams = {
+        team.id: team
+        for team in (
+            await session.execute(select(Team).where(Team.project_id == project.id))
+        ).scalars()
+    }
+    _quality_page_step_end(project.id, "load_teams", t, rows=len(teams))
+
+    t = _quality_page_step_start(project.id, "load_thresholds")
+    thresholds = await load_thresholds(session)
+    _quality_page_step_end(project.id, "load_thresholds", t, metrics=len(thresholds))
+
+    t = _quality_page_step_start(project.id, "load_open_alerts")
+    open_alerts = list(
+        (
+            await session.execute(
+                select(RiskAlert).where(
+                    RiskAlert.project_id == project.id,
+                    RiskAlert.deleted_at.is_(None),
+                    RiskAlert.status.in_([AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED]),
+                )
+                .order_by(RiskAlert.created_at.desc())
+            )
+        ).scalars()
+    )
+    _quality_page_step_end(project.id, "load_open_alerts", t, rows=len(open_alerts))
+
+    t = _quality_page_step_start(project.id, "load_week_scorecards")
+    week_scorecards = list(
+        (
+            await session.execute(
+                select(ReviewerScorecard)
+                .where(
+                    ReviewerScorecard.project_id == project.id,
+                    ReviewerScorecard.iso_year == iso_year,
+                    ReviewerScorecard.iso_week == iso_week,
+                )
+                .order_by(ReviewerScorecard.iso_week.desc())
+            )
+        ).scalars()
+    )
+    _quality_page_step_end(
+        project.id,
+        "load_week_scorecards",
+        t,
+        rows=len(week_scorecards),
+        iso_year=iso_year,
+        iso_week=iso_week,
+    )
+
+    error_entries: list[QualityErrorEntry] = []
+    if snapshots:
+        t = _quality_page_step_start(project.id, "load_error_entries")
+        error_entries = list(
+            (
+                await session.execute(
+                    select(QualityErrorEntry).where(
+                        QualityErrorEntry.quality_snapshot_id == snapshots[0].id
+                    )
+                )
+            ).scalars()
+        )
+        _quality_page_step_end(project.id, "load_error_entries", t, rows=len(error_entries))
+    else:
+        logger.info(
+            "quality_page SKIP project_id=%s step=load_error_entries reason=no_snapshots",
+            project.id,
+        )
+
+    cached_calibration: CalibrationBriefRead | None = None
+    cache_lookup_done = False
+    if week_scorecards:
+        t = _quality_page_step_start(project.id, "calibration_brief.cache_lookup")
+        cached_calibration = await get_cached_calibration_brief(
+            session, project.id, iso_year=iso_year, iso_week=iso_week
+        )
+        cache_lookup_done = True
+        _quality_page_step_end(
+            project.id,
+            "calibration_brief.cache_lookup",
+            t,
+            hit=cached_calibration is not None,
+        )
+    else:
+        logger.info(
+            "quality_page SKIP project_id=%s step=calibration_brief.cache_lookup reason=empty_scorecards",
+            project.id,
+        )
+
+    drift_alerts = [
+        alert
+        for alert in open_alerts
+        if alert.alert_type == AlertType.QUALITY_DRIFT
+    ][:10]
+
+    t = _quality_page_step_start(project.id, "assemble_dashboard")
+    dashboard = _assemble_quality_dashboard(
+        snapshots=snapshots,
+        teams=teams,
+        thresholds=thresholds,
+        drift_alerts=drift_alerts,
+        error_entries=error_entries,
+        current_user=current_user,
+    )
+    _quality_page_step_end(
+        project.id,
+        "assemble_dashboard",
+        t,
+        drift_alerts=len(drift_alerts),
+        team_rows=len(dashboard.team_scorecard),
+    )
+
+    t = _quality_page_step_start(project.id, "load_calibration_brief")
+    calibration_brief = await get_calibration_brief_for_project(
+        project,
+        iso_year=iso_year,
+        iso_week=iso_week,
+        scorecards=week_scorecards,
+        thresholds=thresholds,
+        cached_brief=cached_calibration,
+        cache_lookup_done=cache_lookup_done,
+        session=session,
+    )
+    _quality_page_step_end(
+        project.id,
+        "load_calibration_brief",
+        t,
+        candidates=len(calibration_brief.candidates),
+    )
+
+    t = _quality_page_step_start(project.id, "assemble_response")
+    sop_flags = sop_ambiguity_flags_from_alerts(open_alerts)
+    reviewer_scorecards = [ReviewerScorecardRead.model_validate(r) for r in week_scorecards]
+    page = QualityPageRead(
+        dashboard=dashboard,
+        calibration_brief=calibration_brief,
+        sop_ambiguity_flags=sop_flags,
+        reviewer_scorecards=reviewer_scorecards,
+    )
+    _quality_page_step_end(
+        project.id,
+        "assemble_response",
+        t,
+        sop_flags=len(sop_flags),
+        reviewer_scorecards=len(reviewer_scorecards),
+    )
+
+    _quality_page_step_end(project.id, "build_quality_page.total", request_started)
+    return page
 
 
 def _overall_status(drift_alerts: list[RiskAlert]) -> str:
@@ -748,16 +971,83 @@ async def generate_quality_summary(
 
 
 async def get_calibration_brief_for_project(
-    session: AsyncSession,
     project: Project,
     *,
     iso_year: int,
     iso_week: int,
+    scorecards: list[ReviewerScorecard] | None = None,
+    thresholds: dict | None = None,
+    cached_brief: CalibrationBriefRead | None = None,
+    cache_lookup_done: bool = False,
+    session: AsyncSession | None = None,
 ) -> CalibrationBriefRead:
-    candidates = await identify_calibration_candidates(
-        session, project.id, iso_year=iso_year, iso_week=iso_week
+    if scorecards is not None and not scorecards:
+        t = _quality_page_step_start(project.id, "calibration_brief.template")
+        brief = build_template_calibration_brief(
+            project, [], iso_year=iso_year, iso_week=iso_week
+        )
+        _quality_page_step_end(project.id, "calibration_brief.template", t)
+        return brief
+
+    if not cache_lookup_done:
+        if session is None:
+            async with AsyncSessionLocal() as query_session:
+                return await get_calibration_brief_for_project(
+                    project,
+                    iso_year=iso_year,
+                    iso_week=iso_week,
+                    scorecards=scorecards,
+                    thresholds=thresholds,
+                    session=query_session,
+                )
+        t = _quality_page_step_start(project.id, "calibration_brief.cache_lookup")
+        cached_brief = await get_cached_calibration_brief(
+            session, project.id, iso_year=iso_year, iso_week=iso_week
+        )
+        _quality_page_step_end(
+            project.id,
+            "calibration_brief.cache_lookup",
+            t,
+            hit=cached_brief is not None,
+        )
+        cache_lookup_done = True
+
+    if cached_brief is not None:
+        return cached_brief
+
+    t = _quality_page_step_start(project.id, "calibration_brief.identify_candidates")
+    if session is None:
+        async with AsyncSessionLocal() as query_session:
+            candidates = await identify_calibration_candidates(
+                query_session,
+                project.id,
+                iso_year=iso_year,
+                iso_week=iso_week,
+                scorecards=scorecards,
+                thresholds=thresholds,
+            )
+    else:
+        candidates = await identify_calibration_candidates(
+            session,
+            project.id,
+            iso_year=iso_year,
+            iso_week=iso_week,
+            scorecards=scorecards,
+            thresholds=thresholds,
+        )
+    _quality_page_step_end(
+        project.id,
+        "calibration_brief.identify_candidates",
+        t,
+        candidates=len(candidates),
     )
-    return await generate_calibration_brief(session, project, candidates, iso_year=iso_year, iso_week=iso_week)
+
+    t = _quality_page_step_start(project.id, "calibration_brief.template")
+    brief = build_template_calibration_brief(
+        project, candidates, iso_year=iso_year, iso_week=iso_week
+    )
+    _quality_page_step_end(project.id, "calibration_brief.template", t)
+    return brief
 
 
 async def create_reviewer_scorecard(

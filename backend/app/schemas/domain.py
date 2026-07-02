@@ -1222,6 +1222,13 @@ class SopAmbiguityFlagRead(BaseModel):
     detail: str | None = None
 
 
+class QualityPageRead(BaseModel):
+    dashboard: QualityDashboardRead
+    calibration_brief: CalibrationBriefRead
+    sop_ambiguity_flags: list[SopAmbiguityFlagRead] = []
+    reviewer_scorecards: list[ReviewerScorecardRead] = []
+
+
 class WhatIfQueryRead(BaseModel):
     scenario: str
     projected_outcome: str

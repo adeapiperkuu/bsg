@@ -1,5 +1,9 @@
 from uuid import UUID
 
+import logging
+from datetime import datetime, timezone
+from time import perf_counter
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 
@@ -22,6 +26,7 @@ from app.schemas.domain import (
     OnboardingRecordRead,
     QualityDashboardRead,
     QualityErrorEntryCreate,
+    QualityPageRead,
     QualityPortfolioRead,
     QualityScanRunRead,
     QualitySnapshotCreate,
@@ -42,6 +47,7 @@ from app.schemas.domain import (
 )
 from app.services.quality import (
     build_quality_dashboard,
+    build_quality_page,
     create_gold_set_evaluation_log,
     create_iaa_measurement,
     create_onboarding_record,
@@ -69,6 +75,7 @@ from app.services.quality import (
 from app.services.scoping import get_visible_project
 
 router = APIRouter(tags=["quality"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/internal/quality-scan", response_model=DataResponse[QualityScanRunRead])
@@ -132,6 +139,43 @@ async def get_quality_dashboard(
     project = await get_visible_project(session, project_id, current_user)
     dashboard = await build_quality_dashboard(session, project, current_user)
     return DataResponse(data=dashboard)
+
+
+@router.get("/projects/{project_id}/quality-page", response_model=DataResponse[QualityPageRead])
+async def get_quality_page(
+    project_id: UUID, session: SessionDep, current_user: UserDep
+) -> DataResponse[QualityPageRead]:
+    request_started = perf_counter()
+    request_wall = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    logger.info(
+        "quality_page REQUEST START project_id=%s at=%s",
+        project_id,
+        request_wall,
+    )
+
+    scope_started = perf_counter()
+    scope_wall = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    logger.info(
+        "quality_page START project_id=%s step=get_visible_project at=%s",
+        project_id,
+        scope_wall,
+    )
+    project = await get_visible_project(session, project_id, current_user)
+    logger.info(
+        "quality_page END project_id=%s step=get_visible_project elapsed_ms=%.1f",
+        project_id,
+        (perf_counter() - scope_started) * 1000,
+    )
+
+    page = await build_quality_page(session, project, current_user)
+
+    logger.info(
+        "quality_page REQUEST END project_id=%s started_at=%s elapsed_ms=%.1f",
+        project_id,
+        request_wall,
+        (perf_counter() - request_started) * 1000,
+    )
+    return DataResponse(data=page)
 
 
 @router.get("/projects/{project_id}/quality-snapshots", response_model=ListResponse[QualitySnapshotRead])
@@ -416,7 +460,10 @@ async def get_calibration_brief(
         iso_year = cal[0]
         iso_week = cal[1]
     brief = await get_calibration_brief_for_project(
-        session, project, iso_year=iso_year, iso_week=iso_week
+        project,
+        iso_year=iso_year,
+        iso_week=iso_week,
+        session=session,
     )
     return DataResponse(data=brief)
 

@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   LineChart,
   Line,
@@ -12,18 +12,18 @@ import {
   Tooltip,
   Legend,
 } from "recharts";
+import { Loader2 } from "lucide-react";
 import { useState } from "react";
 import { Card, SectionHeader, KpiCard, AiBadge, EvidenceBadge, StatusPill } from "@/components/bsg/widgets";
 import { AgentQueryBox } from "@/components/bsg/AgentQueryBox";
+import { QualityPageSkeleton } from "@/components/bsg/QualityPageSkeleton";
 import {
   ERROR_CATEGORY_LABELS,
-  fetchCalibrationBrief,
-  fetchQualityDashboard,
-  fetchReviewerScorecards,
-  fetchSopAmbiguityFlags,
+  fetchQualityPage,
   listProjects,
   resolveRiskAlert,
 } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/quality")({ component: QualityPage });
 
@@ -67,33 +67,27 @@ function QualityPage() {
   const [projectId, setProjectId] = useState<string | undefined>(undefined);
   const activeProjectId = projectId ?? projects[0]?.id;
 
-  const { data: dashboard, isLoading, isError } = useQuery({
-    queryKey: ["quality-dashboard", activeProjectId],
-    queryFn: () => fetchQualityDashboard(activeProjectId!),
+  const {
+    data: qualityPage,
+    isLoading,
+    isFetching,
+    isError,
+  } = useQuery({
+    queryKey: ["quality-page", activeProjectId],
+    queryFn: () => fetchQualityPage(activeProjectId!),
     enabled: Boolean(activeProjectId),
+    placeholderData: keepPreviousData,
   });
 
-  const { data: calibrationBrief } = useQuery({
-    queryKey: ["calibration-brief", activeProjectId],
-    queryFn: () => fetchCalibrationBrief(activeProjectId!),
-    enabled: Boolean(activeProjectId),
-  });
-
-  const { data: sopFlags = [] } = useQuery({
-    queryKey: ["sop-flags", activeProjectId],
-    queryFn: () => fetchSopAmbiguityFlags(activeProjectId!),
-    enabled: Boolean(activeProjectId),
-  });
-
-  const { data: reviewerScorecards = [] } = useQuery({
-    queryKey: ["reviewer-scorecards", activeProjectId],
-    queryFn: () => fetchReviewerScorecards(activeProjectId!),
-    enabled: Boolean(activeProjectId),
-  });
+  const dashboard = qualityPage?.dashboard;
+  const calibrationBrief = qualityPage?.calibration_brief;
+  const sopFlags = qualityPage?.sop_ambiguity_flags ?? [];
+  const reviewerScorecards = qualityPage?.reviewer_scorecards ?? [];
+  const isUpdating = isFetching && Boolean(qualityPage);
 
   const handleResolveAlert = async (alertId: string) => {
     await resolveRiskAlert(alertId, "Resolved from Quality dashboard");
-    await queryClient.invalidateQueries({ queryKey: ["quality-dashboard", activeProjectId] });
+    await queryClient.invalidateQueries({ queryKey: ["quality-page", activeProjectId] });
   };
 
   const trendData =
@@ -113,10 +107,14 @@ function QualityPage() {
     <div className="space-y-5">
       <Card>
         <div className="flex flex-wrap items-center gap-2">
-          <label className="text-xs text-muted-foreground">Project</label>
+          <label className="text-xs text-muted-foreground" htmlFor="quality-project-select">
+            Project
+          </label>
           <select
-            className="rounded border border-border bg-card px-2 py-1.5 text-xs"
+            id="quality-project-select"
+            className="rounded border border-border bg-card px-2 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-60"
             value={activeProjectId ?? ""}
+            disabled={isFetching}
             onChange={(e) => setProjectId(e.target.value)}
           >
             {projects.map((p) => (
@@ -125,14 +123,25 @@ function QualityPage() {
               </option>
             ))}
           </select>
+          {isUpdating && (
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground" aria-live="polite">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+              Updating…
+            </span>
+          )}
         </div>
       </Card>
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading quality dashboard…</p>}
+      {isLoading && <QualityPageSkeleton />}
       {isError && <p className="text-sm text-[color:var(--danger)]">Failed to load quality data.</p>}
 
       {dashboard && (
-        <>
+        <div
+          className={cn(
+            "space-y-5 transition-opacity",
+            isUpdating && "pointer-events-none opacity-60",
+          )}
+        >
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
             <KpiCard
               label="Gold-Set Accuracy"
@@ -365,7 +374,7 @@ function QualityPage() {
             <SectionHeader title="Quality Agent" sub="Natural language queries" />
             <AgentQueryBox projectId={activeProjectId} />
           </Card>
-        </>
+        </div>
       )}
     </div>
   );

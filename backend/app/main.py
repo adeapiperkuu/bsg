@@ -29,11 +29,23 @@ from app.core.config import get_settings
 from app.core.csrf import CsrfMiddleware
 from app.core.exceptions import register_exception_handlers
 from app.db.session import AsyncSessionLocal, dispose_engine
+from app.services.quality_thresholds import warm_thresholds_cache
 from app.db.models import ScanTrigger
 from app.services.quality import scan_all_projects
 from app.services.signal_dispatcher import dispatch_pending_signals
 
 logger = logging.getLogger(__name__)
+
+
+def configure_logging(level: str = "INFO") -> None:
+    """Ensure app loggers emit to the uvicorn console (default root level is WARNING)."""
+    log_level = getattr(logging, level.upper(), logging.INFO)
+    logging.basicConfig(
+        level=log_level,
+        format="%(levelname)s:     %(name)s - %(message)s",
+        force=True,
+    )
+    logging.getLogger("app").setLevel(log_level)
 
 
 async def _scheduled_quality_scan() -> None:
@@ -53,6 +65,13 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     scheduler = AsyncIOScheduler()
     scheduler.add_job(_scheduled_quality_scan, "cron", day_of_week="mon", hour=2)
     scheduler.start()
+    try:
+        await warm_thresholds_cache()
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Could not pre-warm quality thresholds cache at startup",
+            exc_info=True,
+        )
     yield
     scheduler.shutdown()
     await dispose_engine()
@@ -60,6 +79,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    configure_logging(settings.log_level)
     app = FastAPI(
         title="BSG Operations Tower API",
         version="0.1.0",

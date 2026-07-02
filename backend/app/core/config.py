@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     knowledge_strong_model: str = "gpt-4o"
     email_api_key: str | None = None
     email_from_address: str | None = None
+    log_level: str = "INFO"
     knowledge_storage_bucket: str = "knowledge-documents"
     knowledge_upload_dir: str = str(BACKEND_ROOT / "data" / "knowledge")
 
