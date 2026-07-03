@@ -967,34 +967,6 @@ class ClientCsatCreate(BaseModel):
 # --- Phase 2.0 Quality Intelligence schemas ---
 
 
-class KnowledgeLessonCreate(BaseModel):
-    title: str
-    body: str
-    tags: list[str] = []
-    linked_quality_event_id: UUID | None = None
-    linked_alert_id: UUID | None = None
-
-
-class KnowledgeLessonRead(ORMModel):
-    id: UUID
-    org_id: UUID
-    title: str
-    body: str
-    tags: list[str] = []
-    linked_quality_event_id: UUID | None = None
-    linked_alert_id: UUID | None = None
-    created_by: UUID
-    created_at: datetime
-    updated_at: datetime
-
-
-class KnowledgeSearchResult(BaseModel):
-    id: UUID
-    source_type: str
-    title: str
-    snippet: str
-
-
 class ReviewerScorecardCreate(BaseModel):
     annotator_id: UUID
     iso_year: int = Field(ge=2024)
@@ -1053,6 +1025,7 @@ class KnowledgeChunkRead(BaseModel):
 class KnowledgeDocumentRead(ORMModel):
     id: UUID
     folder_id: UUID
+    active_version_id: UUID | None = None
     folder_name: str
     folder_kind: str
     title: str
@@ -1377,6 +1350,7 @@ class KnowledgeChunkRead(BaseModel):
 class KnowledgeDocumentRead(ORMModel):
     id: UUID
     folder_id: UUID
+    active_version_id: UUID | None = None
     folder_name: str
     folder_kind: str
     title: str
@@ -1424,29 +1398,18 @@ class KnowledgeConversationTurn(BaseModel):
 
 class KnowledgeAskCreate(BaseModel):
     query_text: str = Field(min_length=1, max_length=8000)
+    conversation_id: UUID | None = None
     conversation_history: list[KnowledgeConversationTurn] = Field(default_factory=list, max_length=6)
     answer_mode: Literal["internal", "client_safe"] = "internal"
     include_histories: bool = True
-    max_sources: int = Field(default=5, ge=1, le=10)
+    max_sources: int = Field(default=3, ge=1, le=10)
     min_relevance_score: float = Field(default=0.25, ge=0.0, le=1.0)
     project: str | None = None
     department: str | None = None
-
-
-class KnowledgeCitationRead(BaseModel):
-    document_id: UUID
-    chunk_id: UUID | None = None
-    citation_label: str
-    title: str
-    source_type: str
-    version: str
-    folder_name: str = ""
-    folder_kind: str = ""
-    relevance_score: float = 0.0
-    page_number: int | None = None
-    chunk_index: int | None = None
-    chunk_preview: str = ""
-    section_title: str | None = None
+    folder_id: UUID | None = None
+    source_type: str | None = None
+    effective_date_from: date | None = None
+    effective_date_to: date | None = None
 
 
 class KnowledgeStructuredAnswer(BaseModel):
@@ -1486,10 +1449,63 @@ class KnowledgeLibraryHealthRead(BaseModel):
     open_gaps: list[KnowledgeGapTodoRead] = Field(default_factory=list)
 
 
+class KnowledgeLibraryHealthCountsRead(BaseModel):
+    ready_count: int = 0
+    needs_review_count: int = 0
+    expired_count: int = 0
+    needs_reindex_count: int = 0
+    indexing_count: int = 0
+    draft_count: int = 0
+    archived_count: int = 0
+
+
+class KnowledgeDocumentSummaryRead(BaseModel):
+    id: UUID
+    folder_id: UUID
+    folder_name: str
+    folder_kind: str
+    title: str
+    source_type: str
+    version: str
+    visibility: str
+    status: str
+    owner_approver: str
+    effective_date: date | None
+    file_name: str
+    processing_status: str
+    processing_error: str | None = None
+    indexing_status: str
+    workflow_state: str = "needs_review"
+    updated_at: datetime
+
+
+class KnowledgeFolderTreeNodeRead(BaseModel):
+    id: UUID
+    name: str
+    folder_kind: str
+    display_order: int
+    document_count: int = 0
+
+
+class KnowledgeDocumentCountsRead(BaseModel):
+    total: int = 0
+    by_folder_id: dict[str, int] = Field(default_factory=dict)
+
+
+class KnowledgePermissionsRead(BaseModel):
+    can_upload: bool = False
+    can_manage_eval: bool = False
+    can_adjust_retrieval_scope: bool = False
+    can_resolve_gaps: bool = False
+
+
 class KnowledgeBootstrapRead(BaseModel):
     folders: list[KnowledgeFolderRead]
-    documents: list[KnowledgeDocumentRead]
-    library_health: KnowledgeLibraryHealthRead
+    folder_tree: list[KnowledgeFolderTreeNodeRead]
+    recent_documents: list[KnowledgeDocumentSummaryRead]
+    document_counts: KnowledgeDocumentCountsRead
+    permissions: KnowledgePermissionsRead
+    library_health: KnowledgeLibraryHealthCountsRead
 
 
 class KnowledgeAskRead(BaseModel):
@@ -1499,10 +1515,28 @@ class KnowledgeAskRead(BaseModel):
     confidence_reasons: list[str] = []
     structured_answer: KnowledgeStructuredAnswer | None = None
     knowledge_gap: KnowledgeGapRead | None = None
-    citations: list[KnowledgeCitationRead]
     query_id: UUID | None = None
+    conversation_id: UUID | None = None
     model_used: str | None = None
     retrieval_debug: dict[str, object] | None = None
+
+
+class KnowledgeConversationSummaryRead(BaseModel):
+    id: UUID
+    title: str
+    turn_count: int
+    updated_at: datetime
+
+
+class KnowledgeConversationTurnRead(BaseModel):
+    query_id: UUID
+    query_text: str
+    answer: KnowledgeAskRead
+
+
+class KnowledgeConversationRead(BaseModel):
+    id: UUID
+    turns: list[KnowledgeConversationTurnRead]
 
 
 class KnowledgeDocumentVersionRead(BaseModel):
@@ -1531,7 +1565,7 @@ class KnowledgeRetrievalSettingsRead(BaseModel):
     only_approved: bool = True
     include_histories: bool = True
     min_confidence: float = 0.25
-    max_sources: int = 5
+    max_sources: int = 3
     project: str | None = None
     department: str | None = None
 
@@ -1557,59 +1591,6 @@ class KnowledgeFeedbackRead(BaseModel):
     rating: str
     comment: str | None = None
     created_at: datetime
-
-
-class KnowledgeEvalQuestionCreate(BaseModel):
-    question_text: str = Field(min_length=1, max_length=8000)
-    expected_document_ids: list[UUID] = Field(default_factory=list, max_length=10)
-    expected_answer_notes: str | None = Field(default=None, max_length=4000)
-
-
-class KnowledgeEvalQuestionUpdate(BaseModel):
-    question_text: str | None = Field(default=None, min_length=1, max_length=8000)
-    expected_document_ids: list[UUID] | None = Field(default=None, max_length=10)
-    expected_answer_notes: str | None = Field(default=None, max_length=4000)
-    is_active: bool | None = None
-
-
-class KnowledgeEvalQuestionRead(BaseModel):
-    id: UUID
-    question_text: str
-    expected_document_ids: list[UUID] = []
-    expected_answer_notes: str | None = None
-    is_active: bool = True
-    created_at: datetime
-    updated_at: datetime
-
-
-class KnowledgeEvalRunItemRead(BaseModel):
-    id: UUID
-    eval_question_id: UUID
-    query_id: UUID | None = None
-    citation_hit: bool
-    empty_answer: bool
-    latency_ms: int | None = None
-    observed_document_ids: list[UUID] = []
-    created_at: datetime
-
-
-class KnowledgeEvalRunRead(BaseModel):
-    run_count: int
-    citation_hit_rate: float
-    empty_answer_rate: float
-    latency_p95_ms: int | None = None
-    results: list[KnowledgeEvalRunItemRead]
-
-
-class KnowledgeEvalMetricsRead(BaseModel):
-    days: int
-    total_queries: int
-    empty_answer_rate: float
-    latency_p95_ms: int | None = None
-    downvote_rate: float
-    eval_question_count: int
-    eval_run_count: int
-    citation_hit_rate: float
 
 
 # --- Workforce dashboard schemas ---

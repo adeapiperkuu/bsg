@@ -57,12 +57,12 @@ def _engine_kwargs(database_url: str) -> dict:
         kwargs["poolclass"] = NullPool
         return kwargs
 
-    # Session pooler (port 5432): small app-side pool; prepared statements are supported.
+    # Session pooler (port 5432): keep a modest app-side pool for parallel page loads.
     kwargs.update(
         {
             "pool_pre_ping": True,
-            "pool_size": 2,
-            "max_overflow": 0,
+            "pool_size": 5,
+            "max_overflow": 3,
             "pool_recycle": 300,
             "pool_timeout": 30,
         }

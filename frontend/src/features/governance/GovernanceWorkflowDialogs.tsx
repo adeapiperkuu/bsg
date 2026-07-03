@@ -114,8 +114,8 @@ export function GovernanceWorkflowDialogs({
 
   useEffect(() => {
     if (!dialog || !canWrite) return;
-    void listKnowledgeDocuments({ workflowState: "approved" })
-      .then(setKnowledgeDocs)
+    void listKnowledgeDocuments({ workflowState: "approved", limit: 100, offset: 0 })
+      .then((response) => setKnowledgeDocs(response.data))
       .catch(() => setKnowledgeDocs([]));
   }, [dialog, canWrite]);
 

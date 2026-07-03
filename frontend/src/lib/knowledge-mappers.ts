@@ -1,6 +1,7 @@
 import type {
   KnowledgeChunkApi,
   KnowledgeDocumentApi,
+  KnowledgeDocumentSummaryApi,
   KnowledgeFolderKind,
   KnowledgeIndexingStatusApi,
   KnowledgeProcessingStatusApi,
@@ -114,6 +115,14 @@ const workflowFromApi: Record<KnowledgeWorkflowState, WorkflowState> = {
   archived: "Archived",
 };
 
+export const workflowToApi: Record<WorkflowState, KnowledgeWorkflowState> = {
+  "Needs review": "needs_review",
+  Approved: "approved",
+  Expired: "expired",
+  "Needs re-index": "needs_reindex",
+  Archived: "archived",
+};
+
 function chunkFromApi(chunk: KnowledgeChunkApi): KnowledgeChunk {
   return {
     id: chunk.id,
@@ -130,10 +139,6 @@ const statusFromApi: Record<KnowledgeStatusApi, DocumentStatus> = {
   approved: "Approved",
   archived: "Archived",
 };
-
-export function workflowStateLabel(state: WorkflowState): string {
-  return state;
-}
 
 export function folderNameToApi(folder: FolderName): KnowledgeFolderKind {
   return seedFolderToApi[folder] ?? "custom";
@@ -157,6 +162,45 @@ export function documentToApiPatch(patch: Partial<KnowledgeDocument>) {
     status: patch.status ? statusToApi[patch.status] : undefined,
     owner_approver: patch.owner,
     effective_date: patch.effectiveDate || undefined,
+  };
+}
+
+export function documentSummaryFromApi(row: KnowledgeDocumentSummaryApi): KnowledgeDocument {
+  const indexing = ["uploaded", "extracting", "extracted", "chunking", "chunked", "embedding"].includes(
+    row.processing_status,
+  );
+  const indexed = row.processing_status === "ready" || row.indexing_status === "indexed";
+  const fileType = row.file_name.split(".").pop()?.toUpperCase() ?? "DOC";
+  return {
+    id: row.id,
+    title: row.title,
+    folderId: row.folder_id,
+    folder: row.folder_name,
+    folderKind: row.folder_kind,
+    sourceType: sourceFromApi[row.source_type],
+    version: row.version,
+    visibility: visibilityFromApi[row.visibility],
+    status: statusFromApi[row.status],
+    workflowState: workflowFromApi[row.workflow_state] ?? "Needs review",
+    owner: row.owner_approver,
+    effectiveDate: row.effective_date ?? "",
+    fileName: row.file_name,
+    fileType,
+    fileUrl: null,
+    indexed,
+    indexing,
+    processingStatus: row.processing_status,
+    processingLabel: processingStatusLabel(row.processing_status),
+    processingError: row.processing_error,
+    preview: [],
+    qualityScore: null,
+    qualityWarnings: [],
+    chunkCount: 0,
+    citationCount: 0,
+    approvedByName: null,
+    approvedAt: null,
+    chunks: [],
+    semanticRelevance: null,
   };
 }
 

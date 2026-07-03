@@ -27,7 +27,7 @@ async def get_delivery_dashboard(
     session: SessionDep,
     current_user: UserDep,
 ) -> DashboardResponse:
-    """Return the aggregated Delivery Performance dashboard for one project."""
+    """Return the aggregated Delivery Performance dashboard for one project without AI work."""
     dashboard_data = await get_dashboard_data(
         session=session,
         project_id=project_id,
