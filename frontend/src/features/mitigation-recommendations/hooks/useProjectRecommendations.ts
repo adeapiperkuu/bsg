@@ -12,17 +12,19 @@ import {
 } from "@/features/mitigation-recommendations/api/recommendations";
 import type {
   AssignOwnerPayload,
-  MitigationRecommendation,
+  GroupedRecommendationRisk,
   ProjectRecommendationsResponse,
   RecommendationStatus,
 } from "@/features/mitigation-recommendations/types";
 import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
 
+// Recommendations are now returned grouped by title, so a single recommendation lives
+// inside a group's `risks` array — find and update it there instead of a flat list.
 function updateRecommendationInCache(
   queryClient: QueryClient,
   projectId: string,
   recommendationId: string,
-  updater: (item: MitigationRecommendation) => MitigationRecommendation,
+  updater: (item: GroupedRecommendationRisk) => GroupedRecommendationRisk,
 ) {
   queryClient.setQueryData<ProjectRecommendationsResponse>(
     queryKeys.projectRecommendations(projectId),
@@ -30,9 +32,12 @@ function updateRecommendationInCache(
       if (!current) return current;
       return {
         ...current,
-        data: current.data.map((item) =>
-          item.id === recommendationId ? updater(item) : item,
-        ),
+        data: current.data.map((group) => ({
+          ...group,
+          risks: group.risks.map((risk) =>
+            risk.recommendation_id === recommendationId ? updater(risk) : risk,
+          ),
+        })),
       };
     },
   );

@@ -12,7 +12,13 @@ Strict grounding rules:
 - If the data is insufficient, say the dashboard has insufficient delivery activity to summarize.
 - Do not mention that you are an AI model.
 
-Write one short paragraph. Add up to three action-focused bullets only when the provided JSON supports them.
+Write one short paragraph that covers, in this order, only the elements present in the JSON:
+1. Begin with the traffic light status and confidence percentage.
+2. If risks are present, name up to two by title.
+3. Mention the current milestone and its status.
+4. Close with the single most impactful action to take.
+
+Add up to three action-focused bullets only when the provided JSON supports them.
 
 Structured dashboard data:
 

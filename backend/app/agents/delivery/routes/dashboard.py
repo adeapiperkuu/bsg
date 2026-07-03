@@ -33,5 +33,8 @@ async def get_delivery_dashboard(
         project_id=project_id,
         current_user=current_user,
     )
+    # TODO(cleanup): daily_summary is always forced to None — app.agents.delivery.ai.summary_service
+    # (generate_daily_summary) is never called from this route. Either wire it up or remove the
+    # field/service; left as-is since deciding which is a product call, not a hardening fix.
     dashboard_data["daily_summary"] = None
     return DashboardResponse.model_validate(dashboard_data)

@@ -4,7 +4,6 @@ import {
   fetchDeliveryPortfolio,
   listOrganisations,
   listProjectDeliveryConfidence,
-  listProjectThroughput,
   listProjects,
 } from "@/lib/api";
 import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
@@ -45,15 +44,6 @@ export function projectDeliveryConfidenceQueryOptions(projectId: string | null) 
   });
 }
 
-export function projectThroughputQueryOptions(projectId: string | null) {
-  return queryOptions({
-    queryKey: queryKeys.projectThroughput(projectId ?? ""),
-    queryFn: () => listProjectThroughput(projectId!),
-    enabled: Boolean(projectId),
-    staleTime: STALE_TIME_MS,
-  });
-}
-
 export function useProjectsQuery() {
   return useQuery(projectsQueryOptions);
 }
@@ -72,8 +62,4 @@ export function useDeliveryDashboardQuery(projectId: string | null) {
 
 export function useProjectDeliveryConfidenceQuery(projectId: string | null) {
   return useQuery(projectDeliveryConfidenceQueryOptions(projectId));
-}
-
-export function useProjectThroughputQuery(projectId: string | null) {
-  return useQuery(projectThroughputQueryOptions(projectId));
 }

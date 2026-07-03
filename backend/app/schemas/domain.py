@@ -554,6 +554,11 @@ class ThroughputSnapshotRead(ORMModel):
     rolling_7day_units: int | None
     created_at: datetime
     updated_at: datetime
+    # Populated only by the create endpoint (never by list reads, where scoring already
+    # ran previously). "failed" means the snapshot was stored but confidence/risk scoring
+    # did not complete — never silently hidden from the caller.
+    scoring_status: str | None = None
+    scoring_error: str | None = None
 
 
 class ThroughputSnapshotCreate(BaseModel):
@@ -693,8 +698,43 @@ class OwnerOptionRead(BaseModel):
     label: str
 
 
+class GroupedRecommendationRiskRead(BaseModel):
+    """One risk-level member within a GroupedMitigationRecommendationRead."""
+
+    recommendation_id: UUID
+    source_risk_id: UUID | None
+    source_risk_title: str | None = None
+    description: str | None
+    status: str
+    confidence_score: Decimal
+    # True when confidence_score fell back to a static per-tier constant rather than
+    # being computed from the linked risk's slippage_probability.
+    is_estimated: bool = False
+    owner_type: str | None = None
+    owner_id: UUID | None = None
+    owner_label: str | None = None
+
+
+class GroupedMitigationRecommendationRead(BaseModel):
+    """Recommendations sharing the same action title, grouped for display.
+
+    This is a read-time aggregation of MitigationRecommendationRead rows —
+    each linked risk keeps its own id/status/confidence in `risks` so
+    accept/reject/assign-owner continue to act on individual recommendations.
+    """
+
+    title: str
+    severity: str
+    confidence_score: Decimal
+    is_estimated: bool = False
+    project_id: UUID
+    risks: list[GroupedRecommendationRiskRead]
+    statuses: list[str]
+    descriptions: list[str]
+
+
 class ProjectRecommendationsResponse(BaseModel):
-    data: list[MitigationRecommendationRead]
+    data: list[GroupedMitigationRecommendationRead]
     assignable_owners: list[OwnerOptionRead]
     pagination: Pagination
 

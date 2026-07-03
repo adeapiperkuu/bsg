@@ -82,6 +82,13 @@ class RecommendationRow:
     owner_label: str | None
     source_risk_title: str | None
     source_risk_type: str | None
+    # None when the linked risk had no slippage_probability and confidence_score fell back
+    # to the static per-tier constant in _confidence_from_risk.
+    source_risk_slippage_probability: Decimal | None = None
+
+    @property
+    def is_estimated_confidence(self) -> bool:
+        return self.source_risk_slippage_probability is None
 
 
 @dataclass(frozen=True)
@@ -123,6 +130,9 @@ def _top_contributing_cause(causes: dict[str, Any] | None) -> str | None:
 
 
 def generate_mitigation_copy(risk: RiskAlert) -> tuple[str, str]:
+    # Title is intentionally the shared, unqualified action template: distinct risks that
+    # resolve to the same template (e.g. two separate at-risk milestones) are expected to
+    # share a title, since list_project_recommendations groups by this exact title below.
     top_cause = _top_contributing_cause(risk.contributing_causes)
     if top_cause and top_cause in CAUSE_ACTIONS:
         title, description = CAUSE_ACTIONS[top_cause]
@@ -208,8 +218,10 @@ async def list_project_recommendations(
     org_id: UUID,
 ) -> tuple[list[RecommendationRow], list[OwnerOption]]:
     """Return all recommendations and assignable owners without per-row queries."""
-    await sync_recommendations_for_project(session, project_id=project_id, org_id=org_id)
-
+    # TODO(cleanup): this owner_user/owner_team aliased-join query is duplicated almost
+    # verbatim in fetch_recommendation_row below (list vs. single-row variant). Worth
+    # extracting into a shared query builder, but left as-is here since both are covered
+    # by existing behavior and a refactor risks subtly changing one of the two paths.
     user_owner = User.__table__.alias("owner_user")
     team_owner = Team.__table__.alias("owner_team")
 
@@ -221,6 +233,7 @@ async def list_project_recommendations(
                 team_owner.c.name.label("owner_team_name"),
                 RiskAlert.title.label("source_risk_title"),
                 RiskAlert.alert_type.label("source_risk_type"),
+                RiskAlert.slippage_probability.label("source_risk_slippage_probability"),
             )
             .outerjoin(
                 user_owner,
@@ -242,7 +255,6 @@ async def list_project_recommendations(
                 MitigationRecommendation.deleted_at.is_(None),
             )
             .order_by(
-                MitigationRecommendation.severity.asc(),
                 MitigationRecommendation.confidence_score.desc(),
                 MitigationRecommendation.created_at.desc(),
             )
@@ -255,6 +267,7 @@ async def list_project_recommendations(
             owner_label=row[1] if row[0].owner_type == OwnerType.USER else row[2],
             source_risk_title=row[3],
             source_risk_type=row[4].value if row[4] is not None else None,
+            source_risk_slippage_probability=row[5],
         )
         for row in rows
     ]
@@ -267,6 +280,92 @@ async def list_project_recommendations(
 
     assignable_owners = await _load_assignable_owners(session, project_id=project_id, org_id=org_id)
     return recommendations, assignable_owners
+
+
+@dataclass(frozen=True)
+class GroupedRecommendation:
+    """Read-time grouping of recommendation rows that share the same action title.
+
+    This is a display aggregation only: it does not change how recommendations
+    are generated, scored, or persisted. Each underlying row keeps its own id,
+    status, and confidence_score so accept/reject/assign-owner still operate
+    on individual recommendations.
+    """
+
+    title: str
+    severity: RecommendationSeverity
+    confidence_score: Decimal
+    project_id: UUID
+    members: list[RecommendationRow]
+
+
+def group_recommendations_by_title(rows: list[RecommendationRow]) -> list[GroupedRecommendation]:
+    """Aggregate recommendation rows by their shared action title.
+
+    Several open risks can independently produce the same static action title
+    (e.g. multiple at-risk milestones each generating "Protect at-risk
+    milestone"). Grouping here avoids showing visually identical cards while
+    preserving every linked risk's own id, status, confidence, and description.
+    """
+    order: list[str] = []
+    buckets: dict[str, list[RecommendationRow]] = {}
+    for row in rows:
+        title = row.recommendation.title
+        if title not in buckets:
+            buckets[title] = []
+            order.append(title)
+        buckets[title].append(row)
+
+    groups = [
+        GroupedRecommendation(
+            title=title,
+            severity=min(
+                (member.recommendation.severity for member in buckets[title]),
+                key=lambda severity: SEVERITY_ORDER.get(severity, 99),
+            ),
+            confidence_score=max(member.recommendation.confidence_score for member in buckets[title]),
+            project_id=buckets[title][0].recommendation.project_id,
+            members=buckets[title],
+        )
+        for title in order
+    ]
+    groups.sort(
+        key=lambda group: (SEVERITY_ORDER.get(group.severity, 99), -float(group.confidence_score))
+    )
+    return groups
+
+
+def grouped_recommendation_to_read(group: GroupedRecommendation) -> dict[str, Any]:
+    """Serialize a GroupedRecommendation into the GroupedMitigationRecommendationRead shape."""
+    # The group-level confidence_score is the max across members (see group_recommendations_by_title),
+    # so its is_estimated flag should reflect whichever member that displayed value came from.
+    top_member = max(group.members, key=lambda member: member.recommendation.confidence_score)
+    return {
+        "title": group.title,
+        "severity": group.severity.value,
+        "confidence_score": group.confidence_score,
+        "is_estimated": top_member.is_estimated_confidence,
+        "project_id": group.project_id,
+        "risks": [
+            {
+                "recommendation_id": member.recommendation.id,
+                "source_risk_id": member.recommendation.source_risk_id,
+                "source_risk_title": member.source_risk_title,
+                "description": member.recommendation.description,
+                "status": member.recommendation.status.value,
+                "confidence_score": member.recommendation.confidence_score,
+                "is_estimated": member.is_estimated_confidence,
+                "owner_type": member.recommendation.owner_type.value if member.recommendation.owner_type else None,
+                "owner_id": member.recommendation.owner_id,
+                "owner_label": member.owner_label,
+            }
+            for member in group.members
+        ],
+        "statuses": [member.recommendation.status.value for member in group.members],
+        "descriptions": [
+            member.recommendation.description for member in group.members if member.recommendation.description
+        ],
+    }
 
 
 async def _load_assignable_owners(
@@ -400,6 +499,7 @@ async def fetch_recommendation_row(
                 team_owner.c.name.label("owner_team_name"),
                 RiskAlert.title.label("source_risk_title"),
                 RiskAlert.alert_type.label("source_risk_type"),
+                RiskAlert.slippage_probability.label("source_risk_slippage_probability"),
             )
             .outerjoin(
                 user_owner,
@@ -431,6 +531,7 @@ async def fetch_recommendation_row(
         owner_label=owner_label,
         source_risk_title=row[3],
         source_risk_type=row[4].value if row[4] is not None else None,
+        source_risk_slippage_probability=row[5],
     )
 
 

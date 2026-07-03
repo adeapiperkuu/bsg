@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from sqlalchemy import select
@@ -17,6 +17,7 @@ from app.agents.delivery.analytics.confidence import (
     calculate_confidence,
     classify_confidence_status,
     forecast_completion_date,
+    has_sufficient_throughput_data,
 )
 from app.agents.delivery.analytics.milestones import resolve_milestone_status, select_current_milestone
 from app.agents.delivery.analytics.risk import (
@@ -118,6 +119,7 @@ class DeliveryScores:
     contributing_causes: dict[str, float]
     confidence_status: ConfidenceStatus
     forecast_completion_date: date | None
+    has_sufficient_data: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +135,11 @@ class DeliveryScoringRunResult:
     milestone_alert_ids: tuple[UUID, ...]
     notifications_sent: int
     skipped_persistence: bool
+    # "failed" means the pure scores were computed but a persistence/side-effect handler
+    # raised — the throughput snapshot itself is unaffected, but confidence/risk/alerts
+    # may be stale until the next successful scoring run. Never silently hidden from callers.
+    scoring_status: Literal["ok", "failed"] = "ok"
+    scoring_error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +201,7 @@ def compute_delivery_scores(context: ScoringContext) -> DeliveryScores:
         contributing_causes=contributing_causes,
         confidence_status=confidence_status,
         forecast_completion_date=forecast,
+        has_sufficient_data=has_sufficient_throughput_data(context.latest_rolling_units),
     )
 
 
@@ -246,6 +254,10 @@ def build_dashboard_response(raw_data: dict[str, Any]) -> dict[str, Any]:
             "tier": scores.risk_tier,
             "contributing_causes": scores.contributing_causes,
         },
+        # False only when the project has zero throughput snapshots — callers must show
+        # "Insufficient data" instead of treating the numeric confidence/traffic_light as
+        # a real health signal (see has_sufficient_throughput_data).
+        "has_sufficient_data": scores.has_sufficient_data,
     }
 
     return {
@@ -380,6 +392,12 @@ def _build_run_result(
         ),
         HandlerRunSummary(),
     )
+    failed = next((r for r in handler_results if not r.success), None)
+    scoring_status: Literal["ok", "failed"] = "failed" if failed is not None else "ok"
+    # Sanitized: handler name + exception type only, never the raw exception message
+    # (which may include internal identifiers or query fragments). Full detail is in the logs.
+    scoring_error = f"{failed.handler} raised {failed.error_type}" if failed is not None else None
+
     return DeliveryScoringRunResult(
         project_id=compute_result.resolved_project.id,
         as_of_date=effective_date,
@@ -390,6 +408,8 @@ def _build_run_result(
         milestone_alert_ids=summary.milestone_alert_ids,
         notifications_sent=summary.notifications_sent,
         skipped_persistence=_run_was_fully_idempotent(summary),
+        scoring_status=scoring_status,
+        scoring_error=scoring_error,
     )
 
 
@@ -439,6 +459,7 @@ def _scores_snapshot(scores: DeliveryScores) -> DeliveryScoresSnapshot:
         contributing_causes=scores.contributing_causes,
         confidence_status=scores.confidence_status,
         forecast_completion_date=scores.forecast_completion_date,
+        has_sufficient_data=scores.has_sufficient_data,
     )
 
 

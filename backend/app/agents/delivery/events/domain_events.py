@@ -53,6 +53,7 @@ class DeliveryScoresSnapshot:
     contributing_causes: dict[str, float]
     confidence_status: str
     forecast_completion_date: date | None
+    has_sufficient_data: bool = True
 
 
 @dataclass(frozen=True, slots=True)

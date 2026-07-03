@@ -18,12 +18,12 @@ export function DeliveryChat({ projectId }: Props) {
     input,
     setInput,
     asking,
-    animatingMessageIndex,
+    loadingHistory,
+    isStreaming,
     isInputDisabled,
+    error,
     suggestions,
     sendMessage,
-    onAnimationComplete,
-    resetConversation,
   } = useDeliveryChat({ projectId });
 
   const hasUserMessage = messages.some((message) => message.role === "user");
@@ -33,12 +33,8 @@ export function DeliveryChat({ projectId }: Props) {
   };
 
   useEffect(() => {
-    resetConversation();
-  }, [projectId, resetConversation]);
-
-  useEffect(() => {
     scrollToEnd();
-  }, [asking, messages.length, animatingMessageIndex]);
+  }, [asking, messages.length, isStreaming]);
 
   const handleSubmit = () => {
     if (input.trim()) {
@@ -63,7 +59,7 @@ export function DeliveryChat({ projectId }: Props) {
         </div>
       </div>
 
-      {!hasUserMessage && (
+      {!hasUserMessage && !loadingHistory && (
         <div className="px-4 pt-3">
           <DeliverySuggestions
             disabled={isInputDisabled}
@@ -73,7 +69,13 @@ export function DeliveryChat({ projectId }: Props) {
       )}
 
       <div className="mx-4 mb-3 mt-3 min-h-[220px] max-h-[420px] flex-1 space-y-4 overflow-y-auto rounded-md bg-secondary/35 p-3 text-xs">
-        {messages.length === 0 && !asking && (
+        {loadingHistory && (
+          <div className="flex flex-col items-center justify-center gap-2 py-8 text-center text-muted-foreground">
+            <p className="text-[11px]">Loading previous conversation…</p>
+          </div>
+        )}
+
+        {!loadingHistory && messages.length === 0 && !asking && (
           <div className="flex flex-col items-center justify-center gap-2 py-8 text-center text-muted-foreground">
             <p className="max-w-[220px] text-[11px] leading-5">
               Ask about portfolio risk, throughput, milestones, blockers, or recovery priorities.
@@ -81,14 +83,8 @@ export function DeliveryChat({ projectId }: Props) {
           </div>
         )}
 
-        {messages.map((message, index) => (
-          <DeliveryMessage
-            key={message.id}
-            message={message}
-            isAnimating={message.role === "agent" && index === animatingMessageIndex}
-            onAnimationProgress={scrollToEnd}
-            onAnimationComplete={onAnimationComplete}
-          />
+        {messages.map((message) => (
+          <DeliveryMessage key={message.id} message={message} />
         ))}
 
         {asking && (
@@ -108,11 +104,11 @@ export function DeliveryChat({ projectId }: Props) {
         <div ref={chatEndRef} aria-hidden="true" />
       </div>
 
-      {suggestions.length > 0 && animatingMessageIndex === null && !asking && (
+      {suggestions.length > 0 && !isStreaming && !asking && (
         <div className="px-4 pb-3">
           <DeliverySuggestions
             suggestions={suggestions}
-            label="Follow-up"
+            label="Quick follow-up questions (not AI-generated)"
             disabled={isInputDisabled}
             onSelect={(prompt) => void sendMessage(prompt)}
           />
@@ -120,11 +116,12 @@ export function DeliveryChat({ projectId }: Props) {
       )}
 
       <div className="border-t border-border/70 px-4 py-3">
+        {error && <p className="mb-2 text-[11px] text-[color:var(--danger)]">{error}</p>}
         <DeliveryChatInput
           value={input}
           disabled={isInputDisabled}
           asking={asking}
-          replying={animatingMessageIndex !== null}
+          replying={isStreaming}
           onChange={setInput}
           onSubmit={handleSubmit}
         />
