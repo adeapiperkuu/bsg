@@ -9,6 +9,7 @@ import mimetypes
 import re
 import math
 import time
+from time import perf_counter
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from decimal import Decimal
@@ -46,7 +47,6 @@ from app.db.models.entities import (
     KnowledgeGap,
     KnowledgeGapStatus,
     KnowledgeIndexingStatus,
-    KnowledgeLesson,
     KnowledgeProcessingStatus,
     KnowledgeQueryFeedback,
     KnowledgeSourceType,
@@ -64,7 +64,10 @@ from app.schemas.common import Pagination
 from app.schemas.domain import (
     KnowledgeAskRead,
     KnowledgeBootstrapRead,
+    KnowledgeConversationRead,
+    KnowledgeConversationSummaryRead,
     KnowledgeConversationTurn,
+    KnowledgeConversationTurnRead,
     KnowledgeDocumentCountsRead,
     KnowledgeDocumentRead,
     KnowledgeDocumentSummaryRead,
@@ -77,8 +80,6 @@ from app.schemas.domain import (
     KnowledgeGapTodoRead,
     KnowledgeLibraryHealthCountsRead,
     KnowledgeLibraryHealthRead,
-    KnowledgeLessonCreate,
-    KnowledgeLessonRead,
     KnowledgeChunkRead,
     KnowledgePermissionsRead,
     KnowledgeQualityCriterion,
@@ -96,42 +97,177 @@ logger = logging.getLogger(__name__)
 KNOWLEDGE_AGENT_NAME = "operational_knowledge_agent"
 
 
-async def list_lessons(
+def _conversation_key(agent_query: AgentQuery) -> UUID:
+    return agent_query.conversation_id or agent_query.id
+
+
+async def _validate_knowledge_conversation_id(
     session: AsyncSession,
-    org_id,
+    current_user: CurrentUser,
+    conversation_id: UUID | None,
+) -> UUID | None:
+    if conversation_id is None:
+        return None
+    anchor = (
+        await session.execute(
+            select(AgentQuery).where(
+                AgentQuery.id == conversation_id,
+                AgentQuery.org_id == current_user.org_id,
+                AgentQuery.agent_name == KNOWLEDGE_AGENT_NAME,
+            )
+        )
+    ).scalar_one_or_none()
+    if anchor is None:
+        raise ApiError(404, "NOT_FOUND", "Knowledge conversation not found.")
+    if anchor.user_id != current_user.id and current_user.role not in {
+        AppRole.BSG_LEADERSHIP,
+        AppRole.SUPER_ADMIN,
+    }:
+        raise ApiError(403, "FORBIDDEN", "You cannot continue this conversation.")
+    return _conversation_key(anchor)
+
+
+def _answer_metadata_in_retrieval_params(
+    retrieval_params: dict[str, object] | None,
     *,
-    limit: int = 50,
-) -> list[KnowledgeLesson]:
-    return list(
+    next_step: str,
+    confidence_score: float,
+    confidence_reasons: list[str],
+    structured_answer: KnowledgeStructuredAnswer | None,
+) -> dict[str, object]:
+    params = dict(retrieval_params or {})
+    params["confidence_score"] = confidence_score
+    params["next_step"] = next_step
+    params["confidence_reasons"] = confidence_reasons
+    if structured_answer is not None:
+        params["structured_answer"] = structured_answer.model_dump()
+    return params
+
+
+async def _finalize_knowledge_agent_query(
+    session: AsyncSession,
+    agent_query: AgentQuery,
+    *,
+    conversation_id: UUID | None,
+) -> UUID:
+    if conversation_id is None:
+        agent_query.conversation_id = agent_query.id
+    else:
+        agent_query.conversation_id = conversation_id
+    await session.flush()
+    return agent_query.conversation_id or agent_query.id
+
+
+def _knowledge_ask_read_from_agent_query(agent_query: AgentQuery) -> KnowledgeAskRead:
+    retrieval_debug = agent_query.retrieval_params if isinstance(agent_query.retrieval_params, dict) else None
+    confidence_score = 0.0
+    next_step = ""
+    confidence_reasons: list[str] = []
+    structured_answer: KnowledgeStructuredAnswer | None = None
+    if retrieval_debug:
+        raw_confidence = retrieval_debug.get("confidence_score")
+        if isinstance(raw_confidence, int | float):
+            confidence_score = float(raw_confidence)
+        next_step = str(retrieval_debug.get("next_step") or "")
+        raw_reasons = retrieval_debug.get("confidence_reasons")
+        if isinstance(raw_reasons, list):
+            confidence_reasons = [str(item) for item in raw_reasons]
+        raw_structured = retrieval_debug.get("structured_answer")
+        if isinstance(raw_structured, dict):
+            structured_answer = KnowledgeStructuredAnswer(
+                policy=str(raw_structured.get("policy") or ""),
+                steps=str(raw_structured.get("steps") or ""),
+                owner=str(raw_structured.get("owner") or ""),
+                evidence=str(raw_structured.get("evidence") or ""),
+                next_action=str(raw_structured.get("next_action") or ""),
+            )
+    return KnowledgeAskRead(
+        answer_text=agent_query.answer_text,
+        next_step=next_step,
+        confidence_score=round(confidence_score, 4),
+        confidence_reasons=confidence_reasons,
+        structured_answer=structured_answer,
+        knowledge_gap=None,
+        query_id=agent_query.id,
+        conversation_id=_conversation_key(agent_query),
+        model_used=agent_query.model_used,
+        retrieval_debug=retrieval_debug,
+    )
+
+
+async def list_knowledge_conversations(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    *,
+    limit: int = 30,
+) -> list[KnowledgeConversationSummaryRead]:
+    filters = [
+        AgentQuery.agent_name == KNOWLEDGE_AGENT_NAME,
+        AgentQuery.org_id == current_user.org_id,
+    ]
+    if current_user.role not in {AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN}:
+        filters.append(AgentQuery.user_id == current_user.id)
+    rows = list(
         (
             await session.execute(
-                select(KnowledgeLesson)
-                .where(KnowledgeLesson.org_id == org_id)
-                .order_by(KnowledgeLesson.created_at.desc())
-                .limit(limit)
+                select(AgentQuery)
+                .where(*filters)
+                .order_by(AgentQuery.created_at.desc())
+                .limit(max(limit * 8, 120))
             )
         ).scalars()
     )
+    grouped: dict[UUID, list[AgentQuery]] = {}
+    for row in rows:
+        key = _conversation_key(row)
+        grouped.setdefault(key, []).append(row)
+    summaries: list[KnowledgeConversationSummaryRead] = []
+    for conv_id, turns in grouped.items():
+        ordered = sorted(turns, key=lambda item: item.created_at)
+        summaries.append(
+            KnowledgeConversationSummaryRead(
+                id=conv_id,
+                title=ordered[0].query_text.strip()[:120] or "Knowledge chat",
+                turn_count=len(ordered),
+                updated_at=ordered[-1].created_at,
+            )
+        )
+    summaries.sort(key=lambda item: item.updated_at, reverse=True)
+    return summaries[:limit]
 
 
-async def create_lesson(
+async def get_knowledge_conversation(
     session: AsyncSession,
-    org_id,
-    payload: KnowledgeLessonCreate,
-    created_by: UUID,
-) -> KnowledgeLesson:
-    lesson = KnowledgeLesson(
-        org_id=org_id,
-        title=payload.title,
-        body=payload.body,
-        tags=payload.tags,
-        linked_quality_event_id=payload.linked_quality_event_id,
-        linked_alert_id=payload.linked_alert_id,
-        created_by=created_by,
+    current_user: CurrentUser,
+    conversation_id: UUID,
+) -> KnowledgeConversationRead:
+    await _validate_knowledge_conversation_id(session, current_user, conversation_id)
+    rows = list(
+        (
+            await session.execute(
+                select(AgentQuery)
+                .where(
+                    AgentQuery.org_id == current_user.org_id,
+                    AgentQuery.agent_name == KNOWLEDGE_AGENT_NAME,
+                    (AgentQuery.conversation_id == conversation_id) | (AgentQuery.id == conversation_id),
+                )
+                .order_by(AgentQuery.created_at.asc())
+            )
+        ).scalars()
     )
-    session.add(lesson)
-    await session.flush()
-    return lesson
+    if not rows:
+        raise ApiError(404, "NOT_FOUND", "Knowledge conversation not found.")
+    return KnowledgeConversationRead(
+        id=conversation_id,
+        turns=[
+            KnowledgeConversationTurnRead(
+                query_id=row.id,
+                query_text=row.query_text,
+                answer=_knowledge_ask_read_from_agent_query(row),
+            )
+            for row in rows
+        ],
+    )
 
 
 def _is_missing_schema_error(exc: BaseException) -> bool:
@@ -192,7 +328,13 @@ HYBRID_VECTOR_WEIGHT = 0.68
 HYBRID_KEYWORD_WEIGHT = 0.32
 RECENCY_BOOST_MAX = 0.12
 EXACT_TERM_BOOST_MAX = 0.1
-LOW_CONFIDENCE_THRESHOLD = 0.5  # retry with strong model if first-pass confidence is below this
+METADATA_BOOST_MAX = 0.08
+LOW_CONFIDENCE_THRESHOLD = 0.5
+DEFAULT_MAX_SOURCES = 3
+KNOWLEDGE_ANSWER_CACHE_TTL_S = 300
+EXTRACTION_MIN_CHARS = 200
+EXTRACTION_MIN_CHARS_PER_PAGE = 80
+EXTRACTION_MIN_CHUNKS = 2
 SOP_STALE_DAYS = 365
 UPLOAD_APPROVED_MIN_METADATA_SCORE = 4  # out of 6 metadata criteria before indexing as Approved
 
@@ -228,6 +370,99 @@ def _embed_cache_set(org_id: str, text: str, vector: list[float]) -> None:
     _embed_cache[key] = (vector, time.monotonic() + _EMBED_CACHE_TTL_S)
 
 
+# ── Knowledge answer cache (exact query + approved doc scope) ─────────────────
+
+_knowledge_answer_cache: dict[tuple[str, ...], tuple[float, dict[str, object]]] = {}
+
+
+class _AskTimings:
+    """Per-phase latency markers for knowledge ask requests."""
+
+    def __init__(self) -> None:
+        self._start = perf_counter()
+        self._marks: dict[str, float] = {}
+
+    def mark(self, name: str) -> None:
+        self._marks[name] = round((perf_counter() - self._start) * 1000, 1)
+
+    def to_dict(self) -> dict[str, float]:
+        return dict(self._marks)
+
+
+def _invalidate_knowledge_answer_cache(org_id: UUID) -> None:
+    org_key = str(org_id)
+    for key in list(_knowledge_answer_cache):
+        if key[0] == org_key:
+            del _knowledge_answer_cache[key]
+
+
+def _knowledge_scope_fingerprint(eligible_docs: list[KnowledgeDocument]) -> str:
+    parts = sorted(
+        f"{doc.id}:{doc.version}:{_loaded_datetime(doc, 'updated_at').isoformat()}"
+        for doc in eligible_docs
+    )
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+
+
+def _knowledge_cache_key(
+    org_id: UUID,
+    query_text: str,
+    *,
+    answer_mode: str,
+    scope_hash: str,
+    include_histories: bool,
+    project: str | None,
+    department: str | None,
+    folder_id: UUID | None,
+    source_type: str | None,
+) -> tuple[str, ...]:
+    return (
+        str(org_id),
+        query_text.strip().lower(),
+        answer_mode,
+        scope_hash,
+        str(include_histories),
+        (project or "").strip().lower(),
+        (department or "").strip().lower(),
+        str(folder_id) if folder_id else "",
+        (source_type or "").strip().lower(),
+    )
+
+
+def _get_knowledge_answer_cache(key: tuple[str, ...]) -> dict[str, object] | None:
+    entry = _knowledge_answer_cache.get(key)
+    if entry is None:
+        return None
+    expires_at, payload = entry
+    if time.monotonic() > expires_at:
+        _knowledge_answer_cache.pop(key, None)
+        return None
+    return payload
+
+
+def _set_knowledge_answer_cache(key: tuple[str, ...], payload: dict[str, object]) -> None:
+    _knowledge_answer_cache[key] = (time.monotonic() + KNOWLEDGE_ANSWER_CACHE_TTL_S, payload)
+
+
+def _needs_structured_operational_context(query_text: str, *, explicit_project: str | None = None) -> bool:
+    if explicit_project:
+        return True
+    lower = query_text.lower()
+    operational_terms = (
+        "project",
+        "status",
+        "escalation",
+        "quality",
+        "bottleneck",
+        "csat",
+        "delivery",
+        "utilization",
+        "milestone",
+        "throughput",
+    )
+    return any(term in lower for term in operational_terms)
+
+
 # ── Lightweight chunk carrier from single-SQL vector search ───────────────────
 
 @dataclass
@@ -255,6 +490,8 @@ class RetrievalResult:
     keyword_scores: dict[UUID, float]
     top_score: float
     empty_eligible_reason: str | None = None
+    timings: dict[str, float] | None = None
+    scope_hash: str | None = None
 
 
 @dataclass
@@ -282,6 +519,10 @@ class StreamKnowledgePrepared:
     project: str | None
     department: str | None
     started: datetime
+    timings: _AskTimings | None = None
+    cache_key: tuple[str, ...] | None = None
+    scope_hash: str | None = None
+    conversation_id: UUID | None = None
 
 
 def _build_context_chunks_from_matches(
@@ -841,6 +1082,7 @@ async def update_document(
         body=f'"{doc.title}" was updated and may need review or re-approval.',
         actor_id=current_user.id,
     )
+    _invalidate_knowledge_answer_cache(current_user.org_id)
     return await _to_document_read(session, doc, folder)
 
 
@@ -851,6 +1093,7 @@ async def delete_document(session: AsyncSession, current_user: CurrentUser, docu
     if not can_access_visibility(current_user.role, doc.visibility):
         raise ApiError(403, "FORBIDDEN", "You cannot delete this document.")
     doc.deleted_at = datetime.now(timezone.utc)
+    _invalidate_knowledge_answer_cache(current_user.org_id)
 
 
 async def create_document_from_upload(
@@ -1075,6 +1318,7 @@ async def reindex_document(session: AsyncSession, current_user: CurrentUser, doc
     doc.processing_error = None
     await session.flush()
     folder = (await session.execute(select(KnowledgeFolder).where(KnowledgeFolder.id == doc.folder_id))).scalar_one()
+    _invalidate_knowledge_answer_cache(current_user.org_id)
     return await _to_document_read(session, doc, folder)
 
 
@@ -1129,6 +1373,7 @@ async def process_knowledge_document_job(document_id: UUID, version_id: UUID | N
             file_bytes = await _read_stored_file(version.storage_path)
             await _process_document_version(session, doc, version, file_bytes)
             await session.commit()
+            _invalidate_knowledge_answer_cache(doc.org_id)
         except Exception:
             logger.exception("Knowledge document background processing failed", extra={"document_id": str(document_id)})
             await session.rollback()
@@ -1156,11 +1401,17 @@ async def _retrieve_knowledge_context(
     conversation_history: list[KnowledgeConversationTurn] | None = None,
     answer_mode: str = "internal",
     include_histories: bool = True,
-    max_sources: int = 5,
+    max_sources: int = DEFAULT_MAX_SOURCES,
     min_relevance_score: float = 0.25,
     project: str | None = None,
     department: str | None = None,
-    prefer_fast_retrieval: bool = False,
+    folder_id: UUID | None = None,
+    source_type: str | None = None,
+    effective_date_from: date | None = None,
+    effective_date_to: date | None = None,
+    only_approved: bool = True,
+    prefer_fast_retrieval: bool = True,
+    timings: _AskTimings | None = None,
 ) -> RetrievalResult:
     client_safe_mode = answer_mode == "client_safe"
     history = conversation_history or []
@@ -1169,6 +1420,8 @@ async def _retrieve_knowledge_context(
         history,
         prefer_fast=prefer_fast_retrieval,
     )
+    if timings:
+        timings.mark("query_rewrite_ms")
     embedding_input = (
         retrieval_query[:EMBEDDING_INPUT_MAX_CHARS]
         if len(retrieval_query) > EMBEDDING_INPUT_MAX_CHARS
@@ -1183,13 +1436,20 @@ async def _retrieve_knowledge_context(
     else:
         embedding_task = asyncio.create_task(_embed_texts([embedding_input]))
 
-    doc_filters = (
+    doc_filters = [
         KnowledgeDocument.org_id == current_user.org_id,
         KnowledgeDocument.deleted_at.is_(None),
-        KnowledgeDocument.status == KnowledgeDocumentStatus.APPROVED,
         KnowledgeDocument.indexing_status == KnowledgeIndexingStatus.INDEXED,
         KnowledgeDocument.processing_status == KnowledgeProcessingStatus.READY,
-    )
+    ]
+    if only_approved:
+        doc_filters.append(KnowledgeDocument.status == KnowledgeDocumentStatus.APPROVED)
+    else:
+        doc_filters.append(
+            KnowledgeDocument.status.in_(
+                [KnowledgeDocumentStatus.APPROVED, KnowledgeDocumentStatus.DRAFT]
+            )
+        )
     docs_result, folders_result = await asyncio.gather(
         session.execute(select(KnowledgeDocument).where(*doc_filters)),
         session.execute(
@@ -1199,6 +1459,8 @@ async def _retrieve_knowledge_context(
             )
         ),
     )
+    if timings:
+        timings.mark("document_lookup_ms")
     docs = list(docs_result.scalars())
     folders_map: dict[UUID, KnowledgeFolder] = {row.id: row for row in folders_result.scalars()}
     eligible_docs = [doc for doc in docs if can_access_visibility(current_user.role, doc.visibility)]
@@ -1218,6 +1480,7 @@ async def _retrieve_knowledge_context(
             keyword_scores={},
             top_score=0.0,
             empty_eligible_reason="no_accessible_docs",
+            timings=timings.to_dict() if timings else None,
         )
 
     if not include_histories:
@@ -1226,12 +1489,27 @@ async def _retrieve_knowledge_context(
             for doc in eligible_docs
             if folders_map.get(doc.folder_id) and folders_map[doc.folder_id].folder_kind != KnowledgeFolderKind.HISTORIES
         ]
+    if folder_id is not None:
+        eligible_docs = [doc for doc in eligible_docs if doc.folder_id == folder_id]
+    if source_type:
+        source_query = source_type.strip().lower()
+        eligible_docs = [
+            doc for doc in eligible_docs if doc.source_type.value.lower() == source_query
+        ]
     if project:
         project_query = project.strip().lower()
         eligible_docs = [doc for doc in eligible_docs if (doc.project or "").lower() == project_query]
     if department:
         department_query = department.strip().lower()
         eligible_docs = [doc for doc in eligible_docs if (doc.department or "").lower() == department_query]
+    if effective_date_from:
+        eligible_docs = [
+            doc for doc in eligible_docs if doc.effective_date and doc.effective_date >= effective_date_from
+        ]
+    if effective_date_to:
+        eligible_docs = [
+            doc for doc in eligible_docs if doc.effective_date and doc.effective_date <= effective_date_to
+        ]
     if not eligible_docs:
         return RetrievalResult(
             matches=[],
@@ -1244,11 +1522,13 @@ async def _retrieve_knowledge_context(
             keyword_scores={},
             top_score=0.0,
             empty_eligible_reason="no_filtered_docs",
+            timings=timings.to_dict() if timings else None,
         )
 
     doc_ids = [doc.id for doc in eligible_docs]
     active_version_ids = [doc.active_version_id for doc in eligible_docs if doc.active_version_id]
     doc_map = {doc.id: doc for doc in eligible_docs}
+    scope_hash = _knowledge_scope_fingerprint(eligible_docs)
 
     if embedding_task is not None:
         try:
@@ -1258,6 +1538,8 @@ async def _retrieve_knowledge_context(
         except Exception:
             query_embedding = []
             has_embeddings = False
+    if timings:
+        timings.mark("embedding_ms")
 
     candidate_limit = max(RERANK_CANDIDATE_LIMIT, max_sources)
     vector_scores: dict[UUID, float] = {}
@@ -1297,6 +1579,8 @@ async def _retrieve_knowledge_context(
                 page_number=row[6],
                 section_title=row[7],
             )
+    if timings:
+        timings.mark("vector_search_ms")
 
     chunk_filters = [KnowledgeDocumentChunk.document_id.in_(doc_ids)]
     if active_version_ids:
@@ -1315,6 +1599,9 @@ async def _retrieve_knowledge_context(
         keyword_by_id = {
             chunk.id: chunk for chunk in keyword_pool if chunk.id in set(vector_scores) | set(keyword_scores)
         }
+    if timings:
+        timings.mark("keyword_search_ms")
+
     candidate_by_id: dict[UUID, KnowledgeDocumentChunk | _VectorChunk] = {
         **vector_by_id,
         **keyword_by_id,
@@ -1327,10 +1614,13 @@ async def _retrieve_knowledge_context(
             vector_scores=vector_scores,
             keyword_scores=keyword_scores,
             doc_map=doc_map,
+            folders_map=folders_map,
             query_text=retrieval_query,
         )
         if score >= min_relevance_score
     ][:max_sources]
+    if timings:
+        timings.mark("reranking_ms")
 
     top_score = matches[0][1] if matches else 0.0
 
@@ -1344,6 +1634,8 @@ async def _retrieve_knowledge_context(
         vector_scores=vector_scores,
         keyword_scores=keyword_scores,
         top_score=top_score,
+        timings=timings.to_dict() if timings else None,
+        scope_hash=scope_hash,
     )
 
 
@@ -1355,12 +1647,22 @@ async def ask_knowledge_agent(
     conversation_history: list[KnowledgeConversationTurn] | None = None,
     answer_mode: str = "internal",
     include_histories: bool = True,
-    max_sources: int = 5,
+    max_sources: int = DEFAULT_MAX_SOURCES,
     min_relevance_score: float = 0.25,
     project: str | None = None,
     department: str | None = None,
+    folder_id: UUID | None = None,
+    source_type: str | None = None,
+    effective_date_from: date | None = None,
+    effective_date_to: date | None = None,
+    only_approved: bool = True,
+    conversation_id: UUID | None = None,
 ) -> KnowledgeAskRead:
     started = datetime.now(timezone.utc)
+    timings = _AskTimings()
+    resolved_conversation_id = await _validate_knowledge_conversation_id(
+        session, current_user, conversation_id
+    )
     max_sources = max(1, min(max_sources, 10))
     min_relevance_score = max(0.0, min(min_relevance_score, 1.0))
     client_safe_mode = answer_mode == "client_safe"
@@ -1376,6 +1678,13 @@ async def ask_knowledge_agent(
         min_relevance_score=min_relevance_score,
         project=project,
         department=department,
+        folder_id=folder_id,
+        source_type=source_type,
+        effective_date_from=effective_date_from,
+        effective_date_to=effective_date_to,
+        only_approved=only_approved,
+        prefer_fast_retrieval=True,
+        timings=timings,
     )
     if retrieval.empty_eligible_reason == "no_accessible_docs":
         return await _persist_empty_ask_response(
@@ -1431,40 +1740,25 @@ async def ask_knowledge_agent(
         )
 
     # ── 5. Build context for GPT and call LLMClient ───────────────────────────
+    timings.mark("context_build_ms")
     fast_path = top_score >= FAST_PATH_THRESHOLD
     settings = get_settings()
     fast_model = settings.openai_model or settings.llm_model or "gpt-4o-mini"
-    strong_model = settings.knowledge_strong_model
 
     llm = LLMClient()
-    context_chunks: list[dict[str, str]] = []
-    neighbor_context = await _neighbor_context_for_matches(session, matches)
-    for chunk, _score in matches:
-        doc = doc_map[chunk.document_id]
-        folder = folders_map.get(doc.folder_id)
-        raw_chunk_text = neighbor_context.get(chunk.id) or (chunk.chunk_text or chunk.content or "").strip()
-        context_chunks.append(
-            {
-                "title": doc.title,
-                "source_type": _source_label(doc.source_type),
-                "folder": folder.name if folder else doc.folder_id.hex,
-                "page": str(chunk.page_number) if chunk.page_number else "",
-                "text": (
-                    raw_chunk_text
-                    if len(raw_chunk_text) <= RAG_CONTEXT_CHUNK_CHARS
-                    else raw_chunk_text[: RAG_CONTEXT_CHUNK_CHARS - 3].rstrip() + "..."
-                ),
-            }
-        )
+    context_chunks = _build_context_chunks_from_matches(matches, doc_map, folders_map)
 
-    structured_context = await _build_structured_operational_context(
-        session,
-        current_user,
-        query_text=query_text,
-        explicit_project=project,
-        client_safe=client_safe_mode,
-    )
+    structured_context = ""
+    if _needs_structured_operational_context(query_text, explicit_project=project):
+        structured_context = await _build_structured_operational_context(
+            session,
+            current_user,
+            query_text=query_text,
+            explicit_project=project,
+            client_safe=client_safe_mode,
+        )
     llm_history = [{"role": turn.role, "content": turn.content} for turn in history]
+    llm_start = perf_counter()
     llm_result = await llm.generate_rag_answer(
         query_text,
         context_chunks,
@@ -1474,24 +1768,8 @@ async def ask_knowledge_agent(
         structured_context=structured_context,
         fast_path=fast_path,
     )
-
-    # ── Low-confidence retry with stronger model ──────────────────────────────
-    if (
-        not fast_path
-        and fast_model != strong_model
-        and float(llm_result.get("confidence") or 0.0) < LOW_CONFIDENCE_THRESHOLD
-    ):
-        retry_result = await llm.generate_rag_answer(
-            query_text,
-            context_chunks,
-            model=strong_model,
-            conversation_history=llm_history,
-            answer_mode="client_safe" if client_safe_mode else "internal",
-            structured_context=structured_context,
-            fast_path=False,
-        )
-        if float(retry_result.get("confidence") or 0.0) > float(llm_result.get("confidence") or 0.0):
-            llm_result = retry_result
+    timings.mark("llm_complete_ms")
+    timings._marks["llm_first_token_ms"] = round((perf_counter() - llm_start) * 1000, 1)
 
     answer_text = str(llm_result.get("answer") or NO_APPROVED_ANSWER)
     next_step = str(llm_result.get("next_step") or "")
@@ -1577,6 +1855,23 @@ async def ask_knowledge_agent(
         vector_scores=vector_scores,
         keyword_scores=keyword_scores,
         confidence_score=confidence_score,
+        timings=retrieval.timings,
+    )
+    if float(confidence_score) < LOW_CONFIDENCE_THRESHOLD:
+        confidence_reasons.append("This answer may be incomplete. Try deeper search.")
+    timings.mark("persistence_ms")
+    retrieval_params = _answer_metadata_in_retrieval_params(
+        retrieval_params,
+        next_step=next_step,
+        confidence_score=confidence_score,
+        confidence_reasons=confidence_reasons,
+        structured_answer=structured_answer,
+    )
+    retrieval_params["timings"] = timings.to_dict()
+    retrieval_params["total_ms"] = timings.to_dict().get("persistence_ms", 0)
+    logger.info(
+        "knowledge_ask_timing",
+        extra={"org_id": str(current_user.org_id), "timings": timings.to_dict(), "stream": False},
     )
     agent_query = AgentQuery(
         user_id=current_user.id,
@@ -1588,9 +1883,15 @@ async def ask_knowledge_agent(
         model_used=model_used,
         latency_ms=int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
         retrieval_params=retrieval_params,
+        conversation_id=resolved_conversation_id,
     )
     session.add(agent_query)
     await session.flush()
+    active_conversation_id = await _finalize_knowledge_agent_query(
+        session,
+        agent_query,
+        conversation_id=resolved_conversation_id,
+    )
 
     # ── 7. Persist evidence links (one per chunk) ─────────────────────────────
     for chunk, score in matches:
@@ -1614,6 +1915,7 @@ async def ask_knowledge_agent(
         structured_answer=structured_answer,
         knowledge_gap=None,
         query_id=agent_query.id,
+        conversation_id=active_conversation_id,
         model_used=model_used,
         retrieval_debug=retrieval_params,
     )
@@ -1627,10 +1929,16 @@ async def prepare_stream_knowledge_ask(
     conversation_history: list[KnowledgeConversationTurn] | None = None,
     answer_mode: str = "internal",
     include_histories: bool = True,
-    max_sources: int = 5,
+    max_sources: int = DEFAULT_MAX_SOURCES,
     min_relevance_score: float = 0.25,
     project: str | None = None,
     department: str | None = None,
+    folder_id: UUID | None = None,
+    source_type: str | None = None,
+    effective_date_from: date | None = None,
+    effective_date_to: date | None = None,
+    only_approved: bool = True,
+    conversation_id: UUID | None = None,
 ) -> tuple[list[str], StreamKnowledgePrepared | None]:
     """
     Run retrieval and context assembly while the request session is open.
@@ -1638,10 +1946,15 @@ async def prepare_stream_knowledge_ask(
     the stream is complete and prepared_context is None.
     """
     started = datetime.now(timezone.utc)
+    timings = _AskTimings()
     max_sources = max(1, min(max_sources, 10))
     min_relevance_score = max(0.0, min(min_relevance_score, 1.0))
     client_safe_mode = answer_mode == "client_safe"
     history = conversation_history or []
+    early_events = [_sse({"type": "status", "phase": "searching"})]
+    resolved_conversation_id = await _validate_knowledge_conversation_id(
+        session, current_user, conversation_id
+    )
 
     retrieval = await _retrieve_knowledge_context(
         session,
@@ -1654,12 +1967,19 @@ async def prepare_stream_knowledge_ask(
         min_relevance_score=min_relevance_score,
         project=project,
         department=department,
+        folder_id=folder_id,
+        source_type=source_type,
+        effective_date_from=effective_date_from,
+        effective_date_to=effective_date_to,
+        only_approved=only_approved,
         prefer_fast_retrieval=True,
+        timings=timings,
     )
+    early_events.append(_sse({"type": "status", "phase": "reading"}))
     if retrieval.empty_eligible_reason == "no_accessible_docs":
-        return [_sse({"type": "error", "message": "No approved documents are available."})], None
+        return early_events + [_sse({"type": "error", "message": "No approved documents are available."})], None
     if retrieval.empty_eligible_reason == "no_filtered_docs":
-        return [_sse({"type": "error", "message": "No documents matched the filters."})], None
+        return early_events + [_sse({"type": "error", "message": "No documents matched the filters."})], None
 
     matches = retrieval.matches
     doc_map = retrieval.doc_map
@@ -1670,6 +1990,56 @@ async def prepare_stream_knowledge_ask(
     vector_scores = retrieval.vector_scores
     keyword_scores = retrieval.keyword_scores
     top_score = retrieval.top_score
+    scope_hash = retrieval.scope_hash or _knowledge_scope_fingerprint(eligible_docs)
+
+    cache_key = _knowledge_cache_key(
+        current_user.org_id,
+        query_text,
+        answer_mode=answer_mode,
+        scope_hash=scope_hash,
+        include_histories=include_histories,
+        project=project,
+        department=department,
+        folder_id=folder_id,
+        source_type=source_type,
+    )
+    cached = _get_knowledge_answer_cache(cache_key)
+    if cached and not history:
+        early_events.append(_sse({"type": "status", "phase": "generating"}))
+        agent_query = AgentQuery(
+            user_id=current_user.id,
+            org_id=current_user.org_id,
+            project_id=None,
+            agent_name=KNOWLEDGE_AGENT_NAME,
+            query_text=query_text,
+            answer_text=str(cached.get("answer_text") or NO_APPROVED_ANSWER),
+            model_used=str(cached.get("model_used")) if cached.get("model_used") else None,
+            latency_ms=int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
+            retrieval_params={**(cached.get("retrieval_params") or {}), "cache_hit": True},
+            conversation_id=resolved_conversation_id,
+        )
+        session.add(agent_query)
+        await session.flush()
+        active_conversation_id = await _finalize_knowledge_agent_query(
+            session,
+            agent_query,
+            conversation_id=resolved_conversation_id,
+        )
+        return early_events + [
+            _sse({"type": "meta", "query_id": str(agent_query.id), "confidence_estimate": cached.get("confidence_score", 0.0)}),
+            _sse({
+                "type": "done",
+                "query_id": str(agent_query.id),
+                "conversation_id": str(active_conversation_id),
+                "answer_text": cached.get("answer_text"),
+                "confidence_score": cached.get("confidence_score", 0.0),
+                "confidence_reasons": cached.get("confidence_reasons", []),
+                "next_step": cached.get("next_step", ""),
+                "structured_answer": cached.get("structured_answer"),
+                "model_used": cached.get("model_used"),
+                "retrieval_debug": agent_query.retrieval_params,
+            }),
+        ], None
 
     if not matches:
         agent_query = AgentQuery(
@@ -1678,9 +2048,15 @@ async def prepare_stream_knowledge_ask(
             answer_text=NO_APPROVED_ANSWER, model_used=None,
             latency_ms=int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
             retrieval_params=None,
+            conversation_id=resolved_conversation_id,
         )
         session.add(agent_query)
         await session.flush()
+        active_conversation_id = await _finalize_knowledge_agent_query(
+            session,
+            agent_query,
+            conversation_id=resolved_conversation_id,
+        )
         gap = _build_knowledge_gap(
             query_text,
             reason="No relevant chunks met the minimum relevance threshold.",
@@ -1692,10 +2068,12 @@ async def prepare_stream_knowledge_ask(
             gap=gap,
             agent_query_id=agent_query.id,
         )
-        return [
+        return early_events + [
             _sse({"type": "meta", "query_id": str(agent_query.id), "confidence_estimate": 0.0}),
             _sse({
                 "type": "done",
+                "query_id": str(agent_query.id),
+                "conversation_id": str(active_conversation_id),
                 "answer_text": NO_APPROVED_ANSWER,
                 "confidence_score": 0.0,
                 "next_step": "",
@@ -1705,11 +2083,12 @@ async def prepare_stream_knowledge_ask(
         ], None
 
     structured_context = ""
-    if project:
+    if _needs_structured_operational_context(query_text, explicit_project=project):
         structured_context = await _build_structured_operational_context(
             session, current_user, query_text=query_text, explicit_project=project, client_safe=client_safe_mode,
         )
-    return [], StreamKnowledgePrepared(
+    timings.mark("context_build_ms")
+    return early_events, StreamKnowledgePrepared(
         current_user=current_user,
         query_text=query_text,
         answer_mode=answer_mode,
@@ -1731,6 +2110,10 @@ async def prepare_stream_knowledge_ask(
         project=project,
         department=department,
         started=started,
+        timings=timings,
+        cache_key=cache_key,
+        scope_hash=scope_hash,
+        conversation_id=resolved_conversation_id,
     )
 
 
@@ -1757,6 +2140,7 @@ async def stream_prepared_knowledge_ask(
 
     confidence_estimate = round(0.4 * min(top_score, 1.0), 4)
     yield _sse({"type": "meta", "confidence_estimate": confidence_estimate})
+    yield _sse({"type": "status", "phase": "generating"})
 
     context_chunks = _build_context_chunks_from_matches(matches, doc_map, folders_map)
 
@@ -1768,6 +2152,8 @@ async def stream_prepared_knowledge_ask(
     llm = LLMClient()
     accumulated_answer = ""
     llm_done_event: dict[str, object] = {}
+    llm_start = perf_counter()
+    first_token_marked = False
 
     async for event in llm.stream_rag_answer(
         query_text, context_chunks,
@@ -1778,11 +2164,17 @@ async def stream_prepared_knowledge_ask(
         fast_path=fast_path,
     ):
         if event["type"] == "delta":
+            if not first_token_marked and prepared.timings is not None:
+                prepared.timings._marks["llm_first_token_ms"] = round((perf_counter() - llm_start) * 1000, 1)
+                first_token_marked = True
             accumulated_answer += str(event.get("text", ""))
             yield _sse(event)
         elif event["type"] == "done":
             llm_done_event = event
             break
+
+    if prepared.timings is not None:
+        prepared.timings.mark("llm_complete_ms")
 
     raw_confidence = float(llm_done_event.get("confidence") or 0.0)
     model_used = str(llm_done_event.get("model") or fast_model)
@@ -1816,7 +2208,20 @@ async def stream_prepared_knowledge_ask(
     if not answer_text.strip():
         answer_text = NO_APPROVED_ANSWER
 
+    confidence_reasons = _build_confidence_reasons(matches, eligible_docs, doc_map, query_text)
+    if not grounding["grounded"]:
+        confidence_reasons.append("Some generated claims had weak support in retrieved evidence")
+    if structured_context:
+        confidence_reasons.append("Included structured project data in answer context")
+    if client_safe_mode:
+        confidence_reasons.append("Restricted retrieval and wording to client-safe sources")
+    if fast_path:
+        confidence_reasons.append("Fast path: high-relevance chunks used short prompt")
+    if float(confidence_score) < LOW_CONFIDENCE_THRESHOLD:
+        confidence_reasons.append("This answer may be incomplete. Try deeper search.")
+
     query_id: str | None = None
+    active_conversation_id: UUID | None = prepared.conversation_id
     retrieval_params: dict[str, object] | None = None
     try:
         async with AsyncSessionLocal() as persist_session:
@@ -1828,6 +2233,14 @@ async def stream_prepared_knowledge_ask(
                 project=prepared.project, department=prepared.department, eligible_doc_count=len(eligible_docs),
                 has_embeddings=has_embeddings, matches=matches, doc_map=doc_map,
                 vector_scores=vector_scores, keyword_scores=keyword_scores, confidence_score=confidence_score,
+                timings=prepared.timings.to_dict() if prepared.timings else None,
+            )
+            retrieval_params = _answer_metadata_in_retrieval_params(
+                retrieval_params,
+                next_step=next_step,
+                confidence_score=confidence_score,
+                confidence_reasons=confidence_reasons,
+                structured_answer=structured_answer,
             )
             agent_query = AgentQuery(
                 user_id=current_user.id, org_id=current_user.org_id, project_id=None,
@@ -1835,9 +2248,15 @@ async def stream_prepared_knowledge_ask(
                 model_used=model_used,
                 latency_ms=int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
                 retrieval_params=retrieval_params,
+                conversation_id=prepared.conversation_id,
             )
             persist_session.add(agent_query)
             await persist_session.flush()
+            active_conversation_id = await _finalize_knowledge_agent_query(
+                persist_session,
+                agent_query,
+                conversation_id=prepared.conversation_id,
+            )
             query_id = str(agent_query.id)
 
             for chunk, score in matches:
@@ -1852,19 +2271,48 @@ async def stream_prepared_knowledge_ask(
     except Exception:
         logger.exception("Failed to persist streamed knowledge ask")
 
-    confidence_reasons = _build_confidence_reasons(matches, eligible_docs, doc_map, query_text)
-    if not grounding["grounded"]:
-        confidence_reasons.append("Some generated claims had weak support in retrieved evidence")
-    if structured_context:
-        confidence_reasons.append("Included structured project data in answer context")
-    if client_safe_mode:
-        confidence_reasons.append("Restricted retrieval and wording to client-safe sources")
-    if fast_path:
-        confidence_reasons.append("Fast path: high-relevance chunks used short prompt")
+    if prepared.timings is not None:
+        prepared.timings.mark("persistence_ms")
+    if prepared.timings is not None and retrieval_params is not None:
+        retrieval_params["timings"] = prepared.timings.to_dict()
+        retrieval_params["total_ms"] = prepared.timings.to_dict().get("persistence_ms", 0)
+    logger.info(
+        "knowledge_ask_timing",
+        extra={
+            "org_id": str(current_user.org_id),
+            "timings": prepared.timings.to_dict() if prepared.timings else {},
+            "stream": True,
+        },
+    )
+
+    if prepared.cache_key and not prepared.history and answer_text.strip() != NO_APPROVED_ANSWER:
+        _set_knowledge_answer_cache(
+            prepared.cache_key,
+            {
+                "answer_text": answer_text,
+                "confidence_score": confidence_score,
+                "confidence_reasons": confidence_reasons,
+                "next_step": next_step,
+                "structured_answer": (
+                    {
+                        "policy": structured_answer.policy,
+                        "steps": structured_answer.steps,
+                        "owner": structured_answer.owner,
+                        "evidence": structured_answer.evidence,
+                        "next_action": structured_answer.next_action,
+                    }
+                    if structured_answer
+                    else None
+                ),
+                "model_used": model_used,
+                "retrieval_params": retrieval_params,
+            },
+        )
 
     yield _sse({
         "type": "done",
         "query_id": query_id,
+        "conversation_id": str(active_conversation_id) if active_conversation_id else None,
         "answer_text": answer_text,
         "confidence_score": confidence_score,
         "confidence_reasons": confidence_reasons,
@@ -2177,65 +2625,12 @@ async def get_knowledge_query_answer(
     ).scalar_one_or_none()
     if agent_query is None:
         raise ApiError(404, "NOT_FOUND", "Knowledge query not found.")
-
-    links = list(
-        (
-            await session.execute(
-                select(KnowledgeEvidenceLink).where(KnowledgeEvidenceLink.agent_query_id == query_id)
-            )
-        ).scalars()
-    )
-    doc_ids = {link.document_id for link in links}
-    chunk_ids = {link.chunk_id for link in links if link.chunk_id}
-    docs = {
-        doc.id: doc
-        for doc in (
-            await session.execute(select(KnowledgeDocument).where(KnowledgeDocument.id.in_(doc_ids)))
-        ).scalars()
-    }
-    chunks = {
-        chunk.id: chunk
-        for chunk in (
-            await session.execute(select(KnowledgeDocumentChunk).where(KnowledgeDocumentChunk.id.in_(chunk_ids)))
-        ).scalars()
-    }
-    folder_ids = {doc.folder_id for doc in docs.values()}
-    folders = {
-        folder.id: folder
-        for folder in (
-            await session.execute(select(KnowledgeFolder).where(KnowledgeFolder.id.in_(folder_ids)))
-        ).scalars()
-    }
-
-    evidence_scores: list[float] = []
-    for link in links:
-        doc = docs.get(link.document_id)
-        if doc is None or not can_access_visibility(current_user.role, doc.visibility):
-            continue
-        evidence_scores.append(float(link.relevance_score or 0))
-
-    retrieval_debug = agent_query.retrieval_params if isinstance(agent_query.retrieval_params, dict) else None
-    confidence_score = 0.0
-    if retrieval_debug and isinstance(retrieval_debug.get("confidence_score"), int | float):
-        confidence_score = float(retrieval_debug["confidence_score"])
-    elif evidence_scores:
-        confidence_score = max(evidence_scores, default=0.0)
-
-    reasons = ["Reopened saved answer with persisted evidence links"]
-    if retrieval_debug:
-        reasons.append("Retrieval debug metadata is available")
-
-    return KnowledgeAskRead(
-        answer_text=agent_query.answer_text,
-        next_step="",
-        confidence_score=round(confidence_score, 4),
-        confidence_reasons=reasons,
-        structured_answer=None,
-        knowledge_gap=None,
-        query_id=agent_query.id,
-        model_used=agent_query.model_used,
-        retrieval_debug=retrieval_debug,
-    )
+    if agent_query.user_id != current_user.id and current_user.role not in {
+        AppRole.BSG_LEADERSHIP,
+        AppRole.SUPER_ADMIN,
+    }:
+        raise ApiError(403, "FORBIDDEN", "You cannot view this saved answer.")
+    return _knowledge_ask_read_from_agent_query(agent_query)
 
 
 async def _get_document_or_404(session: AsyncSession, org_id: UUID, document_id: UUID) -> KnowledgeDocument:
@@ -2469,6 +2864,7 @@ async def _process_document_version(
         if not cleaned_text:
             raise ValueError("No extractable text found after cleaning.")
         cleaned_sections = _clean_sections(extracted["sections"])
+        cleaned_sections = _strip_repeated_headers_footers(cleaned_sections)
         if not cleaned_sections:
             cleaned_sections = [{"text": cleaned_text, "page_number": None, "section_title": None}]
         extraction.extracted_text = cleaned_text
@@ -2482,6 +2878,16 @@ async def _process_document_version(
         processing_phase = "chunking"
         doc.processing_status = KnowledgeProcessingStatus.CHUNKING
         chunks = _chunk_sections(cleaned_sections)
+        _warnings, quality_score, diagnostics = _analyze_extraction_quality(
+            file_name=doc.file_name,
+            raw_text=str(extracted["text"]),
+            cleaned_text=cleaned_text,
+            sections=cleaned_sections,
+            chunks=chunks,
+            page_count=int(extracted["page_count"]) if extracted.get("page_count") is not None else None,
+        )
+        extraction.diagnostics = diagnostics
+        extraction.quality_score = quality_score
         chunk_rows: list[KnowledgeDocumentChunk] = []
         for index, chunk_data in enumerate(chunks):
             chunk = KnowledgeDocumentChunk(
@@ -2492,6 +2898,8 @@ async def _process_document_version(
                 chunk_index=index,
                 heading=chunk_data["section_title"],
                 section_title=chunk_data["section_title"],
+                section_path=chunk_data.get("section_path"),
+                chunk_type=str(chunk_data.get("chunk_type") or "text"),
                 page_number=chunk_data["page_number"],
                 content=chunk_data["chunk_text"],
                 chunk_text=chunk_data["chunk_text"],
@@ -2594,6 +3002,63 @@ def _save_upload_locally(org_id: UUID, document_id: UUID, version: str, file_nam
     return path
 
 
+def _strip_repeated_headers_footers(sections: list[dict[str, object]]) -> list[dict[str, object]]:
+    if len(sections) < 3:
+        return sections
+    line_counts: dict[str, int] = {}
+    for section in sections:
+        lines = str(section.get("text") or "").splitlines()
+        for line in (*lines[:2], *lines[-2:]):
+            cleaned = line.strip()
+            if len(cleaned) < 8:
+                continue
+            line_counts[cleaned] = line_counts.get(cleaned, 0) + 1
+    threshold = max(2, int(len(sections) * 0.4))
+    repeated = {line for line, count in line_counts.items() if count >= threshold}
+    if not repeated:
+        return sections
+    cleaned_sections: list[dict[str, object]] = []
+    for section in sections:
+        lines = [line for line in str(section.get("text") or "").splitlines() if line.strip() not in repeated]
+        text = "\n".join(lines).strip()
+        if text:
+            cleaned_sections.append({**section, "text": text})
+    return cleaned_sections or sections
+
+
+def _analyze_extraction_quality(
+    *,
+    file_name: str,
+    raw_text: str,
+    cleaned_text: str,
+    sections: list[dict[str, object]],
+    chunks: list[dict[str, object]],
+    page_count: int | None = None,
+) -> tuple[list[str], int, dict[str, object]]:
+    warnings: list[str] = []
+    char_count = len(cleaned_text.strip())
+    chunk_count = len(chunks)
+    if not char_count:
+        warnings.append("No text found after extraction.")
+    elif char_count < EXTRACTION_MIN_CHARS:
+        warnings.append("Very low text volume after extraction.")
+    if chunk_count < EXTRACTION_MIN_CHUNKS:
+        warnings.append("Few chunks created — document may be hard to search.")
+    if cleaned_text.count("|") + cleaned_text.lower().count("row ") >= 12:
+        warnings.append("Table-heavy document detected — table-aware extraction recommended.")
+    pages = page_count or len({section.get("page_number") for section in sections if section.get("page_number")})
+    if Path(file_name).suffix.lower() == ".pdf" and pages > 0 and char_count / pages < EXTRACTION_MIN_CHARS_PER_PAGE:
+        warnings.append("Likely scanned PDF — OCR recommended.")
+    score = max(0, min(100, 100 - (len(warnings) * 18)))
+    return warnings, score, {
+        "warnings": warnings,
+        "char_count": char_count,
+        "chunk_count": chunk_count,
+        "page_count": pages,
+        "file_name": file_name,
+    }
+
+
 def _extract_text(file_name: str, file_bytes: bytes) -> dict[str, object]:
     suffix = Path(file_name).suffix.lower()
     if suffix not in SUPPORTED_KNOWLEDGE_EXTENSIONS:
@@ -2617,6 +3082,7 @@ def _extract_pdf(file_bytes: bytes) -> dict[str, object]:
         raise RuntimeError("PDF extraction requires PyMuPDF.") from exc
     sections: list[dict[str, object]] = []
     with fitz.open(stream=file_bytes, filetype="pdf") as pdf:
+        page_count = len(pdf)
         for index, page in enumerate(pdf, start=1):
             text = page.get_text("text", sort=True).strip()
             if text:
@@ -2624,7 +3090,7 @@ def _extract_pdf(file_bytes: bytes) -> dict[str, object]:
     full_text = "\n\n".join(str(item["text"]) for item in sections).strip()
     if not full_text:
         raise ValueError("No extractable text found in PDF.")
-    return {"text": full_text, "sections": sections}
+    return {"text": full_text, "sections": sections, "page_count": page_count}
 
 
 def _extract_docx(file_bytes: bytes) -> dict[str, object]:
@@ -2755,7 +3221,16 @@ def _clean_sections(sections: object) -> list[dict[str, object]]:
             continue
         title = _clean_optional(str(section.get("section_title"))) if section.get("section_title") else None
         page_number = section.get("page_number")
-        cleaned.append({"text": text, "page_number": page_number, "section_title": title})
+        section_path = title
+        cleaned.append(
+            {
+                "text": text,
+                "page_number": page_number,
+                "section_title": title,
+                "section_path": section_path,
+                "chunk_type": section.get("chunk_type", "text"),
+            }
+        )
     return cleaned
 
 
@@ -2836,12 +3311,16 @@ def _chunk_sections(sections: list[dict[str, object]]) -> list[dict[str, object]
             chunk_words = words[start:end]
             chunk_text = _rebuild_chunk_text(text, chunk_words).strip()
             if chunk_text:
+                section_title = section.get("section_title")
+                section_path = str(section.get("section_path") or section_title or "")
                 chunks.append(
                     {
                         "chunk_text": chunk_text,
                         "token_count": len(chunk_words),
                         "page_number": section.get("page_number"),
-                        "section_title": section.get("section_title"),
+                        "section_title": section_title,
+                        "section_path": section_path or None,
+                        "chunk_type": section.get("chunk_type", "text"),
                     }
                 )
             if end == len(words):
@@ -3028,6 +3507,7 @@ def _rerank_hybrid_candidates(
     vector_scores: dict[UUID, float],
     keyword_scores: dict[UUID, float],
     doc_map: dict[UUID, KnowledgeDocument],
+    folders_map: dict[UUID, KnowledgeFolder],
     query_text: str,
 ) -> list[tuple[KnowledgeDocumentChunk | _VectorChunk, float]]:
     scored: list[tuple[KnowledgeDocumentChunk | _VectorChunk, float]] = []
@@ -3036,6 +3516,7 @@ def _rerank_hybrid_candidates(
         doc = doc_map.get(chunk.document_id)
         if doc is None:
             continue
+        folder = folders_map.get(doc.folder_id)
         vector_score = max(0.0, vector_scores.get(chunk.id, 0.0))
         keyword_score = max(0.0, keyword_scores.get(chunk.id, 0.0))
         if has_vector:
@@ -3050,10 +3531,33 @@ def _rerank_hybrid_candidates(
         )
         combined += min(EXACT_TERM_BOOST_MAX, exact_boost)
         combined += _recency_boost(doc)
+        combined += _metadata_match_boost(doc, folder, query_text)
         if combined > 0:
             scored.append((chunk, round(min(1.0, combined), 4)))
     scored.sort(key=lambda item: item[1], reverse=True)
     return scored
+
+
+def _metadata_match_boost(
+    doc: KnowledgeDocument,
+    folder: KnowledgeFolder | None,
+    query_text: str,
+) -> float:
+    query_lower = query_text.lower()
+    targets = [
+        doc.title,
+        doc.version,
+        doc.owner_approver,
+        doc.project or "",
+        doc.department or "",
+        doc.source_type.value.replace("_", " "),
+        doc.status.value if doc.status is not None else "",
+        folder.name if folder else "",
+    ]
+    hits = sum(1 for target in targets if target and target.lower() in query_lower)
+    if not hits:
+        return 0.0
+    return min(METADATA_BOOST_MAX, (hits / max(len(targets), 1)) * METADATA_BOOST_MAX)
 
 
 def _tokenize_search_text(text_value: str) -> list[str]:
@@ -3644,6 +4148,7 @@ def _build_retrieval_params(
     vector_scores: dict[UUID, float],
     keyword_scores: dict[UUID, float],
     confidence_score: float | None = None,
+    timings: dict[str, float] | None = None,
 ) -> dict[str, object]:
     sources: list[dict[str, object]] = []
     for chunk, score in matches:
@@ -3673,6 +4178,8 @@ def _build_retrieval_params(
     }
     if confidence_score is not None:
         params["confidence_score"] = confidence_score
+    if timings:
+        params["timings"] = timings
     return params
 
 

@@ -4,6 +4,7 @@ from uuid import uuid4
 from app.db.models.entities import KnowledgeDocument, KnowledgeDocumentChunk, KnowledgeSourceType
 from app.schemas.domain import KnowledgeConversationTurn
 from app.services.knowledge import (
+    _analyze_extraction_quality,
     _build_standalone_retrieval_query,
     _build_retrieval_query,
     _fast_retrieval_query,
@@ -156,6 +157,7 @@ def test_hybrid_rerank_boosts_recent_approved_documents() -> None:
         vector_scores={old_chunk.id: 0.65, new_chunk.id: 0.65},
         keyword_scores={old_chunk.id: 0.5, new_chunk.id: 0.5},
         doc_map=docs,
+        folders_map={},
         query_text="Escalation SOP approval",
     )
 
@@ -185,6 +187,20 @@ def test_grounding_check_flags_unsupported_claims() -> None:
 
     assert result["grounded"] is False
     assert result["support"] < 0.65
+
+
+def test_analyze_extraction_quality_flags_scanned_pdf() -> None:
+    warnings, score, diagnostics = _analyze_extraction_quality(
+        file_name="scan.pdf",
+        raw_text="tiny",
+        cleaned_text="short",
+        sections=[{"text": "short", "page_number": 1}],
+        chunks=[{"chunk_text": "short"}],
+        page_count=5,
+    )
+    assert any("OCR" in warning for warning in warnings)
+    assert score < 100
+    assert diagnostics["page_count"] == 5
 
 
 def test_loaded_datetime_reads_explicit_in_memory_value() -> None:

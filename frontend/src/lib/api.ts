@@ -33,14 +33,15 @@ import type {
   KnowledgeAskResponseApi,
   KnowledgeAnswerModeApi,
   AgentQueryApi,
-  KnowledgeConversationTurnApi,
+  KnowledgeConversationApi,
+  KnowledgeConversationSummaryApi,
+  KnowledgeConversationHistoryTurnApi,
   KnowledgeDocumentFilters,
   KnowledgeDocumentVersionApi,
   KnowledgeFeedbackRequestApi,
   KnowledgeFeedbackResponseApi,
   KnowledgeFolderApi,
   KnowledgeGapTodoApi,
-  KnowledgeLessonApi,
   KnowledgeLibraryHealthApi,
   KnowledgeRetrievalSettingsApi,
   KnowledgeVersionCompareApi,
@@ -1147,8 +1148,9 @@ export async function downloadKnowledgeDocumentFile(documentId: string): Promise
 }
 
 export type KnowledgeAskOptions = {
-  conversationHistory?: KnowledgeConversationTurnApi[];
+  conversationHistory?: KnowledgeConversationHistoryTurnApi[];
   answerMode?: KnowledgeAnswerModeApi;
+  conversationId?: string | null;
 };
 
 export async function askKnowledgeAgent(queryText: string, options: KnowledgeAskOptions = {}): Promise<KnowledgeAskResponseApi> {
@@ -1158,6 +1160,9 @@ export async function askKnowledgeAgent(queryText: string, options: KnowledgeAsk
   };
   if (options.answerMode !== undefined) {
     payload.answer_mode = options.answerMode;
+  }
+  if (options.conversationId) {
+    payload.conversation_id = options.conversationId;
   }
   const body = await apiFetch<{ data: KnowledgeAskResponseApi }>("/knowledge/ask", {
     method: "POST",
@@ -1169,9 +1174,10 @@ export async function askKnowledgeAgent(queryText: string, options: KnowledgeAsk
 
 export type KnowledgeStreamEvent =
   | { type: "meta"; query_id?: string; confidence_estimate: number }
+  | { type: "status"; phase: "searching" | "reading" | "generating" }
   | { type: "delta"; text: string }
   | { type: "replace"; text: string }
-  | { type: "done"; query_id?: string | null; answer_text: string; confidence_score: number; confidence_reasons: string[]; next_step: string; structured_answer: KnowledgeAskResponseApi["structured_answer"]; model_used: string | null; retrieval_debug?: KnowledgeAskResponseApi["retrieval_debug"] }
+  | { type: "done"; query_id?: string | null; conversation_id?: string | null; answer_text: string; confidence_score: number; confidence_reasons: string[]; next_step: string; structured_answer: KnowledgeAskResponseApi["structured_answer"]; model_used: string | null; retrieval_debug?: KnowledgeAskResponseApi["retrieval_debug"] }
   | { type: "error"; message: string };
 
 export async function* streamKnowledgeAsk(
@@ -1183,6 +1189,7 @@ export async function* streamKnowledgeAsk(
     conversation_history: options.conversationHistory ?? [],
   };
   if (options.answerMode !== undefined) payload.answer_mode = options.answerMode;
+  if (options.conversationId) payload.conversation_id = options.conversationId;
 
   const headers = new Headers({ "Content-Type": "application/json", "X-BSG-User-Action": "true" });
   const csrf = document.cookie.match(/(?:^|; )csrf_token=([^;]*)/)?.[1];
@@ -1273,11 +1280,6 @@ export async function listKnowledgeDocumentVersions(
   return body.data;
 }
 
-export async function listKnowledgeLessons(): Promise<KnowledgeLessonApi[]> {
-  const body = await apiFetch<{ data: KnowledgeLessonApi[] }>("/knowledge/lessons");
-  return body.data;
-}
-
 export async function compareKnowledgeDocumentVersions(
   documentId: string,
   leftVersionId: string,
@@ -1310,6 +1312,20 @@ export async function updateKnowledgeRetrievalSettings(
 
 export async function getKnowledgeQueryAnswer(queryId: string): Promise<KnowledgeAskResponseApi> {
   const body = await apiFetch<{ data: KnowledgeAskResponseApi }>(`/knowledge/queries/${queryId}`);
+  return body.data;
+}
+
+export async function listKnowledgeConversations(limit = 30): Promise<KnowledgeConversationSummaryApi[]> {
+  const body = await apiFetch<{ data: KnowledgeConversationSummaryApi[] }>(
+    `/knowledge/conversations?limit=${limit}`,
+  );
+  return body.data;
+}
+
+export async function getKnowledgeConversation(conversationId: string): Promise<KnowledgeConversationApi> {
+  const body = await apiFetch<{ data: KnowledgeConversationApi }>(
+    `/knowledge/conversations/${conversationId}`,
+  );
   return body.data;
 }
 

@@ -13,13 +13,14 @@ import {
   createKnowledgeFolder,
   deleteKnowledgeDocument,
   getKnowledgeBootstrap,
+  getKnowledgeConversation,
   getKnowledgeDocument,
   getKnowledgeLibraryHealth,
   getKnowledgeRetrievalSettings,
   listAgentQueries,
+  listKnowledgeConversations,
   listKnowledgeDocumentVersions,
   listKnowledgeDocuments,
-  listKnowledgeLessons,
   reindexKnowledgeDocument,
   resolveKnowledgeGap,
   updateKnowledgeDocument,
@@ -33,7 +34,8 @@ import { useAuthStore } from "@/stores/useAuthStore";
 import type {
   AgentQueryApi,
   KnowledgeBootstrapApi,
-  KnowledgeLessonApi,
+  KnowledgeConversationApi,
+  KnowledgeConversationSummaryApi,
   KnowledgeLibraryHealthApi,
   KnowledgeRetrievalSettingsApi,
 } from "@/types/knowledge";
@@ -76,7 +78,24 @@ export function invalidateKnowledgeLibrary(queryClient: QueryClient) {
 }
 
 export function invalidateKnowledgeAgentQueries(queryClient: QueryClient) {
-  return queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeAgentQueries });
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeAgentQueries }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeConversations }),
+  ]);
+}
+
+export function knowledgeConversationsQueryOptions(enabled = true) {
+  return queryOptions({
+    queryKey: queryKeys.knowledgeConversations,
+    queryFn: () => listKnowledgeConversations(30),
+    enabled,
+    ...knowledgeQueryDefaults,
+  });
+}
+
+export function useKnowledgeConversationsQuery(enabled = true) {
+  const sessionReady = useKnowledgeSessionReady();
+  return useQuery(knowledgeConversationsQueryOptions(enabled && sessionReady));
 }
 
 export function patchKnowledgeDocumentsCache(
@@ -142,16 +161,6 @@ export function knowledgeDocumentVersionsQueryOptions(documentId: string) {
   });
 }
 
-export function knowledgeLessonsQueryOptions(enabled = true) {
-  return queryOptions({
-    queryKey: queryKeys.knowledgeLessons,
-    queryFn: listKnowledgeLessons,
-    enabled,
-    ...knowledgeQueryDefaults,
-    placeholderData: keepPreviousData,
-  });
-}
-
 export function knowledgeAgentQueriesQueryOptions(enabled = true) {
   return queryOptions({
     queryKey: queryKeys.knowledgeAgentQueries,
@@ -208,11 +217,6 @@ export function useKnowledgeDocumentsQuery(
     initialData,
     initialDataUpdatedAt: initialData ? Date.now() : undefined,
   });
-}
-
-export function useKnowledgeLessonsQuery(enabled = true) {
-  const sessionReady = useKnowledgeSessionReady();
-  return useQuery(knowledgeLessonsQueryOptions(enabled && sessionReady));
 }
 
 export function useKnowledgeDocumentVersionsQuery(documentId: string, enabled = true) {

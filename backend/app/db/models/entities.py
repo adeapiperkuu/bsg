@@ -905,6 +905,10 @@ class AgentQuery(Base, UuidPrimaryKey, CreatedAt):
     model_used: Mapped[str | None] = mapped_column(Text)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     retrieval_params: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    conversation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_queries.id", ondelete="SET NULL"),
+        index=True,
+    )
 
 
 class AgentQueryEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
@@ -1311,6 +1315,8 @@ class KnowledgeDocumentExtraction(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     )
     extraction_error: Mapped[str | None] = mapped_column(Text)
     extracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    diagnostics: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    quality_score: Mapped[int | None] = mapped_column(Integer)
 
 
 class KnowledgeDocumentChunk(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
@@ -1337,6 +1343,8 @@ class KnowledgeDocumentChunk(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     visibility: Mapped[KnowledgeVisibility | None] = mapped_column(knowledge_visibility)
     project: Mapped[str | None] = mapped_column(Text)
     department: Mapped[str | None] = mapped_column(Text)
+    chunk_type: Mapped[str] = mapped_column(Text, default="text", server_default="text")
+    section_path: Mapped[str | None] = mapped_column(Text)
     embedding: Mapped[list[float] | None] = mapped_column(VectorType(1536))
 
 

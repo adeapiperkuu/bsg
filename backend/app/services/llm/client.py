@@ -80,7 +80,7 @@ Return ONLY valid JSON (no markdown fences):
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-RAG_CONTEXT_CHUNK_CHARS = 1200
+RAG_CONTEXT_CHUNK_CHARS = 800
 RAG_MAX_OUTPUT_TOKENS = 700
 FAST_PATH_MAX_TOKENS = 400
 FAST_PATH_THRESHOLD = 0.85  # top chunk score above which fast path is used

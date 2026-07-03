@@ -33,7 +33,7 @@ import {
   askKnowledgeAgent,
   compareKnowledgeDocumentVersions,
   downloadKnowledgeDocumentFile,
-  getKnowledgeQueryAnswer,
+  getKnowledgeConversation,
   streamKnowledgeAsk,
   submitKnowledgeFeedback,
 } from "@/lib/api";
@@ -45,7 +45,6 @@ import {
   useDeleteKnowledgeDocumentMutation,
   useKnowledgeBootstrapQuery,
   useKnowledgeDocumentsQuery,
-  useKnowledgeLessonsQuery,
   useKnowledgeLibraryHealthQuery,
   useKnowledgeRetrievalSettingsQuery,
   useReindexKnowledgeDocumentMutation,
@@ -75,7 +74,8 @@ import {
 } from "@/lib/knowledge-mappers";
 import type {
   KnowledgeAskResponseApi,
-  AgentQueryApi,
+  KnowledgeConversationSummaryApi,
+  KnowledgeConversationTurnApi,
   KnowledgeDocumentVersionApi,
   KnowledgeFolderKind,
   KnowledgeGapApi,
@@ -147,7 +147,9 @@ type ChatMessage = {
   feedbackComment?: string;
   isServiceError?: boolean;
   isStreaming?: boolean;
+  streamPhase?: "searching" | "reading" | "generating";
   wasStreamed?: boolean;
+  isHistorical?: boolean;
   retryQuestion?: string;
   detailsExpanded?: boolean;
 };
@@ -190,6 +192,11 @@ const FOLDER_SUGGESTIONS: Partial<Record<KnowledgeFolderKind, string>> = {
   histories: "Ask about Histories — what lessons learned are captured?",
 };
 const TYPEWRITER_MAX_CHARS = 4000;
+const STREAM_PHASE_LABELS: Record<NonNullable<ChatMessage["streamPhase"]>, string> = {
+  searching: "Searching sources…",
+  reading: "Reading documents…",
+  generating: "Generating answer…",
+};
 const LOW_CONFIDENCE_THRESHOLD = 0.5;
 const NO_KNOWLEDGE_ANSWER =
   "I could not find this information in the uploaded knowledge base.";
@@ -200,6 +207,7 @@ const CHAT_SCROLL_THRESHOLD_PX = 80;
 const LIBRARY_DEBOUNCE_MS = 120;
 
 type KnowledgeChatSession = {
+  conversationId: string | null;
   messages: ChatMessage[];
 };
 
@@ -311,7 +319,11 @@ function loadKnowledgeChatSession(userId: string): KnowledgeChatSession | null {
       .map(normalizeChatMessage)
       .filter((message): message is ChatMessage => message !== null);
     if (messages.length !== parsed.messages.length) return null;
-    return { messages };
+    const conversationId =
+      typeof (parsed as KnowledgeChatSession).conversationId === "string"
+        ? (parsed as KnowledgeChatSession).conversationId
+        : null;
+    return { messages, conversationId };
   } catch {
     return null;
   }
@@ -402,7 +414,10 @@ function findPrecedingUserQuestion(messages: ChatMessage[], agentMessageId: stri
   return null;
 }
 
-function agentMessageFromResponse(response: KnowledgeAskResponseApi): ChatMessage {
+function agentMessageFromResponse(
+  response: KnowledgeAskResponseApi,
+  options?: { isHistorical?: boolean },
+): ChatMessage {
   return {
     id: createChatMessageId(),
     role: "agent",
@@ -414,9 +429,20 @@ function agentMessageFromResponse(response: KnowledgeAskResponseApi): ChatMessag
     knowledge_gap: response.knowledge_gap,
     retrieval_debug: response.retrieval_debug ?? null,
     query_id: response.query_id,
+    isHistorical: options?.isHistorical ?? false,
+    wasStreamed: options?.isHistorical ? false : undefined,
     detailsExpanded:
       (response.confidence_score ?? 1) < LOW_CONFIDENCE_THRESHOLD || !!response.knowledge_gap,
   };
+}
+
+function messagesFromConversation(turns: KnowledgeConversationTurnApi[]): ChatMessage[] {
+  const messages: ChatMessage[] = [];
+  for (const turn of turns) {
+    messages.push(createUserMessage(turn.query_text));
+    messages.push(agentMessageFromResponse(turn.answer, { isHistorical: true }));
+  }
+  return messages;
 }
 
 function inferAnswerMode(question: string): "internal" | "client_safe" {
@@ -470,7 +496,10 @@ function isMessageDetailsOpen(message: ChatMessage) {
   return message.detailsExpanded ?? (isLowConfidenceMessage(message) || !!message.knowledge_gap);
 }
 
-function summarizeRegeneration(previous: ChatMessage, next: ChatMessage): string {
+function summarizeRegeneration(
+  previous: ChatMessage,
+  next: Pick<ChatMessage, "text" | "confidence_score">,
+): string {
   const parts: string[] = [];
   if (previous.confidence_score !== undefined && next.confidence_score !== undefined) {
     const delta = Math.round((next.confidence_score - previous.confidence_score) * 100);
@@ -559,6 +588,7 @@ function KnowledgePage() {
   const [asking, setAsking] = useState(false);
   const [animatingMessageId, setAnimatingMessageId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [liveAnnouncement, setLiveAnnouncement] = useState("");
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
@@ -577,7 +607,6 @@ function KnowledgePage() {
   const [uploadWarning, setUploadWarning] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
-  const [showLessonsPanel, setShowLessonsPanel] = useState(false);
   const [activeFolder, setActiveFolder] = useState<string | "All">("All");
   const [statusFilter, setStatusFilter] = useState<DocumentStatus | "All">("All");
   const [workflowFilter, setWorkflowFilter] = useState<WorkflowState | "All">("All");
@@ -607,7 +636,6 @@ function KnowledgePage() {
     processingPollActive,
     librarySnapshot?.documents,
   );
-  const lessonsQuery = useKnowledgeLessonsQuery(showLessonsPanel);
   const debouncedSearchTerm = useDebouncedValue(searchTerm, LIBRARY_DEBOUNCE_MS);
   const debouncedActiveFolder = useDebouncedValue(activeFolder, LIBRARY_DEBOUNCE_MS);
   const debouncedStatusFilter = useDebouncedValue(statusFilter, LIBRARY_DEBOUNCE_MS);
@@ -921,17 +949,21 @@ function KnowledgePage() {
     setLiveAnnouncement(`Knowledge Agent: ${text}`);
   };
 
-  const finishAgentAnswer = (messageId: string, text: string, options?: { skipAnimation?: boolean }) => {
+  const finishAgentAnswer = (
+    messageId: string,
+    text: string,
+    options?: { skipAnimation?: boolean; isHistorical?: boolean },
+  ) => {
     const displayText = text.trim();
     if (!displayText) {
       announceAgentMessage(NO_KNOWLEDGE_ANSWER);
       return;
     }
-    if (!options?.skipAnimation && shouldAnimateAnswer(displayText)) {
-      setAnimatingMessageId(messageId);
+    if (options?.skipAnimation || options?.isHistorical || !shouldAnimateAnswer(displayText)) {
+      announceAgentMessage(displayText);
       return;
     }
-    announceAgentMessage(displayText);
+    setAnimatingMessageId(messageId);
   };
 
   useEffect(() => {
@@ -954,6 +986,7 @@ function KnowledgePage() {
     chatHydratedUserIdRef.current = userId;
     const stored = loadKnowledgeChatSession(userId);
     setMessages(stored?.messages ?? []);
+    setActiveConversationId(stored?.conversationId ?? null);
     setAnimatingMessageId(null);
   }, [user?.id]);
 
@@ -964,8 +997,8 @@ function KnowledgePage() {
       clearKnowledgeChatSession(userId);
       return;
     }
-    saveKnowledgeChatSession(userId, { messages });
-  }, [user?.id, messages]);
+    saveKnowledgeChatSession(userId, { messages, conversationId: activeConversationId });
+  }, [user?.id, messages, activeConversationId]);
 
   useEffect(() => {
     if (!isDocumentOpen || !activeChunkId || documentTab !== "chunks") return;
@@ -1228,6 +1261,7 @@ function KnowledgePage() {
     const askOptions = {
       conversationHistory,
       answerMode: inferAnswerMode(question),
+      conversationId: activeConversationId,
     };
 
     try {
@@ -1238,6 +1272,12 @@ function KnowledgePage() {
               msg.id === agentMsgId
                 ? { ...msg, query_id: event.query_id ?? null }
                 : msg,
+            ),
+          );
+        } else if (event.type === "status") {
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId ? { ...msg, streamPhase: event.phase } : msg,
             ),
           );
         } else if (event.type === "delta") {
@@ -1282,6 +1322,9 @@ function KnowledgePage() {
               };
             }),
           );
+          if (event.conversation_id) {
+            setActiveConversationId(event.conversation_id);
+          }
           finishAgentAnswer(agentMsgId, resolvedText, { skipAnimation: true });
           if ((event.confidence_score ?? 1) === 0) {
             void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeLibraryHealth });
@@ -1354,39 +1397,101 @@ function KnowledgePage() {
 
     const priorMessages = messages.slice(0, agentIndex);
     const conversationHistory = buildConversationHistory(priorMessages.slice(0, -1));
+    const agentMsgId = createChatMessageId();
 
     followChatScrollRef.current = true;
     setShowJumpToBottom(false);
-    setMessages((current) => current.filter((message) => message.id !== agentMessageId));
+    setMessages((current) => {
+      const next = current.filter((message) => message.id !== agentMessageId);
+      next.splice(agentIndex, 0, { id: agentMsgId, role: "agent", text: "", isStreaming: true });
+      return next;
+    });
     setAnimatingMessageId(null);
     setAsking(true);
+
+    let gotDone = false;
+    let streamAnswer = "";
+    const askOptions = {
+      conversationHistory,
+      answerMode: inferAnswerMode(question),
+      conversationId: activeConversationId,
+    };
+
     try {
-      const response = await askKnowledgeAgent(question, {
-        conversationHistory,
-        answerMode: inferAnswerMode(question),
-      });
-      const agentMsg = agentMessageFromResponse(response);
-      agentMsg.regenerationSummary = summarizeRegeneration(previousAgentMessage, agentMsg);
-      setMessages((current) => {
-        const next = [...current];
-        next.splice(agentIndex, 0, agentMsg);
-        return next;
-      });
-      finishAgentAnswer(agentMsg.id, agentMsg.text);
+      for await (const event of streamKnowledgeAsk(question, askOptions)) {
+        if (event.type === "status") {
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId ? { ...msg, streamPhase: event.phase } : msg,
+            ),
+          );
+        } else if (event.type === "delta") {
+          streamAnswer += event.text;
+          const liveText = streamAnswer;
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId ? { ...msg, text: liveText, wasStreamed: true } : msg,
+            ),
+          );
+          scrollChatToEnd();
+        } else if (event.type === "done") {
+          gotDone = true;
+          const resolvedText = resolveAgentAnswerText(
+            { text: streamAnswer, structured_answer: event.structured_answer, next_step: event.next_step },
+            event.answer_text,
+          );
+          const agentMsg: ChatMessage = {
+            id: agentMsgId,
+            role: "agent",
+            text: resolvedText,
+            isStreaming: false,
+            wasStreamed: true,
+            query_id: event.query_id,
+            confidence_score: event.confidence_score,
+            confidence_reasons: event.confidence_reasons,
+            next_step: event.next_step || undefined,
+            structured_answer: event.structured_answer ?? null,
+            retrieval_debug: event.retrieval_debug ?? null,
+            regenerationSummary: summarizeRegeneration(previousAgentMessage, {
+              text: resolvedText,
+              confidence_score: event.confidence_score,
+            }),
+            detailsExpanded: (event.confidence_score ?? 1) < LOW_CONFIDENCE_THRESHOLD,
+          };
+          setMessages((current) =>
+            current.map((msg) => (msg.id === agentMsgId ? agentMsg : msg)),
+          );
+          if (event.conversation_id) {
+            setActiveConversationId(event.conversation_id);
+          }
+          finishAgentAnswer(agentMsgId, resolvedText, { skipAnimation: true });
+        } else if (event.type === "error") {
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId
+                ? { ...msg, text: "Couldn't reach the agent — retry?", isStreaming: false, isServiceError: true, retryQuestion: question }
+                : msg,
+            ),
+          );
+        }
+      }
+      if (!gotDone && !streamAnswer.trim()) {
+        setMessages((current) =>
+          current.map((msg) =>
+            msg.id === agentMsgId
+              ? { ...msg, text: "Couldn't reach the agent — retry?", isStreaming: false, isServiceError: true, retryQuestion: question }
+              : msg,
+          ),
+        );
+      }
     } catch {
-      const errorMsg: ChatMessage = {
-        id: createChatMessageId(),
-        role: "agent",
-        text: "Couldn't reach the agent — retry?",
-        isServiceError: true,
-        retryQuestion: question,
-      };
-      setMessages((current) => {
-        const next = [...current];
-        next.splice(agentIndex, 0, errorMsg);
-        return next;
-      });
-      announceAgentMessage(errorMsg.text);
+      setMessages((current) =>
+        current.map((msg) =>
+          msg.id === agentMsgId
+            ? { ...msg, text: "Couldn't reach the agent — retry?", isStreaming: false, isServiceError: true, retryQuestion: question }
+            : msg,
+        ),
+      );
     } finally {
       setAsking(false);
       void invalidateKnowledgeAgentQueries(queryClient);
@@ -1444,20 +1549,18 @@ function KnowledgePage() {
     await submitAsk(question, { skipUserMessage: true });
   };
 
-  const openSavedAnswer = async (query: AgentQueryApi) => {
+  const openConversation = async (conversation: KnowledgeConversationSummaryApi) => {
     if (asking) return;
-    setAsking(true);
     try {
-      const response = await getKnowledgeQueryAnswer(query.id);
-      const userMsg = createUserMessage(query.query_text);
-      const agentMsg = agentMessageFromResponse(response);
-      agentMsg.detailsExpanded = true;
-      setMessages((current) => [...current, userMsg, agentMsg]);
-      finishAgentAnswer(agentMsg.id, agentMsg.text);
+      const loaded = await getKnowledgeConversation(conversation.id);
+      setAnimatingMessageId(null);
+      setActiveConversationId(loaded.id);
+      setMessages(messagesFromConversation(loaded.turns));
+      followChatScrollRef.current = true;
+      setShowJumpToBottom(false);
+      scrollChatToEnd(true);
     } catch {
-      window.alert("Could not reopen that saved answer.");
-    } finally {
-      setAsking(false);
+      window.alert("Could not load that conversation.");
     }
   };
 
@@ -1508,6 +1611,7 @@ function KnowledgePage() {
 
   const clearConversation = () => {
     setMessages([]);
+    setActiveConversationId(null);
     setAnimatingMessageId(null);
     setCopiedMessageId(null);
     setAskInput("");
@@ -1879,50 +1983,6 @@ function KnowledgePage() {
                 {isLibraryControlSettling ? "Updating filters..." : "Refreshing library..."}
               </div>
             )}
-            {!loadingDocs && (
-            <div className="flex items-center justify-between gap-2">
-              <button
-                type="button"
-                onClick={() => setShowLessonsPanel((current) => !current)}
-                className="text-xs font-medium text-muted-foreground hover:text-foreground"
-              >
-                {showLessonsPanel ? "Hide structured lessons" : "Show structured lessons"}
-              </button>
-            </div>
-            )}
-            {showLessonsPanel && (
-              <section className="rounded-md border border-border/70 bg-secondary/20 p-3">
-                <div className="mb-2 text-xs font-semibold text-foreground">Structured lessons</div>
-                {lessonsQuery.isLoading && (lessonsQuery.data?.length ?? 0) === 0 ? (
-                  <div className="space-y-2">
-                    {Array.from({ length: 2 }).map((_, index) => (
-                      <div key={index} className="rounded-md border border-border/60 bg-card/70 p-2">
-                        <Skeleton className="h-4 w-3/5" />
-                        <Skeleton className="mt-2 h-3 w-full" />
-                        <Skeleton className="mt-1.5 h-3 w-4/5" />
-                      </div>
-                    ))}
-                  </div>
-                ) : (lessonsQuery.data?.length ?? 0) === 0 ? (
-                  <p className="text-xs text-muted-foreground">No structured lessons yet.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {lessonsQuery.isFetching && (
-                      <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                        Refreshing lessons...
-                      </div>
-                    )}
-                    {lessonsQuery.data?.map((lesson) => (
-                      <div key={lesson.id} className="rounded-md border border-border/60 bg-card/70 p-2">
-                        <div className="text-sm font-medium text-foreground">{lesson.title}</div>
-                        <p className="mt-1 line-clamp-3 text-xs text-muted-foreground">{lesson.body}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </section>
-            )}
             <>
             {groupedDocuments.map((group) => {
               const isCollapsed = collapsedFolders.has(group.id);
@@ -2162,7 +2222,11 @@ function KnowledgePage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <KnowledgeHistoryPopover asking={asking} onSelectQuery={openSavedAnswer} />
+                  <KnowledgeHistoryPopover
+                    asking={asking}
+                    activeConversationId={activeConversationId}
+                    onSelectConversation={openConversation}
+                  />
                   {!loadingDocs && (
                     <span className="rounded-full bg-[color:var(--success)]/10 px-2.5 py-1 text-[10px] font-medium text-[color:var(--success)]">
                       {approvedIndexedDocs.length} sources ready
@@ -2177,8 +2241,8 @@ function KnowledgePage() {
                       className="h-8 gap-1.5 px-2 text-xs text-muted-foreground"
                       onClick={clearConversation}
                     >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      Clear conversation
+                      <Plus className="h-3.5 w-3.5" />
+                      New chat
                     </Button>
                   )}
                 </div>
@@ -2238,7 +2302,10 @@ function KnowledgePage() {
                 </div>
               ) : (
               messages.map((message) => {
-                const isAnimating = message.role === "agent" && message.id === animatingMessageId;
+                const isAnimating =
+                  message.role === "agent" &&
+                  message.id === animatingMessageId &&
+                  !message.isHistorical;
                 const isAgentReply = message.role === "agent" && !message.isServiceError && !message.isStreaming;
                 const showPostAnimationActions = isAgentReply && !isAnimating;
                 const showAgentDetails = isAgentReply && !isAnimating;
@@ -2323,7 +2390,11 @@ function KnowledgePage() {
                           />
                         </p>
                       ) : (
-                        <TypingIndicator />
+                        <p className="text-sm text-muted-foreground">
+                          {message.streamPhase
+                            ? STREAM_PHASE_LABELS[message.streamPhase]
+                            : "Thinking…"}
+                        </p>
                       )
                     ) : (
                       <p className={cn("leading-5", message.isServiceError && "text-foreground")}>

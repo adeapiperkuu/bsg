@@ -927,27 +927,6 @@ class ClientCsatCreate(BaseModel):
 # --- Phase 2.0 Quality Intelligence schemas ---
 
 
-class KnowledgeLessonCreate(BaseModel):
-    title: str
-    body: str
-    tags: list[str] = []
-    linked_quality_event_id: UUID | None = None
-    linked_alert_id: UUID | None = None
-
-
-class KnowledgeLessonRead(ORMModel):
-    id: UUID
-    org_id: UUID
-    title: str
-    body: str
-    tags: list[str] = []
-    linked_quality_event_id: UUID | None = None
-    linked_alert_id: UUID | None = None
-    created_by: UUID
-    created_at: datetime
-    updated_at: datetime
-
-
 class ReviewerScorecardCreate(BaseModel):
     annotator_id: UUID
     iso_year: int = Field(ge=2024)
@@ -1379,13 +1358,18 @@ class KnowledgeConversationTurn(BaseModel):
 
 class KnowledgeAskCreate(BaseModel):
     query_text: str = Field(min_length=1, max_length=8000)
+    conversation_id: UUID | None = None
     conversation_history: list[KnowledgeConversationTurn] = Field(default_factory=list, max_length=6)
     answer_mode: Literal["internal", "client_safe"] = "internal"
     include_histories: bool = True
-    max_sources: int = Field(default=5, ge=1, le=10)
+    max_sources: int = Field(default=3, ge=1, le=10)
     min_relevance_score: float = Field(default=0.25, ge=0.0, le=1.0)
     project: str | None = None
     department: str | None = None
+    folder_id: UUID | None = None
+    source_type: str | None = None
+    effective_date_from: date | None = None
+    effective_date_to: date | None = None
 
 
 class KnowledgeStructuredAnswer(BaseModel):
@@ -1492,8 +1476,27 @@ class KnowledgeAskRead(BaseModel):
     structured_answer: KnowledgeStructuredAnswer | None = None
     knowledge_gap: KnowledgeGapRead | None = None
     query_id: UUID | None = None
+    conversation_id: UUID | None = None
     model_used: str | None = None
     retrieval_debug: dict[str, object] | None = None
+
+
+class KnowledgeConversationSummaryRead(BaseModel):
+    id: UUID
+    title: str
+    turn_count: int
+    updated_at: datetime
+
+
+class KnowledgeConversationTurnRead(BaseModel):
+    query_id: UUID
+    query_text: str
+    answer: KnowledgeAskRead
+
+
+class KnowledgeConversationRead(BaseModel):
+    id: UUID
+    turns: list[KnowledgeConversationTurnRead]
 
 
 class KnowledgeDocumentVersionRead(BaseModel):
@@ -1522,7 +1525,7 @@ class KnowledgeRetrievalSettingsRead(BaseModel):
     only_approved: bool = True
     include_histories: bool = True
     min_confidence: float = 0.25
-    max_sources: int = 5
+    max_sources: int = 3
     project: str | None = None
     department: str | None = None
 

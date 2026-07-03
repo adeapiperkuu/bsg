@@ -24,6 +24,8 @@ from app.schemas.domain import (
     KnowledgeAskCreate,
     KnowledgeAskRead,
     KnowledgeBootstrapRead,
+    KnowledgeConversationRead,
+    KnowledgeConversationSummaryRead,
     KnowledgeDocumentRead,
     KnowledgeDocumentUpdate,
     KnowledgeDocumentVersionRead,
@@ -33,8 +35,6 @@ from app.schemas.domain import (
     KnowledgeFolderRead,
     KnowledgeGapTodoRead,
     KnowledgeLibraryHealthRead,
-    KnowledgeLessonCreate,
-    KnowledgeLessonRead,
     KnowledgeRetrievalSettingsRead,
     KnowledgeRetrievalSettingsUpdate,
     KnowledgeVersionCompareRead,
@@ -44,18 +44,18 @@ from app.services.knowledge import (
     compare_document_versions,
     create_document_from_upload,
     create_knowledge_folder_by_name,
-    create_lesson,
     delete_document,
     get_document,
     get_document_file_download,
     get_knowledge_bootstrap,
+    get_knowledge_conversation,
     get_knowledge_library_health,
     get_knowledge_query_answer,
     get_retrieval_settings,
     list_document_versions,
     list_documents,
+    list_knowledge_conversations,
     list_knowledge_folders,
-    list_lessons,
     process_knowledge_document_job,
     record_knowledge_feedback,
     reindex_document,
@@ -326,6 +326,12 @@ async def ask_knowledge(
         min_relevance_score=payload.min_relevance_score if payload.min_relevance_score is not None else org_settings.min_confidence,
         project=payload.project or org_settings.project,
         department=payload.department or org_settings.department,
+        folder_id=payload.folder_id,
+        source_type=payload.source_type,
+        effective_date_from=payload.effective_date_from,
+        effective_date_to=payload.effective_date_to,
+        only_approved=org_settings.only_approved,
+        conversation_id=payload.conversation_id,
     )
     await session.commit()
     return DataResponse(data=row)
@@ -365,6 +371,12 @@ async def stream_knowledge(
                 min_relevance_score=min_relevance_score,
                 project=project,
                 department=department,
+                folder_id=payload.folder_id,
+                source_type=payload.source_type,
+                effective_date_from=payload.effective_date_from,
+                effective_date_to=payload.effective_date_to,
+                only_approved=org_settings.only_approved,
+                conversation_id=payload.conversation_id,
             )
             await prep_session.commit()
         for chunk in early_events:
@@ -422,6 +434,28 @@ async def get_knowledge_query(
     return DataResponse(data=row)
 
 
+@router.get("/knowledge/conversations", response_model=ListResponse[KnowledgeConversationSummaryRead])
+async def list_knowledge_conversation_history(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+    limit: int = Query(default=30, ge=1, le=100),
+) -> ListResponse[KnowledgeConversationSummaryRead]:
+    rows = await list_knowledge_conversations(session, current_user, limit=limit)
+    await session.commit()
+    return ListResponse(data=rows, pagination=Pagination(limit=limit))
+
+
+@router.get("/knowledge/conversations/{conversation_id}", response_model=DataResponse[KnowledgeConversationRead])
+async def get_knowledge_conversation_history(
+    conversation_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[KnowledgeConversationRead]:
+    row = await get_knowledge_conversation(session, current_user, conversation_id)
+    await session.commit()
+    return DataResponse(data=row)
+
+
 @router.get("/knowledge/documents/{document_id}/versions", response_model=ListResponse[KnowledgeDocumentVersionRead])
 async def get_knowledge_document_versions(
     document_id: UUID,
@@ -466,26 +500,3 @@ async def patch_knowledge_retrieval_settings(
     await session.commit()
     return DataResponse(data=row)
 
-
-@router.get("/knowledge/lessons", response_model=ListResponse[KnowledgeLessonRead])
-async def get_lessons(
-    session: SessionDep,
-    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
-) -> ListResponse[KnowledgeLessonRead]:
-    rows = await list_lessons(session, current_user.org_id)
-    return ListResponse(
-        data=[KnowledgeLessonRead.model_validate(row) for row in rows],
-        pagination=Pagination(limit=len(rows)),
-    )
-
-
-@router.post("/knowledge/lessons", response_model=DataResponse[KnowledgeLessonRead])
-async def post_lesson(
-    payload: KnowledgeLessonCreate,
-    session: SessionDep,
-    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
-) -> DataResponse[KnowledgeLessonRead]:
-    lesson = await create_lesson(session, current_user.org_id, payload, current_user.id)
-    await session.commit()
-    await session.refresh(lesson)
-    return DataResponse(data=KnowledgeLessonRead.model_validate(lesson))

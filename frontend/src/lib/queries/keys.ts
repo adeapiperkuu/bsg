@@ -42,7 +42,7 @@ export const queryKeys = {
   knowledgeDocumentVersions: (documentId: string) =>
     ["knowledge", "document", documentId, "versions"] as const,
   knowledgeAgentQueries: ["knowledge", "agent-queries"] as const,
-  knowledgeLessons: ["knowledge", "lessons"] as const,
+  knowledgeConversations: ["knowledge", "conversations"] as const,
 };
 
 export const STALE_TIME_MS = 5 * 60 * 1000;

@@ -175,10 +175,10 @@ export interface KnowledgeStructuredAnswerApi {
   next_action: string;
 }
 
-export type KnowledgeConversationRoleApi = "user" | "assistant";
+export type KnowledgeConversationHistoryRoleApi = "user" | "assistant";
 
-export interface KnowledgeConversationTurnApi {
-  role: KnowledgeConversationRoleApi;
+export interface KnowledgeConversationHistoryTurnApi {
+  role: KnowledgeConversationHistoryRoleApi;
   content: string;
 }
 
@@ -197,8 +197,27 @@ export interface KnowledgeAskResponseApi {
   structured_answer: KnowledgeStructuredAnswerApi | null;
   knowledge_gap: KnowledgeGapApi | null;
   query_id: string | null;
+  conversation_id?: string | null;
   model_used: string | null;
   retrieval_debug?: KnowledgeRetrievalDebugApi | null;
+}
+
+export interface KnowledgeConversationSummaryApi {
+  id: string;
+  title: string;
+  turn_count: number;
+  updated_at: string;
+}
+
+export interface KnowledgeConversationTurnApi {
+  query_id: string;
+  query_text: string;
+  answer: KnowledgeAskResponseApi;
+}
+
+export interface KnowledgeConversationApi {
+  id: string;
+  turns: KnowledgeConversationTurnApi[];
 }
 
 export type KnowledgeAnswerModeApi = "internal" | "client_safe";
@@ -286,17 +305,4 @@ export interface KnowledgeDocumentFilters {
   effectiveDateTo?: string;
   semanticQuery?: string;
   aiRank?: boolean;
-}
-
-export interface KnowledgeLessonApi {
-  id: string;
-  org_id: string;
-  title: string;
-  body: string;
-  tags: string[];
-  linked_quality_event_id: string | null;
-  linked_alert_id: string | null;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
 }
