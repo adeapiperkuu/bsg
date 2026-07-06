@@ -22,11 +22,18 @@ from app.agents.delivery.schemas.chat_schema import (
     DeliveryChatSource,
     DeliveryChatTurnRead,
 )
+from app.agents.delivery.services.conversation_service import (
+    append_delivery_turn,
+    get_delivery_conversation_read,
+    get_owned_conversation,
+    load_llm_history_from_conversation,
+    resolve_conversation_for_turn,
+)
 from app.agents.delivery.services.dashboard_service import get_dashboard_data, get_portfolio_data
 from app.core.config import get_settings
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
-from app.db.models import AgentQuery, AgentQueryEvidenceLink, AppRole
+from app.db.models import AgentQuery, AgentQueryEvidenceLink, AppRole, DeliveryConversation
 from app.services.llm.client import LLMClient
 from app.services.scoping import get_visible_project
 
@@ -721,6 +728,7 @@ class _ChatRequestContext:
     context: dict[str, Any]
     history: list[dict[str, str]]
     evidence_catalog_sent: list[DeliveryChatSource]
+    delivery_conversation: DeliveryConversation | None
     anchor: AgentQuery | None
     available_projects: list[_AvailableProject]
 
@@ -758,12 +766,17 @@ async def _prepare_chat_request(
     non-streaming chat paths. Does not call the LLM or persist anything."""
     question_scope = _classify_question(message)
 
+    delivery_conversation: DeliveryConversation | None = None
     anchor: AgentQuery | None = None
     if conversation_id is not None:
-        anchor = await session.get(AgentQuery, conversation_id)
+        delivery_conversation = await get_owned_conversation(session, current_user, conversation_id)
+        if delivery_conversation is None:
+            anchor = await session.get(AgentQuery, conversation_id)
 
     resolved_project_id = project_id
-    if resolved_project_id is None and anchor is not None and anchor.user_id == current_user.id:
+    if resolved_project_id is None and delivery_conversation is not None:
+        resolved_project_id = delivery_conversation.project_id
+    elif resolved_project_id is None and anchor is not None and anchor.user_id == current_user.id:
         resolved_project_id = anchor.project_id
 
     project_dashboard: dict[str, Any] | None = None
@@ -799,7 +812,10 @@ async def _prepare_chat_request(
         if isinstance(dashboard, dict):
             evidence_catalog.extend(_collect_sources(dashboard))
 
-    history = await _load_conversation_history(session, current_user, anchor)
+    if delivery_conversation is not None:
+        history = await load_llm_history_from_conversation(session, delivery_conversation.id)
+    else:
+        history = await _load_conversation_history(session, current_user, anchor)
     available_projects = _list_available_projects(portfolio, project_dashboard, resolved_project_id)
 
     return _ChatRequestContext(
@@ -807,6 +823,7 @@ async def _prepare_chat_request(
         context=context,
         history=history,
         evidence_catalog_sent=evidence_catalog[:20],
+        delivery_conversation=delivery_conversation,
         anchor=anchor,
         available_projects=available_projects,
     )
@@ -940,12 +957,29 @@ async def answer_delivery_chat(
         started=started,
         response_sources=response_sources,
     )
+    conversation = await resolve_conversation_for_turn(
+        session,
+        current_user,
+        conversation_id=conversation_id or (
+            prepared.delivery_conversation.id if prepared.delivery_conversation else None
+        ),
+        project_id=prepared.resolved_project_id,
+        first_message=message,
+    )
+    await append_delivery_turn(
+        session,
+        conversation,
+        user_message=message,
+        assistant_message=answer,
+        agent_query=query,
+        response_sources=response_sources,
+    )
     await session.flush()
 
     return DeliveryChatRead(
         answer=answer,
         sources=response_sources,
-        conversation_id=conversation_id or query.id,
+        conversation_id=conversation.id,
     )
 
 
@@ -1051,6 +1085,23 @@ async def stream_delivery_chat(
         started=started,
         response_sources=response_sources,
     )
+    conversation = await resolve_conversation_for_turn(
+        session,
+        current_user,
+        conversation_id=conversation_id or (
+            prepared.delivery_conversation.id if prepared.delivery_conversation else None
+        ),
+        project_id=prepared.resolved_project_id,
+        first_message=message,
+    )
+    await append_delivery_turn(
+        session,
+        conversation,
+        user_message=message,
+        assistant_message=answer,
+        agent_query=query,
+        response_sources=response_sources,
+    )
     await session.flush()
 
     yield _sse(
@@ -1058,7 +1109,7 @@ async def stream_delivery_chat(
             "type": "done",
             "answer": answer,
             "sources": [source.model_dump(mode="json") for source in response_sources],
-            "conversation_id": str(conversation_id or query.id),
+            "conversation_id": str(conversation.id),
         }
     )
 
@@ -1068,12 +1119,12 @@ async def load_delivery_chat_conversation(
     current_user: CurrentUser,
     conversation_id: UUID,
 ) -> DeliveryChatConversationRead | None:
-    """Reload a persisted conversation thread for display after a page refresh.
+    """Reload a persisted conversation thread for display after a page refresh."""
+    persisted = await get_delivery_conversation_read(session, current_user, conversation_id)
+    if persisted is not None:
+        return persisted
 
-    Returns None if the conversation does not exist or does not belong to the
-    requesting user (super admins may read any conversation, matching the
-    elevated-access pattern used elsewhere, e.g. recommendation mutations).
-    """
+    # Legacy fallback: conversations stored only as agent_queries anchor rows.
     anchor = await session.get(AgentQuery, conversation_id)
     if anchor is None or anchor.agent_name != AGENT_NAME:
         return None
@@ -1138,5 +1189,6 @@ async def load_delivery_chat_conversation(
     return DeliveryChatConversationRead(
         conversation_id=anchor.id,
         project_id=anchor.project_id,
+        title=anchor.query_text.strip()[:120] or "Delivery chat",
         turns=turns,
     )

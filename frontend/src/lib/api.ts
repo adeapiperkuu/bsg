@@ -48,6 +48,7 @@ import type {
 } from "@/types/knowledge";
 import type {
   DeliveryChatConversation,
+  DeliveryChatConversationSummary,
   DeliveryChatRequest,
   DeliveryChatSource,
 } from "@/types/delivery-chat";
@@ -1312,6 +1313,55 @@ export async function getDeliveryChatConversation(
     `/delivery/chat/conversations/${conversationId}`,
   );
   return body.data;
+}
+
+export async function listDeliveryConversations(
+  projectId?: string | null,
+): Promise<DeliveryChatConversationSummary[]> {
+  const params = new URLSearchParams();
+  if (projectId) params.set("project_id", projectId);
+  const query = params.toString();
+  const body = await apiFetch<{ data: DeliveryChatConversationSummary[] }>(
+    `/delivery/chat/conversations${query ? `?${query}` : ""}`,
+  );
+  return body.data;
+}
+
+export async function createDeliveryConversation(
+  projectId?: string | null,
+  title?: string,
+): Promise<DeliveryChatConversationSummary> {
+  const body = await apiFetch<{ data: DeliveryChatConversationSummary }>(
+    "/delivery/chat/conversations",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        project_id: projectId ?? null,
+        title: title ?? null,
+      }),
+    },
+  );
+  return body.data;
+}
+
+export async function renameDeliveryConversation(
+  conversationId: string,
+  title: string,
+): Promise<DeliveryChatConversationSummary> {
+  const body = await apiFetch<{ data: DeliveryChatConversationSummary }>(
+    `/delivery/chat/conversations/${conversationId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    },
+  );
+  return body.data;
+}
+
+export async function deleteDeliveryConversation(conversationId: string): Promise<void> {
+  await apiFetch<void>(`/delivery/chat/conversations/${conversationId}`, {
+    method: "DELETE",
+  });
 }
 
 export async function uploadKnowledgeDocument(
