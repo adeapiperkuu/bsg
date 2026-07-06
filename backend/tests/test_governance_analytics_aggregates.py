@@ -6,9 +6,13 @@ from datetime import date
 import pytest
 
 from app.agents.governance.services.analytics_service import (
+    ANALYTICS_CACHE_TTL,
+    _analytics_cache,
+    _analytics_cache_key,
     _merge_project_metrics,
     _score_project_from_metrics,
     _fetch_dependency_counts_by_project,
+    _fetch_visible_projects,
     _trend_window_start,
     get_governance_analytics,
 )
@@ -88,9 +92,6 @@ async def test_get_governance_analytics_scores_projects_from_aggregate_counts(
 
     async def _empty_list(*_args, **_kwargs):
         return []
-
-    async def _empty_portfolio(**_kwargs):
-        return {"projects": []}
 
     async def _inventory_totals(_session, _user, *, today):
         return 1, 1, 0, 0, 0, 100.0
@@ -179,21 +180,228 @@ async def test_get_governance_analytics_scores_projects_from_aggregate_counts(
         _empty_list,
     )
     monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service.get_portfolio_data",
-        _empty_portfolio,
+        "app.agents.governance.services.analytics_service._fetch_visible_projects",
+        AsyncMock(return_value=[project]),
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_delivery_by_project",
+        AsyncMock(return_value={}),
     )
     monkeypatch.setattr(
         "app.agents.governance.services.analytics_service._analytics_cache",
         {},
     )
 
-    execute_result = MagicMock()
-    execute_result.scalars.return_value = [project]
-    session.execute = AsyncMock(return_value=execute_result)
-
     analytics = await get_governance_analytics(session, dm, days=7)
 
     assert analytics.project_health[0].project_name == "Alpha"
     assert analytics.project_health[0].score == 88
     assert analytics.kpis.blocking_dependencies == 1
-    session.execute.assert_awaited_once()
+    assert analytics.date_range_days == 7
+    assert analytics.export_sections == [
+        "KPIs",
+        "Charts",
+        "Executive Insights",
+        "Governance Health",
+        "Evidence Appendix",
+    ]
+    session.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_governance_analytics_uses_in_process_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dm = _user(AppRole.DELIVERY_MANAGER)
+    session = AsyncMock()
+    project = Project(id=uuid4(), org_id=dm.org_id, name="Alpha")
+    calls = 0
+
+    async def _fake_visible_projects(_session, _user):
+        nonlocal calls
+        calls += 1
+        return [project]
+
+    async def _fake_dependency_counts(_session, _user):
+        nonlocal calls
+        calls += 1
+        return {project.id: (0, 0)}
+
+    async def _empty_mapping(_session, _user):
+        return {}
+
+    async def _empty_mapping_today(_session, _user, *, today):
+        return {}
+
+    async def _empty_list(*_args, **_kwargs):
+        return []
+
+    async def _inventory_totals(_session, _user, *, today):
+        return 0, 0, 0, 0, 0, 100.0
+
+    async def _zero_int(_session, _user, *, today):
+        return 0
+
+    async def _none_averages(_session, _user):
+        return None, None, None
+
+    async def _empty_counter(*_args, **_kwargs):
+        from collections import Counter
+
+        return Counter()
+
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_visible_projects",
+        _fake_visible_projects,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_dependency_counts_by_project",
+        _fake_dependency_counts,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_escalation_counts_by_project",
+        _empty_mapping,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_overdue_action_counts_by_project",
+        _empty_mapping_today,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_pending_scope_counts_by_project",
+        _empty_mapping,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_delivery_by_project",
+        AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_project_evidence",
+        AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_inventory_totals",
+        _inventory_totals,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_open_action_count",
+        _zero_int,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_resolution_averages",
+        _none_averages,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_trend_dependencies",
+        _empty_list,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_trend_escalations",
+        _empty_list,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_trend_actions",
+        _empty_list,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_trend_scopes",
+        _empty_list,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_enum_counter",
+        _empty_counter,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_action_status_counter",
+        _empty_counter,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_blocking_dependencies",
+        _empty_list,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_critical_escalations",
+        _empty_list,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_overdue_actions",
+        _empty_list,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_recent_activity",
+        _empty_list,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._analytics_cache",
+        {},
+    )
+
+    first = await get_governance_analytics(session, dm, days=30)
+    second = await get_governance_analytics(session, dm, days=30)
+
+    assert first is second
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_derive_project_evidence_filters_to_requested_projects() -> None:
+    from app.agents.governance.services.analytics_service import _derive_project_evidence
+    from app.db.models import (
+        GovernanceDependencyStatus,
+        GovernanceEscalationSeverity,
+        GovernanceEscalationStatus,
+        ProjectDependency,
+        GovernanceEscalation,
+    )
+
+    project_id = uuid4()
+    other_id = uuid4()
+    dep = ProjectDependency(
+        id=uuid4(),
+        org_id=uuid4(),
+        project_id=project_id,
+        title="Blocked API",
+        status=GovernanceDependencyStatus.BLOCKING,
+    )
+    esc = GovernanceEscalation(
+        id=uuid4(),
+        org_id=uuid4(),
+        project_id=other_id,
+        title="Critical vendor",
+        severity=GovernanceEscalationSeverity.CRITICAL,
+        status=GovernanceEscalationStatus.OPEN,
+    )
+
+    evidence = _derive_project_evidence(
+        [dep],
+        [esc],
+        project_ids=[project_id],
+        project_names={project_id: "Alpha"},
+    )
+
+    assert len(evidence[project_id]) == 1
+    assert evidence[project_id][0].label == "Blocked API"
+    assert other_id not in evidence
+
+
+def test_analytics_cache_key_scopes_by_org_role_user_and_days() -> None:
+    org_id = uuid4()
+    user_id = uuid4()
+    dm = CurrentUser(
+        id=user_id,
+        org_id=org_id,
+        email="dm@example.com",
+        role=AppRole.DELIVERY_MANAGER,
+        is_active=True,
+    )
+    other = CurrentUser(
+        id=uuid4(),
+        org_id=org_id,
+        email="other@example.com",
+        role=AppRole.DELIVERY_MANAGER,
+        is_active=True,
+    )
+
+    assert _analytics_cache_key(dm, 30) == (org_id, "delivery_manager", user_id, 30)
+    assert _analytics_cache_key(dm, 7) != _analytics_cache_key(dm, 30)
+    assert _analytics_cache_key(dm, 30) != _analytics_cache_key(other, 30)
+    assert ANALYTICS_CACHE_TTL.total_seconds() == 180

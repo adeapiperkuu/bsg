@@ -4,7 +4,17 @@ import pytest
 
 import inspect
 
+from httpx import AsyncClient
+
+from app.agents.governance.schemas.governance import (
+    GovernanceAnalyticsKpisRead,
+    GovernanceAnalyticsRead,
+    GovernanceBootstrapRead,
+    GovernanceKpisRead,
+    GovernanceRegisterRowRead,
+)
 from app.agents.governance.services.governance_service import (
+    PaginatedGovernanceRows,
     map_action_list_row,
     map_dependency_list_row,
     map_escalation_list_row,
@@ -18,6 +28,7 @@ from app.agents.governance.timing import (
 from app.core.security import CurrentUser
 from app.db.models import AppRole
 from app.schemas.common import DataResponse, ListResponse, Pagination
+from tests.conftest import delivery_manager, override_user
 
 
 def _user(role: AppRole = AppRole.DELIVERY_MANAGER) -> CurrentUser:
@@ -64,12 +75,12 @@ async def test_instrument_governance_endpoint_logs_structured_fields(
 ) -> None:
     logged: list[dict[str, object]] = []
 
-    def _capture(_logger: object, _msg: str, *, extra: dict[str, object]) -> None:
+    def _capture(msg: str, *args: object, extra: dict[str, object]) -> None:
         logged.append(extra)
 
     monkeypatch.setattr(
         "app.agents.governance.timing.logger.info",
-        lambda msg, *, extra: _capture(None, msg, extra=extra),
+        _capture,
     )
 
     @instrument_governance_endpoint("GET /governance/actions")
@@ -88,6 +99,140 @@ async def test_instrument_governance_endpoint_logs_structured_fields(
     assert entry["org_id"] == str(user.org_id)
     assert entry["role"] == user.role.value
     assert entry["row_count"] == 2
+    assert "db_ms" in entry
+    assert "serialization_ms" in entry
+    assert "total_ms" in entry
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "endpoint"),
+    [
+        ("/api/v1/governance/bootstrap", "GET /governance/bootstrap"),
+        ("/api/v1/governance/analytics?days=30", "GET /governance/analytics"),
+        ("/api/v1/governance/dependencies", "GET /governance/dependencies"),
+        ("/api/v1/governance/register", "GET /governance/register"),
+    ],
+)
+async def test_governance_baseline_endpoints_emit_timing_logs(
+    api_client: AsyncClient,
+    delivery_manager: CurrentUser,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    endpoint: str,
+) -> None:
+    logged: list[dict[str, object]] = []
+
+    def _capture(_msg: str, *args: object, extra: dict[str, object]) -> None:
+        logged.append(extra)
+
+    monkeypatch.setattr("app.agents.governance.timing.logger.info", _capture)
+
+    async def _bootstrap(_session: object, _user: CurrentUser) -> GovernanceBootstrapRead:
+        return GovernanceBootstrapRead(
+            kpis=GovernanceKpisRead(
+                open_actions=0,
+                overdue_actions=0,
+                open_escalations=0,
+                blocking_dependencies=0,
+                at_risk_items=0,
+                sla_adherence_pct=100.0,
+            )
+        )
+
+    async def _analytics(_session: object, _user: CurrentUser, *, days: int) -> GovernanceAnalyticsRead:
+        return GovernanceAnalyticsRead(
+            generated_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+            date_range_days=days,
+            kpis=GovernanceAnalyticsKpisRead(
+                portfolio_score=80.0,
+                projects_at_risk=0,
+                leadership_attention_projects=0,
+                blocking_dependencies=0,
+                critical_escalations=0,
+                pending_scope_approvals=0,
+                upcoming_governance_meetings=0,
+                governance_sla_pct=100.0,
+                avg_dependency_resolution_days=0.0,
+                avg_escalation_resolution_days=0.0,
+                avg_action_completion_days=0.0,
+                open_dependencies=0,
+                open_actions=0,
+                overdue_actions=0,
+                projects_red=0,
+                projects_amber=0,
+                projects_green=1,
+                weekly_trend=0.0,
+                monthly_trend=0.0,
+            ),
+            project_health=[],
+            portfolio_risk_ranking=[],
+            insights=[],
+            recommendations=[],
+            trends=[],
+            charts={},
+            recent_activity=[],
+            export_sections=[],
+        )
+
+    async def _dependencies_page(
+        _session: object,
+        _user: CurrentUser,
+        **kwargs: object,
+    ) -> PaginatedGovernanceRows:
+        return PaginatedGovernanceRows(items=[], total=0, limit=50, offset=0)
+
+    async def _register_page(
+        _session: object,
+        _user: CurrentUser,
+        **kwargs: object,
+    ) -> PaginatedGovernanceRows:
+        project_id = uuid4()
+        return PaginatedGovernanceRows(
+            items=[
+                GovernanceRegisterRowRead(
+                    project_id=project_id,
+                    project_name="Alpha",
+                    scope_status=None,
+                    scope_version=None,
+                    open_dependencies=0,
+                    blocking_dependencies=0,
+                    open_actions=0,
+                    open_escalations=0,
+                    health="green",
+                )
+            ],
+            total=1,
+            limit=50,
+            offset=0,
+        )
+
+    monkeypatch.setattr(
+        "app.agents.governance.routes.governance.get_governance_bootstrap",
+        _bootstrap,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.routes.governance.get_governance_analytics",
+        _analytics,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.routes.governance.list_governance_dependencies_page",
+        _dependencies_page,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.routes.governance.list_governance_register_page",
+        _register_page,
+    )
+
+    override_user(delivery_manager)
+    response = await api_client.get(path)
+
+    assert response.status_code == 200, response.text
+    assert logged
+    entry = logged[-1]
+    assert entry["endpoint"] == endpoint
+    assert entry["role"] == delivery_manager.role.value
+    assert entry["org_id"] == str(delivery_manager.org_id)
     assert "db_ms" in entry
     assert "serialization_ms" in entry
     assert "total_ms" in entry

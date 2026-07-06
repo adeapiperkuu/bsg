@@ -494,14 +494,16 @@ async def get_portfolio_data(
     current_user: CurrentUser,
     as_of_date: date | None = None,
     limit: int = PORTFOLIO_PROJECT_LIMIT,
+    projects: list[Project] | None = None,
 ) -> dict[str, Any]:
     """Return delivery dashboard summaries for every visible project in one payload."""
-    project_rows = (
-        await session.execute(
-            scoped_project_query(current_user).order_by(Project.name.asc()).limit(limit)
-        )
-    ).scalars()
-    projects = list(project_rows)
+    if projects is None:
+        project_rows = (
+            await session.execute(
+                scoped_project_query(current_user).order_by(Project.name.asc()).limit(limit)
+            )
+        ).scalars()
+        projects = list(project_rows)
     if not projects:
         return {"projects": []}
 

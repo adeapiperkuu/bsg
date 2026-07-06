@@ -7,6 +7,8 @@ import type {
   GovernanceActionListItem,
   GovernanceActionUpdatePayload,
   GovernanceAnalytics,
+  GovernanceAnalyticsDetail,
+  GovernanceAnalyticsSummary,
   GovernanceBootstrap,
   GovernanceEscalation,
   GovernanceEscalationCreatePayload,
@@ -192,6 +194,43 @@ export async function getGovernanceAnalytics(days = 30): Promise<GovernanceAnaly
   return body.data;
 }
 
+export async function getGovernanceAnalyticsSummary(
+  days = 30,
+): Promise<GovernanceAnalyticsSummary> {
+  const body = await apiFetch<{ data: GovernanceAnalyticsSummary }>(
+    `/governance/analytics/summary?days=${encodeURIComponent(String(days))}`,
+  );
+  return body.data;
+}
+
+export async function getGovernanceAnalyticsDetail(
+  days = 30,
+): Promise<GovernanceAnalyticsDetail> {
+  const body = await apiFetch<{ data: GovernanceAnalyticsDetail }>(
+    `/governance/analytics/detail?days=${encodeURIComponent(String(days))}`,
+  );
+  return body.data;
+}
+
+export function mergeGovernanceAnalytics(
+  summary: GovernanceAnalyticsSummary,
+  detail?: GovernanceAnalyticsDetail | null,
+): GovernanceAnalytics {
+  return {
+    generated_at: detail?.generated_at ?? summary.generated_at,
+    date_range_days: summary.date_range_days,
+    kpis: summary.kpis,
+    project_health: summary.project_health,
+    portfolio_risk_ranking: summary.portfolio_risk_ranking,
+    insights: detail?.insights ?? [],
+    recommendations: detail?.recommendations ?? [],
+    trends: detail?.trends ?? [],
+    charts: { ...summary.charts, ...(detail?.charts ?? {}) },
+    recent_activity: detail?.recent_activity ?? [],
+    export_sections: [...summary.export_sections, ...(detail?.export_sections ?? [])],
+  };
+}
+
 export async function exportGovernanceAnalytics(
   days: number,
   format: "csv" | "pdf",
@@ -218,6 +257,28 @@ export function governanceAnalyticsQueryOptions(days: number) {
   return queryOptions({
     queryKey: queryKeys.governanceAnalytics(days),
     queryFn: () => getGovernanceAnalytics(days),
+    staleTime: Math.max(STALE_TIME_MS, 10 * 60 * 1000),
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+}
+
+export function governanceAnalyticsSummaryQueryOptions(days: number) {
+  return queryOptions({
+    queryKey: queryKeys.governanceAnalyticsSummary(days),
+    queryFn: () => getGovernanceAnalyticsSummary(days),
+    staleTime: Math.max(STALE_TIME_MS, 10 * 60 * 1000),
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+}
+
+export function governanceAnalyticsDetailQueryOptions(days: number) {
+  return queryOptions({
+    queryKey: queryKeys.governanceAnalyticsDetail(days),
+    queryFn: () => getGovernanceAnalyticsDetail(days),
     staleTime: Math.max(STALE_TIME_MS, 10 * 60 * 1000),
     refetchOnMount: false,
     refetchOnWindowFocus: false,

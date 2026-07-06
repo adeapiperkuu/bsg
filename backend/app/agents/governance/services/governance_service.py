@@ -28,6 +28,9 @@ from app.agents.governance.services.audit_service import (
 )
 from app.agents.governance.timing import governance_db_timed
 from app.agents.governance.services.notification_service import create_governance_notification
+from app.agents.governance.services.project_governance_summary_service import (
+    refresh_project_governance_summary,
+)
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
 from app.db.models import (
@@ -767,6 +770,7 @@ async def create_dependency(
             source_table="project_dependencies",
             source_row_id=dep.id,
         )
+    await refresh_project_governance_summary(session, dep.org_id, dep.project_id)
     await session.commit()
     await session.refresh(dep)
     return dep
@@ -795,6 +799,7 @@ async def update_dependency(
         previous_values=previous,
         new_values=governance_snapshot(dep, DEPENDENCY_AUDIT_FIELDS),
     )
+    await refresh_project_governance_summary(session, dep.org_id, dep.project_id)
     await session.commit()
     await session.refresh(dep)
     return dep
@@ -822,6 +827,7 @@ async def resolve_dependency(
         previous_values=previous,
         new_values=governance_snapshot(dep, DEPENDENCY_AUDIT_FIELDS),
     )
+    await refresh_project_governance_summary(session, dep.org_id, dep.project_id)
     await session.commit()
     await session.refresh(dep)
     return dep
@@ -847,6 +853,7 @@ async def soft_delete_dependency(
         previous_values=previous,
         new_values=governance_snapshot(dep, DEPENDENCY_AUDIT_FIELDS),
     )
+    await refresh_project_governance_summary(session, dep.org_id, dep.project_id)
     await session.commit()
 
 
@@ -900,6 +907,9 @@ async def create_escalation(
             source_table="governance_escalations",
             source_row_id=escalation.id,
         )
+    await refresh_project_governance_summary(
+        session, escalation.org_id, escalation.project_id
+    )
     await session.commit()
     await session.refresh(escalation)
     return escalation
@@ -939,6 +949,9 @@ async def update_escalation(
         previous_values=previous,
         new_values=governance_snapshot(escalation, ESCALATION_AUDIT_FIELDS),
     )
+    await refresh_project_governance_summary(
+        session, escalation.org_id, escalation.project_id
+    )
     await session.commit()
     await session.refresh(escalation)
     return escalation
@@ -964,6 +977,9 @@ async def soft_delete_escalation(
         source_id=escalation.id,
         previous_values=previous,
         new_values=governance_snapshot(escalation, ESCALATION_AUDIT_FIELDS),
+    )
+    await refresh_project_governance_summary(
+        session, escalation.org_id, escalation.project_id
     )
     await session.commit()
 
@@ -1006,6 +1022,7 @@ async def create_action(
         source_id=action.id,
         new_values=governance_snapshot(action, ACTION_AUDIT_FIELDS),
     )
+    await refresh_project_governance_summary(session, action.org_id, action.project_id)
     await session.commit()
     await session.refresh(action)
     return action
@@ -1041,6 +1058,7 @@ async def update_action(
         previous_values=previous,
         new_values=governance_snapshot(action, ACTION_AUDIT_FIELDS),
     )
+    await refresh_project_governance_summary(session, action.org_id, action.project_id)
     await session.commit()
     await session.refresh(action)
     return action
@@ -1066,6 +1084,7 @@ async def soft_delete_action(
         previous_values=previous,
         new_values=governance_snapshot(action, ACTION_AUDIT_FIELDS),
     )
+    await refresh_project_governance_summary(session, action.org_id, action.project_id)
     await session.commit()
 
 
@@ -1136,6 +1155,7 @@ async def update_scope_state(
             source_table="project_scope_states",
             source_row_id=scope.id,
         )
+    await refresh_project_governance_summary(session, scope.org_id, scope.project_id)
     await session.commit()
     await session.refresh(scope)
     return scope
@@ -1324,6 +1344,10 @@ async def load_project_names(session: AsyncSession, project_ids: set[UUID]) -> d
 
 
 _GOVERNANCE_DB_TIMED = (
+    "list_governance_dependencies_page",
+    "list_governance_actions_page",
+    "list_governance_escalations_page",
+    "list_governance_scope_states_page",
     "_client_project_ids",
     "_execute_paginated_rows",
     "load_user_names",

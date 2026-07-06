@@ -424,6 +424,27 @@ class GovernanceAnalyticsRead(BaseModel):
     export_sections: list[str] = Field(default_factory=list)
 
 
+class GovernanceAnalyticsSummaryRead(BaseModel):
+    generated_at: datetime
+    date_range_days: int
+    kpis: GovernanceAnalyticsKpisRead
+    project_health: list[GovernanceHealthProjectRead] = Field(default_factory=list)
+    portfolio_risk_ranking: list[GovernanceHealthProjectRead] = Field(default_factory=list)
+    charts: dict[str, list[GovernanceChartPointRead]] = Field(default_factory=dict)
+    export_sections: list[str] = Field(default_factory=list)
+
+
+class GovernanceAnalyticsDetailRead(BaseModel):
+    generated_at: datetime
+    date_range_days: int
+    insights: list[GovernanceInsightRead] = Field(default_factory=list)
+    recommendations: list[GovernanceRecommendationRead] = Field(default_factory=list)
+    trends: list[GovernanceTrendPointRead] = Field(default_factory=list)
+    charts: dict[str, list[GovernanceChartPointRead]] = Field(default_factory=dict)
+    recent_activity: list[GovernanceEvidenceRead] = Field(default_factory=list)
+    export_sections: list[str] = Field(default_factory=list)
+
+
 class GovernanceMonitoringRead(BaseModel):
     generated_at: datetime
     window_hours: int

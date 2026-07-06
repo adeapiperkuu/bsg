@@ -52,17 +52,29 @@ class GovernanceEndpointTimer:
     def finish(self, *, row_count: int | None = None) -> None:
         if row_count is not None:
             self.row_count = row_count
+        db_ms = round(self.db_ms, 1)
+        serialization_ms = self.serialization_ms
+        total_ms = self.total_ms
+        extra = {
+            "endpoint": self.endpoint,
+            "org_id": self.org_id,
+            "role": self.role,
+            "row_count": self.row_count,
+            "db_ms": db_ms,
+            "serialization_ms": serialization_ms,
+            "total_ms": total_ms,
+        }
         logger.info(
-            "governance_endpoint_timing",
-            extra={
-                "endpoint": self.endpoint,
-                "org_id": self.org_id,
-                "role": self.role,
-                "row_count": self.row_count,
-                "db_ms": round(self.db_ms, 1),
-                "serialization_ms": self.serialization_ms,
-                "total_ms": self.total_ms,
-            },
+            "governance_endpoint_timing endpoint=%s role=%s org_id=%s row_count=%s "
+            "total_ms=%s db_ms=%s serialization_ms=%s",
+            self.endpoint,
+            self.role,
+            self.org_id,
+            self.row_count,
+            total_ms,
+            db_ms,
+            serialization_ms,
+            extra=extra,
         )
 
 

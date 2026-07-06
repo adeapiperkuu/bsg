@@ -1,34 +1,28 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
-from uuid import UUID
+from datetime import UTC, datetime
 
 from sqlalchemy import and_, func, or_, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.governance.schemas.governance import GovernanceRegisterRowRead
-from app.agents.governance.services.dashboard_service import _overdue_action_filter
 from app.agents.governance.services.governance_service import (
     PaginatedGovernanceRows,
-    _apply_org_filter,
     _bounded_list_filters,
     _client_project_ids,
     _execute_paginated_rows,
     can_read_internal_governance,
 )
+from app.agents.governance.services.project_governance_summary_service import (
+    ensure_org_time_sensitive_summary_counts,
+)
 from app.agents.governance.timing import governance_db_timed
 from app.core.security import CurrentUser
 from app.db.models import (
     AppRole,
-    GovernanceAction,
-    GovernanceActionStatus,
-    GovernanceDependencyStatus,
-    GovernanceEscalation,
-    GovernanceEscalationSeverity,
-    GovernanceEscalationStatus,
     GovernanceScopeStatus,
     Project,
-    ProjectDependency,
+    ProjectGovernanceSummary,
     ProjectScopeState,
 )
 from app.services.scoping import scoped_project_query
@@ -53,86 +47,6 @@ def _compute_register_health(
     return "green"
 
 
-def _dependency_stats_subquery(current_user: CurrentUser, *, today: date):
-    stmt = (
-        select(
-            ProjectDependency.project_id.label("project_id"),
-            func.count()
-            .filter(
-                ProjectDependency.status.in_(
-                    {
-                        GovernanceDependencyStatus.OPEN,
-                        GovernanceDependencyStatus.BLOCKING,
-                    }
-                )
-            )
-            .label("open_dependencies"),
-            func.count()
-            .filter(ProjectDependency.status == GovernanceDependencyStatus.BLOCKING)
-            .label("blocking_dependencies"),
-            func.count()
-            .filter(
-                and_(
-                    ProjectDependency.status == GovernanceDependencyStatus.BLOCKING,
-                    ProjectDependency.due_date.is_not(None),
-                    ProjectDependency.due_date < today,
-                )
-            )
-            .label("blocking_overdue_dependencies"),
-        )
-        .where(ProjectDependency.deleted_at.is_(None))
-        .group_by(ProjectDependency.project_id)
-    )
-    return _apply_org_filter(stmt, ProjectDependency.org_id, current_user).subquery()
-
-
-def _action_stats_subquery(current_user: CurrentUser, *, today: date):
-    open_filter = or_(
-        GovernanceAction.status.in_(
-            {
-                GovernanceActionStatus.OPEN,
-                GovernanceActionStatus.IN_PROGRESS,
-                GovernanceActionStatus.OVERDUE,
-            }
-        ),
-        _overdue_action_filter(today),
-    )
-    stmt = (
-        select(
-            GovernanceAction.project_id.label("project_id"),
-            func.count().filter(open_filter).label("open_actions"),
-            func.count().filter(_overdue_action_filter(today)).label("overdue_actions"),
-        )
-        .where(GovernanceAction.deleted_at.is_(None))
-        .group_by(GovernanceAction.project_id)
-    )
-    return _apply_org_filter(stmt, GovernanceAction.org_id, current_user).subquery()
-
-
-def _escalation_stats_subquery(current_user: CurrentUser):
-    open_filter = GovernanceEscalation.status.in_(
-        {GovernanceEscalationStatus.OPEN, GovernanceEscalationStatus.IN_PROGRESS}
-    )
-    stmt = (
-        select(
-            GovernanceEscalation.project_id.label("project_id"),
-            func.count().filter(open_filter).label("open_escalations"),
-            func.count()
-            .filter(
-                and_(
-                    open_filter,
-                    GovernanceEscalation.severity == GovernanceEscalationSeverity.CRITICAL,
-                )
-            )
-            .label("critical_escalations"),
-        )
-        .where(GovernanceEscalation.deleted_at.is_(None))
-        .group_by(GovernanceEscalation.project_id)
-    )
-    stmt = _apply_org_filter(stmt, GovernanceEscalation.org_id, current_user)
-    return stmt.subquery()
-
-
 async def list_governance_register_page(
     session: AsyncSession,
     current_user: CurrentUser,
@@ -142,28 +56,28 @@ async def list_governance_register_page(
     today = datetime.now(UTC).date()
     can_internal = can_read_internal_governance(current_user)
 
+    await ensure_org_time_sensitive_summary_counts(session, current_user.org_id, today=today)
+
     visible_projects = scoped_project_query(current_user).subquery()
-    dep_stats = _dependency_stats_subquery(current_user, today=today) if can_internal else None
-    action_stats = _action_stats_subquery(current_user, today=today) if can_internal else None
-    esc_stats = _escalation_stats_subquery(current_user)
+    summary = ProjectGovernanceSummary
 
     open_deps = (
-        func.coalesce(dep_stats.c.open_dependencies, 0) if dep_stats is not None else 0
+        func.coalesce(summary.open_dependencies_count, 0) if can_internal else 0
     )
     blocking_deps = (
-        func.coalesce(dep_stats.c.blocking_dependencies, 0) if dep_stats is not None else 0
+        func.coalesce(summary.blocked_dependencies_count, 0) if can_internal else 0
     )
     blocking_overdue = (
-        func.coalesce(dep_stats.c.blocking_overdue_dependencies, 0)
-        if dep_stats is not None
+        func.coalesce(summary.blocking_overdue_dependencies_count, 0)
+        if can_internal
         else 0
     )
-    open_actions = func.coalesce(action_stats.c.open_actions, 0) if action_stats is not None else 0
+    open_actions = func.coalesce(summary.open_actions_count, 0) if can_internal else 0
     overdue_actions = (
-        func.coalesce(action_stats.c.overdue_actions, 0) if action_stats is not None else 0
+        func.coalesce(summary.overdue_actions_count, 0) if can_internal else 0
     )
-    open_escalations = func.coalesce(esc_stats.c.open_escalations, 0)
-    critical_escalations = func.coalesce(esc_stats.c.critical_escalations, 0)
+    open_escalations = func.coalesce(summary.open_escalations_count, 0)
+    critical_escalations = func.coalesce(summary.critical_escalations_count, 0)
 
     stmt = (
         select(
@@ -188,14 +102,14 @@ async def list_governance_register_page(
                 ProjectScopeState.deleted_at.is_(None),
             ),
         )
-        .outerjoin(esc_stats, esc_stats.c.project_id == Project.id)
-    )
-
-    if can_internal:
-        assert dep_stats is not None and action_stats is not None
-        stmt = stmt.outerjoin(dep_stats, dep_stats.c.project_id == Project.id).outerjoin(
-            action_stats, action_stats.c.project_id == Project.id
+        .outerjoin(
+            summary,
+            and_(
+                summary.project_id == Project.id,
+                summary.org_id == Project.org_id,
+            ),
         )
+    )
 
     if current_user.role == AppRole.CLIENT:
         project_ids = await _client_project_ids(session, current_user)

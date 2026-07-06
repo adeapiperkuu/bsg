@@ -108,7 +108,13 @@ function buildFallbackAnswer(queryText: string, selectedProjectId: string): Agen
   };
 }
 
-export function AskGovernanceAgentPanel({ projects }: { projects: ProjectOption[] }) {
+export function AskGovernanceAgentPanel({
+  projects,
+  onNeedsProjects,
+}: {
+  projects: ProjectOption[];
+  onNeedsProjects?: () => void;
+}) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState<string>(ALL_PROJECTS_VALUE);
@@ -223,7 +229,13 @@ export function AskGovernanceAgentPanel({ projects }: { projects: ProjectOption[
           right={<EvidenceBadge />}
         />
         <div className="flex flex-wrap items-center gap-2">
-          <Select value={selectedProjectId} onValueChange={setSelectedProjectId}>
+          <Select
+            value={selectedProjectId}
+            onValueChange={setSelectedProjectId}
+            onOpenChange={(open) => {
+              if (open) onNeedsProjects?.();
+            }}
+          >
             <SelectTrigger className="h-9 w-full shadow-none sm:w-72">
               <SelectValue placeholder="Portfolio" />
             </SelectTrigger>

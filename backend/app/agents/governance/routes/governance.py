@@ -13,6 +13,8 @@ from app.agents.governance.schemas.governance import (
     GovernanceActionRead,
     GovernanceActionUpdate,
     GovernanceAnalyticsRead,
+    GovernanceAnalyticsDetailRead,
+    GovernanceAnalyticsSummaryRead,
     GovernanceBootstrapRead,
     GovernanceEscalationCreate,
     GovernanceEscalationListRead,
@@ -35,7 +37,11 @@ from app.agents.governance.schemas.governance import (
     ProjectScopeStateUpdate,
     PromoteRiskAlertRequest,
 )
-from app.agents.governance.services.analytics_service import get_governance_analytics
+from app.agents.governance.services.analytics_service import (
+    get_governance_analytics,
+    get_governance_analytics_detail,
+    get_governance_analytics_summary,
+)
 from app.agents.governance.services.audit_service import log_governance_event
 from app.agents.governance.services.charter_export import (
     CharterExportDocument,
@@ -149,6 +155,26 @@ async def list_governance_register(
         data=data,
         pagination=_pagination(page.total, page.limit, page.offset, len(data)),
     )
+
+
+@router.get("/governance/analytics/summary", response_model=DataResponse[GovernanceAnalyticsSummaryRead])
+async def governance_analytics_summary(
+    session: SessionDep,
+    days: int = 30,
+    current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
+) -> DataResponse[GovernanceAnalyticsSummaryRead]:
+    return DataResponse(
+        data=await get_governance_analytics_summary(session, current_user, days=days)
+    )
+
+
+@router.get("/governance/analytics/detail", response_model=DataResponse[GovernanceAnalyticsDetailRead])
+async def governance_analytics_detail(
+    session: SessionDep,
+    days: int = 30,
+    current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
+) -> DataResponse[GovernanceAnalyticsDetailRead]:
+    return DataResponse(data=await get_governance_analytics_detail(session, current_user, days=days))
 
 
 @router.get("/governance/analytics", response_model=DataResponse[GovernanceAnalyticsRead])

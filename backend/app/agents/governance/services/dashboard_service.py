@@ -251,3 +251,4 @@ async def get_governance_bootstrap(
 
 
 compute_governance_kpis = governance_db_timed(compute_governance_kpis)
+get_governance_bootstrap = governance_db_timed(get_governance_bootstrap)

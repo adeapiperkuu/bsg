@@ -7,6 +7,11 @@ export default defineConfig(({ command, mode }) => {
   const isDevBuild = command === "build" && mode === "development";
 
   return {
+    test: {
+      environment: "jsdom",
+      setupFiles: ["./src/test/setup.ts"],
+      globals: true,
+    },
     ...(isDevBuild
       ? {
           environments: {

@@ -74,6 +74,10 @@ async def test_register_page_maps_rows_from_paginated_query(
         "app.agents.governance.services.register_service._execute_paginated_rows",
         _paginate,
     )
+    monkeypatch.setattr(
+        "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
+        AsyncMock(),
+    )
 
     page = await list_governance_register_page(session, _user())
 

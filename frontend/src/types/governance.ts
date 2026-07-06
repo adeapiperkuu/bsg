@@ -349,6 +349,27 @@ export type GovernanceAnalytics = {
   export_sections: string[];
 };
 
+export type GovernanceAnalyticsSummary = {
+  generated_at: string;
+  date_range_days: number;
+  kpis: GovernanceAnalyticsKpis;
+  project_health: GovernanceHealthProject[];
+  portfolio_risk_ranking: GovernanceHealthProject[];
+  charts: Record<string, GovernanceChartPoint[]>;
+  export_sections: string[];
+};
+
+export type GovernanceAnalyticsDetail = {
+  generated_at: string;
+  date_range_days: number;
+  insights: GovernanceAnalyticsInsight[];
+  recommendations: GovernanceAnalyticsRecommendation[];
+  trends: GovernanceTrendPoint[];
+  charts: Record<string, GovernanceChartPoint[]>;
+  recent_activity: GovernanceAnalyticsEvidence[];
+  export_sections: string[];
+};
+
 /** Alias matching API response naming. */
 export type GovernanceBootstrapResponse = GovernanceBootstrap;
 

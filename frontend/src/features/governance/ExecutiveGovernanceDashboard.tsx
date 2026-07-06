@@ -1,7 +1,9 @@
 import { Download, RefreshCw } from "lucide-react";
+import type { RefObject } from "react";
 
 import { Card, KpiCard, SectionHeader, StatusPill } from "@/components/bsg/widgets";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { exportGovernanceAnalytics } from "@/lib/queries/governance";
 import { cn } from "@/lib/utils";
@@ -11,13 +13,11 @@ import type {
   GovernanceHealthProject,
 } from "@/types/governance";
 
-function formatRiskLevel(level: string): string {
-  if (level === "excellent") return "Excellent";
-  if (level === "healthy") return "Healthy";
-  if (level === "moderate_risk") return "Moderate Risk";
-  if (level === "high_risk") return "High Risk";
-  if (level === "critical") return "Critical";
-  return level;
+function formatPriority(priority: string): string {
+  if (priority === "critical") return "Critical";
+  if (priority === "high") return "High";
+  if (priority === "medium") return "Medium";
+  return priority;
 }
 
 function scoreStatus(score: number): string {
@@ -26,13 +26,6 @@ function scoreStatus(score: number): string {
   if (score >= 60) return "Moderate Risk";
   if (score >= 40) return "High Risk";
   return "Critical";
-}
-
-function formatPriority(priority: string): string {
-  if (priority === "critical") return "Critical";
-  if (priority === "high") return "High";
-  if (priority === "medium") return "Medium";
-  return priority;
 }
 
 async function exportAnalyticsCsv(days: number) {
@@ -60,64 +53,166 @@ function EvidenceList({ evidence }: { evidence: GovernanceAnalyticsEvidence[] })
   );
 }
 
+export function ExecutiveAnalyticsSummarySkeleton() {
+  return (
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4" aria-label="Loading executive KPIs">
+      {["score", "risk", "dependencies", "sla"].map((item) => (
+        <Card key={item}>
+          <Skeleton className="h-3 w-28" />
+          <Skeleton className="mt-4 h-7 w-16" />
+          <Skeleton className="mt-3 h-3 w-24" />
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+export function ExecutiveAnalyticsDetailSkeleton() {
+  return (
+    <div className="grid gap-4 xl:grid-cols-[1fr_1fr]" aria-label="Loading executive analytics detail">
+      <Card>
+        <Skeleton className="h-4 w-40" />
+        <Skeleton className="mt-2 h-3 w-56" />
+        <div className="mt-5 space-y-2">
+          {[0, 1, 2, 3].map((row) => (
+            <Skeleton key={row} className="h-12 w-full" />
+          ))}
+        </div>
+      </Card>
+      <Card>
+        <Skeleton className="h-4 w-40" />
+        <Skeleton className="mt-2 h-3 w-56" />
+        <div className="mt-5 space-y-2">
+          {[0, 1, 2].map((row) => (
+            <Skeleton key={row} className="h-16 w-full" />
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 function RiskRanking({
   rows,
   onOpenProject,
+  isLoading,
 }: {
   rows: GovernanceHealthProject[];
   onOpenProject: (projectId: string) => void;
+  isLoading?: boolean;
 }) {
   return (
     <Card>
       <SectionHeader title="Portfolio Risk Ranking" sub="Sorted by governance priority" />
-      <div className="space-y-2">
-        {rows.slice(0, 8).map((project, index) => (
-          <button
-            key={project.project_id}
-            type="button"
-            className="flex w-full items-center gap-3 rounded-md border border-border bg-elevated px-3 py-2 text-left text-xs hover:bg-secondary/60"
-            onClick={() => onOpenProject(project.project_id)}
-          >
-            <span className="w-5 text-muted-foreground">{index + 1}</span>
-            <div className="min-w-0 flex-1">
-              <div className="truncate font-medium">{project.project_name}</div>
-              <div className="mt-1 flex flex-wrap gap-2 text-[10px] text-muted-foreground">
-                {project.blocking_dependencies > 0 && (
-                  <span>{project.blocking_dependencies} blocking dep.</span>
-                )}
-                {project.critical_escalations > 0 && (
-                  <span>{project.critical_escalations} critical esc.</span>
-                )}
-                {project.overdue_actions > 0 && <span>{project.overdue_actions} overdue</span>}
-                {project.delivery_traffic_light && (
-                  <span>Delivery {project.delivery_traffic_light}</span>
-                )}
+      {isLoading && rows.length === 0 ? (
+        <div className="space-y-2">
+          {[0, 1, 2, 3].map((row) => (
+            <Skeleton key={row} className="h-12 w-full" />
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {rows.slice(0, 8).map((project, index) => (
+            <button
+              key={project.project_id}
+              type="button"
+              className="flex w-full items-center gap-3 rounded-md border border-border bg-elevated px-3 py-2 text-left text-xs hover:bg-secondary/60"
+              onClick={() => onOpenProject(project.project_id)}
+            >
+              <span className="w-5 text-muted-foreground">{index + 1}</span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-medium">{project.project_name}</div>
+                <div className="mt-1 flex flex-wrap gap-2 text-[10px] text-muted-foreground">
+                  {project.blocking_dependencies > 0 && (
+                    <span>{project.blocking_dependencies} blocking dep.</span>
+                  )}
+                  {project.critical_escalations > 0 && (
+                    <span>{project.critical_escalations} critical esc.</span>
+                  )}
+                  {project.overdue_actions > 0 && <span>{project.overdue_actions} overdue</span>}
+                  {project.delivery_traffic_light && (
+                    <span>Delivery {project.delivery_traffic_light}</span>
+                  )}
+                </div>
               </div>
+              <StatusPill status={scoreStatus(project.score)} />
+              <span className="w-9 text-right font-semibold">{project.score}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function RecommendationsPanel({
+  recommendations,
+  isLoading,
+}: {
+  recommendations: GovernanceAnalytics["recommendations"];
+  isLoading?: boolean;
+}) {
+  return (
+    <Card>
+      <SectionHeader title="AI Recommendations" sub="Evidence-backed next actions" />
+      {isLoading && recommendations.length === 0 ? (
+        <div className="space-y-2">
+          {[0, 1, 2].map((row) => (
+            <Skeleton key={row} className="h-16 w-full" />
+          ))}
+        </div>
+      ) : recommendations.length === 0 ? (
+        <p className="py-6 text-sm text-muted-foreground">
+          No recommendations were generated from current evidence.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {recommendations.slice(0, 5).map((recommendation) => (
+            <div
+              key={`${recommendation.project_id ?? "portfolio"}-${recommendation.title}`}
+              className="rounded-md border border-border bg-elevated p-3"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium">{recommendation.title}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{recommendation.detail}</p>
+                </div>
+                <StatusPill status={formatPriority(recommendation.priority)} />
+              </div>
+              <EvidenceList evidence={recommendation.evidence} />
             </div>
-            <StatusPill status={scoreStatus(project.score)} />
-            <span className="w-9 text-right font-semibold">{project.score}</span>
-          </button>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </Card>
   );
 }
 
 export function ExecutiveGovernanceDashboard({
   analytics,
+  summaryLoading,
+  detailLoading,
   isFetching,
   rangeDays,
   onRangeChange,
   onRefresh,
   onOpenProject,
+  detailSectionRef,
 }: {
-  analytics: GovernanceAnalytics;
+  analytics: GovernanceAnalytics | null;
+  summaryLoading: boolean;
+  detailLoading: boolean;
   isFetching: boolean;
   rangeDays: number;
   onRangeChange: (days: number) => void;
   onRefresh: () => void;
   onOpenProject: (projectId: string) => void;
+  detailSectionRef?: RefObject<HTMLElement | null>;
 }) {
+  const kpis = analytics?.kpis;
+  const ranking = analytics?.portfolio_risk_ranking ?? [];
+  const recommendations = analytics?.recommendations ?? [];
+
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -150,8 +245,11 @@ export function ExecutiveGovernanceDashboard({
             variant="outline"
             size="sm"
             className="shadow-none"
+            disabled={!analytics}
             onClick={() => {
-              void exportAnalyticsCsv(analytics.date_range_days);
+              if (analytics) {
+                void exportAnalyticsCsv(analytics.date_range_days);
+              }
             }}
           >
             <Download className="h-4 w-4" />
@@ -160,67 +258,50 @@ export function ExecutiveGovernanceDashboard({
         </div>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <KpiCard
-          label="Portfolio Score"
-          value={`${analytics.kpis.portfolio_score}`}
-          delta={`${analytics.kpis.weekly_trend >= 0 ? "+" : ""}${analytics.kpis.weekly_trend} weekly`}
-          tone={
-            analytics.kpis.portfolio_score >= 75
-              ? "success"
-              : analytics.kpis.portfolio_score >= 60
-                ? "warning"
-                : "danger"
-          }
-        />
-        <KpiCard
-          label="Projects at Risk"
-          value={analytics.kpis.projects_at_risk}
-          delta={`${analytics.kpis.leadership_attention_projects} need leadership`}
-          tone={analytics.kpis.projects_at_risk > 0 ? "danger" : "success"}
-        />
-        <KpiCard
-          label="Blocking Dependencies"
-          value={analytics.kpis.blocking_dependencies}
-          delta={`${analytics.kpis.open_dependencies} open dependencies`}
-          tone={analytics.kpis.blocking_dependencies > 0 ? "warning" : "success"}
-        />
-        <KpiCard
-          label="Governance SLA"
-          value={`${analytics.kpis.governance_sla_pct}%`}
-          delta={`${analytics.kpis.overdue_actions} overdue actions`}
-          tone={analytics.kpis.governance_sla_pct >= 90 ? "success" : "warning"}
-        />
-      </div>
+      {summaryLoading && !kpis ? (
+        <ExecutiveAnalyticsSummarySkeleton />
+      ) : kpis ? (
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <KpiCard
+            label="Portfolio Score"
+            value={`${kpis.portfolio_score}`}
+            delta={`${kpis.weekly_trend >= 0 ? "+" : ""}${kpis.weekly_trend} weekly`}
+            tone={
+              kpis.portfolio_score >= 75
+                ? "success"
+                : kpis.portfolio_score >= 60
+                  ? "warning"
+                  : "danger"
+            }
+          />
+          <KpiCard
+            label="Projects at Risk"
+            value={kpis.projects_at_risk}
+            delta={`${kpis.leadership_attention_projects} need leadership`}
+            tone={kpis.projects_at_risk > 0 ? "danger" : "success"}
+          />
+          <KpiCard
+            label="Blocking Dependencies"
+            value={kpis.blocking_dependencies}
+            delta={`${kpis.open_dependencies} open dependencies`}
+            tone={kpis.blocking_dependencies > 0 ? "warning" : "success"}
+          />
+          <KpiCard
+            label="Governance SLA"
+            value={`${kpis.governance_sla_pct}%`}
+            delta={`${kpis.overdue_actions} overdue actions`}
+            tone={kpis.governance_sla_pct >= 90 ? "success" : "warning"}
+          />
+        </div>
+      ) : null}
 
-      <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
-        <RiskRanking rows={analytics.portfolio_risk_ranking} onOpenProject={onOpenProject} />
-        <Card>
-          <SectionHeader title="AI Recommendations" sub="Evidence-backed next actions" />
-          <div className="space-y-3">
-            {analytics.recommendations.length === 0 ? (
-              <p className="py-6 text-sm text-muted-foreground">
-                No recommendations were generated from current evidence.
-              </p>
-            ) : (
-              analytics.recommendations.slice(0, 5).map((recommendation) => (
-                <div
-                  key={`${recommendation.project_id ?? "portfolio"}-${recommendation.title}`}
-                  className="rounded-md border border-border bg-elevated p-3"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-medium">{recommendation.title}</p>
-                      <p className="mt-1 text-xs text-muted-foreground">{recommendation.detail}</p>
-                    </div>
-                    <StatusPill status={formatPriority(recommendation.priority)} />
-                  </div>
-                  <EvidenceList evidence={recommendation.evidence} />
-                </div>
-              ))
-            )}
-          </div>
-        </Card>
+      <div ref={detailSectionRef as RefObject<HTMLDivElement>} className="grid gap-4 xl:grid-cols-[1fr_1fr]">
+        <RiskRanking
+          rows={ranking}
+          onOpenProject={onOpenProject}
+          isLoading={summaryLoading && ranking.length === 0}
+        />
+        <RecommendationsPanel recommendations={recommendations} isLoading={detailLoading} />
       </div>
     </section>
   );
