@@ -49,7 +49,6 @@ import type {
 import type {
   DeliveryChatConversation,
   DeliveryChatRequest,
-  DeliveryChatResponse,
   DeliveryChatSource,
 } from "@/types/delivery-chat";
 
@@ -1244,20 +1243,6 @@ export async function* streamKnowledgeAsk(
     const event = parseSseLine(buf);
     if (event) yield event;
   }
-}
-
-export async function sendDeliveryChatMessage(
-  payload: DeliveryChatRequest,
-): Promise<DeliveryChatResponse> {
-  const body = await apiFetch<{ data: DeliveryChatResponse }>("/delivery/chat", {
-    method: "POST",
-    body: JSON.stringify({
-      message: payload.message,
-      project_id: payload.project_id ?? null,
-      conversation_id: payload.conversation_id ?? null,
-    }),
-  });
-  return body.data;
 }
 
 export type DeliveryChatStreamEvent =

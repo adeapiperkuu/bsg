@@ -725,6 +725,27 @@ class _ChatRequestContext:
     available_projects: list[_AvailableProject]
 
 
+def _resolve_chat_project_reference(
+    message: str,
+    prepared: _ChatRequestContext,
+) -> _ProjectMatchResult | None:
+    """Resolve project references when the client did not send project_id."""
+    if prepared.resolved_project_id is not None or not prepared.available_projects:
+        return None
+    return _resolve_project_references(message, prepared.available_projects)
+
+
+def _early_exit_answer_for_resolution(
+    resolution: _ProjectMatchResult,
+    available_projects: list[_AvailableProject],
+) -> str | None:
+    if resolution.status == "not_found":
+        return _project_not_found_answer(resolution.reference, available_projects)
+    if resolution.status == "ambiguous":
+        return _project_ambiguous_answer(resolution.reference, resolution.candidates)
+    return None
+
+
 async def _prepare_chat_request(
     session: AsyncSession,
     current_user: CurrentUser,
@@ -873,18 +894,12 @@ async def answer_delivery_chat(
     # Resolve project references before calling the LLM.
     # Skip when a project_id was already provided — the reference is already
     # resolved at the UI/API level and re-checking would only produce false positives.
-    resolution: _ProjectMatchResult | None = None
-    if prepared.resolved_project_id is None and prepared.available_projects:
-        resolution = _resolve_project_references(message, prepared.available_projects)
-        if resolution.status == "not_found":
+    resolution = _resolve_chat_project_reference(message, prepared)
+    if resolution is not None:
+        early_answer = _early_exit_answer_for_resolution(resolution, prepared.available_projects)
+        if early_answer is not None:
             return DeliveryChatRead(
-                answer=_project_not_found_answer(resolution.reference, prepared.available_projects),
-                sources=[],
-                conversation_id=conversation_id or uuid4(),
-            )
-        if resolution.status == "ambiguous":
-            return DeliveryChatRead(
-                answer=_project_ambiguous_answer(resolution.reference, resolution.candidates),
+                answer=early_answer,
                 sources=[],
                 conversation_id=conversation_id or uuid4(),
             )
@@ -967,24 +982,14 @@ async def stream_delivery_chat(
     )
 
     # Resolve project references before streaming — same rules as the non-streaming path.
-    resolution: _ProjectMatchResult | None = None
-    if prepared.resolved_project_id is None and prepared.available_projects:
-        resolution = _resolve_project_references(message, prepared.available_projects)
-        if resolution.status == "not_found":
+    resolution = _resolve_chat_project_reference(message, prepared)
+    if resolution is not None:
+        early_answer = _early_exit_answer_for_resolution(resolution, prepared.available_projects)
+        if early_answer is not None:
             yield _sse(
                 {
                     "type": "done",
-                    "answer": _project_not_found_answer(resolution.reference, prepared.available_projects),
-                    "sources": [],
-                    "conversation_id": str(conversation_id or uuid4()),
-                }
-            )
-            return
-        if resolution.status == "ambiguous":
-            yield _sse(
-                {
-                    "type": "done",
-                    "answer": _project_ambiguous_answer(resolution.reference, resolution.candidates),
+                    "answer": early_answer,
                     "sources": [],
                     "conversation_id": str(conversation_id or uuid4()),
                 }
