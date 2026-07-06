@@ -35,7 +35,17 @@ export interface DeliveryChatTurn {
 export interface DeliveryChatConversation {
   conversation_id: string;
   project_id: string | null;
+  title?: string | null;
   turns: DeliveryChatTurn[];
+}
+
+export interface DeliveryChatConversationSummary {
+  id: string;
+  title: string;
+  project_id: string | null;
+  turn_count: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface DeliveryChatMessage {

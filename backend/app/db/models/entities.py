@@ -920,6 +920,42 @@ class AgentQueryEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
     description: Mapped[str] = mapped_column(Text)
 
 
+class DeliveryConversation(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "delivery_conversations"
+    __table_args__ = (
+        Index("delivery_conversations_user_updated_idx", "user_id", "updated_at"),
+        Index(
+            "delivery_conversations_org_user_project_updated_idx",
+            "org_id",
+            "user_id",
+            "project_id",
+            "updated_at",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
+    project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), index=True)
+    title: Mapped[str] = mapped_column(Text, default="New conversation", server_default="New conversation")
+
+
+class DeliveryMessage(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "delivery_messages"
+    __table_args__ = (Index("delivery_messages_conversation_created_idx", "conversation_id", "created_at"),)
+
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("delivery_conversations.id", ondelete="CASCADE"),
+        index=True,
+    )
+    role: Mapped[str] = mapped_column(Text)
+    content: Mapped[str] = mapped_column(Text)
+    agent_query_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_queries.id", ondelete="SET NULL"),
+        index=True,
+    )
+    metadata_: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB)
+
+
 class ClientCsatScore(Base, UuidPrimaryKey, CreatedAt):
     __tablename__ = "client_csat_scores"
     __table_args__ = (

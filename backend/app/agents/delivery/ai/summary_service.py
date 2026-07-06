@@ -17,10 +17,6 @@ DEFAULT_TIMEOUT_SECONDS = 5.0
 _PROMPT_TEMPLATE = PROMPT_PATH.read_text(encoding="utf-8")
 
 
-def _load_prompt_template() -> str:
-    return _PROMPT_TEMPLATE
-
-
 def _risk_summary_fields(risk: dict[str, Any]) -> dict[str, Any]:
     """Project a risk down to the fields the summary prompt actually uses."""
     return {
@@ -59,9 +55,8 @@ def _summary_context(dashboard_data: dict[str, Any]) -> dict[str, Any]:
 
 def build_daily_summary_prompt(dashboard_data: dict[str, Any]) -> str:
     """Build a grounded prompt from already-aggregated dashboard data."""
-    template = _load_prompt_template()
     context_json = json.dumps(_summary_context(dashboard_data), default=str, indent=2)
-    return template.replace("{{DASHBOARD_DATA_JSON}}", context_json)
+    return _PROMPT_TEMPLATE.replace("{{DASHBOARD_DATA_JSON}}", context_json)
 
 
 async def generate_daily_summary(
