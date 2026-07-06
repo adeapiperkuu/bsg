@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Plus, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
@@ -15,8 +15,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { AskGovernanceAgentPanel } from "@/features/governance/AskGovernanceAgentPanel";
-import { ExecutiveGovernanceDashboard } from "@/features/governance/ExecutiveGovernanceDashboard";
 import { GovernanceFiltersBar } from "@/features/governance/GovernanceFiltersBar";
 import { GovernanceKpiStrip } from "@/features/governance/GovernanceKpiStrip";
 import {
@@ -28,12 +26,16 @@ import {
   shouldEnableGovernanceAnalyticsSummary,
   shouldEnableGovernanceProjects,
 } from "@/features/governance/governance-load-strategy";
-import { ProjectChartersPanel } from "@/features/governance/ProjectChartersPanel";
-import { ProjectGovernanceSheet } from "@/features/governance/ProjectGovernanceSheet";
 import {
-  GovernanceWorkflowDialogs,
-  type WorkflowDialogState,
-} from "@/features/governance/GovernanceWorkflowDialogs";
+  ExecutiveDashboardFallback,
+  GovernanceToolsPanelFallback,
+  LazyAskGovernanceAgentPanel,
+  LazyExecutiveGovernanceDashboard,
+  LazyGovernanceWorkflowDialogs,
+  LazyProjectChartersPanel,
+} from "@/features/governance/governance-lazy";
+import type { WorkflowDialogState } from "@/features/governance/governance-workflow-types";
+import { ProjectGovernanceSheet } from "@/features/governance/ProjectGovernanceSheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   emptyGovernanceFilters,
@@ -342,7 +344,7 @@ export function GovernanceDashboard() {
   const [actionPage, setActionPage] = useState(1);
   const [registerPage, setRegisterPage] = useState(1);
   const [escalationPage, setEscalationPage] = useState(1);
-  const [governanceToolsTab, setGovernanceToolsTab] = useState<"agent" | "charters">("agent");
+  const [governanceToolsTab, setGovernanceToolsTab] = useState<"agent" | "charters" | null>(null);
   const [filtersPopoverOpen, setFiltersPopoverOpen] = useState(false);
   const [agentNeedsProjects, setAgentNeedsProjects] = useState(false);
   const [analyticsDeferredReady, setAnalyticsDeferredReady] = useState(false);
@@ -462,8 +464,8 @@ export function GovernanceDashboard() {
   const needsProjects = shouldEnableGovernanceProjects({
     filtersOpen: filtersPopoverOpen,
     dialogOpen: Boolean(dialog),
-    agentNeedsProjects,
-    chartersTabActive: !isClient && governanceToolsTab === "charters",
+    agentNeedsProjects: agentNeedsProjects && governanceToolsTab === "agent",
+    chartersTabActive: governanceToolsTab === "charters",
   });
   const projectsQuery = useQuery({
     ...projectsQueryOptions,
@@ -536,6 +538,13 @@ export function GovernanceDashboard() {
     observer.observe(node);
     return () => observer.disconnect();
   }, [showExecutiveAnalytics, mergedAnalytics]);
+
+  const analyticsSummaryLoading =
+    analyticsSummaryQuery.isLoading && !analyticsSummaryQuery.data;
+  const analyticsDetailLoading =
+    analyticsDetailEnabled &&
+    analyticsDetailQuery.isFetching &&
+    !(analyticsDetailQuery.data || analyticsDetailQuery.isPlaceholderData);
 
   const kpis = bootstrapQuery.data?.kpis ?? EMPTY_GOVERNANCE_KPIS;
 
@@ -959,22 +968,17 @@ export function GovernanceDashboard() {
               />
             </Card>
           ) : (
-            <ExecutiveGovernanceDashboard
-              analytics={mergedAnalytics}
-              summaryLoading={analyticsSummaryQuery.isLoading && !analyticsSummaryQuery.data}
-              detailLoading={analyticsDetailEnabled && analyticsDetailQuery.isLoading && !analyticsDetailQuery.data}
-              isFetching={analyticsSummaryQuery.isFetching || analyticsDetailQuery.isFetching}
-              rangeDays={analyticsRangeDays}
-              onRangeChange={setAnalyticsRangeDays}
-              onRefresh={() => {
-                void analyticsSummaryQuery.refetch();
-                if (analyticsDetailEnabled) {
-                  void analyticsDetailQuery.refetch();
-                }
-              }}
-              onOpenProject={openAnalyticsProjectSheet}
-              detailSectionRef={analyticsDetailSectionRef}
-            />
+            <Suspense fallback={<ExecutiveDashboardFallback />}>
+              <LazyExecutiveGovernanceDashboard
+                analytics={mergedAnalytics}
+                summaryLoading={analyticsSummaryLoading}
+                detailLoading={analyticsDetailLoading}
+                rangeDays={analyticsRangeDays}
+                onRangeChange={setAnalyticsRangeDays}
+                onOpenProject={openAnalyticsProjectSheet}
+                detailSectionRef={analyticsDetailSectionRef}
+              />
+            </Suspense>
           )}
         </>
       )}
@@ -1047,7 +1051,7 @@ export function GovernanceDashboard() {
             {!isClient && selectedTable === "dependencies" && (
               <Card>
                 <SectionHeader title="Dependency Tracker" sub="Cross-project dependencies" />
-                {dependenciesQuery.isFetching && (
+                {dependenciesQuery.isFetching && dependenciesQuery.data && (
                   <div className="mb-2 flex items-center gap-2 text-[10px] text-muted-foreground">
                     <RefreshCw className="h-3 w-3 animate-spin" />
                     Refreshing dependencies...
@@ -1156,7 +1160,7 @@ export function GovernanceDashboard() {
                   title="Governance Actions"
                   sub="Tracked follow-ups and commitments"
                 />
-                {actionsQuery.isFetching && (
+                {actionsQuery.isFetching && actionsQuery.data && (
                   <div className="mb-2 flex items-center gap-2 text-[10px] text-muted-foreground">
                     <RefreshCw className="h-3 w-3 animate-spin" />
                     Refreshing actions...
@@ -1243,7 +1247,8 @@ export function GovernanceDashboard() {
             {selectedTable === "register" && (
               <Card>
                 <SectionHeader title="Governance Register" sub="Click a project for details" />
-                {(registerQuery.isFetching || portfolioQuery.isFetching) && (
+                {(registerQuery.isFetching || portfolioQuery.isFetching) &&
+                  (registerQuery.data || portfolioQuery.data) && (
                   <div className="mb-2 flex items-center gap-2 text-[10px] text-muted-foreground">
                     <RefreshCw className="h-3 w-3 animate-spin" />
                     Refreshing register...
@@ -1350,7 +1355,7 @@ export function GovernanceDashboard() {
             {selectedTable === "escalations" && (
               <Card>
                 <SectionHeader title="Escalation Register" />
-                {escalationsQuery.isFetching && (
+                {escalationsQuery.isFetching && escalationsQuery.data && (
                   <div className="mb-2 flex items-center gap-2 text-[10px] text-muted-foreground">
                     <RefreshCw className="h-3 w-3 animate-spin" />
                     Refreshing escalations...
@@ -1459,8 +1464,10 @@ export function GovernanceDashboard() {
       {!isClient && (
         <div className="space-y-3">
           <Tabs
-            value={governanceToolsTab}
-            onValueChange={(value) => setGovernanceToolsTab(value as "agent" | "charters")}
+            value={governanceToolsTab ?? ""}
+            onValueChange={(value) =>
+              setGovernanceToolsTab(value as "agent" | "charters")
+            }
           >
             <TabsList className="h-auto flex-wrap justify-start gap-1 bg-elevated">
               <TabsTrigger value="agent" className="text-xs">
@@ -1471,27 +1478,37 @@ export function GovernanceDashboard() {
               </TabsTrigger>
             </TabsList>
 
-            <TabsContent value="agent" className="mt-3">
-              <AskGovernanceAgentPanel
-                projects={projectOptions}
-                onNeedsProjects={() => setAgentNeedsProjects(true)}
-              />
-            </TabsContent>
+            {governanceToolsTab === "agent" && (
+              <TabsContent value="agent" className="mt-3">
+                <Suspense fallback={<GovernanceToolsPanelFallback />}>
+                  <LazyAskGovernanceAgentPanel
+                    projects={projectOptions}
+                    onNeedsProjects={() => setAgentNeedsProjects(true)}
+                  />
+                </Suspense>
+              </TabsContent>
+            )}
 
-            <TabsContent value="charters" className="mt-3">
-              <ProjectChartersPanel
-                projects={projectOptions}
-                canWrite={canWrite}
-                isClient={isClient}
-                isReadOnly={isReadOnly}
-                loadCharters={governanceToolsTab === "charters"}
-              />
-            </TabsContent>
+            {governanceToolsTab === "charters" && (
+              <TabsContent value="charters" className="mt-3">
+                <Suspense fallback={<GovernanceToolsPanelFallback />}>
+                  <LazyProjectChartersPanel
+                    projects={projectOptions}
+                    canWrite={canWrite}
+                    isClient={isClient}
+                    isReadOnly={isReadOnly}
+                    loadCharters
+                  />
+                </Suspense>
+              </TabsContent>
+            )}
           </Tabs>
         </div>
       )}
 
-      <GovernanceWorkflowDialogs
+      {dialog && (
+        <Suspense fallback={null}>
+          <LazyGovernanceWorkflowDialogs
         dialog={dialog}
         onClose={() => setDialog(null)}
         data={data}
@@ -1616,7 +1633,9 @@ export function GovernanceDashboard() {
               : replaceOrAddById(current.scope_states, scope),
           }));
         }}
-      />
+          />
+        </Suspense>
+      )}
 
       <ProjectGovernanceSheet
         open={sheetOpen}

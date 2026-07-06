@@ -48,6 +48,13 @@ export default defineConfig(({ command, mode }) => {
       host: "::",
       port: 3000,
       strictPort: true,
+      // Proxy to 127.0.0.1 — Docker/WSL often bind localhost:8000 on Windows.
+      proxy: {
+        "/api": {
+          target: "http://127.0.0.1:8000",
+          changeOrigin: true,
+        },
+      },
     },
     plugins: [
       tailwindcss(),

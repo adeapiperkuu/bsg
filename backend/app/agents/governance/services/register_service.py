@@ -131,7 +131,40 @@ async def list_governance_register_page(
         )
 
     stmt = stmt.order_by(Project.name.asc())
-    page = await _execute_paginated_rows(session, stmt, limit=filters.limit, offset=filters.offset)
+
+    count_stmt = (
+        select(func.count())
+        .select_from(Project)
+        .join(visible_projects, visible_projects.c.id == Project.id)
+    )
+    if current_user.role == AppRole.CLIENT:
+        count_stmt = count_stmt.where(Project.id.in_(project_ids))
+    if filters.project_id is not None:
+        count_stmt = count_stmt.where(Project.id == filters.project_id)
+    if filters.status is not None:
+        count_stmt = count_stmt.join(
+            ProjectScopeState,
+            and_(
+                ProjectScopeState.project_id == Project.id,
+                ProjectScopeState.deleted_at.is_(None),
+            ),
+        ).where(ProjectScopeState.scope_status == filters.status)
+    if filters.search is not None:
+        pattern = f"%{filters.search.lower()}%"
+        count_stmt = count_stmt.where(
+            or_(
+                func.lower(Project.name).like(pattern),
+                func.lower(func.cast(Project.id, String)).like(pattern),
+            )
+        )
+
+    page = await _execute_paginated_rows(
+        session,
+        stmt,
+        limit=filters.limit,
+        offset=filters.offset,
+        count_stmt=count_stmt,
+    )
 
     items = [
         GovernanceRegisterRowRead(

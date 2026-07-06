@@ -208,7 +208,7 @@ async def test_register_query_reads_project_governance_summary(
 ) -> None:
     captured: dict[str, str] = {}
 
-    async def capture_statement(_session, stmt, *, limit, offset):
+    async def capture_statement(_session, stmt, *, limit, offset, count_stmt):
         captured["sql"] = str(stmt.compile(compile_kwargs={"literal_binds": False}))
         return MagicMock(items=[], total=0, limit=limit, offset=offset)
 
@@ -236,7 +236,7 @@ async def test_register_page_still_applies_pagination(
 ) -> None:
     captured: dict[str, int] = {}
 
-    async def capture_statement(_session, _stmt, *, limit, offset):
+    async def capture_statement(_session, _stmt, *, limit, offset, count_stmt):
         captured["limit"] = limit
         captured["offset"] = offset
         return MagicMock(items=[], total=12, limit=limit, offset=offset)
@@ -264,7 +264,7 @@ async def test_register_org_isolation_joins_summary_to_project_org(
     org_a = uuid4()
     captured: dict[str, str] = {}
 
-    async def capture_statement(_session, stmt, *, limit, offset):
+    async def capture_statement(_session, stmt, *, limit, offset, count_stmt):
         captured["sql"] = str(stmt.compile(compile_kwargs={"literal_binds": False}))
         return MagicMock(items=[], total=0, limit=limit, offset=offset)
 
@@ -286,6 +286,33 @@ async def test_register_org_isolation_joins_summary_to_project_org(
 
     sql = captured["sql"]
     assert "project_governance_summary.org_id = projects.org_id" in sql.replace("\n", " ")
+
+
+@pytest.mark.asyncio
+async def test_register_count_query_omits_summary_join(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str] = {}
+
+    async def capture_statement(_session, _stmt, *, limit, offset, count_stmt):
+        captured["count_sql"] = str(count_stmt.compile(compile_kwargs={"literal_binds": False}))
+        return MagicMock(items=[], total=4, limit=limit, offset=offset)
+
+    monkeypatch.setattr(
+        "app.agents.governance.services.register_service._execute_paginated_rows",
+        capture_statement,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
+        AsyncMock(),
+    )
+
+    from app.agents.governance.services.register_service import list_governance_register_page
+
+    page = await list_governance_register_page(AsyncMock(), _user(), limit=10, offset=0)
+
+    count_sql = captured["count_sql"].lower()
+    assert "project_governance_summary" not in count_sql
+    assert "over()" not in count_sql
+    assert page.total == 4
 
 
 @pytest.mark.asyncio

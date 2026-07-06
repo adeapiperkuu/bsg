@@ -265,11 +265,6 @@ async def export_governance_analytics_pdf(
     body = (
         f"Generated: {data.generated_at.isoformat()}\n"
         f"Range: {data.date_range_days} days\n\n"
-        f"Portfolio Score: {data.kpis.portfolio_score}\n"
-        f"Projects at Risk: {data.kpis.projects_at_risk}\n"
-        f"Blocking Dependencies: {data.kpis.blocking_dependencies}\n"
-        f"Critical Escalations: {data.kpis.critical_escalations}\n"
-        f"Governance SLA: {data.kpis.governance_sla_pct}%\n\n"
         "Portfolio Risk Ranking\n"
         + "\n".join(
             f"- {project.project_name}: score={project.score}, risk={project.risk_level}"

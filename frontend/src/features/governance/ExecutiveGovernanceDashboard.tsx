@@ -1,12 +1,11 @@
-import { Download, RefreshCw } from "lucide-react";
+import { Download } from "lucide-react";
 import type { RefObject } from "react";
 
-import { Card, KpiCard, SectionHeader, StatusPill } from "@/components/bsg/widgets";
+import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { exportGovernanceAnalytics } from "@/lib/queries/governance";
-import { cn } from "@/lib/utils";
 import type {
   GovernanceAnalytics,
   GovernanceAnalyticsEvidence,
@@ -50,20 +49,6 @@ function EvidenceList({ evidence }: { evidence: GovernanceAnalyticsEvidence[] })
         </li>
       ))}
     </ul>
-  );
-}
-
-export function ExecutiveAnalyticsSummarySkeleton() {
-  return (
-    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4" aria-label="Loading executive KPIs">
-      {["score", "risk", "dependencies", "sla"].map((item) => (
-        <Card key={item}>
-          <Skeleton className="h-3 w-28" />
-          <Skeleton className="mt-4 h-7 w-16" />
-          <Skeleton className="mt-3 h-3 w-24" />
-        </Card>
-      ))}
-    </div>
   );
 }
 
@@ -192,24 +177,19 @@ export function ExecutiveGovernanceDashboard({
   analytics,
   summaryLoading,
   detailLoading,
-  isFetching,
   rangeDays,
   onRangeChange,
-  onRefresh,
   onOpenProject,
   detailSectionRef,
 }: {
   analytics: GovernanceAnalytics | null;
   summaryLoading: boolean;
   detailLoading: boolean;
-  isFetching: boolean;
   rangeDays: number;
   onRangeChange: (days: number) => void;
-  onRefresh: () => void;
   onOpenProject: (projectId: string) => void;
   detailSectionRef?: RefObject<HTMLElement | null>;
 }) {
-  const kpis = analytics?.kpis;
   const ranking = analytics?.portfolio_risk_ranking ?? [];
   const recommendations = analytics?.recommendations ?? [];
 
@@ -235,16 +215,6 @@ export function ExecutiveGovernanceDashboard({
             variant="outline"
             size="sm"
             className="shadow-none"
-            onClick={onRefresh}
-          >
-            <RefreshCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
-            Refresh
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="shadow-none"
             disabled={!analytics}
             onClick={() => {
               if (analytics) {
@@ -257,43 +227,6 @@ export function ExecutiveGovernanceDashboard({
           </Button>
         </div>
       </div>
-
-      {summaryLoading && !kpis ? (
-        <ExecutiveAnalyticsSummarySkeleton />
-      ) : kpis ? (
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <KpiCard
-            label="Portfolio Score"
-            value={`${kpis.portfolio_score}`}
-            delta={`${kpis.weekly_trend >= 0 ? "+" : ""}${kpis.weekly_trend} weekly`}
-            tone={
-              kpis.portfolio_score >= 75
-                ? "success"
-                : kpis.portfolio_score >= 60
-                  ? "warning"
-                  : "danger"
-            }
-          />
-          <KpiCard
-            label="Projects at Risk"
-            value={kpis.projects_at_risk}
-            delta={`${kpis.leadership_attention_projects} need leadership`}
-            tone={kpis.projects_at_risk > 0 ? "danger" : "success"}
-          />
-          <KpiCard
-            label="Blocking Dependencies"
-            value={kpis.blocking_dependencies}
-            delta={`${kpis.open_dependencies} open dependencies`}
-            tone={kpis.blocking_dependencies > 0 ? "warning" : "success"}
-          />
-          <KpiCard
-            label="Governance SLA"
-            value={`${kpis.governance_sla_pct}%`}
-            delta={`${kpis.overdue_actions} overdue actions`}
-            tone={kpis.governance_sla_pct >= 90 ? "success" : "warning"}
-          />
-        </div>
-      ) : null}
 
       <div ref={detailSectionRef as RefObject<HTMLDivElement>} className="grid gap-4 xl:grid-cols-[1fr_1fr]">
         <RiskRanking

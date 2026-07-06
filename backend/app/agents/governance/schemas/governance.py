@@ -388,32 +388,9 @@ class GovernanceTrendPointRead(BaseModel):
     sla_adherence_pct: float
 
 
-class GovernanceAnalyticsKpisRead(BaseModel):
-    portfolio_score: int
-    projects_at_risk: int
-    leadership_attention_projects: int
-    blocking_dependencies: int
-    critical_escalations: int
-    pending_scope_approvals: int
-    upcoming_governance_meetings: int
-    governance_sla_pct: float
-    avg_dependency_resolution_days: float | None = None
-    avg_escalation_resolution_days: float | None = None
-    avg_action_completion_days: float | None = None
-    open_dependencies: int
-    open_actions: int
-    overdue_actions: int
-    projects_red: int
-    projects_amber: int
-    projects_green: int
-    weekly_trend: float
-    monthly_trend: float
-
-
 class GovernanceAnalyticsRead(BaseModel):
     generated_at: datetime
     date_range_days: int
-    kpis: GovernanceAnalyticsKpisRead
     project_health: list[GovernanceHealthProjectRead]
     portfolio_risk_ranking: list[GovernanceHealthProjectRead]
     insights: list[GovernanceInsightRead]
@@ -427,7 +404,6 @@ class GovernanceAnalyticsRead(BaseModel):
 class GovernanceAnalyticsSummaryRead(BaseModel):
     generated_at: datetime
     date_range_days: int
-    kpis: GovernanceAnalyticsKpisRead
     project_health: list[GovernanceHealthProjectRead] = Field(default_factory=list)
     portfolio_risk_ranking: list[GovernanceHealthProjectRead] = Field(default_factory=list)
     charts: dict[str, list[GovernanceChartPointRead]] = Field(default_factory=dict)

@@ -21,7 +21,6 @@ from app.agents.governance.analytics.sla import (
     effective_action_status,
 )
 from app.agents.governance.schemas.governance import (
-    GovernanceAnalyticsKpisRead,
     GovernanceAnalyticsDetailRead,
     GovernanceAnalyticsRead,
     GovernanceAnalyticsSummaryRead,
@@ -33,7 +32,6 @@ from app.agents.governance.schemas.governance import (
     GovernanceTrendPointRead,
 )
 from app.agents.governance.services.dashboard_service import (
-    _fetch_action_kpis,
     _overdue_action_filter,
 )
 from app.agents.governance.services.governance_service import (
@@ -408,177 +406,6 @@ async def _fetch_action_status_counter(
             "open": int(row.open or 0),
             "overdue": int(row.overdue or 0),
         }
-    )
-
-
-async def _fetch_inventory_totals(
-    session: AsyncSession,
-    current_user: CurrentUser,
-    *,
-    today: date,
-) -> tuple[int, int, int, int, int, float]:
-    """Return open deps, blocking deps, critical esc, pending scope, overdue actions, sla pct."""
-    if not can_read_internal_governance(current_user):
-        return 0, 0, 0, 0, 0, 100.0
-
-    open_dep_stmt = select(func.count()).select_from(ProjectDependency).where(
-        ProjectDependency.deleted_at.is_(None),
-        ProjectDependency.status != GovernanceDependencyStatus.RESOLVED,
-    )
-    open_dep_stmt = _apply_org_filter(open_dep_stmt, ProjectDependency.org_id, current_user)
-
-    blocking_stmt = select(func.count()).select_from(ProjectDependency).where(
-        ProjectDependency.deleted_at.is_(None),
-        ProjectDependency.status == GovernanceDependencyStatus.BLOCKING,
-    )
-    blocking_stmt = _apply_org_filter(blocking_stmt, ProjectDependency.org_id, current_user)
-
-    critical_stmt = select(func.count()).select_from(GovernanceEscalation).where(
-        GovernanceEscalation.deleted_at.is_(None),
-        GovernanceEscalation.status.in_(OPEN_ESCALATION_STATUSES),
-        GovernanceEscalation.severity == GovernanceEscalationSeverity.CRITICAL,
-    )
-    critical_stmt = _apply_org_filter(critical_stmt, GovernanceEscalation.org_id, current_user)
-
-    pending_stmt = select(func.count()).select_from(ProjectScopeState).where(
-        ProjectScopeState.deleted_at.is_(None),
-        ProjectScopeState.scope_status == GovernanceScopeStatus.PENDING_REVISION,
-    )
-    pending_stmt = _apply_org_filter(pending_stmt, ProjectScopeState.org_id, current_user)
-
-    overdue_stmt = select(func.count()).select_from(GovernanceAction).where(
-        GovernanceAction.deleted_at.is_(None),
-        _overdue_action_filter(today),
-    )
-    overdue_stmt = _apply_org_filter(overdue_stmt, GovernanceAction.org_id, current_user)
-
-    totals_stmt = select(
-        open_dep_stmt.scalar_subquery().label("open_dependencies"),
-        blocking_stmt.scalar_subquery().label("blocking_dependencies"),
-        critical_stmt.scalar_subquery().label("critical_escalations"),
-        pending_stmt.scalar_subquery().label("pending_scope"),
-        overdue_stmt.scalar_subquery().label("overdue_actions"),
-    )
-    totals = (await session.execute(totals_stmt)).one()
-
-    _, _, sla_pct = await _fetch_action_kpis(
-        session,
-        current_user,
-        today=today,
-        window_start=today - timedelta(days=90),
-    )
-
-    return (
-        int(totals.open_dependencies or 0),
-        int(totals.blocking_dependencies or 0),
-        int(totals.critical_escalations or 0),
-        int(totals.pending_scope or 0),
-        int(totals.overdue_actions or 0),
-        sla_pct,
-    )
-
-
-async def _fetch_open_action_count(
-    session: AsyncSession,
-    current_user: CurrentUser,
-    *,
-    today: date,
-) -> int:
-    if not can_read_internal_governance(current_user):
-        return 0
-    open_filter = or_(
-        GovernanceAction.status.in_(
-            {
-                GovernanceActionStatus.OPEN,
-                GovernanceActionStatus.IN_PROGRESS,
-                GovernanceActionStatus.OVERDUE,
-            }
-        ),
-        _overdue_action_filter(today),
-    )
-    stmt = (
-        select(func.count())
-        .select_from(GovernanceAction)
-        .where(GovernanceAction.deleted_at.is_(None), open_filter)
-    )
-    stmt = _apply_org_filter(stmt, GovernanceAction.org_id, current_user)
-    return int((await session.execute(stmt)).scalar_one() or 0)
-
-
-async def _fetch_resolution_averages(
-    session: AsyncSession,
-    current_user: CurrentUser,
-) -> tuple[float | None, float | None, float | None]:
-    if not can_read_internal_governance(current_user):
-        return None, None, None
-
-    dep_stmt = (
-        select(
-            func.avg(
-                func.extract(
-                    "epoch",
-                    ProjectDependency.resolved_at - ProjectDependency.created_at,
-                )
-                / 86400.0
-            )
-        )
-        .select_from(ProjectDependency)
-        .where(
-            ProjectDependency.deleted_at.is_(None),
-            ProjectDependency.resolved_at.is_not(None),
-            ProjectDependency.created_at.is_not(None),
-        )
-    )
-    dep_stmt = _apply_org_filter(dep_stmt, ProjectDependency.org_id, current_user)
-
-    esc_stmt = (
-        select(
-            func.avg(
-                func.extract(
-                    "epoch",
-                    GovernanceEscalation.resolved_at - GovernanceEscalation.raised_at,
-                )
-                / 86400.0
-            )
-        )
-        .select_from(GovernanceEscalation)
-        .where(
-            GovernanceEscalation.deleted_at.is_(None),
-            GovernanceEscalation.resolved_at.is_not(None),
-            GovernanceEscalation.raised_at.is_not(None),
-        )
-    )
-    esc_stmt = _apply_org_filter(esc_stmt, GovernanceEscalation.org_id, current_user)
-
-    action_stmt = (
-        select(
-            func.avg(
-                func.extract(
-                    "epoch",
-                    GovernanceAction.completed_at - GovernanceAction.created_at,
-                )
-                / 86400.0
-            )
-        )
-        .select_from(GovernanceAction)
-        .where(
-            GovernanceAction.deleted_at.is_(None),
-            GovernanceAction.completed_at.is_not(None),
-            GovernanceAction.created_at.is_not(None),
-        )
-    )
-    action_stmt = _apply_org_filter(action_stmt, GovernanceAction.org_id, current_user)
-
-    stmt = select(
-        dep_stmt.scalar_subquery().label("dependency_days"),
-        esc_stmt.scalar_subquery().label("escalation_days"),
-        action_stmt.scalar_subquery().label("action_days"),
-    )
-    row = (await session.execute(stmt)).one()
-    return (
-        round(float(row.dependency_days), 1) if row.dependency_days is not None else None,
-        round(float(row.escalation_days), 1) if row.escalation_days is not None else None,
-        round(float(row.action_days), 1) if row.action_days is not None else None,
     )
 
 
@@ -1341,19 +1168,6 @@ async def get_governance_analytics(
             project_health, key=lambda row: (row.score, -row.priority, row.project_name)
         )
 
-    (
-        open_dependencies,
-        blocking_dependencies_count,
-        critical_escalations_count,
-        pending_scope_count,
-        overdue_actions_count,
-        governance_sla_pct,
-    ) = await _fetch_inventory_totals(session, current_user, today=today)
-    open_actions_count = await _fetch_open_action_count(session, current_user, today=today)
-    dep_resolution_avg, esc_resolution_avg, action_completion_avg = await _fetch_resolution_averages(
-        session, current_user
-    )
-
     trends_started = perf_counter()
     (
         trend_dependencies,
@@ -1414,11 +1228,6 @@ async def get_governance_analytics(
     )
     trends_ms = round((perf_counter() - trends_started) * 1000, 1)
 
-    portfolio_score = round(mean([row.score for row in project_health])) if project_health else 100
-    green = sum(1 for row in project_health if row.score >= 75)
-    amber = sum(1 for row in project_health if 40 <= row.score < 75)
-    red = sum(1 for row in project_health if row.score < 40)
-
     charts = {
         "dependencies_by_type": _chart_points(
             dep_type_counter,
@@ -1471,37 +1280,6 @@ async def get_governance_analytics(
         ],
     }
 
-    recent_trend = trends[-7:] if len(trends) >= 7 else trends
-    prior_trend = trends[-14:-7] if len(trends) >= 14 else []
-    recent_health = mean([point.portfolio_health for point in recent_trend]) if recent_trend else portfolio_score
-    prior_health = mean([point.portfolio_health for point in prior_trend]) if prior_trend else recent_health
-
-    kpis = GovernanceAnalyticsKpisRead(
-        portfolio_score=portfolio_score,
-        projects_at_risk=sum(1 for row in project_health if row.score < 60),
-        leadership_attention_projects=sum(
-            1
-            for row in project_health
-            if row.critical_escalations or row.blocking_dependencies or row.score < 60
-        ),
-        blocking_dependencies=blocking_dependencies_count,
-        critical_escalations=critical_escalations_count,
-        pending_scope_approvals=pending_scope_count,
-        upcoming_governance_meetings=0,
-        governance_sla_pct=governance_sla_pct,
-        avg_dependency_resolution_days=dep_resolution_avg,
-        avg_escalation_resolution_days=esc_resolution_avg,
-        avg_action_completion_days=action_completion_avg,
-        open_dependencies=open_dependencies,
-        open_actions=open_actions_count,
-        overdue_actions=overdue_actions_count,
-        projects_red=red,
-        projects_amber=amber,
-        projects_green=green,
-        weekly_trend=round(recent_health - prior_health, 1),
-        monthly_trend=0.0,
-    )
-
     recommendations_started = perf_counter()
     insights = _build_insights(
         project_health,
@@ -1515,7 +1293,6 @@ async def get_governance_analytics(
     analytics = GovernanceAnalyticsRead(
         generated_at=datetime.now(UTC),
         date_range_days=effective_days,
-        kpis=kpis,
         project_health=project_health,
         portfolio_risk_ranking=ranking,
         insights=insights,
@@ -1524,7 +1301,6 @@ async def get_governance_analytics(
         charts=charts,
         recent_activity=recent_activity,
         export_sections=[
-            "KPIs",
             "Charts",
             "Executive Insights",
             "Governance Health",
@@ -1565,48 +1341,6 @@ async def get_governance_analytics(
     return analytics
 
 
-def _build_summary_kpis(
-    *,
-    project_health: list[GovernanceHealthProjectRead],
-    open_dependencies: int,
-    blocking_dependencies_count: int,
-    critical_escalations_count: int,
-    pending_scope_count: int,
-    overdue_actions_count: int,
-    governance_sla_pct: float,
-    open_actions_count: int,
-) -> GovernanceAnalyticsKpisRead:
-    portfolio_score = round(mean([row.score for row in project_health])) if project_health else 100
-    green = sum(1 for row in project_health if row.score >= 75)
-    amber = sum(1 for row in project_health if 40 <= row.score < 75)
-    red = sum(1 for row in project_health if row.score < 40)
-    return GovernanceAnalyticsKpisRead(
-        portfolio_score=portfolio_score,
-        projects_at_risk=sum(1 for row in project_health if row.score < 60),
-        leadership_attention_projects=sum(
-            1
-            for row in project_health
-            if row.critical_escalations or row.blocking_dependencies or row.score < 60
-        ),
-        blocking_dependencies=blocking_dependencies_count,
-        critical_escalations=critical_escalations_count,
-        pending_scope_approvals=pending_scope_count,
-        upcoming_governance_meetings=0,
-        governance_sla_pct=governance_sla_pct,
-        avg_dependency_resolution_days=None,
-        avg_escalation_resolution_days=None,
-        avg_action_completion_days=None,
-        open_dependencies=open_dependencies,
-        open_actions=open_actions_count,
-        overdue_actions=overdue_actions_count,
-        projects_red=red,
-        projects_amber=amber,
-        projects_green=green,
-        weekly_trend=0.0,
-        monthly_trend=0.0,
-    )
-
-
 def _summary_health_charts(
     project_health: list[GovernanceHealthProjectRead],
 ) -> dict[str, list[GovernanceChartPointRead]]:
@@ -1630,7 +1364,7 @@ async def get_governance_analytics_summary(
     *,
     days: int = 30,
 ) -> GovernanceAnalyticsSummaryRead:
-    """Fast executive header: KPIs and top risk ranking without heavy analytics work."""
+    """Fast executive header: top risk ranking without heavy analytics work."""
     assert_can_read_governance(current_user)
     effective_days = _clamp_range(days)
     cache_key = _analytics_cache_key(current_user, effective_days)
@@ -1674,33 +1408,13 @@ async def get_governance_analytics_summary(
     top_ranking = ranking[:SUMMARY_RANKING_LIMIT]
     top_health = top_ranking
 
-    (
-        open_dependencies,
-        blocking_dependencies_count,
-        critical_escalations_count,
-        pending_scope_count,
-        overdue_actions_count,
-        governance_sla_pct,
-    ) = await _fetch_inventory_totals(session, current_user, today=today)
-    open_actions_count = await _fetch_open_action_count(session, current_user, today=today)
-
     summary = GovernanceAnalyticsSummaryRead(
         generated_at=now,
         date_range_days=effective_days,
-        kpis=_build_summary_kpis(
-            project_health=project_health,
-            open_dependencies=open_dependencies,
-            blocking_dependencies_count=blocking_dependencies_count,
-            critical_escalations_count=critical_escalations_count,
-            pending_scope_count=pending_scope_count,
-            overdue_actions_count=overdue_actions_count,
-            governance_sla_pct=governance_sla_pct,
-            open_actions_count=open_actions_count,
-        ),
         project_health=top_health,
         portfolio_risk_ranking=top_ranking,
         charts=_summary_health_charts(project_health),
-        export_sections=["KPIs", "Governance Health"],
+        export_sections=["Governance Health"],
     )
     _analytics_summary_cache[cache_key] = (now, summary)
     return summary

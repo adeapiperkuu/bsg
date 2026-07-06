@@ -1,5 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { Suspense } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GovernanceDashboard } from "@/features/governance/GovernanceDashboard";
@@ -45,31 +47,10 @@ const sampleDependency = {
 const analyticsSummary = {
   generated_at: "2026-07-06T08:00:00.000Z",
   date_range_days: 30,
-  kpis: {
-    portfolio_score: 82,
-    projects_at_risk: 1,
-    leadership_attention_projects: 2,
-    blocking_dependencies: 3,
-    critical_escalations: 0,
-    pending_scope_approvals: 0,
-    upcoming_governance_meetings: 0,
-    governance_sla_pct: 95,
-    avg_dependency_resolution_days: null,
-    avg_escalation_resolution_days: null,
-    avg_action_completion_days: null,
-    open_dependencies: 4,
-    open_actions: 2,
-    overdue_actions: 1,
-    projects_red: 0,
-    projects_amber: 1,
-    projects_green: 3,
-    weekly_trend: 0,
-    monthly_trend: 0,
-  },
   project_health: [],
   portfolio_risk_ranking: [],
   charts: {},
-  export_sections: ["KPIs", "Governance Health"],
+  export_sections: ["Governance Health"],
 };
 
 function renderDashboard() {
@@ -83,7 +64,9 @@ function renderDashboard() {
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <GovernanceDashboard />
+      <Suspense fallback={null}>
+        <GovernanceDashboard />
+      </Suspense>
     </QueryClientProvider>,
   );
 }
@@ -214,17 +197,36 @@ describe("GovernanceDashboard load behavior", () => {
     expect(fetchCalls.some((path) => path.startsWith("/governance/bootstrap"))).toBe(true);
   });
 
-  it("keeps executive KPIs visible while detail is pending", async () => {
+  it("keeps executive analytics visible while detail is pending", async () => {
     renderDashboard();
 
     await waitFor(
       () => {
-        expect(screen.getByText("Portfolio Score")).toBeInTheDocument();
+        expect(fetchCalls.some((path) => path.startsWith("/governance/analytics/summary"))).toBe(
+          true,
+        );
+        expect(screen.getByText("Portfolio Risk Ranking")).toBeInTheDocument();
       },
       { timeout: GOVERNANCE_ANALYTICS_DEFER_MS + 800 },
     );
 
-    expect(screen.getByText("Vendor contract review")).toBeInTheDocument();
     expect(fetchCalls.some((path) => path.startsWith("/governance/analytics/detail"))).toBe(false);
+  });
+
+  it("lazy-loads governance tools panels only after a tab is opened", async () => {
+    const user = userEvent.setup();
+    renderDashboard();
+
+    await waitFor(() => {
+      expect(screen.getByText("Vendor contract review")).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText("Ask a governance question")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: /Ask Governance Agent/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Ask a governance question")).toBeInTheDocument();
+    });
   });
 });

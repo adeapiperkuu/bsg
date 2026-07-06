@@ -268,19 +268,115 @@ async def _execute_paginated_rows(
     *,
     limit: int,
     offset: int,
+    count_stmt: Select,
 ) -> PaginatedGovernanceRows:
-    total_count = func.count().over().label("_total_count")
-    windowed = stmt.add_columns(total_count).limit(limit).offset(offset)
-    rows = (await session.execute(windowed)).all()
+    total = int((await session.execute(count_stmt)).scalar_one())
+    rows = (await session.execute(stmt.limit(limit).offset(offset))).all()
     if not rows:
-        return PaginatedGovernanceRows(items=[], total=0, limit=limit, offset=offset)
+        return PaginatedGovernanceRows(items=[], total=total, limit=limit, offset=offset)
+    return PaginatedGovernanceRows(items=rows, total=total, limit=limit, offset=offset)
 
-    total = int(rows[0]._total_count)
-    if len(rows[0]._fields) == 2 and rows[0]._fields[1] == "_total_count":
-        items = [row[0] for row in rows]
-    else:
-        items = rows
-    return PaginatedGovernanceRows(items=items, total=total, limit=limit, offset=offset)
+
+def _dependency_count_stmt(current_user: CurrentUser) -> Select:
+    stmt = (
+        select(func.count())
+        .select_from(ProjectDependency)
+        .where(ProjectDependency.deleted_at.is_(None))
+    )
+    return _apply_org_filter(stmt, ProjectDependency.org_id, current_user)
+
+
+def _action_count_stmt(current_user: CurrentUser) -> Select:
+    stmt = (
+        select(func.count())
+        .select_from(GovernanceAction)
+        .where(GovernanceAction.deleted_at.is_(None))
+    )
+    return _apply_org_filter(stmt, GovernanceAction.org_id, current_user)
+
+
+def _escalation_count_stmt(current_user: CurrentUser) -> Select:
+    stmt = (
+        select(func.count())
+        .select_from(GovernanceEscalation)
+        .where(GovernanceEscalation.deleted_at.is_(None))
+    )
+    return _apply_org_filter(stmt, GovernanceEscalation.org_id, current_user)
+
+
+def _scope_state_count_stmt(current_user: CurrentUser) -> Select:
+    stmt = (
+        select(func.count())
+        .select_from(ProjectScopeState)
+        .where(ProjectScopeState.deleted_at.is_(None))
+    )
+    return _apply_org_filter(stmt, ProjectScopeState.org_id, current_user)
+
+
+def _apply_dependency_page_filters(stmt: Select, filters: GovernanceListFilters) -> Select:
+    if filters.project_id is not None:
+        stmt = stmt.where(ProjectDependency.project_id == filters.project_id)
+    if filters.status is not None:
+        stmt = stmt.where(ProjectDependency.status == filters.status)
+    if filters.dependency_type is not None:
+        stmt = stmt.where(ProjectDependency.dependency_type == filters.dependency_type)
+    if filters.owner_id is not None:
+        stmt = stmt.where(ProjectDependency.owner_id == filters.owner_id)
+    if filters.search is not None:
+        stmt = stmt.where(_search_filter(ProjectDependency, filters.search))
+    if filters.date_from is not None:
+        stmt = stmt.where(ProjectDependency.due_date >= filters.date_from)
+    if filters.date_to is not None:
+        stmt = stmt.where(ProjectDependency.due_date <= filters.date_to)
+    return stmt
+
+
+def _apply_action_page_filters(stmt: Select, filters: GovernanceListFilters) -> Select:
+    if filters.project_id is not None:
+        stmt = stmt.where(GovernanceAction.project_id == filters.project_id)
+    if filters.status is not None:
+        stmt = stmt.where(GovernanceAction.status == filters.status)
+    if filters.owner_id is not None:
+        stmt = stmt.where(GovernanceAction.owner_id == filters.owner_id)
+    if filters.search is not None:
+        stmt = stmt.where(_search_filter(GovernanceAction, filters.search))
+    if filters.date_from is not None:
+        stmt = stmt.where(GovernanceAction.due_date >= filters.date_from)
+    if filters.date_to is not None:
+        stmt = stmt.where(GovernanceAction.due_date <= filters.date_to)
+    return stmt
+
+
+def _apply_escalation_page_filters(stmt: Select, filters: GovernanceListFilters) -> Select:
+    if filters.project_id is not None:
+        stmt = stmt.where(GovernanceEscalation.project_id == filters.project_id)
+    if filters.status is not None:
+        stmt = stmt.where(GovernanceEscalation.status == filters.status)
+    if filters.severity is not None:
+        stmt = stmt.where(GovernanceEscalation.severity == filters.severity)
+    if filters.assigned_to is not None:
+        stmt = stmt.where(GovernanceEscalation.assigned_to == filters.assigned_to)
+    if filters.search is not None:
+        stmt = stmt.where(_search_filter(GovernanceEscalation, filters.search))
+    if filters.date_from is not None:
+        stmt = stmt.where(func.date(GovernanceEscalation.raised_at) >= filters.date_from)
+    if filters.date_to is not None:
+        stmt = stmt.where(func.date(GovernanceEscalation.raised_at) <= filters.date_to)
+    return stmt
+
+
+def _apply_scope_state_page_filters(stmt: Select, filters: GovernanceListFilters) -> Select:
+    if filters.project_id is not None:
+        stmt = stmt.where(ProjectScopeState.project_id == filters.project_id)
+    if filters.status is not None:
+        stmt = stmt.where(ProjectScopeState.scope_status == filters.status)
+    if filters.search is not None:
+        stmt = stmt.where(_search_filter(ProjectScopeState, filters.search))
+    if filters.date_from is not None:
+        stmt = stmt.where(func.date(ProjectScopeState.updated_at) >= filters.date_from)
+    if filters.date_to is not None:
+        stmt = stmt.where(func.date(ProjectScopeState.updated_at) <= filters.date_to)
+    return stmt
 
 
 def _dependency_list_stmt(current_user: CurrentUser) -> Select:
@@ -496,22 +592,13 @@ async def list_governance_dependencies_page(
         return PaginatedGovernanceRows(items=[], total=0, limit=filters.limit, offset=filters.offset)
     filters = _bounded_list_filters(**raw_filters)
     stmt = _dependency_list_stmt(current_user)
-    if filters.project_id is not None:
-        stmt = stmt.where(ProjectDependency.project_id == filters.project_id)
-    if filters.status is not None:
-        stmt = stmt.where(ProjectDependency.status == filters.status)
-    if filters.dependency_type is not None:
-        stmt = stmt.where(ProjectDependency.dependency_type == filters.dependency_type)
-    if filters.owner_id is not None:
-        stmt = stmt.where(ProjectDependency.owner_id == filters.owner_id)
-    if filters.search is not None:
-        stmt = stmt.where(_search_filter(ProjectDependency, filters.search))
-    if filters.date_from is not None:
-        stmt = stmt.where(ProjectDependency.due_date >= filters.date_from)
-    if filters.date_to is not None:
-        stmt = stmt.where(ProjectDependency.due_date <= filters.date_to)
+    count_stmt = _dependency_count_stmt(current_user)
+    stmt = _apply_dependency_page_filters(stmt, filters)
+    count_stmt = _apply_dependency_page_filters(count_stmt, filters)
     stmt = stmt.order_by(ProjectDependency.due_date.asc().nulls_last(), ProjectDependency.created_at.desc())
-    return await _execute_paginated_rows(session, stmt, limit=filters.limit, offset=filters.offset)
+    return await _execute_paginated_rows(
+        session, stmt, limit=filters.limit, offset=filters.offset, count_stmt=count_stmt
+    )
 
 
 async def list_governance_actions_page(
@@ -524,20 +611,13 @@ async def list_governance_actions_page(
         return PaginatedGovernanceRows(items=[], total=0, limit=filters.limit, offset=filters.offset)
     filters = _bounded_list_filters(**raw_filters)
     stmt = _action_list_stmt(current_user)
-    if filters.project_id is not None:
-        stmt = stmt.where(GovernanceAction.project_id == filters.project_id)
-    if filters.status is not None:
-        stmt = stmt.where(GovernanceAction.status == filters.status)
-    if filters.owner_id is not None:
-        stmt = stmt.where(GovernanceAction.owner_id == filters.owner_id)
-    if filters.search is not None:
-        stmt = stmt.where(_search_filter(GovernanceAction, filters.search))
-    if filters.date_from is not None:
-        stmt = stmt.where(GovernanceAction.due_date >= filters.date_from)
-    if filters.date_to is not None:
-        stmt = stmt.where(GovernanceAction.due_date <= filters.date_to)
+    count_stmt = _action_count_stmt(current_user)
+    stmt = _apply_action_page_filters(stmt, filters)
+    count_stmt = _apply_action_page_filters(count_stmt, filters)
     stmt = stmt.order_by(GovernanceAction.due_date.asc().nulls_last(), GovernanceAction.created_at.desc())
-    return await _execute_paginated_rows(session, stmt, limit=filters.limit, offset=filters.offset)
+    return await _execute_paginated_rows(
+        session, stmt, limit=filters.limit, offset=filters.offset, count_stmt=count_stmt
+    )
 
 
 async def list_governance_escalations_page(
@@ -547,27 +627,19 @@ async def list_governance_escalations_page(
 ) -> PaginatedGovernanceRows:
     filters = _bounded_list_filters(**raw_filters)
     stmt = _escalation_list_stmt(current_user)
+    count_stmt = _escalation_count_stmt(current_user)
     if current_user.role == AppRole.CLIENT:
         project_ids = await _client_project_ids(session, current_user)
         if not project_ids:
             return PaginatedGovernanceRows(items=[], total=0, limit=filters.limit, offset=filters.offset)
         stmt = stmt.where(GovernanceEscalation.project_id.in_(project_ids))
-    if filters.project_id is not None:
-        stmt = stmt.where(GovernanceEscalation.project_id == filters.project_id)
-    if filters.status is not None:
-        stmt = stmt.where(GovernanceEscalation.status == filters.status)
-    if filters.severity is not None:
-        stmt = stmt.where(GovernanceEscalation.severity == filters.severity)
-    if filters.assigned_to is not None:
-        stmt = stmt.where(GovernanceEscalation.assigned_to == filters.assigned_to)
-    if filters.search is not None:
-        stmt = stmt.where(_search_filter(GovernanceEscalation, filters.search))
-    if filters.date_from is not None:
-        stmt = stmt.where(func.date(GovernanceEscalation.raised_at) >= filters.date_from)
-    if filters.date_to is not None:
-        stmt = stmt.where(func.date(GovernanceEscalation.raised_at) <= filters.date_to)
+        count_stmt = count_stmt.where(GovernanceEscalation.project_id.in_(project_ids))
+    stmt = _apply_escalation_page_filters(stmt, filters)
+    count_stmt = _apply_escalation_page_filters(count_stmt, filters)
     stmt = stmt.order_by(GovernanceEscalation.raised_at.desc(), GovernanceEscalation.created_at.desc())
-    return await _execute_paginated_rows(session, stmt, limit=filters.limit, offset=filters.offset)
+    return await _execute_paginated_rows(
+        session, stmt, limit=filters.limit, offset=filters.offset, count_stmt=count_stmt
+    )
 
 
 async def list_governance_scope_states_page(
@@ -581,18 +653,13 @@ async def list_governance_scope_states_page(
     filters = _bounded_list_filters(**raw_filters)
     stmt = select(ProjectScopeState).where(ProjectScopeState.deleted_at.is_(None))
     stmt = _apply_org_filter(stmt, ProjectScopeState.org_id, current_user)
-    if filters.project_id is not None:
-        stmt = stmt.where(ProjectScopeState.project_id == filters.project_id)
-    if filters.status is not None:
-        stmt = stmt.where(ProjectScopeState.scope_status == filters.status)
-    if filters.search is not None:
-        stmt = stmt.where(_search_filter(ProjectScopeState, filters.search))
-    if filters.date_from is not None:
-        stmt = stmt.where(func.date(ProjectScopeState.updated_at) >= filters.date_from)
-    if filters.date_to is not None:
-        stmt = stmt.where(func.date(ProjectScopeState.updated_at) <= filters.date_to)
+    count_stmt = _scope_state_count_stmt(current_user)
+    stmt = _apply_scope_state_page_filters(stmt, filters)
+    count_stmt = _apply_scope_state_page_filters(count_stmt, filters)
     stmt = stmt.order_by(ProjectScopeState.updated_at.desc(), ProjectScopeState.created_at.desc())
-    return await _execute_paginated_rows(session, stmt, limit=filters.limit, offset=filters.offset)
+    return await _execute_paginated_rows(
+        session, stmt, limit=filters.limit, offset=filters.offset, count_stmt=count_stmt
+    )
 
 
 async def get_dependency_or_404(

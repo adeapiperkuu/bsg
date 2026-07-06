@@ -1,4 +1,4 @@
-import { queryOptions, useQuery } from "@tanstack/react-query";
+import { queryOptions } from "@tanstack/react-query";
 import { apiFetch, apiFetchBlob } from "@/lib/api";
 import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
 import type {
@@ -17,8 +17,6 @@ import type {
   GovernanceListParams,
   GovernanceListPagination,
   GovernanceRegisterRowApi,
-  GovernanceWeeklySummary,
-  GovernanceWeeklySummaryCreatePayload,
   PaginatedGovernanceList,
   ProjectCharter,
   ProjectCharterGeneratePayload,
@@ -219,7 +217,6 @@ export function mergeGovernanceAnalytics(
   return {
     generated_at: detail?.generated_at ?? summary.generated_at,
     date_range_days: summary.date_range_days,
-    kpis: summary.kpis,
     project_health: summary.project_health,
     portfolio_risk_ranking: summary.portfolio_risk_ranking,
     insights: detail?.insights ?? [],

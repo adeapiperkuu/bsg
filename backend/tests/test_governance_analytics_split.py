@@ -6,7 +6,6 @@ from httpx import AsyncClient
 
 from app.agents.governance.schemas.governance import (
     GovernanceAnalyticsDetailRead,
-    GovernanceAnalyticsKpisRead,
     GovernanceAnalyticsRead,
     GovernanceAnalyticsSummaryRead,
     GovernanceHealthProjectRead,
@@ -53,27 +52,6 @@ def _sample_health(project_id: UUID | None = None) -> GovernanceHealthProjectRea
     )
 
 
-def _sample_kpis() -> GovernanceAnalyticsKpisRead:
-    return GovernanceAnalyticsKpisRead(
-        portfolio_score=88,
-        projects_at_risk=0,
-        leadership_attention_projects=1,
-        blocking_dependencies=1,
-        critical_escalations=0,
-        pending_scope_approvals=0,
-        upcoming_governance_meetings=0,
-        governance_sla_pct=100.0,
-        open_dependencies=1,
-        open_actions=0,
-        overdue_actions=0,
-        projects_red=0,
-        projects_amber=0,
-        projects_green=1,
-        weekly_trend=0.0,
-        monthly_trend=0.0,
-    )
-
-
 @pytest.mark.asyncio
 async def test_get_governance_analytics_summary_limits_ranking(
     monkeypatch: pytest.MonkeyPatch,
@@ -100,12 +78,6 @@ async def test_get_governance_analytics_summary_limits_ranking(
     async def _pending_counts(_session, _user):
         return {project.id: 0 for project in projects}
 
-    async def _inventory(_session, _user, *, today):
-        return 0, 0, 0, 0, 0, 100.0
-
-    async def _open_actions(_session, _user, *, today):
-        return 0
-
     monkeypatch.setattr(
         "app.agents.governance.services.analytics_service._fetch_visible_projects",
         _fake_visible,
@@ -127,14 +99,6 @@ async def test_get_governance_analytics_summary_limits_ranking(
         _pending_counts,
     )
     monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_inventory_totals",
-        _inventory,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_open_action_count",
-        _open_actions,
-    )
-    monkeypatch.setattr(
         "app.agents.governance.services.analytics_service._analytics_summary_cache",
         {},
     )
@@ -149,8 +113,7 @@ async def test_get_governance_analytics_summary_limits_ranking(
     assert len(summary.portfolio_risk_ranking) <= SUMMARY_RANKING_LIMIT
     assert len(summary.project_health) <= SUMMARY_RANKING_LIMIT
     assert "health_distribution" in summary.charts
-    assert summary.export_sections == ["KPIs", "Governance Health"]
-    assert summary.kpis.weekly_trend == 0.0
+    assert summary.export_sections == ["Governance Health"]
 
 
 @pytest.mark.asyncio
@@ -264,11 +227,10 @@ async def test_governance_analytics_summary_endpoint_contract(
         return GovernanceAnalyticsSummaryRead(
             generated_at=datetime.now(UTC),
             date_range_days=days,
-            kpis=_sample_kpis(),
             project_health=[_sample_health()],
             portfolio_risk_ranking=[_sample_health()],
             charts={},
-            export_sections=["KPIs", "Governance Health"],
+            export_sections=["Governance Health"],
         )
 
     monkeypatch.setattr(
@@ -282,7 +244,6 @@ async def test_governance_analytics_summary_endpoint_contract(
     assert response.status_code == 200
     body = response.json()
     assert body["data"]["date_range_days"] == 30
-    assert body["data"]["kpis"]["portfolio_score"] == 88
     assert len(body["data"]["portfolio_risk_ranking"]) == 1
 
 
@@ -333,7 +294,6 @@ async def test_governance_analytics_full_endpoint_still_works(
         return GovernanceAnalyticsRead(
             generated_at=datetime.now(UTC),
             date_range_days=days,
-            kpis=_sample_kpis(),
             project_health=[health],
             portfolio_risk_ranking=[health],
             insights=[],
@@ -341,7 +301,7 @@ async def test_governance_analytics_full_endpoint_still_works(
             trends=[],
             charts={},
             recent_activity=[],
-            export_sections=["KPIs"],
+            export_sections=["Charts"],
         )
 
     monkeypatch.setattr(
@@ -354,5 +314,4 @@ async def test_governance_analytics_full_endpoint_still_works(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["data"]["kpis"]["blocking_dependencies"] == 1
-    assert body["data"]["export_sections"] == ["KPIs"]
+    assert body["data"]["export_sections"] == ["Charts"]

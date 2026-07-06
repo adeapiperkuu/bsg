@@ -313,32 +313,9 @@ export type GovernanceTrendPoint = {
   sla_adherence_pct: number;
 };
 
-export type GovernanceAnalyticsKpis = {
-  portfolio_score: number;
-  projects_at_risk: number;
-  leadership_attention_projects: number;
-  blocking_dependencies: number;
-  critical_escalations: number;
-  pending_scope_approvals: number;
-  upcoming_governance_meetings: number;
-  governance_sla_pct: number;
-  avg_dependency_resolution_days: number | null;
-  avg_escalation_resolution_days: number | null;
-  avg_action_completion_days: number | null;
-  open_dependencies: number;
-  open_actions: number;
-  overdue_actions: number;
-  projects_red: number;
-  projects_amber: number;
-  projects_green: number;
-  weekly_trend: number;
-  monthly_trend: number;
-};
-
 export type GovernanceAnalytics = {
   generated_at: string;
   date_range_days: number;
-  kpis: GovernanceAnalyticsKpis;
   project_health: GovernanceHealthProject[];
   portfolio_risk_ranking: GovernanceHealthProject[];
   insights: GovernanceAnalyticsInsight[];
@@ -352,7 +329,6 @@ export type GovernanceAnalytics = {
 export type GovernanceAnalyticsSummary = {
   generated_at: string;
   date_range_days: number;
-  kpis: GovernanceAnalyticsKpis;
   project_health: GovernanceHealthProject[];
   portfolio_risk_ranking: GovernanceHealthProject[];
   charts: Record<string, GovernanceChartPoint[]>;

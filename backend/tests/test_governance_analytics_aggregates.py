@@ -93,15 +93,6 @@ async def test_get_governance_analytics_scores_projects_from_aggregate_counts(
     async def _empty_list(*_args, **_kwargs):
         return []
 
-    async def _inventory_totals(_session, _user, *, today):
-        return 1, 1, 0, 0, 0, 100.0
-
-    async def _zero_int(_session, _user, *, today):
-        return 0
-
-    async def _none_averages(_session, _user):
-        return None, None, None
-
     async def _empty_counter(*_args, **_kwargs):
         from collections import Counter
 
@@ -126,18 +117,6 @@ async def test_get_governance_analytics_scores_projects_from_aggregate_counts(
     monkeypatch.setattr(
         "app.agents.governance.services.analytics_service._fetch_project_evidence",
         _empty_list,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_inventory_totals",
-        _inventory_totals,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_open_action_count",
-        _zero_int,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_resolution_averages",
-        _none_averages,
     )
     monkeypatch.setattr(
         "app.agents.governance.services.analytics_service._fetch_trend_dependencies",
@@ -196,10 +175,8 @@ async def test_get_governance_analytics_scores_projects_from_aggregate_counts(
 
     assert analytics.project_health[0].project_name == "Alpha"
     assert analytics.project_health[0].score == 88
-    assert analytics.kpis.blocking_dependencies == 1
     assert analytics.date_range_days == 7
     assert analytics.export_sections == [
-        "KPIs",
         "Charts",
         "Executive Insights",
         "Governance Health",
@@ -236,15 +213,6 @@ async def test_get_governance_analytics_uses_in_process_cache(
     async def _empty_list(*_args, **_kwargs):
         return []
 
-    async def _inventory_totals(_session, _user, *, today):
-        return 0, 0, 0, 0, 0, 100.0
-
-    async def _zero_int(_session, _user, *, today):
-        return 0
-
-    async def _none_averages(_session, _user):
-        return None, None, None
-
     async def _empty_counter(*_args, **_kwargs):
         from collections import Counter
 
@@ -277,18 +245,6 @@ async def test_get_governance_analytics_uses_in_process_cache(
     monkeypatch.setattr(
         "app.agents.governance.services.analytics_service._fetch_project_evidence",
         AsyncMock(return_value={}),
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_inventory_totals",
-        _inventory_totals,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_open_action_count",
-        _zero_int,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_resolution_averages",
-        _none_averages,
     )
     monkeypatch.setattr(
         "app.agents.governance.services.analytics_service._fetch_trend_dependencies",

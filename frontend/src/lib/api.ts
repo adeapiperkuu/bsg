@@ -53,7 +53,18 @@ import type {
   DeliveryChatSource,
 } from "@/types/delivery-chat";
 
-export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
+function resolveApiBase(): string {
+  const configured = import.meta.env.VITE_API_BASE_URL?.trim();
+  if (import.meta.env.DEV) {
+    // Always proxy in dev; localhost:8000 often hits Docker/WSL instead of the FastAPI app.
+    if (!configured || configured.includes("localhost:8000") || configured.includes("127.0.0.1:8000")) {
+      return "/api/v1";
+    }
+  }
+  return configured || "/api/v1";
+}
+
+export const API_BASE = resolveApiBase();
 
 /** Display labels for quality error taxonomy codes (spec §7.3). */
 export const ERROR_CATEGORY_LABELS: Record<string, string> = {

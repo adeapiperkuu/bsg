@@ -57,14 +57,6 @@ async def test_summary_does_not_call_get_portfolio_data(
         AsyncMock(return_value={project.id: 0}),
     )
     monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_inventory_totals",
-        AsyncMock(return_value=(0, 0, 0, 0, 0, 100.0)),
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_open_action_count",
-        AsyncMock(return_value=0),
-    )
-    monkeypatch.setattr(
         "app.agents.governance.services.analytics_service._analytics_summary_cache",
         {},
     )

@@ -7,7 +7,6 @@ import inspect
 from httpx import AsyncClient
 
 from app.agents.governance.schemas.governance import (
-    GovernanceAnalyticsKpisRead,
     GovernanceAnalyticsRead,
     GovernanceBootstrapRead,
     GovernanceKpisRead,
@@ -144,27 +143,6 @@ async def test_governance_baseline_endpoints_emit_timing_logs(
         return GovernanceAnalyticsRead(
             generated_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
             date_range_days=days,
-            kpis=GovernanceAnalyticsKpisRead(
-                portfolio_score=80.0,
-                projects_at_risk=0,
-                leadership_attention_projects=0,
-                blocking_dependencies=0,
-                critical_escalations=0,
-                pending_scope_approvals=0,
-                upcoming_governance_meetings=0,
-                governance_sla_pct=100.0,
-                avg_dependency_resolution_days=0.0,
-                avg_escalation_resolution_days=0.0,
-                avg_action_completion_days=0.0,
-                open_dependencies=0,
-                open_actions=0,
-                overdue_actions=0,
-                projects_red=0,
-                projects_amber=0,
-                projects_green=1,
-                weekly_trend=0.0,
-                monthly_trend=0.0,
-            ),
             project_health=[],
             portfolio_risk_ranking=[],
             insights=[],

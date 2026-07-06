@@ -94,8 +94,9 @@ def _user(role: AppRole = AppRole.DELIVERY_MANAGER) -> CurrentUser:
 async def test_dependency_list_applies_status_project_and_search_filters(monkeypatch) -> None:
     captured = {}
 
-    async def capture_statement(_session, stmt, *, limit, offset):
+    async def capture_statement(_session, stmt, *, limit, offset, count_stmt):
         captured["sql"] = str(stmt.compile(compile_kwargs={"literal_binds": False}))
+        captured["count_sql"] = str(count_stmt.compile(compile_kwargs={"literal_binds": False}))
         return PaginatedGovernanceRows(items=[], total=0, limit=limit, offset=offset)
 
     monkeypatch.setattr(
@@ -113,9 +114,14 @@ async def test_dependency_list_applies_status_project_and_search_filters(monkeyp
     )
 
     sql = captured["sql"]
+    count_sql = captured["count_sql"]
     assert "project_dependencies.project_id" in sql
     assert "project_dependencies.status" in sql
     assert "projects" in sql.lower()
+    assert "over()" not in sql.lower()
+    assert "users" not in count_sql.lower()
+    assert "projects" not in count_sql.lower()
+    assert "project_dependencies" in count_sql
 
 
 @pytest.mark.asyncio

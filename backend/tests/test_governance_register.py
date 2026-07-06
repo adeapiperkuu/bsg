@@ -67,7 +67,7 @@ async def test_register_page_maps_rows_from_paginated_query(
         critical_escalations=0,
     )
 
-    async def _paginate(_session, _stmt, *, limit, offset):
+    async def _paginate(_session, _stmt, *, limit, offset, count_stmt):
         return MagicMock(items=[row], total=1, limit=limit, offset=offset)
 
     monkeypatch.setattr(

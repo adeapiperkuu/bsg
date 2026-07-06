@@ -123,3 +123,7 @@ Suggested acceptance checks per phase:
 - Query definitions: `frontend/src/lib/queries/governance.ts`
 - Timing helper: `backend/app/agents/governance/timing.py`
 - Timing tests: `backend/tests/test_governance_timing.py`
+
+## Cleanup notes
+
+**Cleanup Batch 1 (2026-07-06):** Removed the unmounted legacy governance API layer (`app/api/routes/governance.py`, `app/services/governance.py`, `app/agents/governance/dependencies.py`). These were not registered in `main.py` and formed an isolated import chain. The live router is `app.agents.governance.routes.governance`, mounted via `app.include_router(governance_routes.router, prefix=api_prefix)` in `main.py`.
