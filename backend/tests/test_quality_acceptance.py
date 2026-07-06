@@ -164,42 +164,36 @@ async def test_concurrent_nl_sessions_do_not_degrade() -> None:
     )
     project = SimpleNamespace(id=project_id, org_id=user.org_id, name="P")
 
-    async def _fake_gather(*_a, **_k):
-        snap_id = uuid4()
+    async def _fake_fallback_evidence(*_a, **_k):
+        alert_id = uuid4()
         return [
             EvidenceInput(
-                source_table="quality_snapshots",
-                source_row_id=snap_id,
-                description="snap",
+                source_table="risk_alerts",
+                source_row_id=alert_id,
+                description="alert",
             )
-        ], "{}"
+        ], {"note": "No quality snapshots available for this project."}
 
     with (
         patch("app.agents.quality_intelligence.query_handler.get_visible_project", AsyncMock(return_value=project)),
-        patch("app.agents.quality_intelligence.query_handler.gather_quality_evidence", AsyncMock(side_effect=_fake_gather)),
+        patch("app.agents.quality_intelligence.query_handler._fetch_latest_snapshot", AsyncMock(return_value=None)),
+        patch(
+            "app.agents.quality_intelligence.query_handler._fallback_evidence_no_snapshot",
+            AsyncMock(side_effect=_fake_fallback_evidence),
+        ),
         patch("app.agents.quality_intelligence.query_handler.classify_intent_llm", AsyncMock(return_value=None)),
         patch("app.agents.quality_intelligence.query_handler.OKAClient") as mock_oka_cls,
-        patch(
-            "app.agents.quality_intelligence.query_handler.analyze_root_cause",
-            AsyncMock(
-                return_value=SimpleNamespace(
-                    primary_driver="onboarding_gap", confidence="medium", factors=[], blocked=False
-                )
-            ),
-        ),
         patch("app.agents.quality_intelligence.query_handler.get_settings") as mock_settings,
     ):
         mock_settings.return_value.llm_api_key = None
         mock_settings.return_value.llm_model = "test-model"
+        mock_settings.return_value.llm_intent_routing = False
         mock_oka_cls.return_value.retrieve_lessons = AsyncMock(return_value=[])
 
         async def _one():
             session = AsyncMock()
             session.add = lambda *a: None
             session.flush = AsyncMock()
-            session.execute = AsyncMock(
-                return_value=type("R", (), {"scalar_one_or_none": lambda self: None})()
-            )
             return await answer_quality_query(session, user, payload)
 
         results = await asyncio.gather(*[_one() for _ in range(20)])

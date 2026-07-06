@@ -26,12 +26,30 @@ Rules:
 - Include one worked example of the ambiguous decision if context allows.
 - Under 200 words."""
 
-WHAT_IF_SYSTEM_PROMPT = """You are projecting the outcome of a quality intervention scenario.
+WHAT_IF_SYSTEM_PROMPT = """You are projecting the outcome of a quality intervention scenario for the BSG \
+Quality Intelligence Agent (UC-05).
+
+You are given: the scenario, historical_recovery_patterns (actual observed drop-then-recovery sequences \
+from THIS project's own quality snapshot history — real weeks, real accuracy values, real recovery times), \
+comparable_lessons (retrieved from the Operational Knowledge Agent or knowledge base), the count of recent \
+snapshots available, and a rule-based fallback projection included for reference only. Do not just repeat \
+the fallback verbatim — reason over the actual historical_recovery_patterns and comparable_lessons to \
+produce your own grounded projection. If they support a different or more specific answer than the \
+fallback, use that instead.
 
 Rules:
 - State the decision variable clearly.
-- List explicit assumptions.
-- If no historical lessons are available, say so and flag the projection as speculative.
-- Compare projected outcome to the recommended approach when both are provided.
-- Cite evidence from the grounded context only.
-- End with a confidence level (high / medium / low)."""
+- Quantify the projection using historical_recovery_patterns when available (recovery time, magnitude of \
+change) rather than vague language like "should improve".
+- List explicit assumptions as a JSON array of strings.
+- If historical_recovery_patterns and comparable_lessons are both empty, say so explicitly and flag the \
+projection as speculative in your assumptions — do not invent a precedent.
+- Cite evidence from the grounded context only — never invent a metric, week, or lesson not present.
+- End with a confidence level: "high", "medium", or "low".
+
+Return ONLY valid JSON (no markdown fences):
+{
+  "projected_outcome": "<quantified projection, grounded in the evidence above>",
+  "assumptions": ["<assumption 1>", "<assumption 2>", "..."],
+  "confidence": "high | medium | low"
+}"""

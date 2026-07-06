@@ -40,9 +40,11 @@
 
 The Quality Intelligence Agent monitors annotation quality signals, detects drift before client impact, performs root-cause reasoning, and surfaces actionable recommendations. It operates in **passive (push)** and **active (pull)** modes.
 
-**Where we are:** Phase 1.5 (Connected Agent) and Phase 2.0 (Full Reasoning) are **complete**. The agent ships scheduled drift scans, inter-agent signal consumption, sanitized client summaries, item-level eval/rework ingestion, full six-hypothesis RCA, UC-03–07 backends, NL impact/historical queries, and acceptance test gates.
+**Where we are:** Phase 1.5 (Connected Agent) and Phase 2.0 (Full Reasoning) are **complete**. The agent ships scheduled drift scans, inter-agent signal consumption, sanitized client summaries, item-level eval/rework ingestion, a full six-hypothesis **deterministic** RCA engine, UC-03–07 backends, NL impact/historical queries, and acceptance test gates.
 
-**Where we are going:** Phase 2.5 — governance auto-escalation, leadership heatmap extensions, and per-org threshold overrides.
+**Phase 2.0-R — LLM reasoning over evidence (complete, dark-launched):** "Full six-hypothesis RCA" above described a rule-based waterfall — fixed thresholds and hardcoded contribution-percentage formulas standing in for judgment. The LLM was only ever a narrator over the rules' pre-computed verdict, never shown the raw evidence. This has been replaced per [`quality_reasoning_upgrade_plan.md`](quality_reasoning_upgrade_plan.md): `evidence_pack.py` assembles a bounded, anonymized (R1/R2/... handles, never annotator_id/full_name), cite-able evidence pack; `root_cause.py` extracts deterministic `Signal`s (facts, not verdicts) from it; `reasoning.py` sends the full pack + signals to an LLM that weighs hypotheses, rules out confounders (e.g. a gold-set version change vs. a real reviewer regression, BR-10), and can surface causes outside the six hypotheses as `novel_findings`; `citations.py::validate_reasoning` grounds every citation, renormalizes or rejects fabricated contribution weights, and enforces confidence discipline before the result is trusted. The original rule-based engine (`analyze_root_cause_deterministic`) is kept verbatim as the automatic fallback and is what runs whenever `quality_llm_reasoning` is `False` (default). A `quality_llm_reasoning_shadow` flag runs the LLM engine alongside the deterministic one for divergence logging without affecting user-visible output, ahead of flipping the main flag.
+
+**Where we are going:** Validate Phase 2.0-R via shadow-mode divergence data, then flip `quality_llm_reasoning` on per pilot org. After that, Phase 2.5 — governance auto-escalation, leadership heatmap extensions, and per-org threshold overrides.
 
 ```mermaid
 flowchart LR
@@ -79,7 +81,8 @@ flowchart LR
 |------|----------------|-----------|
 | Weekly quality snapshots | `quality_snapshots`, `quality_error_entries` | `backend/app/api/routes/quality.py` |
 | Drift detection | WoW delta, floor breach, 3-week trend, sample-size gate | `backend/app/agents/quality_intelligence/drift.py` |
-| Root-cause (rule-based) | Onboarding gap + SOP ambiguity proxies | `backend/app/agents/quality_intelligence/root_cause.py` |
+| Root-cause (deterministic engine) | Six-hypothesis waterfall + `Signal` extraction (facts, not verdicts) — fallback and shadow baseline | `backend/app/agents/quality_intelligence/root_cause.py` |
+| Root-cause (LLM reasoning, dark-launched) | Evidence pack -> LLM weighs hypotheses, rules out confounders, surfaces novel findings -> validated -> cached on the snapshot | `backend/app/agents/quality_intelligence/evidence_pack.py`, `reasoning.py`, `citations.py` |
 | Risk alerts & notifications | `quality_drift` alerts, DM notifications | `backend/app/agents/quality_intelligence/alerts.py` |
 | Runtime thresholds | `metric_configurations.threshold_config` JSONB | `backend/app/services/quality_thresholds.py` |
 | Quality dashboard API | Aggregated KPIs, trend, scorecard, alerts | `GET /projects/{id}/quality-dashboard` |
@@ -637,12 +640,15 @@ Resolve before or during indicated phase. Full list in spec §16.3 and `16. Deci
 | Action | LLM calls | Phase |
 |--------|-----------|-------|
 | Load quality dashboard | 0 | 1.0 |
-| POST quality snapshot / drift | 0 | 1.0 |
-| NL query in Agent box | 1 per question | 1.0 |
+| POST quality snapshot / drift (root cause, `quality_llm_reasoning=false`, default) | 0 | 1.0 |
+| POST quality snapshot / drift (root cause, `quality_llm_reasoning=true`) | 1 per snapshot write (cached — see below) | 2.0-R |
+| NL query in Agent box (synthesis only; reuses cached root-cause trace) | 1 per question | 1.0 |
 | Client weekly summary draft | 1 per draft (via Client Agent) | 1.5 |
 | What-if projection narrative | 1 per query | 2.0 |
 
-Context sent per NL query: up to 6 `quality_snapshots` + error entries + 5 open drift alerts + pre-computed drift/RCA JSON. See `query_handler.py` and `prompts.py`.
+Root-cause reasoning is computed once per snapshot write in `evaluate_snapshot()` (`services/quality.py`) and persisted to `quality_snapshots.root_cause` JSONB, keyed by a fingerprint of the extracted `Signal`s (`reasoning.py::_fingerprint_signals`). A conversational NL query reuses that cached trace unless the underlying evidence changed — it does not trigger a second root-cause LLM call, only the synthesis call. `quality_llm_reasoning_shadow=true` runs the LLM engine an extra time purely for divergence logging, with no effect on the response served.
+
+Context sent per NL query: the full evidence pack (`evidence_pack.py` — snapshot timeline, reviewer scorecards, IAA, SOP/gold-set version history, throughput, onboarding, open alerts, OKA lessons, anonymized to R1/R2/... handles) plus the validated root-cause/drift trace. See `query_handler.py`, `evidence_pack.py`, `reasoning.py`, and `prompts.py`.
 
 ---
 
@@ -669,7 +675,7 @@ Context sent per NL query: up to 6 `quality_snapshots` + error entries + 5 open 
 
 ---
 
-## Current Implementation State (as of 2026-06-26)
+## Current Implementation State (as of 2026-06-26, LLM reasoning added 2026-07-06)
 
 ### What is fully implemented and live
 
@@ -677,7 +683,8 @@ Context sent per NL query: up to 6 `quality_snapshots` + error entries + 5 open 
 |------|--------|-----------|
 | Phase 1.0 — all capabilities | **Complete** | see §4 |
 | Phase 1.5 — connected agent | **Complete** | scheduler, signal consumption, comms §8.4, taxonomy |
-| Phase 2.0 — full reasoning | **Complete** | item-level logs, UC-02–05, NL maturity, acceptance tests |
+| Phase 2.0 — full reasoning (deterministic engine) | **Complete** | item-level logs, UC-02–05, NL maturity, acceptance tests |
+| Phase 2.0-R — LLM reasoning over evidence | **Complete, dark-launched** | `evidence_pack.py`, `reasoning.py`, `citations.py::validate_reasoning` |
 | DB schema — Phase 2 tables + `quality_sop_links` | Migrated | `supabase/migrations/20260625130000_quality_phase2_schema.sql`, `20260626100000_quality_sop_links.sql` |
 | Inter-agent signal bus + consumers | **Complete** | `signals.py`, `signal_dispatcher.py`, delivery + workforce consumers |
 | Frontend — calibration, SOP flags, scorecards, data-gap badge, rework target | **Complete** | `frontend/src/routes/quality.tsx` |
@@ -694,6 +701,24 @@ Context sent per NL query: up to 6 `quality_snapshots` + error entries + 5 open 
 | Impact + historical NL intents | `query_handler.py` | UC-02 |
 | Client comms §8.4 wiring | `communications.py` route | UC-06, BR-03 |
 | Acceptance test suite | `tests/test_quality_acceptance.py` etc. | §16.4 |
+
+#### Phase 2.0-R backend modules — LLM reasoning over evidence (added 2026-07-06)
+
+See [`quality_reasoning_upgrade_plan.md`](quality_reasoning_upgrade_plan.md) for the full design. Summary:
+
+| Module | File | Role |
+|--------|------|------|
+| Evidence pack builder | `evidence_pack.py` | Bounded, anonymized (R1/R2/... handles), cite-able view of all quality data for one snapshot — the only thing the LLM is allowed to see |
+| Deterministic signal extraction | `root_cause.py::extract_signals` | Facts per §7.2 hypothesis (not fabricated weights) — a pre-pass, not the answer |
+| Deterministic fallback engine | `root_cause.py::analyze_root_cause_deterministic` | The original rule-based waterfall, kept verbatim as the safety net |
+| LLM reasoning core | `reasoning.py::reason_root_cause` | Single entry point: sample-size gate -> fingerprint cache check -> LLM (validated) or deterministic, with shadow-mode divergence logging |
+| Reasoning/synthesis prompts | `prompts.py` | `QUALITY_REASONING_PROMPT` (weighs evidence) + `QUALITY_SYNTHESIS_PROMPT` (writes the final answer from the *validated* reasoning only) |
+| Citation/confidence validation | `citations.py::validate_reasoning` | Drops ungrounded evidence_keys, renormalizes contribution_pct, downgrades unearned "high" confidence, rejects PII leakage or a primary driver with no surviving citations |
+| What-if grounded in real history | `what_if.py` | LLM reasons over `_historical_recovery_patterns` (actual snapshot drop/recovery sequences) instead of only rephrasing a canned template |
+| Config flags | `core/config.py` | `quality_llm_reasoning` (main flag, default `False`), `quality_llm_reasoning_shadow` (divergence logging only), `quality_reasoning_model` |
+| Tests | `tests/test_quality_reasoning.py` | Anonymization, citation validation, engine selection (deterministic/LLM/fallback/cache), BR-10 confounder case |
+
+Audit trail: no new table was added — `quality_snapshots.root_cause` JSONB already covers it. Each write now also carries `engine` (`llm` / `deterministic` / `deterministic_fallback`), `novel_findings`, and a `reasoning_trace` (`model_used`, `latency_ms`, `validation_reasons` or `fallback_reasons`, `_signal_fingerprint` for the cache).
 
 ### Operational dependencies (pilot data, not code gaps)
 
@@ -717,4 +742,5 @@ Context sent per NL query: up to 6 `quality_snapshots` + error entries + 5 open 
 3. Ingest `reviewer_scorecards`, eval logs, and rework logs for pilot teams
 4. Configure `LLM_API_KEY`; optionally `LLM_INTENT_ROUTING=true`
 5. Verify scheduler + signal dispatch in staging (`scan_all_projects` → `dispatch_pending_signals`)
-6. Proceed to Phase 2.5 (governance escalation, leadership heatmap, threshold overrides)
+6. Optionally enable `QUALITY_LLM_REASONING_SHADOW=true` first to collect deterministic-vs-LLM divergence data, then `QUALITY_LLM_REASONING=true` per pilot org once satisfied (see Phase 2.0-R above)
+7. Proceed to Phase 2.5 (governance escalation, leadership heatmap, threshold overrides)

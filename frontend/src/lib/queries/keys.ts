@@ -34,6 +34,7 @@ export const queryKeys = {
   governanceEscalations: ["governance", "escalations"] as const,
   governanceScopeStates: ["governance", "scope-states"] as const,
   governanceCharterReferences: ["governance", "charter-references"] as const,
+  qualityPage: (projectId: string) => ["quality", "page", projectId] as const,
 };
 
 export const STALE_TIME_MS = 5 * 60 * 1000;

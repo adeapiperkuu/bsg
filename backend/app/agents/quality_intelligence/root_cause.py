@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
@@ -17,6 +17,7 @@ from app.agents.quality_intelligence.drift import (
     fetch_error_entries,
     fetch_prior_snapshot,
 )
+from app.agents.quality_intelligence.evidence_pack import EvidencePack
 from app.db.optional_tables import query_optional_table
 from app.db.models import (
     Annotator,
@@ -29,6 +30,16 @@ from app.db.models import (
     ThroughputSnapshot,
 )
 
+# §7.2 hypothesis feature-extraction thresholds (facts, not fabricated weights —
+# see quality_reasoning_upgrade_plan.md §2). The LLM reasoning layer assigns
+# contribution weights; this module only surfaces what the data shows.
+ONBOARDING_RECENT_DAYS = 14
+SOP_CHANGE_RECENT_DAYS = 14
+LOW_ACCURACY_THRESHOLD = 85.0
+LOW_IAA_THRESHOLD = 0.80
+MIN_LOW_IAA_RECORDS = 3
+WORKLOAD_SPIKE_RATIO = 1.1
+
 
 @dataclass(frozen=True)
 class RootCauseResult:
@@ -38,6 +49,22 @@ class RootCauseResult:
     recommended_actions: list[dict[str, Any]]
     blocked: bool = False
     block_reason: str | None = None
+    engine: str = "deterministic"
+    novel_findings: list[str] = field(default_factory=list)
+    reasoning_trace: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class Signal:
+    """A cited, deterministic observation about the evidence pack — one per
+    §7.2 hypothesis. Facts, not verdicts: strength describes what the data
+    shape supports, not an invented contribution percentage."""
+
+    hypothesis: str
+    observed: bool
+    strength: str  # "strong" | "moderate" | "weak"
+    facts: list[str]
+    evidence_keys: list[str]
 
 
 def _dominant_error_category(entries) -> tuple[str | None, float]:
@@ -258,7 +285,10 @@ async def _hypothesis_systemic_iaa(
     }
 
 
-async def analyze_root_cause(session: AsyncSession, snapshot: QualitySnapshot) -> RootCauseResult:
+async def analyze_root_cause_deterministic(session: AsyncSession, snapshot: QualitySnapshot) -> RootCauseResult:
+    """The original rule-based waterfall (§7.2 hypotheses via hardcoded SQL +
+    thresholds). Kept verbatim as the safety-net fallback when LLM reasoning
+    is disabled, unavailable, or fails validation (reasoning.py)."""
     if snapshot.evaluated_item_count is not None and snapshot.evaluated_item_count < MIN_EVALUATED_ITEMS:
         return RootCauseResult(
             primary_driver=None,
@@ -470,4 +500,253 @@ def root_cause_to_json(result: RootCauseResult) -> dict[str, Any]:
         "recommended_actions": result.recommended_actions,
         "blocked": result.blocked,
         "block_reason": result.block_reason,
+        "engine": result.engine,
+        "novel_findings": result.novel_findings,
+        "reasoning_trace": result.reasoning_trace,
     }
+
+
+def _parse_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        return None
+
+
+def _signal_onboarding_gap(pack: EvidencePack) -> Signal:
+    low_scorecards = [
+        item
+        for item in pack.reviewer_scorecards
+        if item.data.get("accuracy_pct") is not None
+        and item.data["accuracy_pct"] < LOW_ACCURACY_THRESHOLD
+        and item.data.get("meets_min_sample")
+    ]
+    low_eval_handles = [
+        handle
+        for handle, stats in pack.eval_log_rollup.get("by_reviewer", {}).items()
+        if stats.get("avg_score") is not None
+        and stats["avg_score"] < LOW_ACCURACY_THRESHOLD
+        and stats.get("meets_min_sample")
+    ]
+    today = date.today()
+    recent_onboarding = [
+        item
+        for item in pack.onboarding_events
+        if (d := _parse_date(item.data.get("onboarding_date"))) is not None
+        and (today - d).days <= ONBOARDING_RECENT_DAYS
+    ]
+
+    facts: list[str] = []
+    evidence_keys: list[str] = []
+    for item in low_scorecards:
+        facts.append(
+            f"{item.key}: {item.data['accuracy_pct']}% accuracy over {item.data['items_evaluated']} items"
+        )
+        evidence_keys.append(item.key)
+    for handle in low_eval_handles:
+        stats = pack.eval_log_rollup["by_reviewer"][handle]
+        facts.append(f"{handle}: {stats['avg_score']}% avg score over {stats['items']} gold-set items")
+        if handle not in evidence_keys:
+            evidence_keys.append(handle)
+    if recent_onboarding:
+        facts.append(f"{len(recent_onboarding)} reviewer(s) onboarded within {ONBOARDING_RECENT_DAYS} days")
+        evidence_keys.extend(item.key for item in recent_onboarding)
+
+    has_low_performers = bool(low_scorecards or low_eval_handles)
+    observed = has_low_performers or bool(recent_onboarding)
+    if has_low_performers and recent_onboarding:
+        strength = "strong"
+    elif has_low_performers or recent_onboarding:
+        strength = "moderate"
+    else:
+        strength = "weak"
+        facts.append("No low-accuracy reviewers or recent onboarding events found")
+
+    return Signal(
+        hypothesis="onboarding_gap",
+        observed=observed,
+        strength=strength,
+        facts=facts,
+        evidence_keys=evidence_keys,
+    )
+
+
+def _signal_sop_change(pack: EvidencePack) -> Signal:
+    today = date.today()
+    recent = [
+        item
+        for item in pack.sop_timeline
+        if (d := _parse_date(item.data.get("effective_date"))) is not None
+        and (today - d).days <= SOP_CHANGE_RECENT_DAYS
+    ]
+    if not recent:
+        return Signal(
+            hypothesis="sop_change",
+            observed=False,
+            strength="weak",
+            facts=[f"No SOP version change in the last {SOP_CHANGE_RECENT_DAYS} days"],
+            evidence_keys=[],
+        )
+    most_recent = min(recent, key=lambda i: (today - _parse_date(i.data["effective_date"])).days)
+    days_ago = (today - _parse_date(most_recent.data["effective_date"])).days
+    strength = "strong" if days_ago <= 7 else "moderate"
+    return Signal(
+        hypothesis="sop_change",
+        observed=True,
+        strength=strength,
+        facts=[f"{most_recent.summary} ({days_ago} days ago)"],
+        evidence_keys=[most_recent.key],
+    )
+
+
+def _signal_task_complexity_spike(pack: EvidencePack) -> Signal:
+    # No project-charter / new-task-type data source exists yet in this schema
+    # (tracked as a Phase 2.5+ gap in QUALITY_INTELLIGENCE_V1_GAPS.md). Surfaced
+    # explicitly as not-observed rather than silently omitted, per BR-05's
+    # "state the data gap" principle.
+    return Signal(
+        hypothesis="task_complexity_spike",
+        observed=False,
+        strength="weak",
+        facts=["No task-complexity data source available (project charter / new task-type log not implemented)"],
+        evidence_keys=[],
+    )
+
+
+def _signal_gold_set_version_change(pack: EvidencePack) -> Signal:
+    versions = pack.gold_set_versions
+    if len(versions) < 2:
+        return Signal(
+            hypothesis="gold_set_version_change",
+            observed=False,
+            strength="weak",
+            facts=["Fewer than two gold-set metadata versions on record"],
+            evidence_keys=[],
+        )
+    newest, prior = versions[0], versions[1]
+    if newest.data["version"] == prior.data["version"]:
+        return Signal(
+            hypothesis="gold_set_version_change",
+            observed=False,
+            strength="weak",
+            facts=["No gold-set version change detected"],
+            evidence_keys=[],
+        )
+    return Signal(
+        hypothesis="gold_set_version_change",
+        observed=True,
+        strength="strong",
+        facts=[
+            f"Gold-set version changed {prior.data['version']} -> {newest.data['version']} "
+            f"(updated {newest.data['last_updated']})"
+        ],
+        evidence_keys=[newest.key, prior.key],
+    )
+
+
+def _signal_workload_fatigue(pack: EvidencePack) -> Signal:
+    rows = pack.throughput_timeline  # already ordered newest-first
+    if len(rows) < 5:
+        return Signal(
+            hypothesis="workload_fatigue",
+            observed=False,
+            strength="weak",
+            facts=["Fewer than 5 throughput snapshots on record"],
+            evidence_keys=[],
+        )
+    latest = rows[0]
+    latest_units = latest.data.get("rolling_7day_units")
+    prior_vals = [r.data.get("rolling_7day_units") for r in rows[1:5] if r.data.get("rolling_7day_units") is not None]
+    if latest_units is None or not prior_vals:
+        return Signal(
+            hypothesis="workload_fatigue",
+            observed=False,
+            strength="weak",
+            facts=["Insufficient rolling-7day throughput data"],
+            evidence_keys=[],
+        )
+    avg = sum(prior_vals) / len(prior_vals)
+    if avg <= 0:
+        return Signal(
+            hypothesis="workload_fatigue",
+            observed=False,
+            strength="weak",
+            facts=["Prior throughput average is zero or unavailable"],
+            evidence_keys=[],
+        )
+    ratio = latest_units / avg
+    if ratio <= WORKLOAD_SPIKE_RATIO:
+        return Signal(
+            hypothesis="workload_fatigue",
+            observed=False,
+            strength="weak",
+            facts=[f"7-day units {latest_units} vs 4-week avg {avg:.0f} — no sustained spike"],
+            evidence_keys=[latest.key],
+        )
+    strength = "strong" if ratio >= 1.25 else "moderate"
+    return Signal(
+        hypothesis="workload_fatigue",
+        observed=True,
+        strength=strength,
+        facts=[f"7-day units {latest_units} vs 4-week avg {avg:.0f} (+{(ratio - 1) * 100:.0f}%)"],
+        evidence_keys=[latest.key],
+    )
+
+
+def _signal_systemic_sop_ambiguity(pack: EvidencePack) -> Signal:
+    low_iaa = [
+        item
+        for item in pack.iaa_records
+        if item.data.get("krippendorff_alpha") is not None
+        and item.data["krippendorff_alpha"] < LOW_IAA_THRESHOLD
+    ]
+    ambiguity_categories = {c.lower() for c in GUIDELINE_AMBIGUITY_CATEGORIES}
+    latest_share_by_category = {
+        category: rows[-1]["share_pct"]
+        for category, rows in pack.error_taxonomy_trend.items()
+        if rows and (category.lower() in ambiguity_categories or category in GUIDELINE_AMBIGUITY_CATEGORIES)
+    }
+    ambiguity_share = sum(v for v in latest_share_by_category.values() if v is not None)
+
+    facts: list[str] = []
+    evidence_keys: list[str] = [item.key for item in low_iaa]
+    if low_iaa:
+        facts.append(f"{len(low_iaa)} task-type IAA measurement(s) below {LOW_IAA_THRESHOLD}")
+    if ambiguity_share:
+        facts.append(f"Guideline-ambiguity error share at {ambiguity_share:.1f}% in the latest week")
+
+    observed = len(low_iaa) >= MIN_LOW_IAA_RECORDS or ambiguity_share >= 20.0
+    if not facts:
+        facts.append("No distributed IAA drop or guideline-ambiguity error concentration found")
+        strength = "weak"
+    elif len(low_iaa) >= 5 or ambiguity_share >= 30.0:
+        strength = "strong"
+    elif observed:
+        strength = "moderate"
+    else:
+        strength = "weak"
+
+    return Signal(
+        hypothesis="systemic_sop_ambiguity",
+        observed=observed,
+        strength=strength,
+        facts=facts,
+        evidence_keys=evidence_keys,
+    )
+
+
+def extract_signals(pack: EvidencePack) -> list[Signal]:
+    """Deterministic, cited feature extraction over the evidence pack — one
+    Signal per §7.2 hypothesis, in spec order. No fabricated weights: the LLM
+    reasoning layer (reasoning.py) assigns contribution percentages from these
+    facts. Pure function of the pack — no DB access, fully unit-testable."""
+    return [
+        _signal_onboarding_gap(pack),
+        _signal_sop_change(pack),
+        _signal_task_complexity_spike(pack),
+        _signal_gold_set_version_change(pack),
+        _signal_workload_fatigue(pack),
+        _signal_systemic_sop_ambiguity(pack),
+    ]

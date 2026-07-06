@@ -1238,6 +1238,43 @@ class WhatIfQueryRead(BaseModel):
     comparable_lessons: list[dict] = []
 
 
+class RecommendedAction(BaseModel):
+    """§7.4 recommendation structure — produced by either the LLM reasoning
+    layer or the deterministic fallback template."""
+
+    rank: int = Field(ge=1)
+    action: str
+    target: str
+    expected_outcome: str
+    estimated_effort: str
+    evidence_basis: str | None = None
+    priority: Literal["immediate", "this_week", "next_sprint"] = "this_week"
+
+
+class LLMFactor(BaseModel):
+    """One weighed root-cause factor produced by the LLM reasoning call
+    (reasoning.py). Contribution weights come from the model's own
+    interpretation of the evidence pack, not a fabricated formula."""
+
+    factor: str
+    contribution_pct: float = Field(ge=0, le=100)
+    evidence_keys: list[str] = []
+    reasoning: str
+
+
+class LLMRootCause(BaseModel):
+    """Structured output contract for QUALITY_REASONING_PROMPT. Validated by
+    citations.validate_reasoning before it is trusted (quality_reasoning_upgrade_plan.md §6)."""
+
+    primary_driver: str
+    factors: list[LLMFactor] = []
+    confidence: Literal["high", "medium", "low"]
+    competing_hypotheses_ruled_out: list[str] = []
+    novel_findings: list[str] = []
+    recommended_actions: list[RecommendedAction] = []
+    data_gaps: list[str] = []
+
+
 class InterAgentSignalRead(ORMModel):
     id: UUID
     signal_type: str

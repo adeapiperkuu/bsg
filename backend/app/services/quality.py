@@ -19,9 +19,11 @@ from app.agents.quality_intelligence.calibration import (
     process_calibration_for_snapshot,
 )
 from app.agents.quality_intelligence.drift import DriftResult, evaluate_drift  # noqa: F401 – re-exported
+from app.agents.quality_intelligence.evidence_pack import build_evidence_pack
 from app.agents.quality_intelligence.oka_client import OKAClient
+from app.agents.quality_intelligence.reasoning import reason_root_cause
 from app.agents.quality_intelligence.rework_metrics import compute_rework_impact
-from app.agents.quality_intelligence.root_cause import analyze_root_cause, root_cause_to_json
+from app.agents.quality_intelligence.root_cause import extract_signals, root_cause_to_json
 from app.agents.quality_intelligence.sop_ambiguity import (
     confirm_sop_ambiguity_resolution,
     list_sop_ambiguity_flags,
@@ -182,7 +184,11 @@ async def evaluate_snapshot(session: AsyncSession, snapshot: QualitySnapshot) ->
         await session.flush()
         return drift
 
-    root_cause = await analyze_root_cause(session, snapshot)
+    # Full-detail pack for computation — RBAC narrowing is applied at read
+    # time (filter_dashboard_for_role / filter_response_for_role), not here.
+    pack = await build_evidence_pack(session, snapshot, role=AppRole.SUPER_ADMIN)
+    signals = extract_signals(pack)
+    root_cause = await reason_root_cause(session, snapshot, pack, signals)
     snapshot.root_cause = root_cause_to_json(root_cause)
     snapshot.confidence_level = root_cause.confidence
 

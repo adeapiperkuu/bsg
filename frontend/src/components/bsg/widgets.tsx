@@ -1,9 +1,31 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
-export function Card({ className, children }: { className?: string; children: ReactNode }) {
+export function Card({
+  id,
+  className,
+  children,
+}: {
+  id?: string;
+  className?: string;
+  children: ReactNode;
+}) {
   return (
-    <div className={cn("rounded-lg border border-border bg-card p-5", className)}>{children}</div>
+    <div id={id} className={cn("rounded-lg border border-border bg-card p-5", className)}>
+      {children}
+    </div>
+  );
+}
+
+export function SectionGroupHeading({ title, right }: { title: string; right?: ReactNode }) {
+  return (
+    <div className="flex items-center gap-3 pb-1 pt-1">
+      <h2 className="whitespace-nowrap text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        {title}
+      </h2>
+      <div className="h-px flex-1 bg-border" />
+      {right}
+    </div>
   );
 }
 
