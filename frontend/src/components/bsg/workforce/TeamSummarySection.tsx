@@ -1,4 +1,6 @@
 import { Card, SectionHeader } from "@/components/bsg/widgets";
+import { TeamsManager } from "@/components/bsg/WorkforceManagement";
+import { ManageToggleButton } from "@/components/bsg/workforce/ManageToggleButton";
 import { TeamSummaryRow } from "@/components/bsg/workforce/TeamSummaryRow";
 import type { AnnotatorRead, TeamRead } from "@/types/workforce";
 
@@ -6,18 +8,28 @@ export function TeamSummarySection({
   workforceLoading,
   hasTeams,
   canReadInternalWorkforce,
+  canManageWorkforce,
+  resolvedProjectId,
+  teams,
   annotatorsByTeam,
   filteredTeams,
   expandedTeams,
+  showTeamsManager,
+  onToggleTeamsManager,
   onToggleTeam,
   onSelectAnnotator,
 }: {
   workforceLoading: boolean;
   hasTeams: boolean;
   canReadInternalWorkforce: boolean;
+  canManageWorkforce: boolean;
+  resolvedProjectId: string | null;
+  teams: TeamRead[];
   annotatorsByTeam: Map<string, AnnotatorRead[]>;
   filteredTeams: TeamRead[];
   expandedTeams: Set<string>;
+  showTeamsManager: boolean;
+  onToggleTeamsManager: () => void;
   onToggleTeam: (teamId: string) => void;
   onSelectAnnotator: (annotator: AnnotatorRead) => void;
 }) {
@@ -29,6 +41,15 @@ export function TeamSummarySection({
           canReadInternalWorkforce
             ? "Expand a team to open an employee profile"
             : "Team structure (annotator details restricted)"
+        }
+        right={
+          canManageWorkforce && resolvedProjectId ? (
+            <ManageToggleButton
+              active={showTeamsManager}
+              onClick={onToggleTeamsManager}
+              label="Manage"
+            />
+          ) : undefined
         }
       />
       {workforceLoading ? (
@@ -75,6 +96,9 @@ export function TeamSummarySection({
                         : null
                     }
                     expanded={expandedTeams.has(team.id)}
+                    canManageWorkforce={canManageWorkforce}
+                    showTeamsManager={showTeamsManager}
+                    projectId={resolvedProjectId}
                     onToggle={() => onToggleTeam(team.id)}
                     onSelectAnnotator={onSelectAnnotator}
                   />
@@ -84,6 +108,9 @@ export function TeamSummarySection({
           </table>
         </div>
       )}
+      {canManageWorkforce && resolvedProjectId && showTeamsManager ? (
+        <TeamsManager projectId={resolvedProjectId} teams={teams} canManage={canManageWorkforce} />
+      ) : null}
     </Card>
   );
 }

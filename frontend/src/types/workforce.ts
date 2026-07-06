@@ -18,6 +18,20 @@ export type TeamRead = {
   updated_at: string;
 };
 
+export type TeamCreatePayload = {
+  name: string;
+  site: DeliverySite;
+  domain: string;
+  is_active?: boolean;
+};
+
+export type TeamUpdatePayload = {
+  name?: string;
+  site?: DeliverySite;
+  domain?: string;
+  is_active?: boolean;
+};
+
 export type AnnotatorRead = {
   id: string;
   org_id: string;
@@ -28,6 +42,21 @@ export type AnnotatorRead = {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+};
+
+export type AnnotatorCreatePayload = {
+  full_name: string;
+  site: DeliverySite;
+  is_sme_certified?: boolean;
+  is_active?: boolean;
+};
+
+export type AnnotatorUpdatePayload = {
+  full_name?: string;
+  site?: DeliverySite;
+  is_sme_certified?: boolean;
+  is_active?: boolean;
+  team_id?: string;
 };
 
 export type ProjectWorkforceSummaryRead = {

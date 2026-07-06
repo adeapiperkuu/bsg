@@ -1,7 +1,9 @@
 import { apiFetch } from "../api";
 import type {
+  AnnotatorCreatePayload,
   AnnotatorRead,
   AnnotatorSkillCreatePayload,
+  AnnotatorUpdatePayload,
   AnnotatorSkillRead,
   AnnotatorSkillUpdatePayload,
   CapabilityGapDetectionResponse,
@@ -18,7 +20,9 @@ import type {
   ProjectWorkforceSummaryRead,
   SkillMatrixRead,
   SkillRead,
+  TeamCreatePayload,
   TeamRead,
+  TeamUpdatePayload,
   TrainingGapSummaryRead,
   TrainingProgramRead,
   TrainingRecordCreatePayload,
@@ -47,6 +51,55 @@ export async function getProjectWorkforceSummary(
 export async function listTeamAnnotators(teamId: string): Promise<AnnotatorRead[]> {
   const body = await apiFetch<{ data: AnnotatorRead[] }>(`/teams/${teamId}/annotators?limit=100`);
   return body.data;
+}
+
+export async function createProjectTeam(
+  projectId: string,
+  payload: TeamCreatePayload,
+): Promise<TeamRead> {
+  const body = await apiFetch<{ data: TeamRead }>(`/projects/${projectId}/teams`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
+export async function updateTeam(teamId: string, payload: TeamUpdatePayload): Promise<TeamRead> {
+  const body = await apiFetch<{ data: TeamRead }>(`/teams/${teamId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
+export async function deleteTeam(teamId: string): Promise<void> {
+  await apiFetch<void>(`/teams/${teamId}`, { method: "DELETE" });
+}
+
+export async function createTeamAnnotator(
+  teamId: string,
+  payload: AnnotatorCreatePayload,
+): Promise<AnnotatorRead> {
+  const body = await apiFetch<{ data: AnnotatorRead }>(`/teams/${teamId}/annotators`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
+export async function updateAnnotator(
+  annotatorId: string,
+  payload: AnnotatorUpdatePayload,
+): Promise<AnnotatorRead> {
+  const body = await apiFetch<{ data: AnnotatorRead }>(`/annotators/${annotatorId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
+export async function deleteAnnotator(annotatorId: string): Promise<void> {
+  await apiFetch<void>(`/annotators/${annotatorId}`, { method: "DELETE" });
 }
 
 export async function listProjectUtilization(

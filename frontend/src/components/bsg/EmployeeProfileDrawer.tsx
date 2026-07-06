@@ -2,6 +2,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import type { AnnotatorRead, TeamRead } from "@/types/workforce";
 
 import { EmployeeCertificationsSection } from "./employee-profile/EmployeeCertificationsSection";
+import { EmployeeProfileBasicsSection } from "./employee-profile/EmployeeProfileBasicsSection";
 import { EmployeeProfileHeader } from "./employee-profile/EmployeeProfileHeader";
 import { EmployeeSkillsSection } from "./employee-profile/EmployeeSkillsSection";
 import { EmployeeTrainingSection } from "./employee-profile/EmployeeTrainingSection";
@@ -12,17 +13,23 @@ export function EmployeeProfileDrawer({
   onOpenChange,
   annotator,
   team,
+  teams,
   projectId,
   canManage,
   canRead = true,
+  onAnnotatorUpdated,
+  onAnnotatorRemoved,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   annotator: AnnotatorRead | null;
   team: TeamRead | undefined;
+  teams: TeamRead[];
   projectId: string | null;
   canManage: boolean;
   canRead?: boolean;
+  onAnnotatorUpdated: (annotator: AnnotatorRead) => void;
+  onAnnotatorRemoved: () => void;
 }) {
   const queriesEnabled = open && Boolean(annotator) && canRead;
 
@@ -33,9 +40,12 @@ export function EmployeeProfileDrawer({
           <EmployeeProfileBody
             annotator={annotator}
             team={team}
+            teams={teams}
             projectId={projectId}
             canManage={canManage}
             queriesEnabled={queriesEnabled}
+            onAnnotatorUpdated={onAnnotatorUpdated}
+            onAnnotatorRemoved={onAnnotatorRemoved}
           />
         ) : null}
       </SheetContent>
@@ -46,19 +56,38 @@ export function EmployeeProfileDrawer({
 function EmployeeProfileBody({
   annotator,
   team,
+  teams,
   projectId,
   canManage,
   queriesEnabled,
+  onAnnotatorUpdated,
+  onAnnotatorRemoved,
 }: {
   annotator: AnnotatorRead;
   team: TeamRead | undefined;
+  teams: TeamRead[];
   projectId: string | null;
   canManage: boolean;
   queriesEnabled: boolean;
+  onAnnotatorUpdated: (annotator: AnnotatorRead) => void;
+  onAnnotatorRemoved: () => void;
 }) {
+  const showBasicsEditor = canManage && teams.length > 0 && projectId !== null;
+
   return (
     <div className="space-y-6 pr-2">
-      <EmployeeProfileHeader annotator={annotator} team={team} />
+      <EmployeeProfileHeader annotator={annotator} team={team} hideDetails={showBasicsEditor} />
+
+      {showBasicsEditor ? (
+        <EmployeeProfileBasicsSection
+          annotator={annotator}
+          teams={teams}
+          projectId={projectId}
+          canManage={canManage}
+          onAnnotatorUpdated={onAnnotatorUpdated}
+          onAnnotatorRemoved={onAnnotatorRemoved}
+        />
+      ) : null}
 
       <EmployeeUtilizationSection
         annotatorId={annotator.id}

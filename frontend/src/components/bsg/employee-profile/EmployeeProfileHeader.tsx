@@ -7,9 +7,14 @@ import { SITE_LABELS } from "./employeeProfileUtils";
 type EmployeeProfileHeaderProps = {
   annotator: AnnotatorRead;
   team: TeamRead | undefined;
+  hideDetails?: boolean;
 };
 
-export function EmployeeProfileHeader({ annotator, team }: EmployeeProfileHeaderProps) {
+export function EmployeeProfileHeader({
+  annotator,
+  team,
+  hideDetails = false,
+}: EmployeeProfileHeaderProps) {
   return (
     <>
       <SheetHeader className="space-y-1 text-left">
@@ -29,26 +34,28 @@ export function EmployeeProfileHeader({ annotator, team }: EmployeeProfileHeader
         ) : null}
       </div>
 
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-[11px]">
-        <div className="flex flex-col">
-          <dt className="text-muted-foreground">SME status</dt>
-          <dd className="font-medium">
-            {annotator.is_sme_certified ? "SME certified" : "Not SME certified"}
-          </dd>
-        </div>
-        <div className="flex flex-col">
-          <dt className="text-muted-foreground">Active status</dt>
-          <dd className="font-medium">{annotator.is_active ? "Active" : "Inactive"}</dd>
-        </div>
-        <div className="flex flex-col">
-          <dt className="text-muted-foreground">Site</dt>
-          <dd className="font-medium">{SITE_LABELS[annotator.site]}</dd>
-        </div>
-        <div className="flex flex-col">
-          <dt className="text-muted-foreground">Domain</dt>
-          <dd className="font-medium">{team?.domain ?? "-"}</dd>
-        </div>
-      </dl>
+      {!hideDetails ? (
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-[11px]">
+          <div className="flex flex-col">
+            <dt className="text-muted-foreground">SME status</dt>
+            <dd className="font-medium">
+              {annotator.is_sme_certified ? "SME certified" : "Not SME certified"}
+            </dd>
+          </div>
+          <div className="flex flex-col">
+            <dt className="text-muted-foreground">Active status</dt>
+            <dd className="font-medium">{annotator.is_active ? "Active" : "Inactive"}</dd>
+          </div>
+          <div className="flex flex-col">
+            <dt className="text-muted-foreground">Site</dt>
+            <dd className="font-medium">{SITE_LABELS[annotator.site]}</dd>
+          </div>
+          <div className="flex flex-col">
+            <dt className="text-muted-foreground">Domain</dt>
+            <dd className="font-medium">{team?.domain ?? "-"}</dd>
+          </div>
+        </dl>
+      ) : null}
     </>
   );
 }

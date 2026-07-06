@@ -1,4 +1,5 @@
 import { StatusPill } from "@/components/bsg/widgets";
+import { AnnotatorCreateForm } from "@/components/bsg/workforce-management/AnnotatorCreateForm";
 import { SITE_LABELS, WORKFORCE_EMPTY_VALUE } from "@/lib/workforceLabels";
 import { cn } from "@/lib/utils";
 import type { AnnotatorRead, TeamRead } from "@/types/workforce";
@@ -9,6 +10,9 @@ export function TeamSummaryRow({
   annotatorCount,
   smeCount,
   expanded,
+  canManageWorkforce,
+  showTeamsManager,
+  projectId,
   onToggle,
   onSelectAnnotator,
 }: {
@@ -17,6 +21,9 @@ export function TeamSummaryRow({
   annotatorCount: number | null;
   smeCount: number | null;
   expanded: boolean;
+  canManageWorkforce: boolean;
+  showTeamsManager: boolean;
+  projectId: string | null;
   onToggle: () => void;
   onSelectAnnotator: (annotator: AnnotatorRead) => void;
 }) {
@@ -24,6 +31,9 @@ export function TeamSummaryRow({
   const sortedAnnotators = canExpand
     ? [...annotators].sort((left, right) => left.full_name.localeCompare(right.full_name))
     : [];
+
+  const showAnnotatorCreate =
+    canManageWorkforce && showTeamsManager && expanded && projectId !== null;
 
   return (
     <>
@@ -76,6 +86,14 @@ export function TeamSummaryRow({
                 ))}
               </div>
             )}
+            {showAnnotatorCreate ? (
+              <AnnotatorCreateForm
+                projectId={projectId}
+                teamId={team.id}
+                defaultSite={team.site}
+                canManage={canManageWorkforce}
+              />
+            ) : null}
           </td>
         </tr>
       ) : null}

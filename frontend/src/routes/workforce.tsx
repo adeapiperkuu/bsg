@@ -105,6 +105,10 @@ function WorkforcePage() {
   const [view, setView] = useState<"geo" | "matrix">("matrix");
   const [showSkillRequirementsManager, setShowSkillRequirementsManager] = useState(false);
   const [showUtilizationManager, setShowUtilizationManager] = useState(false);
+  const [showTeamsManager, setShowTeamsManager] = useState(false);
+  const [expandedTeams, setExpandedTeams] = useState<Set<string>>(() => new Set());
+  const [selectedAnnotator, setSelectedAnnotator] = useState<AnnotatorRead | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const user = useAuthStore((state) => state.user);
   const authLoading = useAuthStore((state) => state.isLoading);
@@ -131,6 +135,10 @@ function WorkforcePage() {
   useEffect(() => {
     setShowSkillRequirementsManager(false);
     setShowUtilizationManager(false);
+    setShowTeamsManager(false);
+    setExpandedTeams(new Set());
+    setSelectedAnnotator(null);
+    setDrawerOpen(false);
   }, [resolvedProjectId]);
 
   const workforceQuery = useProjectWorkforceSummary(resolvedProjectId, canReadInternalWorkforce);
@@ -213,10 +221,6 @@ function WorkforcePage() {
     triggerGenerateRecommendations,
     handleGapStatusUpdate,
   } = useWorkforceCapabilityGapActions(resolvedProjectId);
-
-  const [expandedTeams, setExpandedTeams] = useState<Set<string>>(() => new Set());
-  const [selectedAnnotator, setSelectedAnnotator] = useState<AnnotatorRead | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const toggleTeamExpanded = (teamId: string) => {
     setExpandedTeams((prev) => {
@@ -490,9 +494,14 @@ function WorkforcePage() {
             workforceLoading={workforceLoading}
             hasTeams={hasTeams}
             canReadInternalWorkforce={canReadInternalWorkforce}
+            canManageWorkforce={canManageWorkforce}
+            resolvedProjectId={resolvedProjectId}
+            teams={summary.teams}
             annotatorsByTeam={summary.annotatorsByTeam}
             filteredTeams={filteredTeams}
             expandedTeams={expandedTeams}
+            showTeamsManager={showTeamsManager}
+            onToggleTeamsManager={() => setShowTeamsManager((value) => !value)}
             onToggleTeam={toggleTeamExpanded}
             onSelectAnnotator={openAnnotatorProfile}
           />
@@ -544,9 +553,15 @@ function WorkforcePage() {
           onOpenChange={setDrawerOpen}
           annotator={selectedAnnotator}
           team={selectedAnnotatorTeam}
+          teams={summary.teams}
           projectId={resolvedProjectId}
           canManage={canManageWorkforce}
           canRead={canReadInternalWorkforce}
+          onAnnotatorUpdated={setSelectedAnnotator}
+          onAnnotatorRemoved={() => {
+            setSelectedAnnotator(null);
+            setDrawerOpen(false);
+          }}
         />
       ) : null}
     </div>
