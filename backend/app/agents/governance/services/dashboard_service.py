@@ -16,6 +16,7 @@ from app.agents.governance.services.governance_service import (
     assert_can_read_governance,
     can_read_internal_governance,
 )
+from app.agents.governance.timing import governance_db_timed
 from app.core.security import CurrentUser
 from app.db.models import (
     AppRole,
@@ -67,39 +68,124 @@ def _overdue_action_filter(today: date):
     )
 
 
-async def _count_query(session: AsyncSession, stmt) -> int:
-    return int((await session.execute(stmt)).scalar_one() or 0)
+def _completed_sla_window_filter(window_start: date):
+    return and_(
+        GovernanceAction.status == GovernanceActionStatus.COMPLETED,
+        GovernanceAction.completed_at.is_not(None),
+        func.date(GovernanceAction.completed_at) >= window_start,
+    )
 
 
-async def _compute_sla_adherence_pct(
+def _on_time_completed_filter(window_start: date):
+    return and_(
+        _completed_sla_window_filter(window_start),
+        or_(
+            GovernanceAction.due_date.is_(None),
+            func.date(GovernanceAction.completed_at) <= GovernanceAction.due_date,
+        ),
+    )
+
+
+def _sla_adherence_from_counts(on_time: int, total: int) -> float:
+    if total == 0:
+        return 100.0
+    return round((on_time / total) * 100.0, 1)
+
+
+async def _fetch_action_kpis(
     session: AsyncSession,
     current_user: CurrentUser,
     *,
     today: date,
     window_start: date,
-) -> float:
-    if not can_read_internal_governance(current_user):
-        return 100.0
-
-    stmt = select(GovernanceAction).where(
-        GovernanceAction.deleted_at.is_(None),
-        GovernanceAction.status == GovernanceActionStatus.COMPLETED,
-        GovernanceAction.completed_at.is_not(None),
-        func.date(GovernanceAction.completed_at) >= window_start,
+) -> tuple[int, int, float]:
+    stmt = (
+        select(
+            func.count().filter(_open_action_filter(today)).label("open_actions"),
+            func.count().filter(_overdue_action_filter(today)).label("overdue_actions"),
+            func.count()
+            .filter(_on_time_completed_filter(window_start))
+            .label("on_time_completed"),
+            func.count()
+            .filter(_completed_sla_window_filter(window_start))
+            .label("total_completed"),
+        )
+        .select_from(GovernanceAction)
+        .where(GovernanceAction.deleted_at.is_(None))
     )
     stmt = _apply_org_filter(stmt, GovernanceAction.org_id, current_user)
-    completed = list((await session.execute(stmt)).scalars())
-    if not completed:
-        return 100.0
+    row = (await session.execute(stmt)).one()
+    return (
+        int(row.open_actions or 0),
+        int(row.overdue_actions or 0),
+        _sla_adherence_from_counts(
+            int(row.on_time_completed or 0),
+            int(row.total_completed or 0),
+        ),
+    )
 
-    on_time = 0
-    for action in completed:
-        if action.due_date is None:
-            on_time += 1
-            continue
-        if action.completed_at is not None and action.completed_at.date() <= action.due_date:
-            on_time += 1
-    return round((on_time / len(completed)) * 100.0, 1)
+
+async def _fetch_inventory_kpis(
+    session: AsyncSession,
+    current_user: CurrentUser,
+) -> tuple[int, int]:
+    blocking_stmt = select(func.count()).select_from(ProjectDependency).where(
+        ProjectDependency.deleted_at.is_(None),
+        ProjectDependency.status == GovernanceDependencyStatus.BLOCKING,
+    )
+    blocking_stmt = _apply_org_filter(blocking_stmt, ProjectDependency.org_id, current_user)
+
+    pending_stmt = select(func.count()).select_from(ProjectScopeState).where(
+        ProjectScopeState.deleted_at.is_(None),
+        ProjectScopeState.scope_status == GovernanceScopeStatus.PENDING_REVISION,
+    )
+    pending_stmt = _apply_org_filter(pending_stmt, ProjectScopeState.org_id, current_user)
+
+    stmt = select(
+        blocking_stmt.scalar_subquery().label("blocking_dependencies"),
+        pending_stmt.scalar_subquery().label("pending_scope"),
+    )
+    row = (await session.execute(stmt)).one()
+    return int(row.blocking_dependencies or 0), int(row.pending_scope or 0)
+
+
+async def _fetch_escalation_kpis(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    *,
+    project_ids: list[UUID] | None = None,
+) -> tuple[int, int]:
+    if project_ids is not None and not project_ids:
+        return 0, 0
+
+    stmt = (
+        select(
+            func.count().label("open_escalations"),
+            func.count()
+            .filter(
+                GovernanceEscalation.severity.in_(
+                    {
+                        GovernanceEscalationSeverity.HIGH,
+                        GovernanceEscalationSeverity.CRITICAL,
+                    }
+                )
+            )
+            .label("critical_escalations"),
+        )
+        .select_from(GovernanceEscalation)
+        .where(
+            GovernanceEscalation.deleted_at.is_(None),
+            GovernanceEscalation.status.in_(
+                {GovernanceEscalationStatus.OPEN, GovernanceEscalationStatus.IN_PROGRESS}
+            ),
+        )
+    )
+    stmt = _apply_org_filter(stmt, GovernanceEscalation.org_id, current_user)
+    if project_ids is not None:
+        stmt = stmt.where(GovernanceEscalation.project_id.in_(project_ids))
+
+    row = (await session.execute(stmt)).one()
+    return int(row.open_escalations or 0), int(row.critical_escalations or 0)
 
 
 async def compute_governance_kpis(
@@ -113,81 +199,29 @@ async def compute_governance_kpis(
     overdue_actions = 0
     blocking_dependencies = 0
     pending_scope = 0
+    sla_adherence_pct = 100.0
 
     if can_read_internal_governance(current_user):
-        actions_base = select(func.count()).select_from(GovernanceAction).where(
-            GovernanceAction.deleted_at.is_(None)
-        )
-        actions_base = _apply_org_filter(actions_base, GovernanceAction.org_id, current_user)
-        open_actions = await _count_query(
+        open_actions, overdue_actions, sla_adherence_pct = await _fetch_action_kpis(
             session,
-            actions_base.where(_open_action_filter(today)),
+            current_user,
+            today=today,
+            window_start=window_start,
         )
-        overdue_actions = await _count_query(
-            session,
-            actions_base.where(_overdue_action_filter(today)),
-        )
+        blocking_dependencies, pending_scope = await _fetch_inventory_kpis(session, current_user)
 
-        deps_base = select(func.count()).select_from(ProjectDependency).where(
-            ProjectDependency.deleted_at.is_(None),
-            ProjectDependency.status == GovernanceDependencyStatus.BLOCKING,
-        )
-        deps_base = _apply_org_filter(deps_base, ProjectDependency.org_id, current_user)
-        blocking_dependencies = await _count_query(session, deps_base)
-
-        scope_base = select(func.count()).select_from(ProjectScopeState).where(
-            ProjectScopeState.deleted_at.is_(None),
-            ProjectScopeState.scope_status == GovernanceScopeStatus.PENDING_REVISION,
-        )
-        scope_base = _apply_org_filter(scope_base, ProjectScopeState.org_id, current_user)
-        pending_scope = await _count_query(session, scope_base)
-
-    esc_base = select(func.count()).select_from(GovernanceEscalation).where(
-        GovernanceEscalation.deleted_at.is_(None),
-        GovernanceEscalation.status.in_(
-            {GovernanceEscalationStatus.OPEN, GovernanceEscalationStatus.IN_PROGRESS}
-        ),
-    )
-    esc_base = _apply_org_filter(esc_base, GovernanceEscalation.org_id, current_user)
     if current_user.role == AppRole.CLIENT:
         project_ids = await _client_project_ids(session, current_user)
-        if not project_ids:
-            open_escalations = 0
-            critical_escalations = 0
-        else:
-            esc_base = esc_base.where(GovernanceEscalation.project_id.in_(project_ids))
-            open_escalations = await _count_query(session, esc_base)
-            critical_escalations = await _count_query(
-                session,
-                esc_base.where(
-                    GovernanceEscalation.severity.in_(
-                        {
-                            GovernanceEscalationSeverity.HIGH,
-                            GovernanceEscalationSeverity.CRITICAL,
-                        }
-                    )
-                ),
-            )
-    else:
-        open_escalations = await _count_query(session, esc_base)
-        critical_escalations = await _count_query(
+        open_escalations, critical_escalations = await _fetch_escalation_kpis(
             session,
-            esc_base.where(
-                GovernanceEscalation.severity.in_(
-                    {
-                        GovernanceEscalationSeverity.HIGH,
-                        GovernanceEscalationSeverity.CRITICAL,
-                    }
-                )
-            ),
+            current_user,
+            project_ids=project_ids,
         )
-
-    sla_adherence_pct = await _compute_sla_adherence_pct(
-        session,
-        current_user,
-        today=today,
-        window_start=window_start,
-    )
+    else:
+        open_escalations, critical_escalations = await _fetch_escalation_kpis(
+            session,
+            current_user,
+        )
 
     return GovernanceKpisRead(
         open_actions=open_actions,
@@ -214,3 +248,6 @@ async def get_governance_bootstrap(
     kpis = await compute_governance_kpis(session, current_user)
     _bootstrap_kpi_cache[cache_key] = (now, kpis)
     return GovernanceBootstrapRead(kpis=kpis)
+
+
+compute_governance_kpis = governance_db_timed(compute_governance_kpis)

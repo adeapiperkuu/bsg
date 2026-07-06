@@ -27,6 +27,36 @@ export type GovernanceKpis = {
   sla_adherence_pct: number;
 };
 
+export type GovernanceListPagination = {
+  items: number;
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+};
+
+export type PaginatedGovernanceList<T> = {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+};
+
+export type GovernanceListParams = {
+  limit?: number;
+  offset?: number;
+  project_id?: string;
+  status?: string;
+  severity?: string;
+  dependency_type?: string;
+  owner_id?: string;
+  assigned_to?: string;
+  search?: string;
+  date_from?: string;
+  date_to?: string;
+};
+
 /** Alias for KPI block in bootstrap responses. */
 export type GovernanceKpiSummary = GovernanceKpis;
 
@@ -153,22 +183,65 @@ export type ProjectCharter = {
   project_name?: string | null;
 };
 
-export type GovernanceCharterReference = {
-  document_id: string;
-  title: string;
-  project: string | null;
-  version: string;
-  status: string;
-  visibility: string;
-};
+export type ProjectDependencyListItem = Pick<
+  ProjectDependency,
+  | "id"
+  | "project_id"
+  | "title"
+  | "dependency_type"
+  | "owner_id"
+  | "due_date"
+  | "status"
+  | "overdue_days"
+  | "project_name"
+  | "owner_name"
+>;
+
+export type GovernanceEscalationListItem = Pick<
+  GovernanceEscalation,
+  | "id"
+  | "project_id"
+  | "title"
+  | "severity"
+  | "status"
+  | "raised_at"
+  | "source_type"
+  | "source_id"
+  | "project_name"
+  | "raised_by_name"
+  | "assigned_to_name"
+>;
+
+export type GovernanceActionListItem = Pick<
+  GovernanceAction,
+  | "id"
+  | "project_id"
+  | "title"
+  | "owner_id"
+  | "due_date"
+  | "status"
+  | "project_name"
+  | "owner_name"
+>;
 
 export type GovernanceBootstrap = {
   kpis: GovernanceKpis;
-  dependencies: ProjectDependency[];
-  escalations: GovernanceEscalation[];
-  actions: GovernanceAction[];
+  dependencies: ProjectDependencyListItem[];
+  escalations: GovernanceEscalationListItem[];
+  actions: GovernanceActionListItem[];
   scope_states: ProjectScopeState[];
-  charter_references: GovernanceCharterReference[];
+};
+
+export type GovernanceRegisterRowApi = {
+  project_id: string;
+  project_name: string;
+  scope_status: GovernanceScopeStatus | null;
+  scope_version: string | null;
+  open_dependencies: number;
+  blocking_dependencies: number;
+  open_actions: number;
+  open_escalations: number;
+  health: "green" | "amber" | "red";
 };
 
 export type GovernanceAnalyticsEvidence = {

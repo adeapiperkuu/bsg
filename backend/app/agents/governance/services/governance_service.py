@@ -1,15 +1,32 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from uuid import UUID
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
+from app.agents.governance.analytics.sla import (
+    dependency_overdue_days,
+    dependency_overdue_days_for,
+    effective_action_status,
+    effective_action_status_for,
+)
+from app.agents.governance.schemas.governance import (
+    GovernanceActionListRead,
+    GovernanceActionRead,
+    GovernanceEscalationListRead,
+    GovernanceEscalationRead,
+    ProjectDependencyListRead,
+    ProjectDependencyRead,
+)
 from app.agents.governance.services.audit_service import (
     governance_snapshot,
     log_governance_event,
 )
+from app.agents.governance.timing import governance_db_timed
 from app.agents.governance.services.notification_service import create_governance_notification
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
@@ -86,6 +103,62 @@ SUMMARY_AUDIT_FIELDS = (
     "approved_by",
     "approved_at",
 )
+
+
+@dataclass(frozen=True)
+class GovernanceListFilters:
+    limit: int = 50
+    offset: int = 0
+    project_id: UUID | None = None
+    status: str | None = None
+    severity: str | None = None
+    dependency_type: str | None = None
+    owner_id: UUID | None = None
+    assigned_to: UUID | None = None
+    search: str | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+
+
+@dataclass(frozen=True)
+class PaginatedGovernanceRows:
+    items: list
+    total: int
+    limit: int
+    offset: int
+
+    @property
+    def has_more(self) -> bool:
+        return self.offset + len(self.items) < self.total
+
+
+def _bounded_list_filters(
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    project_id: UUID | None = None,
+    status: str | None = None,
+    severity: str | None = None,
+    dependency_type: str | None = None,
+    owner_id: UUID | None = None,
+    assigned_to: UUID | None = None,
+    search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> GovernanceListFilters:
+    return GovernanceListFilters(
+        limit=max(1, min(limit, 100)),
+        offset=max(0, offset),
+        project_id=project_id,
+        status=status.strip() if status and status.strip() else None,
+        severity=severity.strip() if severity and severity.strip() else None,
+        dependency_type=dependency_type.strip() if dependency_type and dependency_type.strip() else None,
+        owner_id=owner_id,
+        assigned_to=assigned_to,
+        search=search.strip() if search and search.strip() else None,
+        date_from=date_from,
+        date_to=date_to,
+    )
 
 
 def assert_can_read_governance(current_user: CurrentUser) -> None:
@@ -184,6 +257,339 @@ async def scoped_scope_states_query(
     stmt = select(ProjectScopeState).where(ProjectScopeState.deleted_at.is_(None))
     stmt = _apply_org_filter(stmt, ProjectScopeState.org_id, current_user)
     return list((await session.execute(stmt)).scalars())
+
+
+async def _execute_paginated_rows(
+    session: AsyncSession,
+    stmt: Select,
+    *,
+    limit: int,
+    offset: int,
+) -> PaginatedGovernanceRows:
+    total_count = func.count().over().label("_total_count")
+    windowed = stmt.add_columns(total_count).limit(limit).offset(offset)
+    rows = (await session.execute(windowed)).all()
+    if not rows:
+        return PaginatedGovernanceRows(items=[], total=0, limit=limit, offset=offset)
+
+    total = int(rows[0]._total_count)
+    if len(rows[0]._fields) == 2 and rows[0]._fields[1] == "_total_count":
+        items = [row[0] for row in rows]
+    else:
+        items = rows
+    return PaginatedGovernanceRows(items=items, total=total, limit=limit, offset=offset)
+
+
+def _dependency_list_stmt(current_user: CurrentUser) -> Select:
+    owner = aliased(User)
+    stmt = (
+        select(
+            ProjectDependency.id,
+            ProjectDependency.project_id,
+            ProjectDependency.title,
+            ProjectDependency.dependency_type,
+            ProjectDependency.owner_id,
+            ProjectDependency.due_date,
+            ProjectDependency.status,
+            Project.name.label("project_name"),
+            func.coalesce(owner.full_name, owner.email).label("owner_name"),
+        )
+        .join(Project, Project.id == ProjectDependency.project_id)
+        .outerjoin(owner, owner.id == ProjectDependency.owner_id)
+        .where(ProjectDependency.deleted_at.is_(None))
+    )
+    return _apply_org_filter(stmt, ProjectDependency.org_id, current_user)
+
+
+def _action_list_stmt(current_user: CurrentUser) -> Select:
+    owner = aliased(User)
+    stmt = (
+        select(
+            GovernanceAction.id,
+            GovernanceAction.project_id,
+            GovernanceAction.title,
+            GovernanceAction.owner_id,
+            GovernanceAction.due_date,
+            GovernanceAction.status,
+            Project.name.label("project_name"),
+            func.coalesce(owner.full_name, owner.email).label("owner_name"),
+        )
+        .join(Project, Project.id == GovernanceAction.project_id)
+        .outerjoin(owner, owner.id == GovernanceAction.owner_id)
+        .where(GovernanceAction.deleted_at.is_(None))
+    )
+    return _apply_org_filter(stmt, GovernanceAction.org_id, current_user)
+
+
+def _escalation_list_stmt(current_user: CurrentUser) -> Select:
+    assignee = aliased(User)
+    raiser = aliased(User)
+    stmt = (
+        select(
+            GovernanceEscalation.id,
+            GovernanceEscalation.project_id,
+            GovernanceEscalation.title,
+            GovernanceEscalation.severity,
+            GovernanceEscalation.status,
+            GovernanceEscalation.raised_at,
+            GovernanceEscalation.source_type,
+            GovernanceEscalation.source_id,
+            Project.name.label("project_name"),
+            func.coalesce(raiser.full_name, raiser.email).label("raised_by_name"),
+            func.coalesce(assignee.full_name, assignee.email).label("assigned_to_name"),
+        )
+        .join(Project, Project.id == GovernanceEscalation.project_id)
+        .outerjoin(raiser, raiser.id == GovernanceEscalation.raised_by)
+        .outerjoin(assignee, assignee.id == GovernanceEscalation.assigned_to)
+        .where(GovernanceEscalation.deleted_at.is_(None))
+    )
+    return _apply_org_filter(stmt, GovernanceEscalation.org_id, current_user)
+
+
+def map_dependency_list_row(row) -> ProjectDependencyListRead:
+    return ProjectDependencyListRead(
+        id=row.id,
+        project_id=row.project_id,
+        title=row.title,
+        dependency_type=row.dependency_type,
+        owner_id=row.owner_id,
+        due_date=row.due_date,
+        status=row.status,
+        overdue_days=dependency_overdue_days_for(row.due_date, row.status),
+        project_name=row.project_name,
+        owner_name=row.owner_name,
+    )
+
+
+def map_action_list_row(row) -> GovernanceActionListRead:
+    return GovernanceActionListRead(
+        id=row.id,
+        project_id=row.project_id,
+        title=row.title,
+        owner_id=row.owner_id,
+        due_date=row.due_date,
+        status=effective_action_status_for(row.status, row.due_date),
+        project_name=row.project_name,
+        owner_name=row.owner_name,
+    )
+
+
+def map_escalation_list_row(row) -> GovernanceEscalationListRead:
+    return GovernanceEscalationListRead(
+        id=row.id,
+        project_id=row.project_id,
+        title=row.title,
+        severity=row.severity,
+        status=row.status,
+        raised_at=row.raised_at,
+        source_type=row.source_type,
+        source_id=row.source_id,
+        project_name=row.project_name,
+        raised_by_name=row.raised_by_name,
+        assigned_to_name=row.assigned_to_name,
+    )
+
+
+async def enriched_dependency_read(
+    session: AsyncSession,
+    dep: ProjectDependency,
+) -> ProjectDependencyRead:
+    owner = aliased(User)
+    row = (
+        await session.execute(
+            select(
+                Project.name.label("project_name"),
+                func.coalesce(owner.full_name, owner.email).label("owner_name"),
+            )
+            .select_from(Project)
+            .outerjoin(owner, owner.id == dep.owner_id)
+            .where(Project.id == dep.project_id)
+        )
+    ).one()
+    return ProjectDependencyRead.model_validate(dep, from_attributes=True).model_copy(
+        update={
+            "overdue_days": dependency_overdue_days(dep),
+            "project_name": row.project_name,
+            "owner_name": row.owner_name,
+        }
+    )
+
+
+async def enriched_action_read(
+    session: AsyncSession,
+    action: GovernanceAction,
+) -> GovernanceActionRead:
+    owner = aliased(User)
+    row = (
+        await session.execute(
+            select(
+                Project.name.label("project_name"),
+                func.coalesce(owner.full_name, owner.email).label("owner_name"),
+            )
+            .select_from(Project)
+            .outerjoin(owner, owner.id == action.owner_id)
+            .where(Project.id == action.project_id)
+        )
+    ).one()
+    return GovernanceActionRead.model_validate(action, from_attributes=True).model_copy(
+        update={
+            "status": effective_action_status(action),
+            "project_name": row.project_name,
+            "owner_name": row.owner_name,
+        }
+    )
+
+
+async def enriched_escalation_read(
+    session: AsyncSession,
+    escalation: GovernanceEscalation,
+) -> GovernanceEscalationRead:
+    assignee = aliased(User)
+    raiser = aliased(User)
+    row = (
+        await session.execute(
+            select(
+                Project.name.label("project_name"),
+                func.coalesce(raiser.full_name, raiser.email).label("raised_by_name"),
+                func.coalesce(assignee.full_name, assignee.email).label("assigned_to_name"),
+            )
+            .select_from(Project)
+            .outerjoin(raiser, raiser.id == escalation.raised_by)
+            .outerjoin(assignee, assignee.id == escalation.assigned_to)
+            .where(Project.id == escalation.project_id)
+        )
+    ).one()
+    return GovernanceEscalationRead.model_validate(escalation, from_attributes=True).model_copy(
+        update={
+            "project_name": row.project_name,
+            "raised_by_name": row.raised_by_name,
+            "assigned_to_name": row.assigned_to_name,
+        }
+    )
+
+
+def _search_filter(model, search: str):
+    pattern = f"%{search}%"
+    fields = [model.title.ilike(pattern)]
+    description = getattr(model, "description", None)
+    notes = getattr(model, "notes", None)
+    version_label = getattr(model, "version_label", None)
+    if description is not None:
+        fields.append(description.ilike(pattern))
+    if notes is not None:
+        fields.append(notes.ilike(pattern))
+    if version_label is not None:
+        fields.append(version_label.ilike(pattern))
+    return or_(*fields)
+
+
+async def list_governance_dependencies_page(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    **raw_filters,
+) -> PaginatedGovernanceRows:
+    if not can_read_internal_governance(current_user):
+        filters = _bounded_list_filters(**raw_filters)
+        return PaginatedGovernanceRows(items=[], total=0, limit=filters.limit, offset=filters.offset)
+    filters = _bounded_list_filters(**raw_filters)
+    stmt = _dependency_list_stmt(current_user)
+    if filters.project_id is not None:
+        stmt = stmt.where(ProjectDependency.project_id == filters.project_id)
+    if filters.status is not None:
+        stmt = stmt.where(ProjectDependency.status == filters.status)
+    if filters.dependency_type is not None:
+        stmt = stmt.where(ProjectDependency.dependency_type == filters.dependency_type)
+    if filters.owner_id is not None:
+        stmt = stmt.where(ProjectDependency.owner_id == filters.owner_id)
+    if filters.search is not None:
+        stmt = stmt.where(_search_filter(ProjectDependency, filters.search))
+    if filters.date_from is not None:
+        stmt = stmt.where(ProjectDependency.due_date >= filters.date_from)
+    if filters.date_to is not None:
+        stmt = stmt.where(ProjectDependency.due_date <= filters.date_to)
+    stmt = stmt.order_by(ProjectDependency.due_date.asc().nulls_last(), ProjectDependency.created_at.desc())
+    return await _execute_paginated_rows(session, stmt, limit=filters.limit, offset=filters.offset)
+
+
+async def list_governance_actions_page(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    **raw_filters,
+) -> PaginatedGovernanceRows:
+    if not can_read_internal_governance(current_user):
+        filters = _bounded_list_filters(**raw_filters)
+        return PaginatedGovernanceRows(items=[], total=0, limit=filters.limit, offset=filters.offset)
+    filters = _bounded_list_filters(**raw_filters)
+    stmt = _action_list_stmt(current_user)
+    if filters.project_id is not None:
+        stmt = stmt.where(GovernanceAction.project_id == filters.project_id)
+    if filters.status is not None:
+        stmt = stmt.where(GovernanceAction.status == filters.status)
+    if filters.owner_id is not None:
+        stmt = stmt.where(GovernanceAction.owner_id == filters.owner_id)
+    if filters.search is not None:
+        stmt = stmt.where(_search_filter(GovernanceAction, filters.search))
+    if filters.date_from is not None:
+        stmt = stmt.where(GovernanceAction.due_date >= filters.date_from)
+    if filters.date_to is not None:
+        stmt = stmt.where(GovernanceAction.due_date <= filters.date_to)
+    stmt = stmt.order_by(GovernanceAction.due_date.asc().nulls_last(), GovernanceAction.created_at.desc())
+    return await _execute_paginated_rows(session, stmt, limit=filters.limit, offset=filters.offset)
+
+
+async def list_governance_escalations_page(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    **raw_filters,
+) -> PaginatedGovernanceRows:
+    filters = _bounded_list_filters(**raw_filters)
+    stmt = _escalation_list_stmt(current_user)
+    if current_user.role == AppRole.CLIENT:
+        project_ids = await _client_project_ids(session, current_user)
+        if not project_ids:
+            return PaginatedGovernanceRows(items=[], total=0, limit=filters.limit, offset=filters.offset)
+        stmt = stmt.where(GovernanceEscalation.project_id.in_(project_ids))
+    if filters.project_id is not None:
+        stmt = stmt.where(GovernanceEscalation.project_id == filters.project_id)
+    if filters.status is not None:
+        stmt = stmt.where(GovernanceEscalation.status == filters.status)
+    if filters.severity is not None:
+        stmt = stmt.where(GovernanceEscalation.severity == filters.severity)
+    if filters.assigned_to is not None:
+        stmt = stmt.where(GovernanceEscalation.assigned_to == filters.assigned_to)
+    if filters.search is not None:
+        stmt = stmt.where(_search_filter(GovernanceEscalation, filters.search))
+    if filters.date_from is not None:
+        stmt = stmt.where(func.date(GovernanceEscalation.raised_at) >= filters.date_from)
+    if filters.date_to is not None:
+        stmt = stmt.where(func.date(GovernanceEscalation.raised_at) <= filters.date_to)
+    stmt = stmt.order_by(GovernanceEscalation.raised_at.desc(), GovernanceEscalation.created_at.desc())
+    return await _execute_paginated_rows(session, stmt, limit=filters.limit, offset=filters.offset)
+
+
+async def list_governance_scope_states_page(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    **raw_filters,
+) -> PaginatedGovernanceRows:
+    if not can_read_internal_governance(current_user):
+        filters = _bounded_list_filters(**raw_filters)
+        return PaginatedGovernanceRows(items=[], total=0, limit=filters.limit, offset=filters.offset)
+    filters = _bounded_list_filters(**raw_filters)
+    stmt = select(ProjectScopeState).where(ProjectScopeState.deleted_at.is_(None))
+    stmt = _apply_org_filter(stmt, ProjectScopeState.org_id, current_user)
+    if filters.project_id is not None:
+        stmt = stmt.where(ProjectScopeState.project_id == filters.project_id)
+    if filters.status is not None:
+        stmt = stmt.where(ProjectScopeState.scope_status == filters.status)
+    if filters.search is not None:
+        stmt = stmt.where(_search_filter(ProjectScopeState, filters.search))
+    if filters.date_from is not None:
+        stmt = stmt.where(func.date(ProjectScopeState.updated_at) >= filters.date_from)
+    if filters.date_to is not None:
+        stmt = stmt.where(func.date(ProjectScopeState.updated_at) <= filters.date_to)
+    stmt = stmt.order_by(ProjectScopeState.updated_at.desc(), ProjectScopeState.created_at.desc())
+    return await _execute_paginated_rows(session, stmt, limit=filters.limit, offset=filters.offset)
 
 
 async def get_dependency_or_404(
@@ -915,3 +1321,37 @@ async def load_project_names(session: AsyncSession, project_ids: set[UUID]) -> d
         await session.execute(select(Project.id, Project.name).where(Project.id.in_(project_ids)))
     ).all()
     return {row.id: row.name for row in rows}
+
+
+_GOVERNANCE_DB_TIMED = (
+    "_client_project_ids",
+    "_execute_paginated_rows",
+    "load_user_names",
+    "load_project_names",
+    "get_dependency_or_404",
+    "get_escalation_or_404",
+    "get_action_or_404",
+    "enriched_dependency_read",
+    "enriched_action_read",
+    "enriched_escalation_read",
+    "get_scope_state_for_project",
+    "create_dependency",
+    "update_dependency",
+    "resolve_dependency",
+    "soft_delete_dependency",
+    "create_escalation",
+    "update_escalation",
+    "soft_delete_escalation",
+    "create_action",
+    "update_action",
+    "soft_delete_action",
+    "update_scope_state",
+    "create_weekly_summary",
+    "get_weekly_summary_by_id",
+    "list_weekly_summaries",
+    "update_weekly_summary_draft",
+    "approve_weekly_summary",
+    "get_latest_weekly_summary",
+)
+for _name in _GOVERNANCE_DB_TIMED:
+    globals()[_name] = governance_db_timed(globals()[_name])

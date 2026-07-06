@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { listKnowledgeDocuments } from "@/lib/api";
+import { getAction, getDependency, getEscalation } from "@/lib/queries/governance";
 import type { KnowledgeDocumentApi } from "@/types/knowledge";
 import type {
   GovernanceAction,
@@ -110,17 +111,23 @@ export function GovernanceWorkflowDialogs({
   const [versionLabel, setVersionLabel] = useState("");
   const [notes, setNotes] = useState("");
   const [linkedDocId, setLinkedDocId] = useState("");
+  const [escalationSourceType, setEscalationSourceType] =
+    useState<GovernanceEscalationSourceType | null>(null);
+  const [escalationSourceId, setEscalationSourceId] = useState<string | null>(null);
+  const [loadingEdit, setLoadingEdit] = useState(false);
   const [knowledgeDocs, setKnowledgeDocs] = useState<KnowledgeDocumentApi[]>([]);
 
   useEffect(() => {
     if (!dialog || !canWrite) return;
-    void listKnowledgeDocuments({ workflowState: "approved", limit: 100, offset: 0 })
-      .then((response) => setKnowledgeDocs(response.data))
+    void listKnowledgeDocuments({ workflowState: "approved" })
+      .then((docs) => setKnowledgeDocs(docs))
       .catch(() => setKnowledgeDocs([]));
   }, [dialog, canWrite]);
 
   useEffect(() => {
     if (!dialog) return;
+
+    let cancelled = false;
 
     const reset = () => {
       setTitle("");
@@ -136,42 +143,9 @@ export function GovernanceWorkflowDialogs({
       setVersionLabel("");
       setNotes("");
       setLinkedDocId("");
+      setEscalationSourceType(null);
+      setEscalationSourceId(null);
     };
-
-    if (dialog.mode === "create") {
-      reset();
-      if (dialog.kind === "dependency") setStatus("open");
-      if (dialog.kind === "action") setStatus("open");
-      if (dialog.kind === "escalation") setStatus("open");
-      return;
-    }
-
-    if (dialog.kind === "dependency" && dialog.id) {
-      const dep = data.dependencies.find((d) => d.id === dialog.id);
-      if (!dep) return;
-      fillDependency(dep);
-      return;
-    }
-    if (dialog.kind === "action" && dialog.id) {
-      const action = data.actions.find((a) => a.id === dialog.id);
-      if (!action) return;
-      fillAction(action);
-      return;
-    }
-    if (dialog.kind === "escalation" && dialog.id) {
-      const esc = data.escalations.find((e) => e.id === dialog.id);
-      if (!esc) return;
-      fillEscalation(esc);
-      return;
-    }
-    if (dialog.kind === "scope") {
-      const scope = data.scope_states.find((s) => s.project_id === dialog.projectId);
-      if (!scope) {
-        reset();
-        return;
-      }
-      fillScope(scope);
-    }
 
     function fillDependency(dep: ProjectDependency) {
       setTitle(dep.title);
@@ -200,8 +174,12 @@ export function GovernanceWorkflowDialogs({
       setAssignedTo(esc.assigned_to ?? "");
       setStatus(esc.status);
       setSeverity(esc.severity);
+      setEscalationSourceType(esc.source_type ?? null);
+      setEscalationSourceId(esc.source_id ?? null);
       if (esc.source_type === "knowledge_document" && esc.source_id) {
         setLinkedDocId(esc.source_id);
+      } else {
+        setLinkedDocId("");
       }
     }
 
@@ -212,7 +190,50 @@ export function GovernanceWorkflowDialogs({
       setNotes(scope.notes ?? "");
       setLinkedDocId(scope.linked_charter_document_id ?? "");
     }
-  }, [dialog, data]);
+
+    if (dialog.mode === "create") {
+      reset();
+      if (dialog.kind === "dependency") setStatus("open");
+      if (dialog.kind === "action") setStatus("open");
+      if (dialog.kind === "escalation") setStatus("open");
+      return;
+    }
+
+    if (dialog.kind === "scope") {
+      const scope = data.scope_states.find((s) => s.project_id === dialog.projectId);
+      if (!scope) {
+        reset();
+        return;
+      }
+      fillScope(scope);
+      return;
+    }
+
+    if (!dialog.id) return;
+
+    const loadEdit = async () => {
+      setLoadingEdit(true);
+      try {
+        if (dialog.kind === "dependency") {
+          fillDependency(await getDependency(dialog.id!));
+        } else if (dialog.kind === "action") {
+          fillAction(await getAction(dialog.id!));
+        } else if (dialog.kind === "escalation") {
+          fillEscalation(await getEscalation(dialog.id!));
+        }
+      } catch {
+        if (!cancelled) toast.error("Failed to load record for editing.");
+      } finally {
+        if (!cancelled) setLoadingEdit(false);
+      }
+    };
+
+    void loadEdit();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [dialog, data.scope_states]);
 
   if (!dialog || !canWrite) return null;
 
@@ -277,16 +298,15 @@ export function GovernanceWorkflowDialogs({
           },
         });
       } else if (dialog.kind === "escalation") {
-        const existing = dialog.id ? data.escalations.find((e) => e.id === dialog.id) : undefined;
         const sourceType: GovernanceEscalationSourceType | null =
-          existing?.source_type === "delivery_risk"
+          escalationSourceType === "delivery_risk"
             ? "delivery_risk"
             : linkedDocId
               ? "knowledge_document"
               : null;
         const sourceId =
-          existing?.source_type === "delivery_risk"
-            ? (existing.source_id ?? null)
+          escalationSourceType === "delivery_risk"
+            ? escalationSourceId
             : linkedDocId || null;
 
         await onSaveEscalation({
@@ -537,10 +557,7 @@ export function GovernanceWorkflowDialogs({
                   </SelectContent>
                 </Select>
               </div>
-              {!(
-                dialog.mode === "edit" &&
-                data.escalations.find((e) => e.id === dialog.id)?.source_type === "delivery_risk"
-              ) && (
+              {!(dialog.mode === "edit" && escalationSourceType === "delivery_risk") && (
                 <div>
                   <Label>Linked escalation note (approved)</Label>
                   <Select
@@ -611,10 +628,10 @@ export function GovernanceWorkflowDialogs({
         </div>
 
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
+          <Button type="button" variant="outline" onClick={onClose} disabled={saving || loadingEdit}>
             Cancel
           </Button>
-          <Button type="button" onClick={() => void handleSave()} disabled={saving}>
+          <Button type="button" onClick={() => void handleSave()} disabled={saving || loadingEdit}>
             {saving ? "Saving…" : "Save"}
           </Button>
         </DialogFooter>

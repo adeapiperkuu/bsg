@@ -3,6 +3,7 @@ import type {
   GovernanceBootstrap,
   GovernanceEscalation,
   GovernanceEscalationSeverity,
+  GovernanceRegisterRowApi,
   GovernanceScopeStatus,
   ProjectDependency,
 } from "@/types/governance";
@@ -96,7 +97,10 @@ export function isDueThisWeek(dueDate: string | null, ref = new Date()): boolean
   return due >= mondayOfWeek(ref) && due <= sundayOfWeek(ref);
 }
 
-export function isOverdueAction(action: GovernanceAction, ref = new Date()): boolean {
+export function isOverdueAction(
+  action: Pick<GovernanceAction, "status" | "due_date">,
+  ref = new Date(),
+): boolean {
   if (action.status === "overdue") return true;
   if (action.status === "completed" || !action.due_date) return false;
   const due = new Date(`${action.due_date}T23:59:59`);
@@ -213,6 +217,28 @@ export function buildGovernanceRegister(
     .sort((a, b) => a.projectName.localeCompare(b.projectName));
 }
 
+export function mapRegisterApiRow(
+  row: GovernanceRegisterRowApi,
+  portfolio?: DeliveryPortfolioResponse,
+): GovernanceRegisterRow {
+  const delivery = deliveryContextForProject(row.project_id, portfolio);
+  return {
+    projectId: row.project_id,
+    projectName: row.project_name,
+    scopeStatus: row.scope_status,
+    scopeVersion: row.scope_version,
+    openDependencies: row.open_dependencies,
+    blockingDependencies: row.blocking_dependencies,
+    openActions: row.open_actions,
+    openEscalations: row.open_escalations,
+    health:
+      row.health === "red" ? "Red" : row.health === "amber" ? "Amber" : "Green",
+    deliveryTrafficLight: delivery.trafficLight,
+    deliveryConfidence: delivery.confidence,
+    atRiskMilestones: delivery.atRiskMilestones,
+  };
+}
+
 export function actionsDueThisWeek(actions: GovernanceAction[]): GovernanceAction[] {
   return actions.filter(
     (action) =>
@@ -224,7 +250,9 @@ export function overdueActions(actions: GovernanceAction[]): GovernanceAction[] 
   return actions.filter((action) => isOverdueAction(action));
 }
 
-export function dependencyRowClass(dep: ProjectDependency): string {
+export function dependencyRowClass(
+  dep: Pick<ProjectDependency, "status" | "overdue_days">,
+): string {
   if (dep.status === "blocking" || dep.overdue_days > 0) {
     return "bg-[color:var(--danger)]/5";
   }
@@ -232,7 +260,9 @@ export function dependencyRowClass(dep: ProjectDependency): string {
   return "";
 }
 
-export function escalationRowClass(esc: GovernanceEscalation): string {
+export function escalationRowClass(
+  esc: Pick<GovernanceEscalation, "severity">,
+): string {
   if (esc.severity === "critical" || esc.severity === "high") {
     return "bg-[color:var(--danger)]/5";
   }

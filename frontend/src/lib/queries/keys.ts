@@ -29,11 +29,16 @@ export const queryKeys = {
   projectCapabilityGaps: (projectId: string) => ["projects", projectId, "capability-gaps"] as const,
   governanceBootstrap: ["governance", "bootstrap"] as const,
   governanceAnalytics: (days: number) => ["governance", "analytics", days] as const,
-  governanceDependencies: ["governance", "dependencies"] as const,
-  governanceActions: ["governance", "actions"] as const,
-  governanceEscalations: ["governance", "escalations"] as const,
-  governanceScopeStates: ["governance", "scope-states"] as const,
-  governanceCharterReferences: ["governance", "charter-references"] as const,
+  governanceDependencies: (params: Record<string, unknown> = {}) =>
+    ["governance", "dependencies", params] as const,
+  governanceActions: (params: Record<string, unknown> = {}) =>
+    ["governance", "actions", params] as const,
+  governanceEscalations: (params: Record<string, unknown> = {}) =>
+    ["governance", "escalations", params] as const,
+  governanceScopeStates: (params: Record<string, unknown> = {}) =>
+    ["governance", "scope-states", params] as const,
+  governanceRegister: (params: Record<string, unknown> = {}) =>
+    ["governance", "register", params] as const,
   knowledgeBootstrap: ["knowledge", "bootstrap"] as const,
   knowledgeDocuments: ["knowledge", "documents"] as const,
   knowledgeLibraryHealth: ["knowledge", "library-health"] as const,

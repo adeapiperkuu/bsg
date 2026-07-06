@@ -28,6 +28,18 @@ class GovernanceKpisRead(BaseModel):
     sla_adherence_pct: float
 
 
+class GovernanceRegisterRowRead(BaseModel):
+    project_id: UUID
+    project_name: str
+    scope_status: GovernanceScopeStatus | None = None
+    scope_version: str | None = None
+    open_dependencies: int = 0
+    blocking_dependencies: int = 0
+    open_actions: int = 0
+    open_escalations: int = 0
+    health: str
+
+
 class ProjectScopeStateRead(ORMModel):
     id: UUID
     org_id: UUID
@@ -88,6 +100,19 @@ class ProjectDependencyUpdate(BaseModel):
     status: GovernanceDependencyStatus | None = None
 
 
+class ProjectDependencyListRead(BaseModel):
+    id: UUID
+    project_id: UUID
+    title: str
+    dependency_type: GovernanceDependencyType
+    owner_id: UUID | None
+    due_date: date | None
+    status: GovernanceDependencyStatus
+    overdue_days: int = 0
+    project_name: str | None = None
+    owner_name: str | None = None
+
+
 class GovernanceEscalationRead(ORMModel):
     id: UUID
     org_id: UUID
@@ -135,6 +160,20 @@ class PromoteRiskAlertRequest(BaseModel):
     risk_alert_id: UUID
 
 
+class GovernanceEscalationListRead(BaseModel):
+    id: UUID
+    project_id: UUID
+    title: str
+    severity: GovernanceEscalationSeverity
+    status: GovernanceEscalationStatus
+    raised_at: datetime
+    source_type: GovernanceEscalationSourceType | None = None
+    source_id: UUID | None = None
+    project_name: str | None = None
+    raised_by_name: str | None = None
+    assigned_to_name: str | None = None
+
+
 class GovernanceActionRead(ORMModel):
     id: UUID
     org_id: UUID
@@ -162,6 +201,17 @@ class GovernanceActionCreate(BaseModel):
     due_date: date | None = None
     status: GovernanceActionStatus = GovernanceActionStatus.OPEN
     linked_knowledge_document_id: UUID | None = None
+
+
+class GovernanceActionListRead(BaseModel):
+    id: UUID
+    project_id: UUID
+    title: str
+    owner_id: UUID | None
+    due_date: date | None
+    status: GovernanceActionStatus
+    project_name: str | None = None
+    owner_name: str | None = None
 
 
 class GovernanceActionUpdate(BaseModel):
@@ -251,15 +301,6 @@ class ProjectCharterRead(ORMModel):
     project_name: str | None = None
 
 
-class GovernanceCharterReferenceRead(BaseModel):
-    document_id: UUID
-    title: str
-    project: str | None
-    version: str
-    status: str
-    visibility: str
-
-
 class GovernanceKnowledgeDocumentRef(BaseModel):
     document_id: UUID
     title: str
@@ -276,7 +317,6 @@ class GovernanceBootstrapRead(BaseModel):
     escalations: list[GovernanceEscalationRead] = Field(default_factory=list)
     actions: list[GovernanceActionRead] = Field(default_factory=list)
     scope_states: list[ProjectScopeStateRead] = Field(default_factory=list)
-    charter_references: list[GovernanceCharterReferenceRead] = Field(default_factory=list)
 
 
 class GovernanceEvidenceRead(BaseModel):

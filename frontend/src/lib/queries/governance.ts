@@ -4,24 +4,55 @@ import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
 import type {
   GovernanceAction,
   GovernanceActionCreatePayload,
+  GovernanceActionListItem,
   GovernanceActionUpdatePayload,
   GovernanceAnalytics,
-  GovernanceCharterReference,
   GovernanceBootstrap,
   GovernanceEscalation,
   GovernanceEscalationCreatePayload,
+  GovernanceEscalationListItem,
   GovernanceEscalationUpdatePayload,
+  GovernanceListParams,
+  GovernanceListPagination,
+  GovernanceRegisterRowApi,
   GovernanceWeeklySummary,
   GovernanceWeeklySummaryCreatePayload,
+  PaginatedGovernanceList,
   ProjectCharter,
   ProjectCharterGeneratePayload,
   ProjectCharterUpdatePayload,
   ProjectDependency,
   ProjectDependencyCreatePayload,
+  ProjectDependencyListItem,
   ProjectDependencyUpdatePayload,
   ProjectScopeState,
   ProjectScopeStateUpdatePayload,
 } from "@/types/governance";
+
+function governanceListQueryString(params?: GovernanceListParams): string {
+  if (!params) return "";
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      qs.set(key, String(value));
+    }
+  });
+  const text = qs.toString();
+  return text ? `?${text}` : "";
+}
+
+function toPaginatedGovernanceList<T>(body: {
+  data: T[];
+  pagination?: Partial<GovernanceListPagination>;
+}): PaginatedGovernanceList<T> {
+  return {
+    items: body.data,
+    total: body.pagination?.total ?? body.data.length,
+    limit: body.pagination?.limit ?? body.data.length,
+    offset: body.pagination?.offset ?? 0,
+    has_more: body.pagination?.has_more ?? false,
+  };
+}
 
 export async function deleteDependency(dependencyId: string): Promise<void> {
   await apiFetch<void>(`/dependencies/${dependencyId}`, { method: "DELETE" });
@@ -149,13 +180,6 @@ export async function approveGovernanceWeeklySummary(
   return body.data;
 }
 
-export async function getGovernanceCharterReferences(): Promise<GovernanceCharterReference[]> {
-  const body = await apiFetch<{ data: GovernanceCharterReference[] }>(
-    "/governance/charter-references",
-  );
-  return body.data;
-}
-
 export async function getGovernanceBootstrap(): Promise<GovernanceBootstrap> {
   const body = await apiFetch<{ data: GovernanceBootstrap }>("/governance/bootstrap");
   return body.data;
@@ -201,13 +225,27 @@ export function governanceAnalyticsQueryOptions(days: number) {
   });
 }
 
-export async function getProjectDependencies(projectId: string): Promise<ProjectDependency[]> {
-  const body = await apiFetch<{ data: ProjectDependency[] }>(`/projects/${projectId}/dependencies`);
+export async function getProjectDependencies(
+  projectId: string,
+): Promise<ProjectDependencyListItem[]> {
+  const body = await apiFetch<{ data: ProjectDependencyListItem[] }>(
+    `/projects/${projectId}/dependencies`,
+  );
   return body.data;
 }
 
-export async function getGovernanceDependencies(): Promise<ProjectDependency[]> {
-  const body = await apiFetch<{ data: ProjectDependency[] }>("/governance/dependencies");
+export async function getGovernanceDependencies(
+  params?: GovernanceListParams,
+): Promise<PaginatedGovernanceList<ProjectDependencyListItem>> {
+  const body = await apiFetch<{
+    data: ProjectDependencyListItem[];
+    pagination?: Partial<GovernanceListPagination>;
+  }>(`/governance/dependencies${governanceListQueryString(params)}`);
+  return toPaginatedGovernanceList(body);
+}
+
+export async function getDependency(dependencyId: string): Promise<ProjectDependency> {
+  const body = await apiFetch<{ data: ProjectDependency }>(`/dependencies/${dependencyId}`);
   return body.data;
 }
 
@@ -243,8 +281,20 @@ export async function resolveDependency(dependencyId: string): Promise<ProjectDe
   return body.data;
 }
 
-export async function getGovernanceEscalations(): Promise<GovernanceEscalation[]> {
-  const body = await apiFetch<{ data: GovernanceEscalation[] }>("/governance/escalations");
+export async function getGovernanceEscalations(
+  params?: GovernanceListParams,
+): Promise<PaginatedGovernanceList<GovernanceEscalationListItem>> {
+  const body = await apiFetch<{
+    data: GovernanceEscalationListItem[];
+    pagination?: Partial<GovernanceListPagination>;
+  }>(`/governance/escalations${governanceListQueryString(params)}`);
+  return toPaginatedGovernanceList(body);
+}
+
+export async function getEscalation(escalationId: string): Promise<GovernanceEscalation> {
+  const body = await apiFetch<{ data: GovernanceEscalation }>(
+    `/governance/escalations/${escalationId}`,
+  );
   return body.data;
 }
 
@@ -272,14 +322,39 @@ export async function updateGovernanceEscalation(
   return body.data;
 }
 
-export async function getGovernanceActions(): Promise<GovernanceAction[]> {
-  const body = await apiFetch<{ data: GovernanceAction[] }>("/governance/actions");
+export async function getGovernanceActions(
+  params?: GovernanceListParams,
+): Promise<PaginatedGovernanceList<GovernanceActionListItem>> {
+  const body = await apiFetch<{
+    data: GovernanceActionListItem[];
+    pagination?: Partial<GovernanceListPagination>;
+  }>(`/governance/actions${governanceListQueryString(params)}`);
+  return toPaginatedGovernanceList(body);
+}
+
+export async function getAction(actionId: string): Promise<GovernanceAction> {
+  const body = await apiFetch<{ data: GovernanceAction }>(`/governance/actions/${actionId}`);
   return body.data;
 }
 
-export async function getGovernanceScopeStates(): Promise<ProjectScopeState[]> {
-  const body = await apiFetch<{ data: ProjectScopeState[] }>("/governance/scope-states");
-  return body.data;
+export async function getGovernanceScopeStates(
+  params?: GovernanceListParams,
+): Promise<PaginatedGovernanceList<ProjectScopeState>> {
+  const body = await apiFetch<{
+    data: ProjectScopeState[];
+    pagination?: Partial<GovernanceListPagination>;
+  }>(`/governance/scope-states${governanceListQueryString(params)}`);
+  return toPaginatedGovernanceList(body);
+}
+
+export async function getGovernanceRegister(
+  params?: GovernanceListParams,
+): Promise<PaginatedGovernanceList<GovernanceRegisterRowApi>> {
+  const body = await apiFetch<{
+    data: GovernanceRegisterRowApi[];
+    pagination?: Partial<GovernanceListPagination>;
+  }>(`/governance/register${governanceListQueryString(params)}`);
+  return toPaginatedGovernanceList(body);
 }
 
 const governanceLazyQueryDefaults = {
@@ -289,35 +364,45 @@ const governanceLazyQueryDefaults = {
   refetchOnReconnect: false,
 };
 
-export const governanceDependenciesQueryOptions = queryOptions({
-  queryKey: queryKeys.governanceDependencies,
-  queryFn: getGovernanceDependencies,
-  ...governanceLazyQueryDefaults,
-});
+export function governanceDependenciesQueryOptions(params?: GovernanceListParams) {
+  return queryOptions({
+    queryKey: queryKeys.governanceDependencies(params),
+    queryFn: () => getGovernanceDependencies(params),
+    ...governanceLazyQueryDefaults,
+  });
+}
 
-export const governanceActionsQueryOptions = queryOptions({
-  queryKey: queryKeys.governanceActions,
-  queryFn: getGovernanceActions,
-  ...governanceLazyQueryDefaults,
-});
+export function governanceActionsQueryOptions(params?: GovernanceListParams) {
+  return queryOptions({
+    queryKey: queryKeys.governanceActions(params),
+    queryFn: () => getGovernanceActions(params),
+    ...governanceLazyQueryDefaults,
+  });
+}
 
-export const governanceEscalationsQueryOptions = queryOptions({
-  queryKey: queryKeys.governanceEscalations,
-  queryFn: getGovernanceEscalations,
-  ...governanceLazyQueryDefaults,
-});
+export function governanceEscalationsQueryOptions(params?: GovernanceListParams) {
+  return queryOptions({
+    queryKey: queryKeys.governanceEscalations(params),
+    queryFn: () => getGovernanceEscalations(params),
+    ...governanceLazyQueryDefaults,
+  });
+}
 
-export const governanceScopeStatesQueryOptions = queryOptions({
-  queryKey: queryKeys.governanceScopeStates,
-  queryFn: getGovernanceScopeStates,
-  ...governanceLazyQueryDefaults,
-});
+export function governanceScopeStatesQueryOptions(params?: GovernanceListParams) {
+  return queryOptions({
+    queryKey: queryKeys.governanceScopeStates(params),
+    queryFn: () => getGovernanceScopeStates(params),
+    ...governanceLazyQueryDefaults,
+  });
+}
 
-export const governanceCharterReferencesQueryOptions = queryOptions({
-  queryKey: queryKeys.governanceCharterReferences,
-  queryFn: getGovernanceCharterReferences,
-  ...governanceLazyQueryDefaults,
-});
+export function governanceRegisterQueryOptions(params?: GovernanceListParams) {
+  return queryOptions({
+    queryKey: queryKeys.governanceRegister(params),
+    queryFn: () => getGovernanceRegister(params),
+    ...governanceLazyQueryDefaults,
+  });
+}
 
 export async function createGovernanceAction(
   payload: GovernanceActionCreatePayload,

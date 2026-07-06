@@ -7,8 +7,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.governance.timing import governance_db_timed
 from app.core.exceptions import ApiError
-from app.core.security import CurrentUser
 from app.db.models import (
     AlertStatus,
     AppRole,
@@ -91,3 +91,6 @@ async def promote_risk_alert_to_escalation(
     await session.commit()
     await session.refresh(escalation)
     return escalation
+
+
+promote_risk_alert_to_escalation = governance_db_timed(promote_risk_alert_to_escalation)

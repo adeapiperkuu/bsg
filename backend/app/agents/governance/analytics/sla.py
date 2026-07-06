@@ -18,20 +18,25 @@ def _today() -> date:
     return datetime.now(UTC).date()
 
 
-def effective_action_status(
-    action: GovernanceAction, *, today: date | None = None
+def effective_action_status_for(
+    status: GovernanceActionStatus,
+    due_date: date | None,
+    *,
+    today: date | None = None,
 ) -> GovernanceActionStatus:
     """Derive overdue status for open actions past due date."""
     ref = today or _today()
-    if action.status in {GovernanceActionStatus.COMPLETED}:
-        return action.status
-    if (
-        action.due_date is not None
-        and action.due_date < ref
-        and action.status != GovernanceActionStatus.COMPLETED
-    ):
+    if status in {GovernanceActionStatus.COMPLETED}:
+        return status
+    if due_date is not None and due_date < ref and status != GovernanceActionStatus.COMPLETED:
         return GovernanceActionStatus.OVERDUE
-    return action.status
+    return status
+
+
+def effective_action_status(
+    action: GovernanceAction, *, today: date | None = None
+) -> GovernanceActionStatus:
+    return effective_action_status_for(action.status, action.due_date, today=today)
 
 
 def count_open_actions(actions: list[GovernanceAction], *, today: date | None = None) -> int:
@@ -89,13 +94,22 @@ def count_at_risk_items(
     return blocking + pending_scope + critical_escalations
 
 
-def dependency_overdue_days(dep: ProjectDependency, *, today: date | None = None) -> int:
-    if dep.due_date is None or dep.status == GovernanceDependencyStatus.RESOLVED:
+def dependency_overdue_days_for(
+    due_date: date | None,
+    status: GovernanceDependencyStatus,
+    *,
+    today: date | None = None,
+) -> int:
+    if due_date is None or status == GovernanceDependencyStatus.RESOLVED:
         return 0
     ref = today or _today()
-    if dep.due_date >= ref:
+    if due_date >= ref:
         return 0
-    return (ref - dep.due_date).days
+    return (ref - due_date).days
+
+
+def dependency_overdue_days(dep: ProjectDependency, *, today: date | None = None) -> int:
+    return dependency_overdue_days_for(dep.due_date, dep.status, today=today)
 
 
 def calculate_sla_adherence_pct(
