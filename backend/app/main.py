@@ -28,8 +28,9 @@ from app.api.routes import (
 from app.core.config import get_settings
 from app.core.csrf import CsrfMiddleware
 from app.core.exceptions import register_exception_handlers
-from app.db.session import AsyncSessionLocal, dispose_engine
+from app.core.security_headers import SecurityHeadersMiddleware
 from app.db.models import ScanTrigger
+from app.db.session import AsyncSessionLocal, dispose_engine
 from app.services.quality import scan_all_projects
 from app.services.signal_dispatcher import dispatch_pending_signals
 
@@ -69,6 +70,7 @@ def create_app() -> FastAPI:
     )
 
     app.add_middleware(CsrfMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_allowed_origins,

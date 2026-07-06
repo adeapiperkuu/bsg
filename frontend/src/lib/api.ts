@@ -153,8 +153,12 @@ export async function apiFetch<T>(
 
   if (response.status === 401 && !path.startsWith("/auth/") && !retried) {
     const error = await parseApiError(response);
+    const refreshHeaders = new Headers();
+    const csrf = getCsrfToken();
+    if (csrf) refreshHeaders.set("X-CSRF-Token", csrf);
     const refreshed = await fetch(`${API_BASE}/auth/refresh`, {
       method: "POST",
+      headers: refreshHeaders,
       credentials: "include",
     });
     if (refreshed.ok) {
@@ -183,8 +187,12 @@ export async function apiFetchBlob(
 
   if (response.status === 401 && !path.startsWith("/auth/") && !retried) {
     const error = await parseApiError(response);
+    const refreshHeaders = new Headers();
+    const csrf = getCsrfToken();
+    if (csrf) refreshHeaders.set("X-CSRF-Token", csrf);
     const refreshed = await fetch(`${API_BASE}/auth/refresh`, {
       method: "POST",
+      headers: refreshHeaders,
       credentials: "include",
     });
     if (refreshed.ok) {
