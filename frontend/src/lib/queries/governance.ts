@@ -79,10 +79,6 @@ export async function promoteRiskAlertToEscalation(
   return body.data;
 }
 
-export type GovernanceWeeklySummaryUpdatePayload = {
-  summary_text: string;
-};
-
 export async function listProjectCharters(projectId?: string): Promise<ProjectCharter[]> {
   const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
   const body = await apiFetch<{ data: ProjectCharter[] }>(`/governance/project-charters${qs}`);
@@ -137,58 +133,8 @@ export async function exportProjectCharter(
   return apiFetchBlob(`/governance/project-charters/${charterId}/export.${format}`);
 }
 
-export async function listGovernanceWeeklySummaries(): Promise<GovernanceWeeklySummary[]> {
-  const body = await apiFetch<{ data: GovernanceWeeklySummary[] }>("/governance/weekly-summaries");
-  return body.data;
-}
-
-export async function generateGovernanceWeeklySummary(
-  summaryWeek?: string,
-): Promise<GovernanceWeeklySummary> {
-  const body = await apiFetch<{ data: GovernanceWeeklySummary }>(
-    "/governance/weekly-summary/generate",
-    {
-      method: "POST",
-      headers: { "X-BSG-User-Action": "true" },
-      body: JSON.stringify(summaryWeek ? { summary_week: summaryWeek } : {}),
-    },
-  );
-  return body.data;
-}
-
-export async function updateGovernanceWeeklySummary(
-  summaryId: string,
-  payload: GovernanceWeeklySummaryUpdatePayload,
-): Promise<GovernanceWeeklySummary> {
-  const body = await apiFetch<{ data: GovernanceWeeklySummary }>(
-    `/governance/weekly-summary/${summaryId}`,
-    {
-      method: "PATCH",
-      body: JSON.stringify(payload),
-    },
-  );
-  return body.data;
-}
-
-export async function approveGovernanceWeeklySummary(
-  summaryId: string,
-): Promise<GovernanceWeeklySummary> {
-  const body = await apiFetch<{ data: GovernanceWeeklySummary }>(
-    `/governance/weekly-summary/${summaryId}/approve`,
-    { method: "POST" },
-  );
-  return body.data;
-}
-
 export async function getGovernanceBootstrap(): Promise<GovernanceBootstrap> {
   const body = await apiFetch<{ data: GovernanceBootstrap }>("/governance/bootstrap");
-  return body.data;
-}
-
-export async function getGovernanceAnalytics(days = 30): Promise<GovernanceAnalytics> {
-  const body = await apiFetch<{ data: GovernanceAnalytics }>(
-    `/governance/analytics?days=${encodeURIComponent(String(days))}`,
-  );
   return body.data;
 }
 
@@ -201,9 +147,7 @@ export async function getGovernanceAnalyticsSummary(
   return body.data;
 }
 
-export async function getGovernanceAnalyticsDetail(
-  days = 30,
-): Promise<GovernanceAnalyticsDetail> {
+export async function getGovernanceAnalyticsDetail(days = 30): Promise<GovernanceAnalyticsDetail> {
   const body = await apiFetch<{ data: GovernanceAnalyticsDetail }>(
     `/governance/analytics/detail?days=${encodeURIComponent(String(days))}`,
   );
@@ -245,21 +189,6 @@ export const governanceBootstrapQueryOptions = queryOptions({
   refetchOnWindowFocus: false,
   refetchOnReconnect: false,
 });
-
-export function useGovernanceBootstrapQuery() {
-  return useQuery(governanceBootstrapQueryOptions);
-}
-
-export function governanceAnalyticsQueryOptions(days: number) {
-  return queryOptions({
-    queryKey: queryKeys.governanceAnalytics(days),
-    queryFn: () => getGovernanceAnalytics(days),
-    staleTime: Math.max(STALE_TIME_MS, 10 * 60 * 1000),
-    refetchOnMount: false,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-  });
-}
 
 export function governanceAnalyticsSummaryQueryOptions(days: number) {
   return queryOptions({
@@ -498,29 +427,3 @@ export async function updateProjectScope(
   });
   return body.data;
 }
-
-export async function getWeeklySummary(): Promise<GovernanceWeeklySummary | null> {
-  const body = await apiFetch<{ data: GovernanceWeeklySummary | null }>(
-    "/governance/weekly-summary",
-  );
-  return body.data;
-}
-
-export async function createGovernanceWeeklySummary(
-  payload: GovernanceWeeklySummaryCreatePayload,
-): Promise<GovernanceWeeklySummary> {
-  const body = await apiFetch<{ data: GovernanceWeeklySummary }>("/governance/weekly-summary", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-  return body.data;
-}
-
-/** @deprecated Use getProjectDependencies */
-export const listProjectDependencies = getProjectDependencies;
-/** @deprecated Use getGovernanceEscalations */
-export const listGovernanceEscalations = getGovernanceEscalations;
-/** @deprecated Use getGovernanceActions */
-export const listGovernanceActions = getGovernanceActions;
-/** @deprecated Use getWeeklySummary */
-export const getGovernanceWeeklySummary = getWeeklySummary;

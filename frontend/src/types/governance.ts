@@ -6,7 +6,6 @@ export type GovernanceDependencyStatus = "open" | "blocking" | "resolved";
 export type GovernanceEscalationSeverity = "low" | "medium" | "high" | "critical";
 export type GovernanceEscalationStatus = "open" | "in_progress" | "resolved";
 export type GovernanceActionStatus = "open" | "in_progress" | "completed" | "overdue";
-export type GovernanceSummaryStatus = "draft" | "approved";
 export type GovernanceCharterStatus = "draft" | "approved" | "archived";
 export type KnowledgeVisibility = "internal_only" | "leadership_only" | "client_safe";
 export type GovernanceEvidenceSourceType =
@@ -146,21 +145,6 @@ export type GovernanceEvidenceLink = {
   label?: string | null;
   detail?: string | null;
   project_name?: string | null;
-};
-
-export type GovernanceWeeklySummary = {
-  id: string;
-  org_id: string;
-  summary_week: string;
-  summary_text: string;
-  status: GovernanceSummaryStatus;
-  generated_by_ai: boolean;
-  approved_by: string | null;
-  approved_at: string | null;
-  created_at: string;
-  updated_at: string;
-  evidence_links: GovernanceEvidenceLink[];
-  approved_by_name?: string | null;
 };
 
 export type ProjectCharter = {
@@ -412,15 +396,6 @@ export type ProjectScopeStateUpdatePayload = {
   version_label?: string;
   notes?: string | null;
   linked_charter_document_id?: string | null;
-};
-
-export type GovernanceWeeklySummaryCreatePayload = {
-  summary_week: string;
-  summary_text: string;
-  evidence_links?: Array<{
-    source_type: GovernanceEvidenceSourceType;
-    source_id: string;
-  }>;
 };
 
 export type ProjectCharterGeneratePayload = {

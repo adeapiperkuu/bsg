@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from time import perf_counter
 from uuid import UUID
 
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -26,11 +28,11 @@ from app.agents.governance.services.audit_service import (
     governance_snapshot,
     log_governance_event,
 )
-from app.agents.governance.timing import governance_db_timed
 from app.agents.governance.services.notification_service import create_governance_notification
 from app.agents.governance.services.project_governance_summary_service import (
     refresh_project_governance_summary,
 )
+from app.agents.governance.timing import governance_db_timed
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
 from app.db.models import (
@@ -52,6 +54,11 @@ from app.db.models import (
     User,
 )
 from app.services.scoping import get_visible_project
+
+logger = logging.getLogger(__name__)
+
+PAGINATION_TOTAL_LABEL = "_pagination_total"
+DEPENDENCIES_LIST_CACHE_TTL = timedelta(seconds=60)
 
 GOVERNANCE_READ_ROLES = {
     AppRole.DELIVERY_MANAGER,
@@ -129,10 +136,17 @@ class PaginatedGovernanceRows:
     total: int
     limit: int
     offset: int
+    db_executes: int = 1
 
     @property
     def has_more(self) -> bool:
         return self.offset + len(self.items) < self.total
+
+
+_dependencies_list_cache: dict[
+    tuple[UUID | None, str, UUID, int, int],
+    tuple[datetime, PaginatedGovernanceRows],
+] = {}
 
 
 def _bounded_list_filters(
@@ -270,11 +284,37 @@ async def _execute_paginated_rows(
     offset: int,
     count_stmt: Select,
 ) -> PaginatedGovernanceRows:
-    total = int((await session.execute(count_stmt)).scalar_one())
-    rows = (await session.execute(stmt.limit(limit).offset(offset))).all()
+    """Fetch one page plus total count in a single DB round trip when possible."""
+    page_stmt = (
+        stmt.add_columns(func.count().over().label(PAGINATION_TOTAL_LABEL))
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = (await session.execute(page_stmt)).all()
+    db_executes = 1
+
     if not rows:
-        return PaginatedGovernanceRows(items=[], total=total, limit=limit, offset=offset)
-    return PaginatedGovernanceRows(items=rows, total=total, limit=limit, offset=offset)
+        if offset > 0:
+            total = int((await session.execute(count_stmt)).scalar_one())
+            db_executes = 2
+        else:
+            total = 0
+        return PaginatedGovernanceRows(
+            items=[],
+            total=total,
+            limit=limit,
+            offset=offset,
+            db_executes=db_executes,
+        )
+
+    total = int(getattr(rows[0], PAGINATION_TOTAL_LABEL))
+    return PaginatedGovernanceRows(
+        items=rows,
+        total=total,
+        limit=limit,
+        offset=offset,
+        db_executes=db_executes,
+    )
 
 
 def _dependency_count_stmt(current_user: CurrentUser) -> Select:
@@ -377,6 +417,30 @@ def _apply_scope_state_page_filters(stmt: Select, filters: GovernanceListFilters
     if filters.date_to is not None:
         stmt = stmt.where(func.date(ProjectScopeState.updated_at) <= filters.date_to)
     return stmt
+
+
+def _dependencies_cache_key(
+    current_user: CurrentUser,
+    filters: GovernanceListFilters,
+) -> tuple[UUID | None, str, UUID, int, int]:
+    org_id = None if current_user.role == AppRole.SUPER_ADMIN else current_user.org_id
+    return (org_id, current_user.role.value, current_user.id, filters.limit, filters.offset)
+
+
+def _is_default_dependencies_cacheable(filters: GovernanceListFilters) -> bool:
+    return (
+        filters.project_id is None
+        and filters.status is None
+        and filters.dependency_type is None
+        and filters.owner_id is None
+        and filters.search is None
+        and filters.date_from is None
+        and filters.date_to is None
+    )
+
+
+def _invalidate_dependencies_list_cache() -> None:
+    _dependencies_list_cache.clear()
 
 
 def _dependency_list_stmt(current_user: CurrentUser) -> Select:
@@ -591,14 +655,43 @@ async def list_governance_dependencies_page(
         filters = _bounded_list_filters(**raw_filters)
         return PaginatedGovernanceRows(items=[], total=0, limit=filters.limit, offset=filters.offset)
     filters = _bounded_list_filters(**raw_filters)
+    cacheable = _is_default_dependencies_cacheable(filters)
+    cache_key = _dependencies_cache_key(current_user, filters)
+    now = datetime.now(UTC)
+    if cacheable:
+        cached = _dependencies_list_cache.get(cache_key)
+        if cached and now - cached[0] < DEPENDENCIES_LIST_CACHE_TTL:
+            return cached[1]
+
+    started = perf_counter()
     stmt = _dependency_list_stmt(current_user)
     count_stmt = _dependency_count_stmt(current_user)
     stmt = _apply_dependency_page_filters(stmt, filters)
     count_stmt = _apply_dependency_page_filters(count_stmt, filters)
-    stmt = stmt.order_by(ProjectDependency.due_date.asc().nulls_last(), ProjectDependency.created_at.desc())
-    return await _execute_paginated_rows(
+    stmt = stmt.order_by(
+        ProjectDependency.due_date.asc().nulls_last(),
+        ProjectDependency.created_at.desc(),
+    )
+    page = await _execute_paginated_rows(
         session, stmt, limit=filters.limit, offset=filters.offset, count_stmt=count_stmt
     )
+    if cacheable:
+        _dependencies_list_cache[cache_key] = (now, page)
+
+    elapsed_ms = round((perf_counter() - started) * 1000, 1)
+    if elapsed_ms >= 200:
+        logger.info(
+            "governance_dependencies_list_profile total_ms=%s db_executes=%s row_count=%s "
+            "limit=%s offset=%s cached=%s",
+            elapsed_ms,
+            page.db_executes,
+            len(page.items),
+            filters.limit,
+            filters.offset,
+            False,
+        )
+
+    return page
 
 
 async def list_governance_actions_page(
@@ -840,6 +933,7 @@ async def create_dependency(
     await refresh_project_governance_summary(session, dep.org_id, dep.project_id)
     await session.commit()
     await session.refresh(dep)
+    _invalidate_dependencies_list_cache()
     return dep
 
 
@@ -869,6 +963,7 @@ async def update_dependency(
     await refresh_project_governance_summary(session, dep.org_id, dep.project_id)
     await session.commit()
     await session.refresh(dep)
+    _invalidate_dependencies_list_cache()
     return dep
 
 
@@ -897,6 +992,7 @@ async def resolve_dependency(
     await refresh_project_governance_summary(session, dep.org_id, dep.project_id)
     await session.commit()
     await session.refresh(dep)
+    _invalidate_dependencies_list_cache()
     return dep
 
 
@@ -922,6 +1018,7 @@ async def soft_delete_dependency(
     )
     await refresh_project_governance_summary(session, dep.org_id, dep.project_id)
     await session.commit()
+    _invalidate_dependencies_list_cache()
 
 
 async def create_escalation(

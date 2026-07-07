@@ -4,13 +4,17 @@ from uuid import uuid4
 import pytest
 
 from app.agents.governance.services.governance_service import (
+    PAGINATION_TOTAL_LABEL,
     PaginatedGovernanceRows,
     _apply_dependency_page_filters,
     _bounded_list_filters,
     _dependency_count_stmt,
     _dependency_list_stmt,
     _execute_paginated_rows,
+    _invalidate_dependencies_list_cache,
+    _is_default_dependencies_cacheable,
     list_governance_dependencies_page,
+    map_dependency_list_row,
 )
 from app.core.security import CurrentUser
 from app.db.models import AppRole, ProjectDependency
@@ -27,55 +31,65 @@ def _user(role: AppRole = AppRole.DELIVERY_MANAGER) -> CurrentUser:
 
 
 @pytest.mark.asyncio
-async def test_execute_paginated_rows_uses_separate_count_query() -> None:
-    session = AsyncMock()
+async def test_execute_paginated_rows_uses_window_count_in_single_execute() -> None:
     row = MagicMock(project_id=uuid4(), title="Alpha")
-    count_result = MagicMock()
-    count_result.scalar_one.return_value = 7
+    setattr(row, PAGINATION_TOTAL_LABEL, 7)
     rows_result = MagicMock()
     rows_result.all.return_value = [row]
+    session = AsyncMock()
+    captured: dict[str, str] = {}
 
-    captured = {}
-
-    async def execute(stmt):
-        sql = str(stmt.compile(compile_kwargs={"literal_binds": False}))
-        if "count(" in sql.lower() and "over" not in sql.lower() and "limit" not in sql.lower():
-            captured["count_sql"] = sql
-            return count_result
-        captured["rows_sql"] = sql
+    async def _capture_execute(stmt, *_args, **_kwargs):
+        captured["sql"] = str(stmt.compile(compile_kwargs={"literal_binds": False}))
         return rows_result
 
-    session.execute = AsyncMock(side_effect=execute)
+    session.execute.side_effect = _capture_execute
 
-    stmt = _dependency_list_stmt(_user())
-    count_stmt = _dependency_count_stmt(_user())
     page = await _execute_paginated_rows(
         session,
-        stmt,
+        _dependency_list_stmt(_user()),
         limit=2,
-        offset=4,
-        count_stmt=count_stmt,
+        offset=0,
+        count_stmt=_dependency_count_stmt(_user()),
     )
 
     assert page.total == 7
     assert page.items == [row]
-    assert page.limit == 2
-    assert page.offset == 4
-    assert "limit" in captured["rows_sql"].lower()
-    assert "offset" in captured["rows_sql"].lower()
-    assert "over()" not in captured["rows_sql"].lower()
-    assert "users" not in captured["count_sql"].lower()
+    assert page.db_executes == 1
+    assert session.execute.await_count == 1
+    assert "count(*) over" in captured["sql"].lower()
+    assert PAGINATION_TOTAL_LABEL in captured["sql"]
 
 
 @pytest.mark.asyncio
-async def test_execute_paginated_rows_returns_zero_total_for_empty_page() -> None:
-    session = AsyncMock()
-    count_result = MagicMock()
-    count_result.scalar_one.return_value = 0
+async def test_execute_paginated_rows_falls_back_to_count_for_empty_offset_page() -> None:
     rows_result = MagicMock()
     rows_result.all.return_value = []
+    count_result = MagicMock()
+    count_result.scalar_one.return_value = 12
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[rows_result, count_result])
 
-    session.execute = AsyncMock(side_effect=[count_result, rows_result])
+    page = await _execute_paginated_rows(
+        session,
+        _dependency_list_stmt(_user()),
+        limit=25,
+        offset=50,
+        count_stmt=_dependency_count_stmt(_user()),
+    )
+
+    assert page.items == []
+    assert page.total == 12
+    assert page.db_executes == 2
+    assert session.execute.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_execute_paginated_rows_returns_zero_total_for_empty_first_page() -> None:
+    rows_result = MagicMock()
+    rows_result.all.return_value = []
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=rows_result)
 
     page = await _execute_paginated_rows(
         session,
@@ -88,6 +102,8 @@ async def test_execute_paginated_rows_returns_zero_total_for_empty_page() -> Non
     assert page.items == []
     assert page.total == 0
     assert page.has_more is False
+    assert page.db_executes == 1
+    session.execute.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -159,3 +175,77 @@ def test_dependency_list_sorting_is_stable() -> None:
     assert "project_dependencies.due_date" in sql
     assert "project_dependencies.created_at" in sql
     assert sql.index("due_date") < sql.index("created_at")
+
+
+def test_dependency_list_selects_only_table_columns() -> None:
+    sql = str(_dependency_list_stmt(_user()).compile(compile_kwargs={"literal_binds": False}))
+
+    assert "project_dependencies.id" in sql
+    assert "project_dependencies.title" in sql
+    assert "project_dependencies.description" not in sql.lower()
+    assert "projects.name" in sql.lower()
+
+
+def test_map_dependency_list_row_response_shape() -> None:
+    row = MagicMock(
+        id=uuid4(),
+        project_id=uuid4(),
+        title="Vendor sign-off",
+        dependency_type="client_action",
+        owner_id=uuid4(),
+        due_date=None,
+        status="open",
+        project_name="Alpha",
+        owner_name="Alex Owner",
+    )
+
+    payload = map_dependency_list_row(row)
+
+    assert payload.model_dump() == {
+        "id": row.id,
+        "project_id": row.project_id,
+        "title": "Vendor sign-off",
+        "dependency_type": "client_action",
+        "owner_id": row.owner_id,
+        "due_date": None,
+        "status": "open",
+        "overdue_days": 0,
+        "project_name": "Alpha",
+        "owner_name": "Alex Owner",
+    }
+
+
+def test_default_dependencies_request_is_cacheable() -> None:
+    filters = _bounded_list_filters(limit=50, offset=0)
+    assert _is_default_dependencies_cacheable(filters) is True
+
+    filtered = _bounded_list_filters(limit=50, offset=0, search="vendor")
+    assert _is_default_dependencies_cacheable(filtered) is False
+
+
+@pytest.mark.asyncio
+async def test_list_governance_dependencies_page_uses_cache_for_default_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _invalidate_dependencies_list_cache()
+    user = _user()
+    cached_page = PaginatedGovernanceRows(items=[MagicMock()], total=1, limit=50, offset=0)
+    calls = 0
+
+    async def _fake_execute(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return cached_page
+
+    monkeypatch.setattr(
+        "app.agents.governance.services.governance_service._execute_paginated_rows",
+        _fake_execute,
+    )
+
+    session = AsyncMock()
+    first = await list_governance_dependencies_page(session, user, limit=50, offset=0)
+    second = await list_governance_dependencies_page(session, user, limit=50, offset=0)
+
+    assert calls == 1
+    assert first is second
+    _invalidate_dependencies_list_cache()

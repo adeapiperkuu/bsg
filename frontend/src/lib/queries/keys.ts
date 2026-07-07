@@ -28,8 +28,8 @@ export const queryKeys = {
   projectTrainingGaps: (projectId: string) => ["projects", projectId, "training-gaps"] as const,
   projectCapabilityGaps: (projectId: string) => ["projects", projectId, "capability-gaps"] as const,
   governanceBootstrap: ["governance", "bootstrap"] as const,
-  governanceAnalytics: (days: number) => ["governance", "analytics", days] as const,
-  governanceAnalyticsSummary: (days: number) => ["governance", "analytics", "summary", days] as const,
+  governanceAnalyticsSummary: (days: number) =>
+    ["governance", "analytics", "summary", days] as const,
   governanceAnalyticsDetail: (days: number) => ["governance", "analytics", "detail", days] as const,
   governanceDependencies: (params: Record<string, unknown> = {}) =>
     ["governance", "dependencies", params] as const,

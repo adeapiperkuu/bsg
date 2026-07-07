@@ -1,3 +1,4 @@
+from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -6,7 +7,11 @@ import pytest
 from app.agents.governance.services.analytics_service import (
     get_governance_analytics_summary,
 )
-from app.agents.governance.services.delivery_signals import fetch_governance_delivery_signals
+from app.agents.governance.services.delivery_signals import (
+    _gather_governance_signal_inputs,
+    _parse_governance_signal_bundle_rows,
+    fetch_governance_delivery_signals,
+)
 from app.core.security import CurrentUser
 from app.db.models import AppRole, Project
 
@@ -28,39 +33,6 @@ async def test_summary_does_not_call_get_portfolio_data(
     dm = _user()
     session = AsyncMock()
     project = Project(id=uuid4(), org_id=dm.org_id, name="Alpha")
-
-    async def _portfolio_should_not_run(*_args, **_kwargs):
-        raise AssertionError("get_portfolio_data must not be called for analytics summary")
-
-    monkeypatch.setattr(
-        "app.agents.delivery.services.dashboard_service.get_portfolio_data",
-        _portfolio_should_not_run,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_visible_projects",
-        AsyncMock(return_value=[project]),
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_dependency_counts_by_project",
-        AsyncMock(return_value={project.id: (0, 0)}),
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_escalation_counts_by_project",
-        AsyncMock(return_value={project.id: (0, 0)}),
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_overdue_action_counts_by_project",
-        AsyncMock(return_value={project.id: 0}),
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_pending_scope_counts_by_project",
-        AsyncMock(return_value={project.id: 0}),
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._analytics_summary_cache",
-        {},
-    )
-
     signals = {
         project.id: {
             "dashboard": {
@@ -70,15 +42,35 @@ async def test_summary_does_not_call_get_portfolio_data(
             }
         }
     }
-    fetch_mock = AsyncMock(return_value=signals)
+
+    async def _portfolio_should_not_run(*_args, **_kwargs):
+        raise AssertionError("get_portfolio_data must not be called for analytics summary")
+
     monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service.fetch_governance_delivery_signals",
-        fetch_mock,
+        "app.agents.delivery.services.dashboard_service.get_portfolio_data",
+        _portfolio_should_not_run,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_summary_metric_bundle",
+        AsyncMock(
+            return_value=(
+                [project],
+                {project.id: (0, 0)},
+                {project.id: (0, 0)},
+                {project.id: 0},
+                {project.id: 0},
+                signals,
+                {"project_metrics": 1.0, "delivery_signals": 1.0},
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._analytics_summary_cache",
+        {},
     )
 
     summary = await get_governance_analytics_summary(session, dm, days=30)
 
-    fetch_mock.assert_awaited_once()
     assert summary.project_health[0].delivery_confidence == 72.0
     assert summary.project_health[0].delivery_traffic_light == "yellow"
     assert summary.project_health[0].quality_risk == "elevated"
@@ -115,10 +107,7 @@ async def test_fetch_governance_delivery_signals_filters_other_org_projects() ->
                     session,
                     dm,
                     [allowed_project.id, blocked_project.id],
-                    projects_by_id={
-                        allowed_project.id: allowed_project,
-                        blocked_project.id: blocked_project,
-                    },
+                    projects_by_id={allowed_project.id: allowed_project},
                 )
 
     assert set(signals.keys()) == {allowed_project.id}
@@ -138,3 +127,41 @@ async def test_fetch_governance_delivery_signals_returns_empty_for_clients() -> 
 
     assert signals == {}
     session.execute.assert_not_awaited()
+
+
+def test_parse_governance_signal_bundle_rows_coerces_milestone_dates() -> None:
+    project_id = uuid4()
+    throughput, quality, milestones, risks, bottlenecks = _parse_governance_signal_bundle_rows(
+        [
+            (
+                "milestone",
+                project_id,
+                {
+                    "id": str(uuid4()),
+                    "project_id": str(project_id),
+                    "name": "M1",
+                    "description": None,
+                    "planned_date": "2026-07-10",
+                    "actual_date": None,
+                    "status": "on_track",
+                },
+            )
+        ],
+        [project_id],
+    )
+
+    assert milestones[project_id][0]["planned_date"] == date(2026, 7, 10)
+    assert quality[project_id] is None
+    assert risks[project_id] == []
+    assert bottlenecks[project_id] == []
+
+
+@pytest.mark.asyncio
+async def test_gather_governance_signal_inputs_uses_single_execute() -> None:
+    project_id = uuid4()
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=MagicMock(all=lambda: []))
+
+    await _gather_governance_signal_inputs(session, [project_id])
+
+    session.execute.assert_awaited_once()

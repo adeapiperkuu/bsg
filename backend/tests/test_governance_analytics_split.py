@@ -15,6 +15,7 @@ from app.agents.governance.services.analytics_service import (
     _analytics_cache,
     _analytics_detail_cache,
     _analytics_summary_cache,
+    _summary_project_metrics_stmt,
     get_governance_analytics,
     get_governance_analytics_detail,
     get_governance_analytics_summary,
@@ -52,6 +53,22 @@ def _sample_health(project_id: UUID | None = None) -> GovernanceHealthProjectRea
     )
 
 
+def test_summary_project_metrics_stmt_joins_aggregates() -> None:
+    from datetime import date
+
+    sql = str(
+        _summary_project_metrics_stmt(_user(), today=date(2026, 7, 6)).compile(
+            compile_kwargs={"literal_binds": False}
+        )
+    ).lower()
+
+    assert "summary_dep_agg" in sql
+    assert "summary_esc_agg" in sql
+    assert "summary_overdue_agg" in sql
+    assert "summary_scope_agg" in sql
+    assert "outer join" in sql
+
+
 @pytest.mark.asyncio
 async def test_get_governance_analytics_summary_limits_ranking(
     monkeypatch: pytest.MonkeyPatch,
@@ -63,40 +80,20 @@ async def test_get_governance_analytics_summary_limits_ranking(
         for index in range(12)
     ]
 
-    async def _fake_visible(_session, _user):
-        return projects
-
-    async def _dep_counts(_session, _user):
-        return {project.id: (0, 0) for project in projects}
-
-    async def _esc_counts(_session, _user):
-        return {project.id: (0, 0) for project in projects}
-
-    async def _overdue_counts(_session, _user, *, today):
-        return {project.id: 0 for project in projects}
-
-    async def _pending_counts(_session, _user):
-        return {project.id: 0 for project in projects}
+    async def _fake_bundle(_session, _user, *, today):
+        return (
+            projects,
+            {project.id: (0, 0) for project in projects},
+            {project.id: (0, 0) for project in projects},
+            {project.id: 0 for project in projects},
+            {project.id: 0 for project in projects},
+            {},
+            {},
+        )
 
     monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_visible_projects",
-        _fake_visible,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_dependency_counts_by_project",
-        _dep_counts,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_escalation_counts_by_project",
-        _esc_counts,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_overdue_action_counts_by_project",
-        _overdue_counts,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_pending_scope_counts_by_project",
-        _pending_counts,
+        "app.agents.governance.services.analytics_service._fetch_summary_metric_bundle",
+        _fake_bundle,
     )
     monkeypatch.setattr(
         "app.agents.governance.services.analytics_service._analytics_summary_cache",

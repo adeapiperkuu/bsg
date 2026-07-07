@@ -11,7 +11,7 @@ from time import perf_counter
 from typing import TypeVar
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.governance.services.delivery_signals import fetch_governance_delivery_signals
@@ -1358,6 +1358,167 @@ def _summary_health_charts(
     }
 
 
+def _summary_project_metrics_stmt(current_user: CurrentUser, *, today: date) -> Select:
+    dep_agg = (
+        select(
+            ProjectDependency.project_id.label("project_id"),
+            func.count()
+            .filter(ProjectDependency.status != GovernanceDependencyStatus.RESOLVED)
+            .label("open"),
+            func.count()
+            .filter(ProjectDependency.status == GovernanceDependencyStatus.BLOCKING)
+            .label("blocking"),
+        )
+        .where(ProjectDependency.deleted_at.is_(None))
+        .group_by(ProjectDependency.project_id)
+    )
+    dep_agg = _apply_org_filter(dep_agg, ProjectDependency.org_id, current_user).subquery(
+        "summary_dep_agg"
+    )
+
+    esc_agg = (
+        select(
+            GovernanceEscalation.project_id.label("project_id"),
+            func.count().label("open"),
+            func.count()
+            .filter(GovernanceEscalation.severity == GovernanceEscalationSeverity.CRITICAL)
+            .label("critical"),
+        )
+        .where(
+            GovernanceEscalation.deleted_at.is_(None),
+            GovernanceEscalation.status.in_(OPEN_ESCALATION_STATUSES),
+        )
+        .group_by(GovernanceEscalation.project_id)
+    )
+    esc_agg = _apply_org_filter(esc_agg, GovernanceEscalation.org_id, current_user).subquery(
+        "summary_esc_agg"
+    )
+
+    overdue_agg = (
+        select(
+            GovernanceAction.project_id.label("project_id"),
+            func.count().label("overdue"),
+        )
+        .where(GovernanceAction.deleted_at.is_(None))
+        .where(_overdue_action_filter(today))
+        .group_by(GovernanceAction.project_id)
+    )
+    overdue_agg = _apply_org_filter(overdue_agg, GovernanceAction.org_id, current_user).subquery(
+        "summary_overdue_agg"
+    )
+
+    scope_agg = (
+        select(
+            ProjectScopeState.project_id.label("project_id"),
+            func.count().label("pending"),
+        )
+        .where(
+            ProjectScopeState.deleted_at.is_(None),
+            ProjectScopeState.scope_status == GovernanceScopeStatus.PENDING_REVISION,
+        )
+        .group_by(ProjectScopeState.project_id)
+    )
+    scope_agg = _apply_org_filter(scope_agg, ProjectScopeState.org_id, current_user).subquery(
+        "summary_scope_agg"
+    )
+
+    visible_project_ids = scoped_project_query(current_user).with_only_columns(Project.id)
+    return (
+        select(
+            Project,
+            func.coalesce(dep_agg.c.open, 0).label("dep_open"),
+            func.coalesce(dep_agg.c.blocking, 0).label("dep_blocking"),
+            func.coalesce(esc_agg.c.open, 0).label("esc_open"),
+            func.coalesce(esc_agg.c.critical, 0).label("esc_critical"),
+            func.coalesce(overdue_agg.c.overdue, 0).label("overdue_actions"),
+            func.coalesce(scope_agg.c.pending, 0).label("pending_scopes"),
+        )
+        .outerjoin(dep_agg, dep_agg.c.project_id == Project.id)
+        .outerjoin(esc_agg, esc_agg.c.project_id == Project.id)
+        .outerjoin(overdue_agg, overdue_agg.c.project_id == Project.id)
+        .outerjoin(scope_agg, scope_agg.c.project_id == Project.id)
+        .where(Project.id.in_(visible_project_ids))
+        .order_by(Project.name.asc())
+    )
+
+
+async def _fetch_summary_project_metrics(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    *,
+    today: date,
+) -> tuple[
+    list[Project],
+    dict[UUID, tuple[int, int]],
+    dict[UUID, tuple[int, int]],
+    dict[UUID, int],
+    dict[UUID, int],
+]:
+    rows = (await session.execute(_summary_project_metrics_stmt(current_user, today=today))).all()
+    projects: list[Project] = []
+    dependency_counts: dict[UUID, tuple[int, int]] = {}
+    escalation_counts: dict[UUID, tuple[int, int]] = {}
+    overdue_by_project: dict[UUID, int] = {}
+    pending_by_project: dict[UUID, int] = {}
+    internal = can_read_internal_governance(current_user)
+
+    for project, dep_open, dep_blocking, esc_open, esc_critical, overdue_actions, pending_scopes in rows:
+        projects.append(project)
+        if internal:
+            dependency_counts[project.id] = (int(dep_open or 0), int(dep_blocking or 0))
+            overdue_by_project[project.id] = int(overdue_actions or 0)
+            pending_by_project[project.id] = int(pending_scopes or 0)
+        escalation_counts[project.id] = (int(esc_open or 0), int(esc_critical or 0))
+
+    return projects, dependency_counts, escalation_counts, overdue_by_project, pending_by_project
+
+
+async def _fetch_summary_metric_bundle(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    *,
+    today: date,
+) -> tuple[
+    list[Project],
+    dict[UUID, tuple[int, int]],
+    dict[UUID, tuple[int, int]],
+    dict[UUID, int],
+    dict[UUID, int],
+    dict[UUID, dict],
+    dict[str, float],
+]:
+    """Load visible projects + governance aggregates in one query, then delivery signals."""
+    timings: dict[str, float] = {}
+
+    metrics_started = perf_counter()
+    (
+        projects,
+        dependency_counts,
+        escalation_counts,
+        overdue_by_project,
+        pending_by_project,
+    ) = await _fetch_summary_project_metrics(session, current_user, today=today)
+    timings["project_metrics"] = round((perf_counter() - metrics_started) * 1000, 1)
+
+    delivery_started = perf_counter()
+    delivery_by_project = await _fetch_delivery_by_project(
+        session,
+        current_user,
+        projects=projects,
+    )
+    timings["delivery_signals"] = round((perf_counter() - delivery_started) * 1000, 1)
+
+    return (
+        projects,
+        dependency_counts,
+        escalation_counts,
+        overdue_by_project,
+        pending_by_project,
+        delivery_by_project,
+        timings,
+    )
+
+
 async def get_governance_analytics_summary(
     session: AsyncSession,
     current_user: CurrentUser,
@@ -1373,18 +1534,21 @@ async def get_governance_analytics_summary(
     if cached and now - cached[0] < ANALYTICS_CACHE_TTL:
         return cached[1]
 
+    started = perf_counter()
     today = now.date()
-    projects = await _fetch_visible_projects(session, current_user)
 
-    dependency_counts = await _fetch_dependency_counts_by_project(session, current_user)
-    escalation_counts = await _fetch_escalation_counts_by_project(session, current_user)
-    overdue_by_project = await _fetch_overdue_action_counts_by_project(
-        session, current_user, today=today
-    )
-    pending_by_project = await _fetch_pending_scope_counts_by_project(session, current_user)
-
-    delivery_by_project = await _fetch_delivery_by_project(
-        session, current_user, projects=projects
+    (
+        projects,
+        dependency_counts,
+        escalation_counts,
+        overdue_by_project,
+        pending_by_project,
+        delivery_by_project,
+        query_timings,
+    ) = await _fetch_summary_metric_bundle(
+        session,
+        current_user,
+        today=today,
     )
 
     project_health: list[GovernanceHealthProjectRead] = []
@@ -1417,6 +1581,18 @@ async def get_governance_analytics_summary(
         export_sections=["Governance Health"],
     )
     _analytics_summary_cache[cache_key] = (now, summary)
+
+    total_ms = round((perf_counter() - started) * 1000, 1)
+    if total_ms >= 300:
+        logger.info(
+            "governance_analytics_summary_profile total_ms=%s project_count=%s "
+            "ranking_count=%s query_timings=%s",
+            total_ms,
+            len(projects),
+            len(top_ranking),
+            query_timings,
+        )
+
     return summary
 
 

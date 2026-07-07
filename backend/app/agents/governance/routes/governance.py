@@ -183,6 +183,9 @@ async def governance_analytics(
     days: int = 30,
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
 ) -> DataResponse[GovernanceAnalyticsRead]:
+    # TODO(deprecate): Monolithic analytics payload. The live /governance UI uses
+    # GET /governance/analytics/summary + GET /governance/analytics/detail instead.
+    # Keep this route for backward compatibility until external callers are confirmed gone.
     return DataResponse(data=await get_governance_analytics(session, current_user, days=days))
 
 
