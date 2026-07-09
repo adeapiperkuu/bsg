@@ -1,11 +1,19 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 REPO_ROOT = BACKEND_ROOT.parent
+
+
+def origins_are_unsafe_for_credentialed_cors(origins: list[str]) -> bool:
+    """Wildcard or empty CORS origins are unsafe when cookies/credentials are enabled."""
+    if not origins:
+        return True
+    return any(origin == "*" for origin in origins)
 
 
 class Settings(BaseSettings):
@@ -64,6 +72,31 @@ class Settings(BaseSettings):
     @property
     def cors_allowed_origins(self) -> list[str]:
         return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
+
+    @model_validator(mode="after")
+    def validate_security_settings(self) -> Self:
+        if self.environment in {"staging", "prod"}:
+            if not self.supabase_jwt_secret or not self.supabase_jwt_secret.strip():
+                msg = (
+                    "SUPABASE_JWT_SECRET must be set when ENVIRONMENT is staging or production."
+                )
+                raise ValueError(msg)
+
+        if self.environment == "prod":
+            if not self.auth_cookie_secure:
+                msg = "AUTH_COOKIE_SECURE must be true when ENVIRONMENT=prod."
+                raise ValueError(msg)
+            if origins_are_unsafe_for_credentialed_cors(self.cors_allowed_origins):
+                msg = (
+                    "ALLOWED_ORIGINS must list explicit origins in production; "
+                    "wildcard (*) and empty values are not allowed with credentialed cookies."
+                )
+                raise ValueError(msg)
+            if self.auth_cookie_samesite == "none" and not self.auth_cookie_secure:
+                msg = "AUTH_COOKIE_SAMESITE=none requires AUTH_COOKIE_SECURE=true in production."
+                raise ValueError(msg)
+
+        return self
 
     @property
     def jwt_secret(self) -> str:

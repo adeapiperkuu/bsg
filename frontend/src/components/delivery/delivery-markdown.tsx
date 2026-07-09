@@ -1,21 +1,12 @@
-import { memo, type ReactNode } from "react";
+import type { ReactNode } from "react";
+
+import { sanitizeDeliveryMarkdown } from "@/components/delivery/delivery-markdown-utils";
 import { cn } from "@/lib/utils";
 
 type Props = {
   content: string;
   className?: string;
 };
-
-const MARKDOWN_TAG_PATTERN = /<\/?markdown>/gi;
-const CODE_FENCE_PATTERN = /^```(?:markdown)?\s*\n?|\n?```\s*$/g;
-
-export function sanitizeDeliveryMarkdown(content: string): string {
-  return content
-    .replace(MARKDOWN_TAG_PATTERN, "")
-    .replace(CODE_FENCE_PATTERN, "")
-    .replace(/\r\n/g, "\n")
-    .trim();
-}
 
 function renderInline(text: string): ReactNode[] {
   const parts = text.split(/(\*\*[^*]+\*\*)/g);
@@ -106,7 +97,10 @@ function DeliveryMarkdownComponent({ content, className }: Props) {
     if (tableRows.length === 0) return;
     const [header, ...body] = tableRows;
     blocks.push(
-      <div key={`table-${blocks.length}`} className="my-3 overflow-x-auto rounded-sm border border-border/60">
+      <div
+        key={`table-${blocks.length}`}
+        className="my-3 overflow-x-auto rounded-sm border border-border/60"
+      >
         <table className="w-full min-w-[200px] text-left text-[11px]">
           {header && (
             <thead className="border-b border-border/60 bg-secondary/40">
@@ -226,5 +220,3 @@ function DeliveryMarkdownComponent({ content, className }: Props) {
 
   return <div className={cn("space-y-1", className)}>{blocks}</div>;
 }
-
-export const DeliveryMarkdown = memo(DeliveryMarkdownComponent);

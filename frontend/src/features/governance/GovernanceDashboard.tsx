@@ -1,6 +1,6 @@
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, FileText, Plus, RefreshCw } from "lucide-react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, Plus, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
@@ -15,27 +15,34 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { AskGovernanceAgentPanel } from "@/features/governance/AskGovernanceAgentPanel";
-import { ExecutiveGovernanceDashboard } from "@/features/governance/ExecutiveGovernanceDashboard";
 import { GovernanceFiltersBar } from "@/features/governance/GovernanceFiltersBar";
-import { ProjectChartersPanel } from "@/features/governance/ProjectChartersPanel";
-import { ProjectGovernanceSheet } from "@/features/governance/ProjectGovernanceSheet";
+import { GovernanceKpiStrip } from "@/features/governance/GovernanceKpiStrip";
 import {
-  GovernanceWorkflowDialogs,
-  type WorkflowDialogState,
-} from "@/features/governance/GovernanceWorkflowDialogs";
+  collectProjectNamesFromGovernanceRows,
+  GOVERNANCE_ANALYTICS_DEFER_MS,
+  GOVERNANCE_ANALYTICS_DETAIL_IDLE_MS,
+  resolveGovernanceTabTotals,
+  shouldEnableGovernanceAnalyticsDetail,
+  shouldEnableGovernanceAnalyticsSummary,
+  shouldEnableGovernanceProjects,
+} from "@/features/governance/governance-load-strategy";
+import {
+  ExecutiveDashboardFallback,
+  GovernanceToolsPanelFallback,
+  LazyAskGovernanceAgentPanel,
+  LazyExecutiveGovernanceDashboard,
+  LazyGovernanceWorkflowDialogs,
+  LazyProjectChartersPanel,
+} from "@/features/governance/governance-lazy";
+import type { WorkflowDialogState } from "@/features/governance/governance-workflow-types";
+import { ProjectGovernanceSheet } from "@/features/governance/ProjectGovernanceSheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
   emptyGovernanceFilters,
-  filterActions,
-  filterDependencies,
-  filterEscalations,
-  filterRegisterByScope,
 } from "@/features/governance/filters";
 import { listUsers } from "@/lib/api";
 import {
-  buildGovernanceRegister,
+  mapRegisterApiRow,
   dependencyRowClass,
   escalationRowClass,
   formatActionStatus,
@@ -44,7 +51,6 @@ import {
   formatDependencyType,
   formatEscalationSeverity,
   formatEscalationStatus,
-  isOverdueAction,
   type GovernanceRegisterRow,
 } from "@/lib/governance-utils";
 import { deliveryPortfolioQueryOptions, projectsQueryOptions } from "@/lib/queries/delivery";
@@ -56,10 +62,13 @@ import {
   deleteGovernanceAction,
   deleteGovernanceEscalation,
   governanceActionsQueryOptions,
-  governanceAnalyticsQueryOptions,
-  governanceCharterReferencesQueryOptions,
+  governanceAnalyticsDetailQueryOptions,
+  governanceAnalyticsSummaryQueryOptions,
+  governanceBootstrapQueryOptions,
+  mergeGovernanceAnalytics,
   governanceDependenciesQueryOptions,
   governanceEscalationsQueryOptions,
+  governanceRegisterQueryOptions,
   governanceScopeStatesQueryOptions,
   promoteRiskAlertToEscalation,
   resolveDependency,
@@ -74,17 +83,21 @@ import { useAuthStore } from "@/stores/useAuthStore";
 import type { AppRole } from "@/types/auth";
 import type {
   GovernanceAction,
+  GovernanceActionListItem,
   GovernanceBootstrap,
   GovernanceDependencyType,
   GovernanceEscalation,
+  GovernanceEscalationListItem,
   GovernanceEscalationSeverity,
   GovernanceEscalationSourceType,
+  GovernanceListParams,
   GovernanceScopeStatus,
+  PaginatedGovernanceList,
   ProjectDependency,
+  ProjectDependencyListItem,
+  ProjectScopeState,
 } from "@/types/governance";
 
-const OPEN_ACTION_STATUSES = new Set(["open", "in_progress", "overdue"]);
-const OPEN_ESCALATION_STATUSES = new Set(["open", "in_progress"]);
 const TABLE_PAGE_SIZE = 6;
 const GOVERNANCE_TABLE_VIEWPORT_CLASS = "governance-table-shell h-[258px]";
 
@@ -98,10 +111,30 @@ function getSafePage(page: number, totalRows: number): number {
   return Math.min(Math.max(page, 1), getPageCount(totalRows));
 }
 
-function paginateRows<T>(rows: T[], page: number): T[] {
-  const safePage = getSafePage(page, rows.length);
-  const start = (safePage - 1) * TABLE_PAGE_SIZE;
-  return rows.slice(start, start + TABLE_PAGE_SIZE);
+function emptyPaginatedList<T>(): PaginatedGovernanceList<T> {
+  return {
+    items: [],
+    total: 0,
+    limit: TABLE_PAGE_SIZE,
+    offset: 0,
+    has_more: false,
+  };
+}
+
+function backendListParams(
+  filters: ReturnType<typeof emptyGovernanceFilters>,
+  page: number,
+  extra: Partial<GovernanceListParams> = {},
+): GovernanceListParams {
+  return {
+    limit: TABLE_PAGE_SIZE,
+    offset: (getSafePage(page, Number.MAX_SAFE_INTEGER) - 1) * TABLE_PAGE_SIZE,
+    project_id: filters.projectId !== "all" ? filters.projectId : undefined,
+    status: filters.status !== "all" ? filters.status : undefined,
+    search: filters.search.trim() || undefined,
+    date_to: filters.dueBefore || undefined,
+    ...extra,
+  };
 }
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
@@ -113,50 +146,6 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
   }, [delayMs, value]);
 
   return debouncedValue;
-}
-
-function calculateSlaAdherence(actions: GovernanceAction[]): number {
-  const windowStart = new Date();
-  windowStart.setDate(windowStart.getDate() - 90);
-  const recentCompleted = actions.filter((action) => {
-    if (action.status !== "completed" || !action.completed_at) return false;
-    return new Date(action.completed_at) >= windowStart;
-  });
-  if (recentCompleted.length === 0) return 100;
-  const onTime = recentCompleted.filter((action) => {
-    if (!action.due_date || !action.completed_at) return true;
-    return (
-      new Date(action.completed_at).getTime() <= new Date(`${action.due_date}T23:59:59`).getTime()
-    );
-  }).length;
-  return Math.round((onTime / recentCompleted.length) * 1000) / 10;
-}
-
-function recalculateBootstrapKpis(data: GovernanceBootstrap): GovernanceBootstrap {
-  const openActions = data.actions.filter((action) => OPEN_ACTION_STATUSES.has(action.status));
-  const openEscalations = data.escalations.filter((esc) =>
-    OPEN_ESCALATION_STATUSES.has(esc.status),
-  );
-  const blockingDependencies = data.dependencies.filter((dep) => dep.status === "blocking");
-  const pendingScopes = data.scope_states.filter(
-    (scope) => scope.scope_status === "pending_revision",
-  );
-  const highOpenEscalations = data.escalations.filter(
-    (esc) => esc.status !== "resolved" && (esc.severity === "high" || esc.severity === "critical"),
-  );
-
-  return {
-    ...data,
-    kpis: {
-      open_actions: openActions.length,
-      overdue_actions: data.actions.filter((action) => isOverdueAction(action)).length,
-      open_escalations: openEscalations.length,
-      blocking_dependencies: blockingDependencies.length,
-      at_risk_items:
-        blockingDependencies.length + pendingScopes.length + highOpenEscalations.length,
-      sla_adherence_pct: calculateSlaAdherence(data.actions),
-    },
-  };
 }
 
 function replaceOrAddById<T extends { id: string }>(rows: T[], next: T): T[] {
@@ -231,48 +220,6 @@ function SectionError({ message, onRetry }: { message: string; onRetry: () => vo
         Retry
       </Button>
     </div>
-  );
-}
-
-function ExecutiveAnalyticsSkeleton() {
-  return (
-    <section className="space-y-4" aria-label="Loading executive governance intelligence">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <Skeleton className="h-4 w-56" />
-          <Skeleton className="mt-2 h-3 w-80 max-w-full" />
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Skeleton className="h-8 w-44" />
-          <Skeleton className="h-8 w-24" />
-          <Skeleton className="h-8 w-24" />
-        </div>
-      </div>
-
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        {["score", "risk", "dependencies", "sla"].map((item) => (
-          <Card key={item}>
-            <Skeleton className="h-3 w-28" />
-            <Skeleton className="mt-4 h-7 w-16" />
-            <Skeleton className="mt-3 h-3 w-24" />
-          </Card>
-        ))}
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
-        {[0, 1].map((index) => (
-          <Card key={index}>
-            <Skeleton className="h-4 w-40" />
-            <Skeleton className="mt-2 h-3 w-56" />
-            <div className="mt-5 space-y-2">
-              {[0, 1, 2, 3].map((row) => (
-                <Skeleton key={row} className="h-12 w-full" />
-              ))}
-            </div>
-          </Card>
-        ))}
-      </div>
-    </section>
   );
 }
 
@@ -391,56 +338,139 @@ export function GovernanceDashboard() {
   const [promotingRiskId, setPromotingRiskId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [activeTable, setActiveTable] = useState<GovernanceTableTab>(
-    role === "client" ? "register" : "dependencies",
+    role === "client" ? "escalations" : "dependencies",
   );
   const [dependencyPage, setDependencyPage] = useState(1);
   const [actionPage, setActionPage] = useState(1);
   const [registerPage, setRegisterPage] = useState(1);
   const [escalationPage, setEscalationPage] = useState(1);
+  const [governanceToolsTab, setGovernanceToolsTab] = useState<"agent" | "charters" | null>(null);
+  const [filtersPopoverOpen, setFiltersPopoverOpen] = useState(false);
+  const [agentNeedsProjects, setAgentNeedsProjects] = useState(false);
+  const [analyticsDeferredReady, setAnalyticsDeferredReady] = useState(false);
+  const [analyticsDetailIdleReady, setAnalyticsDetailIdleReady] = useState(false);
+  const [analyticsDetailInView, setAnalyticsDetailInView] = useState(false);
+  const analyticsDetailSectionRef = useRef<HTMLDivElement>(null);
 
-  const wantsRegisterData = activeTable === "register" || isClient || sheetOpen;
+  const wantsRegisterData = activeTable === "register";
+  const wantsSheetDetail = sheetOpen && Boolean(selectedRow?.projectId);
+  const sheetProjectId = selectedRow?.projectId;
+
+  const dependencyListParams = useMemo(
+    () =>
+      backendListParams(filters, dependencyPage, {
+        dependency_type:
+          filters.dependencyType !== "all" ? filters.dependencyType : undefined,
+        owner_id: filters.ownerId !== "all" ? filters.ownerId : undefined,
+        project_id: wantsSheetDetail ? sheetProjectId : undefined,
+      }),
+    [dependencyPage, filters, sheetProjectId, wantsSheetDetail],
+  );
+  const actionListParams = useMemo(
+    () =>
+      backendListParams(filters, actionPage, {
+        owner_id: filters.ownerId !== "all" ? filters.ownerId : undefined,
+        project_id: wantsSheetDetail ? sheetProjectId : undefined,
+      }),
+    [actionPage, filters, sheetProjectId, wantsSheetDetail],
+  );
+  const escalationListParams = useMemo(
+    () =>
+      backendListParams(filters, escalationPage, {
+        severity: filters.severity !== "all" ? filters.severity : undefined,
+        assigned_to: filters.assigneeId !== "all" ? filters.assigneeId : undefined,
+        project_id: wantsSheetDetail ? sheetProjectId : undefined,
+      }),
+    [escalationPage, filters, sheetProjectId, wantsSheetDetail],
+  );
+  const scopeListParams = useMemo(
+    () => ({
+      limit: 1,
+      offset: 0,
+      project_id: sheetProjectId,
+    }),
+    [sheetProjectId],
+  );
+  const registerListParams = useMemo(
+    () =>
+      backendListParams(filters, registerPage, {
+        status: filters.scopeStatus !== "all" ? filters.scopeStatus : undefined,
+      }),
+    [filters, registerPage],
+  );
   const dependenciesQuery = useQuery({
-    ...governanceDependenciesQueryOptions,
-    enabled: !isClient && (activeTable === "dependencies" || wantsRegisterData),
+    ...governanceDependenciesQueryOptions(dependencyListParams),
+    enabled: !isClient && (activeTable === "dependencies" || wantsSheetDetail),
     placeholderData: keepPreviousData,
   });
   const actionsQuery = useQuery({
-    ...governanceActionsQueryOptions,
-    enabled: !isClient && (activeTable === "actions" || wantsRegisterData),
+    ...governanceActionsQueryOptions(actionListParams),
+    enabled: !isClient && (activeTable === "actions" || wantsSheetDetail),
     placeholderData: keepPreviousData,
   });
   const escalationsQuery = useQuery({
-    ...governanceEscalationsQueryOptions,
-    enabled: activeTable === "escalations" || wantsRegisterData,
+    ...governanceEscalationsQueryOptions(escalationListParams),
+    enabled: activeTable === "escalations" || wantsSheetDetail,
     placeholderData: keepPreviousData,
   });
   const scopeStatesQuery = useQuery({
-    ...governanceScopeStatesQueryOptions,
-    enabled: wantsRegisterData,
+    ...governanceScopeStatesQueryOptions(scopeListParams),
+    enabled: wantsSheetDetail && !isClient,
     placeholderData: keepPreviousData,
   });
-  const charterReferencesQuery = useQuery({
-    ...governanceCharterReferencesQueryOptions,
-    enabled: !isClient,
+  const registerQuery = useQuery({
+    ...governanceRegisterQueryOptions(registerListParams),
+    enabled: wantsRegisterData,
     placeholderData: keepPreviousData,
   });
 
   const primaryTableQuery = isClient ? escalationsQuery : dependenciesQuery;
-  const primaryTableReady = primaryTableQuery.isSuccess;
   const showExecutiveAnalytics = !isClient;
 
-  const [analyticsRangeDays, setAnalyticsRangeDays] = useState(30);
-  const analyticsQuery = useQuery({
-    ...governanceAnalyticsQueryOptions(analyticsRangeDays),
-    enabled: showExecutiveAnalytics && primaryTableReady,
+  const bootstrapQuery = useQuery({
+    ...governanceBootstrapQueryOptions,
     placeholderData: keepPreviousData,
   });
+
+  const [analyticsRangeDays, setAnalyticsRangeDays] = useState(30);
+  const analyticsSummaryQuery = useQuery({
+    ...governanceAnalyticsSummaryQueryOptions(analyticsRangeDays),
+    enabled: shouldEnableGovernanceAnalyticsSummary(
+      showExecutiveAnalytics,
+      analyticsDeferredReady,
+    ),
+    placeholderData: keepPreviousData,
+  });
+  const analyticsDetailEnabled = shouldEnableGovernanceAnalyticsDetail({
+    showExecutiveAnalytics,
+    analyticsDeferredReady,
+    summaryReady: analyticsSummaryQuery.isSuccess,
+    detailTriggerReady: analyticsDetailIdleReady || analyticsDetailInView,
+  });
+  const analyticsDetailQuery = useQuery({
+    ...governanceAnalyticsDetailQueryOptions(analyticsRangeDays),
+    enabled: analyticsDetailEnabled,
+    placeholderData: keepPreviousData,
+  });
+  const mergedAnalytics = useMemo(() => {
+    if (!analyticsSummaryQuery.data) return null;
+    return mergeGovernanceAnalytics(analyticsSummaryQuery.data, analyticsDetailQuery.data);
+  }, [analyticsDetailQuery.data, analyticsSummaryQuery.data]);
   const portfolioQuery = useQuery({
     ...deliveryPortfolioQueryOptions,
-    enabled: showDelivery && (activeTable === "register" || sheetOpen),
+    enabled: showDelivery && activeTable === "register",
     placeholderData: keepPreviousData,
   });
-  const projectsQuery = useQuery(projectsQueryOptions);
+  const needsProjects = shouldEnableGovernanceProjects({
+    filtersOpen: filtersPopoverOpen,
+    dialogOpen: Boolean(dialog),
+    agentNeedsProjects: agentNeedsProjects && governanceToolsTab === "agent",
+    chartersTabActive: governanceToolsTab === "charters",
+  });
+  const projectsQuery = useQuery({
+    ...projectsQueryOptions,
+    enabled: needsProjects,
+  });
   const usersQuery = useQuery({
     queryKey: ["users"],
     queryFn: listUsers,
@@ -448,20 +478,89 @@ export function GovernanceDashboard() {
     staleTime: 10 * 60 * 1000,
   });
 
+  useEffect(() => {
+    if (!showExecutiveAnalytics) {
+      setAnalyticsDeferredReady(false);
+      setAnalyticsDetailIdleReady(false);
+      setAnalyticsDetailInView(false);
+      return;
+    }
+
+    const timer = window.setTimeout(
+      () => setAnalyticsDeferredReady(true),
+      GOVERNANCE_ANALYTICS_DEFER_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [showExecutiveAnalytics]);
+
+  useEffect(() => {
+    if (!showExecutiveAnalytics) {
+      setAnalyticsDetailIdleReady(false);
+      return;
+    }
+
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (
+        callback: IdleRequestCallback,
+        options?: IdleRequestOptions,
+      ) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+
+    if (idleWindow.requestIdleCallback) {
+      const idleId = idleWindow.requestIdleCallback(
+        () => setAnalyticsDetailIdleReady(true),
+        { timeout: GOVERNANCE_ANALYTICS_DETAIL_IDLE_MS },
+      );
+      return () => idleWindow.cancelIdleCallback?.(idleId);
+    }
+
+    const timer = window.setTimeout(
+      () => setAnalyticsDetailIdleReady(true),
+      GOVERNANCE_ANALYTICS_DETAIL_IDLE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [showExecutiveAnalytics, analyticsRangeDays]);
+
+  useEffect(() => {
+    if (!showExecutiveAnalytics) return;
+    const node = analyticsDetailSectionRef.current;
+    if (!node || typeof IntersectionObserver === "undefined") return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setAnalyticsDetailInView(true);
+        }
+      },
+      { rootMargin: "120px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [showExecutiveAnalytics, mergedAnalytics]);
+
+  const analyticsSummaryLoading =
+    analyticsSummaryQuery.isLoading && !analyticsSummaryQuery.data;
+  const analyticsDetailLoading =
+    analyticsDetailEnabled &&
+    analyticsDetailQuery.isFetching &&
+    !(analyticsDetailQuery.data || analyticsDetailQuery.isPlaceholderData);
+
+  const kpis = bootstrapQuery.data?.kpis ?? EMPTY_GOVERNANCE_KPIS;
+
   const data = useMemo<GovernanceBootstrap>(() => {
-    return recalculateBootstrapKpis({
-      kpis: EMPTY_GOVERNANCE_KPIS,
-      dependencies: dependenciesQuery.data ?? [],
-      actions: actionsQuery.data ?? [],
-      escalations: escalationsQuery.data ?? [],
-      scope_states: scopeStatesQuery.data ?? [],
-      charter_references: charterReferencesQuery.data ?? [],
-    });
+    return {
+      kpis,
+      dependencies: dependenciesQuery.data?.items ?? [],
+      actions: actionsQuery.data?.items ?? [],
+      escalations: escalationsQuery.data?.items ?? [],
+      scope_states: scopeStatesQuery.data?.items ?? [],
+    };
   }, [
     actionsQuery.data,
-    charterReferencesQuery.data,
     dependenciesQuery.data,
     escalationsQuery.data,
+    kpis,
     scopeStatesQuery.data,
   ]);
 
@@ -483,11 +582,6 @@ export function GovernanceDashboard() {
     [usersQuery.data],
   );
 
-  const projectNameById = useMemo(
-    () => new Map(projectOptions.map((project) => [project.value, project.label])),
-    [projectOptions],
-  );
-
   const userNameById = useMemo(
     () => new Map(userOptions.map((userOption) => [userOption.value, userOption.label])),
     [userOptions],
@@ -496,25 +590,41 @@ export function GovernanceDashboard() {
   const updateGovernanceDataCache = (
     updater: (current: GovernanceBootstrap) => GovernanceBootstrap,
   ) => {
-    const next = recalculateBootstrapKpis(updater(data));
-    queryClient.setQueryData<ProjectDependency[]>(
-      queryKeys.governanceDependencies,
-      next.dependencies,
+    const next = updater(data);
+    queryClient.setQueryData<PaginatedGovernanceList<ProjectDependencyListItem>>(
+      queryKeys.governanceDependencies(dependencyListParams),
+      {
+        ...(dependenciesQuery.data ?? emptyPaginatedList<ProjectDependencyListItem>()),
+        items: next.dependencies,
+      },
     );
-    queryClient.setQueryData<GovernanceAction[]>(queryKeys.governanceActions, next.actions);
-    queryClient.setQueryData<GovernanceEscalation[]>(
-      queryKeys.governanceEscalations,
-      next.escalations,
+    queryClient.setQueryData<PaginatedGovernanceList<GovernanceActionListItem>>(
+      queryKeys.governanceActions(actionListParams),
+      {
+        ...(actionsQuery.data ?? emptyPaginatedList<GovernanceActionListItem>()),
+        items: next.actions,
+      },
     );
-    queryClient.setQueryData<GovernanceBootstrap["scope_states"]>(
-      queryKeys.governanceScopeStates,
-      next.scope_states,
+    queryClient.setQueryData<PaginatedGovernanceList<GovernanceEscalationListItem>>(
+      queryKeys.governanceEscalations(escalationListParams),
+      {
+        ...(escalationsQuery.data ?? emptyPaginatedList<GovernanceEscalationListItem>()),
+        items: next.escalations,
+      },
     );
+    queryClient.setQueryData<PaginatedGovernanceList<ProjectScopeState>>(
+      queryKeys.governanceScopeStates(scopeListParams),
+      {
+        ...(scopeStatesQuery.data ?? emptyPaginatedList<ProjectScopeState>()),
+        items: next.scope_states,
+      },
+    );
+    void queryClient.invalidateQueries({ queryKey: queryKeys.governanceBootstrap });
   };
 
   const hydrateDependency = (
     next: ProjectDependency,
-    current?: ProjectDependency,
+    current?: ProjectDependencyListItem,
   ): ProjectDependency => ({
     ...next,
     project_name:
@@ -526,7 +636,10 @@ export function GovernanceDashboard() {
       null,
   });
 
-  const hydrateAction = (next: GovernanceAction, current?: GovernanceAction): GovernanceAction => ({
+  const hydrateAction = (
+    next: GovernanceAction,
+    current?: GovernanceActionListItem,
+  ): GovernanceAction => ({
     ...next,
     project_name:
       next.project_name ?? current?.project_name ?? projectNameById.get(next.project_id) ?? null,
@@ -539,7 +652,7 @@ export function GovernanceDashboard() {
 
   const hydrateEscalation = (
     next: GovernanceEscalation,
-    current?: GovernanceEscalation,
+    current?: GovernanceEscalationListItem,
   ): GovernanceEscalation => ({
     ...next,
     project_name:
@@ -553,19 +666,46 @@ export function GovernanceDashboard() {
   });
 
   const registerRows = useMemo(() => {
-    const rows = buildGovernanceRegister(data, portfolioQuery.data);
-    return filterRegisterByScope(rows, filters);
-  }, [data, portfolioQuery.data, filters]);
+    return (registerQuery.data?.items ?? []).map((row) =>
+      mapRegisterApiRow(row, portfolioQuery.data),
+    );
+  }, [portfolioQuery.data, registerQuery.data?.items]);
 
-  const filteredDependencies = useMemo(
-    () => filterDependencies(data.dependencies, filters),
-    [data, filters],
-  );
-  const filteredActions = useMemo(() => filterActions(data.actions, filters), [data, filters]);
-  const filteredEscalations = useMemo(
-    () => filterEscalations(data.escalations, filters),
-    [data, filters],
-  );
+  const projectNameById = useMemo(() => {
+    const fromRows = collectProjectNamesFromGovernanceRows([
+      ...(dependenciesQuery.data?.items ?? []),
+      ...(actionsQuery.data?.items ?? []),
+      ...(escalationsQuery.data?.items ?? []),
+    ]);
+    for (const row of registerRows) {
+      fromRows.set(row.projectId, row.projectName);
+    }
+    for (const project of projectsQuery.data ?? []) {
+      fromRows.set(project.id, project.name);
+    }
+    return fromRows;
+  }, [
+    actionsQuery.data?.items,
+    dependenciesQuery.data?.items,
+    escalationsQuery.data?.items,
+    projectsQuery.data,
+    registerRows,
+  ]);
+
+  const filteredDependencies = data.dependencies;
+  const filteredActions = data.actions;
+  const filteredEscalations = data.escalations;
+  const tabTotals = resolveGovernanceTabTotals({
+    bootstrapKpis: bootstrapQuery.data?.kpis,
+    dependenciesTotal: dependenciesQuery.data?.total,
+    actionsTotal: actionsQuery.data?.total,
+    escalationsTotal: escalationsQuery.data?.total,
+    registerTotal: registerQuery.data?.total,
+  });
+  const dependencyTotal = tabTotals.dependencies;
+  const actionTotal = tabTotals.actions;
+  const escalationTotal = tabTotals.escalations;
+  const registerTotal = tabTotals.register;
 
   const visibleTableTabs = useMemo(
     () =>
@@ -574,52 +714,40 @@ export function GovernanceDashboard() {
           !isClient && {
             value: "dependencies" as const,
             label: "Dependency Tracker",
-            count: filteredDependencies.length,
+            count: dependencyTotal,
           },
           !isClient && {
             value: "actions" as const,
             label: "Governance Actions",
-            count: filteredActions.length,
+            count: actionTotal,
           },
           {
             value: "register" as const,
             label: "Governance Register",
-            count: registerRows.length,
+            count: registerTotal,
           },
           {
             value: "escalations" as const,
             label: "Escalation Register",
-            count: filteredEscalations.length,
+            count: escalationTotal,
           },
         ] satisfies Array<false | { value: GovernanceTableTab; label: string; count: number }>
       ).filter(Boolean) as Array<{ value: GovernanceTableTab; label: string; count: number }>,
     [
-      filteredActions.length,
-      filteredDependencies.length,
-      filteredEscalations.length,
+      actionTotal,
+      dependencyTotal,
+      escalationTotal,
       isClient,
-      registerRows.length,
+      registerTotal,
     ],
   );
   const selectedTable = visibleTableTabs.some((tab) => tab.value === activeTable)
     ? activeTable
     : (visibleTableTabs[0]?.value ?? "register");
-  const pagedDependencies = useMemo(
-    () => paginateRows(filteredDependencies, dependencyPage),
-    [dependencyPage, filteredDependencies],
-  );
-  const pagedActions = useMemo(
-    () => paginateRows(filteredActions, actionPage),
-    [actionPage, filteredActions],
-  );
-  const pagedRegisterRows = useMemo(
-    () => paginateRows(registerRows, registerPage),
-    [registerPage, registerRows],
-  );
-  const pagedEscalations = useMemo(
-    () => paginateRows(filteredEscalations, escalationPage),
-    [escalationPage, filteredEscalations],
-  );
+  const pagedDependencies = filteredDependencies;
+  const pagedActions = filteredActions;
+  const pagedRegisterRows = registerRows;
+  const pagedEscalations = filteredEscalations;
 
   useEffect(() => {
     setDependencyPage(1);
@@ -637,26 +765,27 @@ export function GovernanceDashboard() {
   }, [data.escalations]);
 
   const refetchDashboardData = async () => {
-    if (!isClient && (activeTable === "dependencies" || activeTable === "register")) {
+    await bootstrapQuery.refetch();
+    if (!isClient && (activeTable === "dependencies" || wantsSheetDetail)) {
       await dependenciesQuery.refetch();
     }
-    if (!isClient && (activeTable === "actions" || activeTable === "register")) {
+    if (!isClient && (activeTable === "actions" || wantsSheetDetail)) {
       await actionsQuery.refetch();
     }
-    if (activeTable === "escalations" || activeTable === "register") {
+    if (activeTable === "escalations" || wantsSheetDetail) {
       await escalationsQuery.refetch();
     }
-    if (activeTable === "register") {
+    if (wantsRegisterData) {
+      await registerQuery.refetch();
+    }
+    if (wantsSheetDetail && !isClient) {
       await scopeStatesQuery.refetch();
     }
-    if (showDelivery && (activeTable === "register" || sheetOpen)) {
+    if (showDelivery && activeTable === "register") {
       await portfolioQuery.refetch();
     }
     if (showExecutiveAnalytics) {
-      await analyticsQuery.refetch();
-    }
-    if (!isClient) {
-      await charterReferencesQuery.refetch();
+      await Promise.all([analyticsSummaryQuery.refetch(), analyticsDetailQuery.refetch()]);
     }
   };
 
@@ -758,7 +887,9 @@ export function GovernanceDashboard() {
       return;
     }
 
-    const project = analyticsQuery.data?.project_health.find((row) => row.project_id === projectId);
+    const project =
+      mergedAnalytics?.project_health.find((row) => row.project_id === projectId) ??
+      mergedAnalytics?.portfolio_risk_ranking.find((row) => row.project_id === projectId);
     if (!project) return;
 
     setSelectedRow({
@@ -798,8 +929,6 @@ export function GovernanceDashboard() {
     );
   }
 
-  const { charter_references } = data;
-
   return (
     <div className="governance-no-shadow space-y-5">
       {isReadOnly && (
@@ -813,36 +942,46 @@ export function GovernanceDashboard() {
           summaries are hidden.
         </div>
       )}
-      {primaryTableQuery.isFetching && (
+      {primaryTableQuery.isFetching && !primaryTableQuery.data && (
         <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
           <RefreshCw className="h-3 w-3 animate-spin" />
           Loading governance tables...
         </div>
       )}
 
-      {analyticsQuery.data ? (
-        <ExecutiveGovernanceDashboard
-          analytics={analyticsQuery.data}
-          isFetching={analyticsQuery.isFetching}
-          rangeDays={analyticsRangeDays}
-          onRangeChange={setAnalyticsRangeDays}
-          onRefresh={() => void analyticsQuery.refetch()}
-          onOpenProject={openAnalyticsProjectSheet}
-        />
-      ) : analyticsQuery.isLoading ? (
-        <ExecutiveAnalyticsSkeleton />
-      ) : analyticsQuery.isError ? (
-        <Card>
-          <SectionError
-            message={
-              analyticsQuery.error instanceof Error
-                ? analyticsQuery.error.message
-                : "Unable to load governance analytics."
-            }
-            onRetry={() => void analyticsQuery.refetch()}
-          />
-        </Card>
-      ) : null}
+      <GovernanceKpiStrip
+        kpis={kpis}
+        isLoading={bootstrapQuery.isLoading && !bootstrapQuery.data}
+      />
+
+      {showExecutiveAnalytics && (
+        <>
+          {analyticsSummaryQuery.isError && !mergedAnalytics ? (
+            <Card>
+              <SectionError
+                message={
+                  analyticsSummaryQuery.error instanceof Error
+                    ? analyticsSummaryQuery.error.message
+                    : "Unable to load governance analytics summary."
+                }
+                onRetry={() => void analyticsSummaryQuery.refetch()}
+              />
+            </Card>
+          ) : (
+            <Suspense fallback={<ExecutiveDashboardFallback />}>
+              <LazyExecutiveGovernanceDashboard
+                analytics={mergedAnalytics}
+                summaryLoading={analyticsSummaryLoading}
+                detailLoading={analyticsDetailLoading}
+                rangeDays={analyticsRangeDays}
+                onRangeChange={setAnalyticsRangeDays}
+                onOpenProject={openAnalyticsProjectSheet}
+                detailSectionRef={analyticsDetailSectionRef}
+              />
+            </Suspense>
+          )}
+        </>
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
         {canWrite && (
@@ -886,6 +1025,7 @@ export function GovernanceDashboard() {
             projects={projectOptions}
             users={userOptions}
             showInternalFilters={!isClient}
+            onFiltersOpenChange={setFiltersPopoverOpen}
           />
         </div>
       </div>
@@ -911,7 +1051,7 @@ export function GovernanceDashboard() {
             {!isClient && selectedTable === "dependencies" && (
               <Card>
                 <SectionHeader title="Dependency Tracker" sub="Cross-project dependencies" />
-                {dependenciesQuery.isFetching && (
+                {dependenciesQuery.isFetching && dependenciesQuery.data && (
                   <div className="mb-2 flex items-center gap-2 text-[10px] text-muted-foreground">
                     <RefreshCw className="h-3 w-3 animate-spin" />
                     Refreshing dependencies...
@@ -932,7 +1072,7 @@ export function GovernanceDashboard() {
                       </tr>
                     </thead>
                     <tbody>
-                      {dependenciesQuery.isLoading && filteredDependencies.length === 0 ? (
+                      {dependenciesQuery.isLoading && !dependenciesQuery.data ? (
                         <LoadingRow colSpan={canWrite ? 8 : 7} />
                       ) : filteredDependencies.length === 0 ? (
                         <EmptyRow
@@ -1006,7 +1146,7 @@ export function GovernanceDashboard() {
                 </div>
                 <TablePagination
                   page={dependencyPage}
-                  totalRows={filteredDependencies.length}
+                  totalRows={dependencyTotal}
                   onPageChange={setDependencyPage}
                 />
               </Card>
@@ -1020,7 +1160,7 @@ export function GovernanceDashboard() {
                   title="Governance Actions"
                   sub="Tracked follow-ups and commitments"
                 />
-                {actionsQuery.isFetching && (
+                {actionsQuery.isFetching && actionsQuery.data && (
                   <div className="mb-2 flex items-center gap-2 text-[10px] text-muted-foreground">
                     <RefreshCw className="h-3 w-3 animate-spin" />
                     Refreshing actions...
@@ -1039,7 +1179,7 @@ export function GovernanceDashboard() {
                       </tr>
                     </thead>
                     <tbody>
-                      {actionsQuery.isLoading && filteredActions.length === 0 ? (
+                      {actionsQuery.isLoading && !actionsQuery.data ? (
                         <LoadingRow colSpan={canWrite ? 6 : 5} />
                       ) : filteredActions.length === 0 ? (
                         <EmptyRow colSpan={canWrite ? 6 : 5} message="No actions match filters." />
@@ -1096,7 +1236,7 @@ export function GovernanceDashboard() {
                 </div>
                 <TablePagination
                   page={actionPage}
-                  totalRows={filteredActions.length}
+                  totalRows={actionTotal}
                   onPageChange={setActionPage}
                 />
               </Card>
@@ -1107,10 +1247,8 @@ export function GovernanceDashboard() {
             {selectedTable === "register" && (
               <Card>
                 <SectionHeader title="Governance Register" sub="Click a project for details" />
-                {(dependenciesQuery.isFetching ||
-                  actionsQuery.isFetching ||
-                  escalationsQuery.isFetching ||
-                  scopeStatesQuery.isFetching) && (
+                {(registerQuery.isFetching || portfolioQuery.isFetching) &&
+                  (registerQuery.data || portfolioQuery.data) && (
                   <div className="mb-2 flex items-center gap-2 text-[10px] text-muted-foreground">
                     <RefreshCw className="h-3 w-3 animate-spin" />
                     Refreshing register...
@@ -1131,10 +1269,7 @@ export function GovernanceDashboard() {
                       </tr>
                     </thead>
                     <tbody>
-                      {(escalationsQuery.isLoading ||
-                        scopeStatesQuery.isLoading ||
-                        (!isClient && (dependenciesQuery.isLoading || actionsQuery.isLoading))) &&
-                      registerRows.length === 0 ? (
+                      {registerQuery.isLoading && !registerQuery.data ? (
                         <LoadingRow
                           colSpan={isClient ? (showDelivery ? 5 : 4) : showDelivery ? 8 : 7}
                         />
@@ -1209,7 +1344,7 @@ export function GovernanceDashboard() {
                 </div>
                 <TablePagination
                   page={registerPage}
-                  totalRows={registerRows.length}
+                  totalRows={registerTotal}
                   onPageChange={setRegisterPage}
                 />
               </Card>
@@ -1220,7 +1355,7 @@ export function GovernanceDashboard() {
             {selectedTable === "escalations" && (
               <Card>
                 <SectionHeader title="Escalation Register" />
-                {escalationsQuery.isFetching && (
+                {escalationsQuery.isFetching && escalationsQuery.data && (
                   <div className="mb-2 flex items-center gap-2 text-[10px] text-muted-foreground">
                     <RefreshCw className="h-3 w-3 animate-spin" />
                     Refreshing escalations...
@@ -1242,7 +1377,7 @@ export function GovernanceDashboard() {
                       </tr>
                     </thead>
                     <tbody>
-                      {escalationsQuery.isLoading && filteredEscalations.length === 0 ? (
+                      {escalationsQuery.isLoading && !escalationsQuery.data ? (
                         <LoadingRow colSpan={isClient ? 7 : canWrite ? 9 : 8} />
                       ) : filteredEscalations.length === 0 ? (
                         <EmptyRow
@@ -1317,7 +1452,7 @@ export function GovernanceDashboard() {
                 </div>
                 <TablePagination
                   page={escalationPage}
-                  totalRows={filteredEscalations.length}
+                  totalRows={escalationTotal}
                   onPageChange={setEscalationPage}
                 />
               </Card>
@@ -1326,44 +1461,54 @@ export function GovernanceDashboard() {
         </Tabs>
       </div>
 
-      <ProjectChartersPanel
-        projects={projectOptions}
-        canWrite={canWrite}
-        isClient={isClient}
-        isReadOnly={isReadOnly}
-        loadCharters={primaryTableReady}
-      />
+      {!isClient && (
+        <div className="space-y-3">
+          <Tabs
+            value={governanceToolsTab ?? ""}
+            onValueChange={(value) =>
+              setGovernanceToolsTab(value as "agent" | "charters")
+            }
+          >
+            <TabsList className="h-auto flex-wrap justify-start gap-1 bg-elevated">
+              <TabsTrigger value="agent" className="text-xs">
+                Ask Governance Agent
+              </TabsTrigger>
+              <TabsTrigger value="charters" className="text-xs">
+                Project Charters
+              </TabsTrigger>
+            </TabsList>
 
-      {!isClient && <AskGovernanceAgentPanel projects={projectOptions} />}
+            {governanceToolsTab === "agent" && (
+              <TabsContent value="agent" className="mt-3">
+                <Suspense fallback={<GovernanceToolsPanelFallback />}>
+                  <LazyAskGovernanceAgentPanel
+                    projects={projectOptions}
+                    onNeedsProjects={() => setAgentNeedsProjects(true)}
+                  />
+                </Suspense>
+              </TabsContent>
+            )}
 
-      {!isClient && charter_references.length > 0 && (
-        <Card>
-          <SectionHeader
-            title="Linked Knowledge Documents"
-            sub="Approved charters and governance references from Operational Knowledge"
-          />
-          <ul className="space-y-2 text-xs">
-            {charter_references.map((doc) => (
-              <li
-                key={doc.document_id}
-                className="flex items-start gap-2 rounded border border-border bg-elevated px-3 py-2"
-              >
-                <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--brand)]" />
-                <div className="min-w-0">
-                  <div className="font-medium">{doc.title}</div>
-                  <div className="mt-0.5 text-[10px] text-muted-foreground">
-                    {doc.project ? `${doc.project} · ` : ""}
-                    {doc.version} · {doc.visibility}
-                  </div>
-                </div>
-                <StatusPill status="Approved" />
-              </li>
-            ))}
-          </ul>
-        </Card>
+            {governanceToolsTab === "charters" && (
+              <TabsContent value="charters" className="mt-3">
+                <Suspense fallback={<GovernanceToolsPanelFallback />}>
+                  <LazyProjectChartersPanel
+                    projects={projectOptions}
+                    canWrite={canWrite}
+                    isClient={isClient}
+                    isReadOnly={isReadOnly}
+                    loadCharters
+                  />
+                </Suspense>
+              </TabsContent>
+            )}
+          </Tabs>
+        </div>
       )}
 
-      <GovernanceWorkflowDialogs
+      {dialog && (
+        <Suspense fallback={null}>
+          <LazyGovernanceWorkflowDialogs
         dialog={dialog}
         onClose={() => setDialog(null)}
         data={data}
@@ -1488,7 +1633,9 @@ export function GovernanceDashboard() {
               : replaceOrAddById(current.scope_states, scope),
           }));
         }}
-      />
+          />
+        </Suspense>
+      )}
 
       <ProjectGovernanceSheet
         open={sheetOpen}

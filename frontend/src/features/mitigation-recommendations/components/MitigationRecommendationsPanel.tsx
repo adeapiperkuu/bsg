@@ -60,12 +60,7 @@ export function MitigationRecommendationsPanel({ projectId }: MitigationRecommen
   const rejectMutation = useRejectRecommendationMutation(projectId);
   const assignMutation = useAssignRecommendationOwnerMutation(projectId);
 
-  const { active, historical } = useMemo(
-    () => splitGroupsByDecision(data?.data ?? []),
-    [data?.data],
-  );
-  const activeGrouped = useMemo(() => groupBySeverity(active), [active]);
-  const historicalGrouped = useMemo(() => groupBySeverity(historical), [historical]);
+  const grouped = useMemo(() => groupBySeverity(data?.data ?? []), [data?.data]);
 
   const assignableOwners = data?.assignable_owners ?? [];
   const hasAny = activeGrouped.length > 0 || historicalGrouped.length > 0;
@@ -121,11 +116,43 @@ export function MitigationRecommendationsPanel({ projectId }: MitigationRecommen
         <p className="text-sm text-[color:var(--danger)]">
           Unable to load mitigation recommendations.
         </p>
-      ) : hasAny ? (
-        <div className="space-y-6">
-          <div>
-            <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-foreground">
-              Active recommendations
+      ) : grouped.length > 0 ? (
+        <div className="space-y-4">
+          {grouped.map((group) => (
+            <div key={group.severity}>
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                {SEVERITY_LABELS[group.severity]} severity
+              </div>
+              <div className="space-y-2">
+                {group.items.map((recommendation) => (
+                  <RecommendationCard
+                    key={recommendation.id}
+                    recommendation={recommendation}
+                    assignableOwners={assignableOwners}
+                    onAccept={(id) => acceptMutation.mutate(id)}
+                    onReject={(id) => rejectMutation.mutate(id)}
+                    onAssignOwner={(id, ownerType, ownerId) =>
+                      assignMutation.mutate({
+                        recommendationId: id,
+                        payload: {
+                          owner_type: ownerType as "user" | "team" | null,
+                          owner_id: ownerId,
+                        },
+                      })
+                    }
+                    isAccepting={
+                      acceptMutation.isPending && acceptMutation.variables === recommendation.id
+                    }
+                    isRejecting={
+                      rejectMutation.isPending && rejectMutation.variables === recommendation.id
+                    }
+                    isAssigning={
+                      assignMutation.isPending &&
+                      assignMutation.variables?.recommendationId === recommendation.id
+                    }
+                  />
+                ))}
+              </div>
             </div>
             <p className="mb-2 text-[11px] text-muted-foreground">
               Awaiting a decision, or accepted with an owner still expected to act.

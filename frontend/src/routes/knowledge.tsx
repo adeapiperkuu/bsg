@@ -21,12 +21,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -155,18 +151,13 @@ type ChatMessage = {
 };
 type LibraryFolder = { id: string; kind: KnowledgeFolderKind; name: string };
 
-const EMPTY_LIBRARY_HEALTH: KnowledgeLibraryHealthApi = {
-  ready_count: 0,
-  needs_review_count: 0,
-  expired_count: 0,
-  needs_reindex_count: 0,
-  indexing_count: 0,
-  draft_count: 0,
-  archived_count: 0,
-  open_gaps: [],
-};
-
-const workflowStates: WorkflowState[] = ["Needs review", "Approved", "Expired", "Needs re-index", "Archived"];
+const workflowStates: WorkflowState[] = [
+  "Needs review",
+  "Approved",
+  "Expired",
+  "Needs re-index",
+  "Archived",
+];
 
 const sourceTypes: SourceType[] = [
   "SOP",
@@ -588,13 +579,12 @@ function KnowledgePage() {
   const [asking, setAsking] = useState(false);
   const [animatingMessageId, setAnimatingMessageId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
-  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
-  const [liveAnnouncement, setLiveAnnouncement] = useState("");
-  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
-  const [retrievalScope, setRetrievalScope] = useState<KnowledgeRetrievalSettingsApi | null>(null);
-  const [scopeDraft, setScopeDraft] = useState<KnowledgeRetrievalSettingsApi | null>(null);
-  const [savingScope, setSavingScope] = useState(false);
+  const [activeSources, setActiveSources] = useState<KnowledgeCitationApi[]>([]);
+  const [lastConfidence, setLastConfidence] = useState<number | null>(null);
+  const [retrievalSettings, setRetrievalSettings] = useState<KnowledgeRetrievalSettingsApi | null>(
+    null,
+  );
+  const [showRetrievalPanel, setShowRetrievalPanel] = useState(false);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [isDocumentOpen, setIsDocumentOpen] = useState(false);
   const [versions, setVersions] = useState<KnowledgeDocumentVersionApi[]>([]);
@@ -687,6 +677,7 @@ function KnowledgePage() {
     : "";
 
   const selectedDoc = documents.find((item) => item.id === docId) ?? null;
+  const selectedDocId = selectedDoc?.id ?? null;
   const approvedIndexedDocs = documents.filter(isRetrievalReady);
   const canAsk = (libraryHealth.ready_count ?? 0) > 0 || approvedIndexedDocs.length > 0;
   const suggestedQuestions = useMemo(
@@ -901,26 +892,86 @@ function KnowledgePage() {
     [debouncedActiveFolder, documents, filteredDocuments, libraryFolders],
   );
 
+  const loadLibraryFolders = async (options?: { silent?: boolean }) => {
+    if (!options?.silent) setLoadingFolders(true);
+    try {
+      const rows = await listKnowledgeFolders();
+      setLibraryFolders(
+        rows.map((row) => ({
+          id: row.id,
+          kind: row.folder_kind,
+          name: row.name,
+        })),
+      );
+    } catch {
+      setLibraryFolders([]);
+    } finally {
+      if (!options?.silent) setLoadingFolders(false);
+    }
+  };
+
+  useEffect(() => {
+    const load = async () => {
+      setLoadingDocs(true);
+      setDocsLoadError("");
+      try {
+        const [rows] = await Promise.all([listKnowledgeDocuments(), loadLibraryFolders()]);
+        const mapped = rows.map(documentFromApi);
+        setDocuments(mapped);
+        setDocId((current) =>
+          current && mapped.some((item) => item.id === current) ? current : (mapped[0]?.id ?? null),
+        );
+      } catch (err) {
+        setDocuments([]);
+        setDocId(null);
+        setDocsLoadError(
+          err instanceof Error ? err.message : "Could not load knowledge documents.",
+        );
+      } finally {
+        setLoadingDocs(false);
+      }
+    };
+    void load();
+  }, []);
+
   useEffect(() => {
     if (libraryFolders.length === 0) return;
-    setForm((current) => (current.folderId ? current : { ...current, folderId: libraryFolders[0].id }));
+    setForm((current) =>
+      current.folderId ? current : { ...current, folderId: libraryFolders[0].id },
+    );
     setCollapsedFolders((current) =>
       current.size > 0 ? current : new Set(libraryFolders.map((folder) => folder.id)),
     );
   }, [libraryFolders]);
 
   useEffect(() => {
-    if (loadingDocs) return;
-    setDocId((current) =>
-      current && documents.some((item) => item.id === current) ? current : documents[0]?.id ?? null,
-    );
-  }, [documents, loadingDocs]);
+    if (!selectedDocId || !isDocumentOpen) return;
+    let cancelled = false;
+    setLoadingDocDetail(true);
+    void getKnowledgeDocument(selectedDocId)
+      .then((row) => {
+        if (cancelled) return;
+        const mapped = documentFromApi(row);
+        setDocuments((current) => current.map((item) => (item.id === mapped.id ? mapped : item)));
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoadingDocDetail(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isDocumentOpen, selectedDocId]);
 
   useEffect(() => {
-    if (!retrievalSettingsQuery.data) return;
-    setRetrievalScope(retrievalSettingsQuery.data);
-    setScopeDraft((current) => current ?? retrievalSettingsQuery.data);
-  }, [retrievalSettingsQuery.data]);
+    if (!selectedDocId || !isDocumentOpen) return;
+    void listKnowledgeDocumentVersions(selectedDocId)
+      .then(setVersions)
+      .catch(() => setVersions([]));
+    setVersionCompare(null);
+    setCompareLeftId("");
+    setCompareRightId("");
+  }, [isDocumentOpen, selectedDocId]);
 
   const scrollChatToEnd = (force = false) => {
     if (!force && !followChatScrollRef.current) return;
@@ -1003,7 +1054,9 @@ function KnowledgePage() {
   useEffect(() => {
     if (!isDocumentOpen || !activeChunkId || documentTab !== "chunks") return;
     window.setTimeout(() => {
-      document.getElementById(`chunk-${activeChunkId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      document
+        .getElementById(`chunk-${activeChunkId}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 120);
   }, [activeChunkId, documentTab, isDocumentOpen]);
 
@@ -1139,13 +1192,11 @@ function KnowledgePage() {
 
   const deleteDocument = async (document: KnowledgeDocument) => {
     const previous = documents;
-    const previousDocId = docId;
-    setPendingDocumentIds((ids) => new Set(ids).add(document.id));
-    patchKnowledgeDocumentsCache(queryClient, (current) =>
-      current.filter((item) => item.id !== document.id),
-    );
+    setDocuments((current) => current.filter((item) => item.id !== document.id));
     setDocId((current) =>
-      current === document.id ? previous.find((item) => item.id !== document.id)?.id ?? null : current,
+      current === document.id
+        ? (previous.find((item) => item.id !== document.id)?.id ?? null)
+        : current,
     );
     setIsDocumentOpen(false);
     try {
@@ -1172,8 +1223,8 @@ function KnowledgePage() {
               ...item,
               indexed: false,
               indexing: true,
-              processingStatus: "extracting",
-              processingLabel: "Extracting...",
+              processingStatus: "embedding",
+              processingLabel: "Generating Embeddings...",
             }
           : item,
       ),
@@ -1265,105 +1316,36 @@ function KnowledgePage() {
     };
 
     try {
-      for await (const event of streamKnowledgeAsk(question, askOptions)) {
-        if (event.type === "meta") {
-          setMessages((current) =>
-            current.map((msg) =>
-              msg.id === agentMsgId
-                ? { ...msg, query_id: event.query_id ?? null }
-                : msg,
-            ),
-          );
-        } else if (event.type === "status") {
-          setMessages((current) =>
-            current.map((msg) =>
-              msg.id === agentMsgId ? { ...msg, streamPhase: event.phase } : msg,
-            ),
-          );
-        } else if (event.type === "delta") {
-          streamAnswer += event.text;
-          scheduleStreamFlush();
-        } else if (event.type === "replace") {
-          streamAnswer = event.text;
-          if (streamFlushRaf !== null) {
-            window.cancelAnimationFrame(streamFlushRaf);
-            streamFlushRaf = null;
-          }
-          setMessages((current) =>
-            current.map((msg) =>
-              msg.id === agentMsgId ? { ...msg, text: event.text, wasStreamed: true } : msg,
-            ),
-          );
-          scrollChatToEnd();
-        } else if (event.type === "done") {
-          gotDone = true;
-          streamAnswer = event.answer_text?.trim() || streamAnswer;
-          const resolvedText = resolveAgentAnswerText(
-            { text: streamAnswer, structured_answer: event.structured_answer, next_step: event.next_step },
-            event.answer_text,
-          );
-          setMessages((current) =>
-            current.map((msg) => {
-              if (msg.id !== agentMsgId) return msg;
-              const sa = event.structured_answer;
-              return {
-                ...msg,
-                text: resolvedText,
-                isStreaming: false,
-                wasStreamed: true,
-                query_id: event.query_id,
-                confidence_score: event.confidence_score,
-                confidence_reasons: event.confidence_reasons,
-                next_step: event.next_step || undefined,
-                structured_answer: sa ?? null,
-                retrieval_debug: event.retrieval_debug ?? null,
-                detailsExpanded:
-                  (event.confidence_score ?? 1) < LOW_CONFIDENCE_THRESHOLD ? true : msg.detailsExpanded,
-              };
-            }),
-          );
-          if (event.conversation_id) {
-            setActiveConversationId(event.conversation_id);
-          }
-          finishAgentAnswer(agentMsgId, resolvedText, { skipAnimation: true });
-          if ((event.confidence_score ?? 1) === 0) {
-            void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeLibraryHealth });
-          }
-        } else if (event.type === "error") {
-          setMessages((current) =>
-            current.map((msg) =>
-              msg.id === agentMsgId
-                ? { ...msg, text: "Couldn't reach the agent — retry?", isStreaming: false, isServiceError: true, retryQuestion: question }
-                : msg,
-            ),
-          );
-          announceAgentMessage("Couldn't reach the agent — retry?");
-        }
-      }
-
-      if (!gotDone && !streamAnswer.trim()) {
-        setMessages((current) =>
-          current.map((msg) =>
-            msg.id === agentMsgId
-              ? {
-                  ...msg,
-                  text: "Couldn't reach the agent — retry?",
-                  isStreaming: false,
-                  isServiceError: true,
-                  retryQuestion: question,
-                }
-              : msg,
-          ),
+      const response = await askKnowledgeAgent(question, {
+        includeHistories: retrievalSettings?.include_histories ?? true,
+        maxSources: retrievalSettings?.max_sources ?? 5,
+        minRelevanceScore: retrievalSettings?.min_confidence ?? 0.25,
+        project: retrievalSettings?.project ?? undefined,
+        department: retrievalSettings?.department ?? undefined,
+      });
+      const agentMsg: ChatMessage = {
+        role: "agent",
+        text: response.answer_text,
+        next_step: response.next_step,
+        confidence_score: response.confidence_score,
+        confidence_reasons: response.confidence_reasons,
+        structured_answer: response.structured_answer,
+        knowledge_gap: response.knowledge_gap,
+        citations: response.citations,
+      };
+      setMessages((current) => {
+        const next = [...current, agentMsg];
+        setAnimatingMessageIndex(next.length - 1);
+        return next;
+      });
+      setActiveSources(response.citations);
+      setLastConfidence(response.confidence_score);
+      if (response.citations[0]) {
+        openDocumentWithChunk(
+          response.citations[0].document_id,
+          response.citations[0].chunk_id,
+          false,
         );
-        announceAgentMessage("Couldn't reach the agent — retry?");
-      } else if (!gotDone && streamAnswer.trim()) {
-        const resolvedText = resolveAgentAnswerText({ text: streamAnswer }, streamAnswer);
-        setMessages((current) =>
-          current.map((msg) =>
-            msg.id === agentMsgId ? { ...msg, text: resolvedText, isStreaming: false, wasStreamed: true } : msg,
-          ),
-        );
-        finishAgentAnswer(agentMsgId, resolvedText, { skipAnimation: true });
       }
     } catch {
       setMessages((current) =>
@@ -1661,7 +1643,8 @@ function KnowledgePage() {
       lesson_learned: "Lesson Learned",
     };
     const suggestedFolder =
-      libraryFolders.find((folder) => folder.kind === gap.suggested_folder_kind) ?? libraryFolders[0];
+      libraryFolders.find((folder) => folder.kind === gap.suggested_folder_kind) ??
+      libraryFolders[0];
     setForm((current) => ({
       ...current,
       title: gap.suggested_title ?? current.title,
@@ -1718,9 +1701,14 @@ function KnowledgePage() {
   };
 
   const runVersionCompare = async () => {
-    if (!selectedDoc || !compareLeftId || !compareRightId || compareLeftId === compareRightId) return;
+    if (!selectedDoc || !compareLeftId || !compareRightId || compareLeftId === compareRightId)
+      return;
     try {
-      const result = await compareKnowledgeDocumentVersions(selectedDoc.id, compareLeftId, compareRightId);
+      const result = await compareKnowledgeDocumentVersions(
+        selectedDoc.id,
+        compareLeftId,
+        compareRightId,
+      );
       setVersionCompare(result);
     } catch {
       setVersionCompare(null);
@@ -1731,9 +1719,30 @@ function KnowledgePage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 px-1 py-2 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight text-foreground">Knowledge workspace</h1>
+          <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <Library className="h-3.5 w-3.5" />
+            Operational Knowledge Agent
+          </div>
+          <h1 className="mt-2 text-xl font-semibold tracking-tight text-foreground">
+            Knowledge workspace
+          </h1>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <SummaryPill
+            icon={<ShieldCheck className="h-3.5 w-3.5" />}
+            label="Retrievable"
+            value={approvedIndexedDocs.length}
+          />
+          <SummaryPill
+            icon={<Loader2 className="h-3.5 w-3.5" />}
+            label="Indexing"
+            value={indexingCount}
+          />
+          <SummaryPill
+            icon={<Archive className="h-3.5 w-3.5" />}
+            label="Drafts"
+            value={draftCount}
+          />
           <Button
             className="h-9 gap-2 bg-[color:var(--brand)] text-xs text-[color:var(--brand-foreground)]"
             onClick={() => setIsUploadOpen(true)}
@@ -1745,369 +1754,385 @@ function KnowledgePage() {
       </div>
 
       <div className="grid grid-cols-12 items-stretch gap-5 xl:h-[calc(100vh-11.5rem)] xl:min-h-[44rem]">
-        <div ref={librarySectionRef} className="col-span-12 flex min-h-0 flex-col gap-5 xl:col-span-4">
-        <Card className="flex min-h-0 flex-1 flex-col border-transparent bg-card/80">
-          <SectionHeader
-            title="Knowledge Library"
-            sub={loadingDocs ? "" : `${documents.length} governed documents`}
-            right={
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-7 gap-1 px-2.5 text-[10px] shadow-none"
-                onClick={openCreateFolder}
-              >
-                <Plus className="h-3 w-3" />
-                Create
-              </Button>
-            }
-          />
-
-          {docsLoadError && (
-            <div className="rounded-md border border-[color:var(--danger)]/30 bg-[color:var(--danger)]/8 px-3 py-2 text-xs text-[color:var(--danger)]">
-              {docsLoadError}
+        <div className="col-span-12 flex min-h-0 flex-col gap-5 xl:col-span-4">
+          <Card className="shrink-0 border-transparent bg-card/80">
+            <div className="border-b border-border/70 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-3.5 w-3.5 text-[color:var(--brand)]" />
+                <span className="text-sm font-semibold tracking-tight text-foreground">
+                  Sources
+                </span>
+              </div>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {activeSources.length > 0
+                  ? `${activeSources.length} source${activeSources.length !== 1 ? "s" : ""} used`
+                  : "Ask a question to see sources"}
+              </p>
             </div>
-          )}
 
-          {loadingDocs && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                Loading library...
+            {activeSources.length === 0 ? (
+              <div className="flex items-center gap-3 px-4 py-5 text-xs text-muted-foreground">
+                <FileText className="h-7 w-7 shrink-0 opacity-25" />
+                <span>Source documents will appear here after you ask a question.</span>
               </div>
-              {Array.from({ length: 3 }).map((_, index) => (
-                <div key={index} className="space-y-2 rounded-md border border-border/60 bg-card/70 p-3">
-                  <Skeleton className="h-4 w-2/5" />
-                  <Skeleton className="h-3 w-full" />
-                  <Skeleton className="h-3 w-4/5" />
-                </div>
-              ))}
-            </div>
-          )}
-
-          {!loadingDocs && hasLibraryTodos && (
-            <div className="space-y-2 rounded-md border border-[color:var(--brand)]/20 bg-[color:var(--brand)]/5 p-3">
-              <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
-                <AlertTriangle className="h-3.5 w-3.5 text-[color:var(--brand)]" />
-                Library health
-              </div>
-              {!canAsk && (
-                <p className="text-[11px] leading-4 text-muted-foreground">
-                  The agent has no retrieval-ready sources. Approve and index documents before asking questions.
-                </p>
-              )}
-              <div className="flex flex-wrap gap-1.5">
-                {(libraryHealth.expired_count || expiredCount) > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setHealthFilter("expired");
-                      setWorkflowFilter("Expired");
-                    }}
-                    className="rounded-full border border-[color:var(--danger)]/30 bg-[color:var(--danger)]/10 px-2.5 py-1 text-[10px] font-medium text-[color:var(--danger)]"
-                  >
-                    {libraryHealth.expired_count || expiredCount} expired
-                  </button>
-                )}
-                {(libraryHealth.needs_reindex_count || needsReindexCount) > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setHealthFilter("needs_reindex");
-                      setWorkflowFilter("Needs re-index");
-                    }}
-                    className="rounded-full border border-border/70 bg-card px-2.5 py-1 text-[10px] font-medium text-foreground"
-                  >
-                    {libraryHealth.needs_reindex_count || needsReindexCount} need re-index
-                  </button>
-                )}
-                {draftCount > 0 && !canAsk && (
-                  <button
-                    type="button"
-                    onClick={() => setHealthFilter("needs_approval")}
-                    className="rounded-full border border-border/70 bg-card px-2.5 py-1 text-[10px] font-medium text-foreground"
-                  >
-                    {draftCount} awaiting approval
-                  </button>
-                )}
-              </div>
-              {libraryTodos.length > 0 && (
-                <div className="space-y-2 border-t border-border/50 pt-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    Knowledge gaps
-                  </p>
-                  {libraryTodos.slice(0, 5).map((gap) => (
-                    <div key={gap.id} className="rounded-md border border-border/60 bg-card/80 p-2">
-                      <p className="text-[11px] font-medium text-foreground">{gap.query_text}</p>
-                      <p className="mt-0.5 text-[10px] text-muted-foreground">{gap.message}</p>
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          className="h-7 text-[10px]"
-                          onClick={() => prefillUploadFromGap(gap)}
-                        >
-                          Upload related doc
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 text-[10px]"
-                          onClick={() => void handleResolveGap(gap.id)}
-                        >
-                          Mark resolved
-                        </Button>
+            ) : (
+              <div className="max-h-56 space-y-2 overflow-y-auto px-3 py-3">
+                {activeSources.map((src, idx) => {
+                  const pct = Math.round(src.relevance_score * 100);
+                  return (
+                    <button
+                      key={`${src.document_id}-${idx}`}
+                      type="button"
+                      onClick={() => openDocumentWithChunk(src.document_id, src.chunk_id, true)}
+                      className="w-full rounded-md border border-border/70 bg-secondary/40 p-3 text-left transition-colors hover:bg-secondary/80"
+                    >
+                      <div className="mb-1 flex items-start justify-between gap-2">
+                        <span className="line-clamp-2 text-[11px] font-semibold leading-tight text-foreground">
+                          {src.title}
+                        </span>
+                        {pct > 0 && (
+                          <span className="shrink-0 rounded-sm bg-[color:var(--brand)]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[color:var(--brand)]">
+                            {pct}%
+                          </span>
+                        )}
                       </div>
+                      <div className="mb-2 text-[10px] text-muted-foreground">
+                        {src.source_type
+                          .replace(/_/g, " ")
+                          .replace(/\b\w/g, (c) => c.toUpperCase())}
+                        {src.folder_name ? ` | ${src.folder_name}` : ""}
+                        {src.page_number ? ` | p. ${src.page_number}` : ""}
+                      </div>
+                      {pct > 0 && (
+                        <div className="h-1 w-full overflow-hidden rounded-full bg-border/60">
+                          <div
+                            className="h-full rounded-full bg-[color:var(--brand)]"
+                            style={{ width: `${Math.min(pct, 100)}%` }}
+                          />
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
+
+          <Card className="flex min-h-0 flex-1 flex-col border-transparent bg-card/80">
+            <SectionHeader
+              title="Knowledge Library"
+              sub={libraryLoading ? "Loading library..." : `${documents.length} governed documents`}
+              right={
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1 px-2.5 text-[10px] shadow-none"
+                  onClick={openCreateFolder}
+                >
+                  <Plus className="h-3 w-3" />
+                  Create
+                </Button>
+              }
+            />
+
+            {docsLoadError && (
+              <div className="rounded-md border border-[color:var(--danger)]/30 bg-[color:var(--danger)]/8 px-3 py-2 text-xs text-[color:var(--danger)]">
+                {docsLoadError}
+              </div>
+            )}
+
+            <div className="space-y-3">
+              <div className="flex flex-wrap gap-1.5">
+                {healthFilters.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setHealthFilter(item.id)}
+                    className={cn(
+                      "rounded-full border px-2.5 py-1 text-[10px] font-medium transition",
+                      healthFilter === item.id
+                        ? "border-[color:var(--brand)]/40 bg-[color:var(--brand)]/10 text-[color:var(--brand)]"
+                        : "border-border/70 bg-transparent text-muted-foreground hover:bg-secondary/70 hover:text-foreground",
+                    )}
+                  >
+                    {item.label} {item.count}
+                  </button>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <div className="relative min-w-0 flex-1">
+                  <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    value={searchTerm}
+                    onChange={(event) => setSearchTerm(event.target.value)}
+                    placeholder="Search title, owner, type, or version"
+                    className="h-9 pl-9 text-xs shadow-none"
+                  />
+                </div>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-9 shrink-0 gap-1.5 px-3 text-xs shadow-none"
+                    >
+                      <Filter className="h-3.5 w-3.5" />
+                      Filters
+                      {activeFilterCount > 0 && (
+                        <span className="rounded-full bg-[color:var(--brand)]/15 px-1.5 text-[10px] font-semibold text-[color:var(--brand)]">
+                          {activeFilterCount}
+                        </span>
+                      )}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="end" className="w-72 space-y-3 p-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-foreground">Library filters</span>
+                      {activeFilterCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={clearLibraryFilters}
+                          className="text-[10px] text-muted-foreground hover:text-foreground"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                    <Field label="Folder">
+                      <Select
+                        value={activeFolder}
+                        onValueChange={(value) => setActiveFolder(value)}
+                      >
+                        <SelectTrigger className="h-8 text-xs shadow-none">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="All">All folders</SelectItem>
+                          {libraryFolders.map((folder) => (
+                            <SelectItem key={folder.id} value={folder.id}>
+                              {folder.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                    <Field label="Status">
+                      <Select
+                        value={statusFilter}
+                        onValueChange={(value) => setStatusFilter(value as DocumentStatus | "All")}
+                      >
+                        <SelectTrigger className="h-8 text-xs shadow-none">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="All">All statuses</SelectItem>
+                          {statuses.map((status) => (
+                            <SelectItem key={status} value={status}>
+                              {status}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                    <Field label="Workflow">
+                      <Select
+                        value={workflowFilter}
+                        onValueChange={(value) => setWorkflowFilter(value as WorkflowState | "All")}
+                      >
+                        <SelectTrigger className="h-8 text-xs shadow-none">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="All">All workflow states</SelectItem>
+                          {workflowStates.map((state) => (
+                            <SelectItem key={state} value={state}>
+                              {state}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                    <Field label="Sort by">
+                      <Select
+                        value={sortMode}
+                        onValueChange={(value) => setSortMode(value as SortMode)}
+                      >
+                        <SelectTrigger className="h-8 text-xs shadow-none">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="recent">Recently effective</SelectItem>
+                          <SelectItem value="title">Title A-Z</SelectItem>
+                          <SelectItem value="approved">Approved first</SelectItem>
+                          <SelectItem value="indexed">Ready first</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                  </PopoverContent>
+                </Popover>
+              </div>
+            </div>
+
+            <div className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+              {libraryLoading ? (
+                <div className="space-y-4" aria-busy="true" aria-label="Loading knowledge library">
+                  {[0, 1, 2].map((section) => (
+                    <div key={section} className="space-y-2">
+                      <Skeleton className="h-4 w-28" />
+                      {[0, 1].map((row) => (
+                        <div key={row} className="rounded-md bg-secondary/40 p-3">
+                          <div className="flex items-start gap-3">
+                            <Skeleton className="h-8 w-8 shrink-0 rounded-md" />
+                            <div className="min-w-0 flex-1 space-y-2">
+                              <Skeleton className="h-4 w-3/4" />
+                              <Skeleton className="h-3 w-1/2" />
+                              <div className="flex gap-1.5">
+                                <Skeleton className="h-5 w-16 rounded-full" />
+                                <Skeleton className="h-5 w-14 rounded-full" />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   ))}
                 </div>
-              )}
-            </div>
-          )}
-
-          {!loadingDocs && (
-          <div className="space-y-3">
-            <div className="flex flex-wrap gap-1.5">
-              {healthFilters.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setHealthFilter(item.id)}
-                  className={cn(
-                    "rounded-full border px-2.5 py-1 text-[10px] font-medium transition",
-                    healthFilter === item.id
-                      ? "border-[color:var(--brand)]/40 bg-[color:var(--brand)]/10 text-[color:var(--brand)]"
-                      : "border-border/70 bg-transparent text-muted-foreground hover:bg-secondary/70 hover:text-foreground",
-                  )}
-                >
-                  {item.label} {item.count}
-                </button>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <div className="relative min-w-0 flex-1">
-                <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-                <Input
-                  value={searchTerm}
-                  onChange={(event) => setSearchTerm(event.target.value)}
-                  placeholder="Search title, owner, type, or version"
-                  className="h-9 pl-9 text-xs shadow-none"
-                />
-              </div>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="h-9 shrink-0 gap-1.5 px-3 text-xs shadow-none"
-                  >
-                    <Filter className="h-3.5 w-3.5" />
-                    Filters
-                    {activeFilterCount > 0 && (
-                      <span className="rounded-full bg-[color:var(--brand)]/15 px-1.5 text-[10px] font-semibold text-[color:var(--brand)]">
-                        {activeFilterCount}
-                      </span>
-                    )}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent align="end" className="w-72 space-y-3 p-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-foreground">Library filters</span>
-                    {activeFilterCount > 0 && (
-                      <button
-                        type="button"
-                        onClick={clearLibraryFilters}
-                        className="text-[10px] text-muted-foreground hover:text-foreground"
-                      >
-                        Clear
-                      </button>
-                    )}
-                  </div>
-                  <Field label="Folder">
-                    <Select value={activeFolder} onValueChange={(value) => setActiveFolder(value)}>
-                      <SelectTrigger className="h-8 text-xs shadow-none"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="All">All folders</SelectItem>
-                        {libraryFolders.map((folder) => (
-                          <SelectItem key={folder.id} value={folder.id}>{folder.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field label="Status">
-                    <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as DocumentStatus | "All")}>
-                      <SelectTrigger className="h-8 text-xs shadow-none"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="All">All statuses</SelectItem>
-                        {statuses.map((status) => (
-                          <SelectItem key={status} value={status}>{status}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field label="Workflow">
-                    <Select value={workflowFilter} onValueChange={(value) => setWorkflowFilter(value as WorkflowState | "All")}>
-                      <SelectTrigger className="h-8 text-xs shadow-none"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="All">All workflow states</SelectItem>
-                        {workflowStates.map((state) => (
-                          <SelectItem key={state} value={state}>{state}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field label="Sort by">
-                    <Select value={sortMode} onValueChange={(value) => setSortMode(value as SortMode)}>
-                      <SelectTrigger className="h-8 text-xs shadow-none"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="recent">Recently effective</SelectItem>
-                        <SelectItem value="title">Title A-Z</SelectItem>
-                        <SelectItem value="approved">Approved first</SelectItem>
-                        <SelectItem value="indexed">Ready first</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                </PopoverContent>
-              </Popover>
-            </div>
-          </div>
-          )}
-
-          <div className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-            {!loadingDocs && !showingLibrarySnapshot && (documentsQuery.isFetching || libraryHealthQuery.isFetching || isLibraryControlSettling) && (
-              <div className="flex items-center gap-2 rounded-md bg-secondary/40 px-3 py-2 text-xs text-muted-foreground">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                {isLibraryControlSettling ? "Updating filters..." : "Refreshing library..."}
-              </div>
-            )}
-            <>
-            {groupedDocuments.map((group) => {
-              const isCollapsed = collapsedFolders.has(group.id);
-              const isExpanded = expandedFolders.has(group.id);
-              const visibleItems = isExpanded ? group.items : group.items.slice(0, folderPreviewLimit);
-              const hiddenCount = Math.max(group.items.length - visibleItems.length, 0);
-
-              return (
-              <section key={group.id}>
-                <button
-                  type="button"
-                  onClick={() => toggleFolder(group.id)}
-                  className="mb-2 flex w-full items-center justify-between rounded-md px-1 py-1 text-left hover:bg-secondary/60"
-                  aria-expanded={!isCollapsed}
-                >
-                  <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
-                    {isCollapsed ? (
-                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-                    ) : (
-                      <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-                    )}
-                    {folderIcon(group.kind, group.folderName)}
-                    {group.folderName}
-                  </div>
-                  <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">
-                    {group.items.length} of {group.total}
-                  </span>
-                </button>
-                <div className={cn("space-y-2", isCollapsed && "hidden")}>
-                  {group.items.length === 0 && (
-                    <div className="rounded-md border border-dashed border-border/70 bg-secondary/30 px-3 py-3 text-xs text-muted-foreground">
-                      No documents in this folder yet.
-                    </div>
-                  )}
-                  {visibleItems.map((item) => {
-                    const isPending = pendingDocumentIds.has(item.id);
+              ) : (
+                <>
+                  {groupedDocuments.map((group) => {
+                    const isCollapsed = collapsedFolders.has(group.id);
+                    const isExpanded = expandedFolders.has(group.id);
+                    const visibleItems = isExpanded
+                      ? group.items
+                      : group.items.slice(0, folderPreviewLimit);
+                    const hiddenCount = Math.max(group.items.length - visibleItems.length, 0);
 
                     return (
-                    <button
-                      key={item.id}
-                      onClick={() => openDocument(item.id)}
-                      className={cn(
-                        "w-full rounded-md p-3 text-left transition",
-                        docId === item.id
-                          ? "bg-[color:var(--brand)]/7"
-                          : "bg-transparent hover:bg-secondary/70",
-                        isPending && "bg-secondary/50",
-                      )}
-                    >
-                      <div className="flex items-start gap-3">
-                        <div className="mt-0.5 rounded-md bg-secondary p-1.5">
-                          <FileText className="h-4 w-4 text-muted-foreground" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-medium text-foreground">{item.title}</p>
-                              <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-                                {item.sourceType} | {item.version} | {item.owner}
-                              </p>
+                      <section key={group.id}>
+                        <button
+                          type="button"
+                          onClick={() => toggleFolder(group.id)}
+                          className="mb-2 flex w-full items-center justify-between rounded-md px-1 py-1 text-left hover:bg-secondary/60"
+                          aria-expanded={!isCollapsed}
+                        >
+                          <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
+                            {isCollapsed ? (
+                              <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                            ) : (
+                              <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+                            )}
+                            {folderIcon(group.kind, group.folderName)}
+                            {group.folderName}
+                          </div>
+                          <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">
+                            {group.items.length} of {group.total}
+                          </span>
+                        </button>
+                        <div className={cn("space-y-2", isCollapsed && "hidden")}>
+                          {group.items.length === 0 && (
+                            <div className="rounded-md border border-dashed border-border/70 bg-secondary/30 px-3 py-3 text-xs text-muted-foreground">
+                              No documents in this folder yet.
                             </div>
-                            <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground">
-                              {item.fileType}
-                            </span>
-                          </div>
-                          <div className="mt-2 flex flex-wrap items-center gap-1">
-                            {item.workflowState !== item.status && <DocBadge label={item.workflowState} />}
-                            <DocBadge label={item.status} />
-                            {item.qualityScore && <QualityScoreBadge score={item.qualityScore} />}
-                            {item.semanticRelevance != null && item.semanticRelevance > 0 && (
-                              <span className="rounded bg-[color:var(--brand)]/10 px-1.5 py-0.5 text-[9px] font-medium text-[color:var(--brand)]">
-                                {Math.round(item.semanticRelevance * 100)}% match
-                              </span>
-                            )}
-                            {item.indexing && <DocBadge label={item.processingLabel} tone="info" />}
-                            {item.processingStatus === "ready" && <DocBadge label="Ready" tone="success" />}
-                            {item.processingStatus === "failed" && <DocBadge label="Failed" tone="danger" />}
-                            {isPending && (
-                              <span className="inline-flex items-center gap-1 rounded bg-secondary px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground">
-                                <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                                Saving
-                              </span>
-                            )}
-                          </div>
-                          {item.indexing && (
-                            <Progress value={processingProgress(item.processingStatus)} className="mt-2 h-1.5" />
+                          )}
+                          {visibleItems.map((item) => (
+                            <button
+                              key={item.id}
+                              onClick={() => openDocument(item.id)}
+                              className={cn(
+                                "w-full rounded-md p-3 text-left transition",
+                                docId === item.id
+                                  ? "bg-[color:var(--brand)]/7"
+                                  : "bg-transparent hover:bg-secondary/70",
+                              )}
+                            >
+                              <div className="flex items-start gap-3">
+                                <div className="mt-0.5 rounded-md bg-secondary p-1.5">
+                                  <FileText className="h-4 w-4 text-muted-foreground" />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="min-w-0">
+                                      <p className="truncate text-sm font-medium text-foreground">
+                                        {item.title}
+                                      </p>
+                                      <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                                        {item.sourceType} | {item.version} | {item.owner}
+                                      </p>
+                                    </div>
+                                    <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground">
+                                      {item.fileType}
+                                    </span>
+                                  </div>
+                                  <div className="mt-2 flex flex-wrap items-center gap-1">
+                                    <DocBadge label={item.workflowState} />
+                                    <DocBadge label={item.status} />
+                                    {item.qualityScore && (
+                                      <QualityScoreBadge score={item.qualityScore} />
+                                    )}
+                                    {item.semanticRelevance != null &&
+                                      item.semanticRelevance > 0 && (
+                                        <span className="rounded bg-[color:var(--brand)]/10 px-1.5 py-0.5 text-[9px] font-medium text-[color:var(--brand)]">
+                                          {Math.round(item.semanticRelevance * 100)}% match
+                                        </span>
+                                      )}
+                                    {item.indexing && (
+                                      <DocBadge label={item.processingLabel} tone="info" />
+                                    )}
+                                    {item.processingStatus === "ready" && (
+                                      <DocBadge label="Ready" tone="success" />
+                                    )}
+                                    {item.processingStatus === "failed" && (
+                                      <DocBadge label="Failed" tone="danger" />
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </button>
+                          ))}
+                          {group.items.length > folderPreviewLimit && (
+                            <button
+                              type="button"
+                              onClick={() => toggleFolderLimit(group.id)}
+                              className="w-full rounded-md border border-dashed border-border/70 px-3 py-2 text-center text-xs font-medium text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+                            >
+                              {isExpanded
+                                ? "Show less"
+                                : `Show all ${group.items.length} documents${hiddenCount ? ` (${hiddenCount} more)` : ""}`}
+                            </button>
                           )}
                         </div>
-                      </div>
-                    </button>
+                      </section>
                     );
                   })}
-                  {group.items.length > folderPreviewLimit && (
-                    <button
-                      type="button"
-                      onClick={() => toggleFolderLimit(group.id)}
-                      className="w-full rounded-md border border-dashed border-border/70 px-3 py-2 text-center text-xs font-medium text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
-                    >
-                      {isExpanded ? "Show less" : `Show all ${group.items.length} documents${hiddenCount ? ` (${hiddenCount} more)` : ""}`}
-                    </button>
+                  {filteredDocuments.length === 0 &&
+                    libraryFolders.length === 0 &&
+                    !docsLoadError && (
+                      <div className="rounded-md border border-dashed border-border/70 bg-secondary/30 p-6 text-center text-xs text-muted-foreground">
+                        No folders yet. Use{" "}
+                        <span className="font-medium text-foreground">Create</span> to add your
+                        first folder.
+                      </div>
+                    )}
+                  {filteredDocuments.length === 0 && libraryFolders.length > 0 && (
+                    <div className="rounded-md bg-secondary/50 p-6 text-center text-xs text-muted-foreground">
+                      {documents.length === 0 && !docsLoadError ? (
+                        <span>
+                          No documents are visible for{" "}
+                          {user?.organisation?.name ?? "your organisation"}.
+                          {user?.role === "client"
+                            ? " Client accounts cannot access the knowledge library API."
+                            : " Try the PM dev account (pm@bsg.dev) or upload a new document."}
+                        </span>
+                      ) : (
+                        "No documents match the current filters."
+                      )}
+                    </div>
                   )}
-                </div>
-              </section>
-              );
-            })}
-            {filteredDocuments.length === 0 && libraryFolders.length === 0 && !docsLoadError && !isLibraryControlSettling && !loadingDocs && (
-              <div className="rounded-md border border-dashed border-border/70 bg-secondary/30 p-6 text-center text-xs text-muted-foreground">
-                No folders yet. Use <span className="font-medium text-foreground">Create</span> to add your first folder.
-              </div>
-            )}
-            {filteredDocuments.length === 0 && libraryFolders.length > 0 && !isLibraryControlSettling && !loadingDocs && (
-              <div className="rounded-md bg-secondary/50 p-6 text-center text-xs text-muted-foreground">
-                {documents.length === 0 && !docsLoadError ? (
-                  <span>
-                    No documents are visible for {user?.organisation?.name ?? "your organisation"}.
-                    {user?.role === "client" ? " Client accounts cannot access the knowledge library API." : " Try the PM dev account (pm@bsg.dev) or upload a new document."}
-                  </span>
-                ) : (
-                  "No documents match the current filters."
-                )}
-              </div>
-            )}
-            </>
-          </div>
-        </Card>
+                </>
+              )}
+            </div>
+          </Card>
         </div>
 
         <div ref={askPanelRef} className="col-span-12 min-h-0 xl:col-span-8">
@@ -2120,407 +2145,121 @@ function KnowledgePage() {
                       <Bot className="h-4 w-4" />
                     </div>
                     <div>
-                      <h3 className="text-sm font-semibold tracking-tight text-foreground">Ask Knowledge Agent</h3>
-                      <p className="mt-0.5 text-xs text-muted-foreground">Answers use approved, ready documents only.</p>
-                      {retrievalScopeLabel && (
-                        <span className="mt-1.5 inline-flex rounded-full border border-[color:var(--brand)]/25 bg-[color:var(--brand)]/8 px-2.5 py-0.5 text-[10px] font-medium text-[color:var(--brand)]">
-                          {retrievalScopeLabel}
-                        </span>
-                      )}
-                      {canAdjustScope && (
-                        <Popover>
-                          <PopoverTrigger asChild>
-                            <button
-                              type="button"
-                              onClick={() => setRetrievalSettingsRequested(true)}
-                              className="mt-1.5 inline-flex rounded-full border border-border/70 px-2.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-                            >
-                              Adjust scope
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent align="start" className="w-80 space-y-3 p-3">
-                            <div>
-                              <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Retrieval scope</div>
-                              <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
-                                Applies to future Knowledge Agent answers.
-                              </p>
-                            </div>
-                            {scopeDraft ? (
-                            <>
-                              <div className="space-y-2">
-                              <label className="block text-[11px] font-medium text-muted-foreground">
-                                Project
-                                <Input
-                                  value={scopeDraft.project ?? ""}
-                                  onChange={(event) => setScopeDraft((current) => current ? { ...current, project: event.target.value } : current)}
-                                  placeholder="All projects"
-                                  className="mt-1 h-8 text-xs"
-                                />
-                              </label>
-                              <label className="block text-[11px] font-medium text-muted-foreground">
-                                Department
-                                <Input
-                                  value={scopeDraft.department ?? ""}
-                                  onChange={(event) => setScopeDraft((current) => current ? { ...current, department: event.target.value } : current)}
-                                  placeholder="All departments"
-                                  className="mt-1 h-8 text-xs"
-                                />
-                              </label>
-                              <div className="grid grid-cols-2 gap-2">
-                                <label className="block text-[11px] font-medium text-muted-foreground">
-                                  Max sources
-                                  <Input
-                                    type="number"
-                                    min={1}
-                                    max={10}
-                                    value={scopeDraft.max_sources}
-                                    onChange={(event) => setScopeDraft((current) => current ? { ...current, max_sources: Number(event.target.value) } : current)}
-                                    className="mt-1 h-8 text-xs"
-                                  />
-                                </label>
-                                <label className="block text-[11px] font-medium text-muted-foreground">
-                                  Min relevance
-                                  <Input
-                                    type="number"
-                                    min={0}
-                                    max={1}
-                                    step={0.05}
-                                    value={scopeDraft.min_confidence}
-                                    onChange={(event) => setScopeDraft((current) => current ? { ...current, min_confidence: Number(event.target.value) } : current)}
-                                    className="mt-1 h-8 text-xs"
-                                  />
-                                </label>
-                              </div>
-                              <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                                <input
-                                  type="checkbox"
-                                  checked={scopeDraft.include_histories}
-                                  onChange={(event) => setScopeDraft((current) => current ? { ...current, include_histories: event.target.checked } : current)}
-                                />
-                                Include histories and lessons learned
-                              </label>
-                              </div>
-                              <Button
-                                type="button"
-                                size="sm"
-                                disabled={savingScope}
-                                className="h-8 w-full text-xs"
-                                onClick={() => void saveRetrievalScope()}
-                              >
-                                {savingScope ? "Saving..." : "Save scope"}
-                              </Button>
-                            </>
-                            ) : (
-                              <div className="rounded-md bg-secondary/50 px-3 py-2 text-[11px] text-muted-foreground">
-                                Loading scope settings...
-                              </div>
-                            )}
-                          </PopoverContent>
-                        </Popover>
-                      )}
+                      <h3 className="text-sm font-semibold tracking-tight text-foreground">
+                        Ask Knowledge Agent
+                      </h3>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        Answers use approved, ready documents only.
+                      </p>
                     </div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <KnowledgeHistoryPopover
-                    asking={asking}
-                    activeConversationId={activeConversationId}
-                    onSelectConversation={openConversation}
+                  <span className="rounded-full bg-[color:var(--success)]/10 px-2.5 py-1 text-[10px] font-medium text-[color:var(--success)]">
+                    {approvedIndexedDocs.length} sources ready
+                  </span>
+                  <AiBadge
+                    confidence={lastConfidence != null ? Math.round(lastConfidence * 100) : 0}
                   />
-                  {!loadingDocs && (
-                    <span className="rounded-full bg-[color:var(--success)]/10 px-2.5 py-1 text-[10px] font-medium text-[color:var(--success)]">
-                      {approvedIndexedDocs.length} sources ready
-                    </span>
-                  )}
-                  {messages.length > 0 && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      disabled={asking}
-                      className="h-8 gap-1.5 px-2 text-xs text-muted-foreground"
-                      onClick={clearConversation}
-                    >
-                      <Plus className="h-3.5 w-3.5" />
-                      New chat
-                    </Button>
-                  )}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 gap-1.5 px-2 text-xs text-muted-foreground"
+                    onClick={() => setShowRetrievalPanel((v) => !v)}
+                  >
+                    <Settings2 className="h-3.5 w-3.5" />
+                    Retrieval
+                  </Button>
                 </div>
               </div>
             </div>
 
-            <div className="relative mx-5 mt-4 min-h-0 flex-1">
-              <div
-                ref={chatScrollRef}
-                onScroll={handleChatScroll}
-                className="h-full space-y-4 overflow-y-auto rounded-md bg-secondary/35 p-4 text-xs"
-              >
-              <div className="sr-only" aria-live="polite" aria-atomic="true">
-                {liveAnnouncement}
+            {showRetrievalPanel && (
+              <div className="px-5 pt-3">
+                <KnowledgeRetrievalPanel
+                  canManage={canManageRetrieval}
+                  onChange={setRetrievalSettings}
+                />
               </div>
-              {messages.length === 0 && !asking && loadingDocs ? null : messages.length === 0 && !asking ? (
-                <div className="flex h-full min-h-[220px] flex-col items-center justify-center px-2 py-6 text-center">
-                  <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-card text-[color:var(--brand)]">
-                    <Sparkles className="h-5 w-5" />
-                  </div>
-                  <p className="text-sm font-medium text-foreground">
-                    {canAsk ? "Ask about SOPs, guides, or past issues" : "Upload and approve documents first"}
-                  </p>
-                  <p className="mt-1 max-w-sm text-[11px] leading-4 text-muted-foreground">
-                    {canAsk
-                      ? "Answers are grounded in approved, indexed documents from your knowledge library."
-                      : `No retrieval-ready sources yet (${approvedIndexedDocs.length} ready). Upload a document, set owner and effective date, approve it, and wait for indexing.`}
-                  </p>
-                  {!canAsk && (
-                    <div className="mt-3 max-w-sm space-y-1 text-left text-[11px] text-muted-foreground">
-                      {draftCount > 0 && <p>• Approve {draftCount} draft document{draftCount === 1 ? "" : "s"}</p>}
-                      {needsReindexCount > 0 && <p>• Re-index {needsReindexCount} document{needsReindexCount === 1 ? "" : "s"} stuck in processing</p>}
-                      {expiredCount > 0 && <p>• Review {expiredCount} expired SOP{expiredCount === 1 ? "" : "s"}</p>}
-                      {documents.length === 0 && <p>• Upload your first SOP or guide using the library panel</p>}
-                    </div>
-                  )}
-                  <div className="mt-5 flex max-w-md flex-wrap justify-center gap-2">
-                    {canAsk && suggestedQuestions.length > 0 ? (
-                      suggestedQuestions.map((question) => (
-                        <button
-                          key={question}
-                          type="button"
-                          onClick={() => void submitAsk(question)}
-                          className="rounded-full border border-border/70 bg-card px-3 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:border-[color:var(--brand)]/30 hover:bg-secondary/70 hover:text-foreground"
-                        >
-                          {question}
-                        </button>
-                      ))
-                    ) : (
-                      <p className="text-[11px] text-muted-foreground">
-                        {canAsk
-                          ? "Upload and approve documents to see suggested questions."
-                          : "Use Upload Document in the library, then approve and index it."}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              ) : (
-              messages.map((message) => {
-                const isAnimating =
-                  message.role === "agent" &&
-                  message.id === animatingMessageId &&
-                  !message.isHistorical;
-                const isAgentReply = message.role === "agent" && !message.isServiceError && !message.isStreaming;
-                const showPostAnimationActions = isAgentReply && !isAnimating;
-                const showAgentDetails = isAgentReply && !isAnimating;
-                const detailsOpen = isAgentReply && isMessageDetailsOpen(message);
-                const showCollapsibleDetails = showAgentDetails && hasCollapsibleDetails(message);
+            )}
+
+            <div className="px-5 pt-3">
+              <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Suggested questions
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {suggestedQuestions.map((question) => (
+                  <button
+                    key={question}
+                    type="button"
+                    onClick={() => setAskInput(question)}
+                    className="rounded-full border border-border/70 bg-card px-3 py-1.5 text-[11px] text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+                  >
+                    {question}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="mx-5 mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto rounded-md bg-secondary/35 p-4 text-xs">
+              {messages.map((message, index) => {
+                const isAnimating = message.role === "agent" && index === animatingMessageIndex;
+                const showAgentDetails = message.role === "agent" && !isAnimating;
+
                 return (
-                <div
-                  key={message.id}
-                  className={cn(
-                    "flex gap-3",
-                    message.role === "user"
-                      ? "justify-end"
-                      : "justify-start",
-                  )}
-                >
-                  {message.role === "agent" && (
-                    <div
-                      className={cn(
-                        "mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-card text-muted-foreground",
-                        message.isServiceError && "text-[color:var(--danger)]",
-                      )}
-                    >
-                      <Bot className="h-3.5 w-3.5" />
-                    </div>
-                  )}
                   <div
+                    key={`${message.role}-${index}`}
                     className={cn(
-                      "max-w-[88%] rounded-md px-3 py-3",
-                      message.role === "user"
-                        ? "bg-[color:var(--brand)] text-[color:var(--brand-foreground)]"
-                        : message.isServiceError
-                          ? "border border-[color:var(--danger)]/30 bg-[color:var(--danger)]/5"
-                          : "bg-card",
+                      "flex gap-3",
+                      message.role === "user" ? "justify-end" : "justify-start",
                     )}
                   >
-                    <div className={cn("mb-1 flex items-center justify-between gap-2 text-[10px] font-semibold uppercase tracking-wider", message.role === "user" ? "text-white/70" : "text-muted-foreground")}>
-                      <span>
-                        {message.role === "user"
-                          ? "You"
-                          : message.isServiceError
-                            ? "Service error"
-                            : "Knowledge Agent"}
-                      </span>
-                      <div className="flex items-center gap-1.5 normal-case">
-                        {isAnimating && (
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setAnimatingMessageId(null);
-                              announceAgentMessage(message.text);
-                            }}
-                            className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-secondary/70 hover:text-foreground"
-                          >
-                            Skip
-                          </button>
+                    {message.role === "agent" && (
+                      <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-card text-muted-foreground">
+                        <Bot className="h-3.5 w-3.5" />
+                      </div>
+                    )}
+                    <div
+                      className={cn(
+                        "max-w-[88%] rounded-md px-3 py-3",
+                        message.role === "user"
+                          ? "bg-[color:var(--brand)] text-[color:var(--brand-foreground)]"
+                          : "bg-card",
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "mb-1 flex items-center justify-between gap-2 text-[10px] font-semibold uppercase tracking-wider",
+                          message.role === "user" ? "text-white/70" : "text-muted-foreground",
                         )}
-                        {isAgentReply && message.confidence_score !== undefined && message.confidence_score > 0 && (
-                          <span className="rounded-sm bg-[color:var(--success)]/15 px-1.5 py-0.5 text-[color:var(--success)]">
-                            {Math.round(message.confidence_score * 100)}% confidence
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    {isAnimating ? (
-                      <TypewriterText
-                        text={message.text}
-                        className="leading-5"
-                        onProgress={() => scrollChatToEnd()}
-                        onComplete={() => {
-                          setAnimatingMessageId(null);
-                          announceAgentMessage(message.text);
-                        }}
-                      />
-                    ) : message.isStreaming ? (
-                      message.text ? (
-                        <p className="leading-5">
-                          {buildAgentDisplayText(message)}
-                          <span
-                            className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-foreground/70 align-middle"
-                            aria-hidden
-                          />
-                        </p>
-                      ) : (
-                        <p className="text-sm text-muted-foreground">
-                          {message.streamPhase
-                            ? STREAM_PHASE_LABELS[message.streamPhase]
-                            : "Thinking…"}
-                        </p>
-                      )
-                    ) : (
-                      <p className={cn("leading-5", message.isServiceError && "text-foreground")}>
-                        {buildAgentDisplayText(message) || NO_KNOWLEDGE_ANSWER}
-                      </p>
-                    )}
-                    {showPostAnimationActions && (
-                      <div className="relative z-10 mt-2.5 flex flex-wrap items-center gap-1 border-t border-border/50 pt-2">
-                        <button
-                          type="button"
-                          disabled={asking}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void copyAgentAnswer(message.id, message.text);
-                          }}
-                          className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-secondary/70 hover:text-foreground disabled:opacity-50"
-                        >
-                          {copiedMessageId === message.id ? (
-                            <>
-                              <CheckCircle2 className="h-3 w-3 text-[color:var(--success)]" />
-                              Copied
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="h-3 w-3" />
-                              Copy
-                            </>
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={asking || !canAsk}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void regenerateAgentAnswer(message.id);
-                          }}
-                          className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-secondary/70 hover:text-foreground disabled:opacity-50"
-                        >
-                          <RefreshCw className="h-3 w-3" />
-                          Regenerate
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void setMessageFeedback(message.id, "up")}
-                          className={cn(
-                            "inline-flex cursor-pointer items-center rounded-sm p-1 transition-colors",
-                            message.feedback === "up"
-                              ? "bg-[color:var(--success)]/20 text-[color:var(--success)] ring-1 ring-[color:var(--success)]/40"
-                              : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground",
-                          )}
-                          title="Helpful answer"
-                          aria-label="Helpful answer"
-                          aria-pressed={message.feedback === "up"}
-                        >
-                          <ThumbsUp className={cn("h-3.5 w-3.5", message.feedback === "up" && "fill-current")} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void setMessageFeedback(message.id, "down")}
-                          className={cn(
-                            "inline-flex cursor-pointer items-center rounded-sm p-1 transition-colors",
-                            message.feedback === "down"
-                              ? "bg-[color:var(--danger)]/20 text-[color:var(--danger)] ring-1 ring-[color:var(--danger)]/40"
-                              : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground",
-                          )}
-                          title="Not helpful"
-                          aria-label="Not helpful"
-                          aria-pressed={message.feedback === "down"}
-                        >
-                          <ThumbsDown className={cn("h-3.5 w-3.5", message.feedback === "down" && "fill-current")} />
-                        </button>
-                      </div>
-                    )}
-                    {showPostAnimationActions && message.feedback === "down" && (
-                      <div className="mt-2" onClick={(event) => event.stopPropagation()}>
-                        <Textarea
-                          value={message.feedbackComment ?? ""}
-                          onChange={(event) => setFeedbackComment(message.id, event.target.value)}
-                          onBlur={(event) => {
-                            const value = event.target.value.trim();
-                            if (value) {
-                              void setMessageFeedback(message.id, "down", value);
-                            }
-                          }}
-                          placeholder="What was wrong? (optional)"
-                          className="min-h-[52px] resize-none text-xs"
-                          rows={2}
-                        />
-                      </div>
-                    )}
-                    {message.isServiceError && !isAnimating && message.retryQuestion && (
-                      <div className="mt-2.5">
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          className="h-7 gap-1.5 text-[10px]"
-                          disabled={asking || !canAsk}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void retryAsk(message.retryQuestion!, message.id);
-                          }}
-                        >
-                          <RefreshCw className="h-3 w-3" />
-                          Retry
-                        </Button>
-                      </div>
-                    )}
-                    {showCollapsibleDetails && (
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          toggleMessageDetails(message.id);
-                        }}
-                        className="mt-2.5 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
                       >
-                        <ChevronDown className={cn("h-3 w-3 transition-transform", detailsOpen && "rotate-180")} />
-                        {detailsOpen ? "Hide details" : "Details"}
-                      </button>
-                    )}
-                    {showCollapsibleDetails && detailsOpen && (
-                      <div className="mt-2 space-y-2.5">
-                        {message.confidence_reasons && message.confidence_reasons.length > 0 && (
-                          <div className="rounded-sm border border-border/60 bg-secondary/40 px-2.5 py-2">
-                            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Why this confidence</div>
+                        <span>{message.role === "user" ? "You" : "Knowledge Agent"}</span>
+                        {showAgentDetails &&
+                          message.confidence_score !== undefined &&
+                          message.confidence_score > 0 && (
+                            <span className="rounded-sm bg-[color:var(--success)]/15 px-1.5 py-0.5 text-[color:var(--success)] normal-case">
+                              {Math.round(message.confidence_score * 100)}% confidence
+                            </span>
+                          )}
+                      </div>
+                      {isAnimating ? (
+                        <TypewriterText
+                          text={message.text}
+                          className="leading-5"
+                          onProgress={scrollChatToEnd}
+                          onComplete={() => setAnimatingMessageIndex(null)}
+                        />
+                      ) : (
+                        <p className="leading-5">{message.text}</p>
+                      )}
+                      {showAgentDetails &&
+                        message.confidence_reasons &&
+                        message.confidence_reasons.length > 0 && (
+                          <div className="mt-2.5 rounded-sm border border-border/60 bg-secondary/40 px-2.5 py-2">
+                            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                              Why this confidence
+                            </div>
                             <ul className="space-y-0.5 text-[11px] leading-4 text-muted-foreground">
                               {message.confidence_reasons.map((reason) => (
                                 <li key={reason}>• {reason}</li>
@@ -2528,71 +2267,111 @@ function KnowledgePage() {
                             </ul>
                           </div>
                         )}
-                        {message.regenerationSummary && (
-                          <div className="rounded-sm border border-[color:var(--brand)]/20 bg-[color:var(--brand)]/5 px-2.5 py-2">
-                            <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--brand)]/70">What changed</div>
-                            <p className="text-[11px] leading-4 text-muted-foreground">{message.regenerationSummary}</p>
+                      {showAgentDetails && message.structured_answer && (
+                        <div className="mt-2.5 space-y-2 rounded-sm border border-border/60 bg-secondary/30 p-2.5">
+                          <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                            Operational answer
                           </div>
-                        )}
-                        {message.retrieval_debug && (
-                          <div className="rounded-sm border border-border/60 bg-secondary/30 px-2.5 py-2">
-                            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Retrieval details</div>
-                            <div className="space-y-1 text-[11px] leading-4 text-muted-foreground">
-                              {message.retrieval_debug.retrieval_query && (
-                                <p>Search query: {message.retrieval_debug.retrieval_query}</p>
-                              )}
-                              <p>
-                                Scope: {message.retrieval_debug.project || "All projects"}
-                                {message.retrieval_debug.department ? ` / ${message.retrieval_debug.department}` : ""}
-                                {message.retrieval_debug.include_histories === false ? " / histories off" : ""}
-                              </p>
-                              <p>
-                                Candidates: {message.retrieval_debug.eligible_doc_count ?? "n/a"} docs
-                                {message.retrieval_debug.has_embeddings === false ? " / keyword fallback" : " / hybrid search"}
-                              </p>
-                            </div>
+                          {message.structured_answer.policy && (
+                            <StructuredField
+                              label="Policy"
+                              value={message.structured_answer.policy}
+                            />
+                          )}
+                          {message.structured_answer.steps && (
+                            <StructuredField
+                              label="Steps"
+                              value={message.structured_answer.steps}
+                            />
+                          )}
+                          {message.structured_answer.owner && (
+                            <StructuredField
+                              label="Owner"
+                              value={message.structured_answer.owner}
+                            />
+                          )}
+                          {message.structured_answer.evidence && (
+                            <StructuredField
+                              label="Evidence"
+                              value={message.structured_answer.evidence}
+                            />
+                          )}
+                          {message.structured_answer.next_action && (
+                            <StructuredField
+                              label="Next action"
+                              value={message.structured_answer.next_action}
+                            />
+                          )}
+                        </div>
+                      )}
+                      {showAgentDetails && message.knowledge_gap && (
+                        <div className="mt-2.5 rounded-sm border border-[color:var(--warning)]/30 bg-[color:var(--warning)]/8 p-2.5">
+                          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--warning)]">
+                            Missing knowledge
                           </div>
-                        )}
-                        {message.structured_answer && (
-                          <div className="space-y-2 rounded-sm border border-border/60 bg-secondary/30 p-2.5">
-                            <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Operational answer</div>
-                            {message.structured_answer.policy && <StructuredField label="Policy" value={message.structured_answer.policy} />}
-                            {message.structured_answer.steps && <StructuredField label="Steps" value={message.structured_answer.steps} />}
-                            {message.structured_answer.owner && <StructuredField label="Owner" value={message.structured_answer.owner} />}
-                            {message.structured_answer.evidence && <StructuredField label="Evidence" value={message.structured_answer.evidence} />}
-                            {message.structured_answer.next_action && <StructuredField label="Next action" value={message.structured_answer.next_action} />}
+                          <p className="text-[11px] leading-4 text-foreground">
+                            {message.knowledge_gap.message}
+                          </p>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-[10px]"
+                              onClick={() => prefillUploadFromGap(message.knowledge_gap!)}
+                            >
+                              Upload related document
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 text-[10px]"
+                              onClick={() => setWorkflowFilter("Needs review")}
+                            >
+                              Review pending documents
+                            </Button>
                           </div>
-                        )}
-                        {message.next_step && (
-                          <div className="rounded-sm border border-[color:var(--brand)]/20 bg-[color:var(--brand)]/5 px-2.5 py-2">
-                            <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--brand)]/70">Recommended next step</div>
-                            <p className="text-[11px] leading-4 text-foreground">{message.next_step}</p>
+                        </div>
+                      )}
+                      {showAgentDetails && message.next_step && (
+                        <div className="mt-2.5 rounded-sm border border-[color:var(--brand)]/20 bg-[color:var(--brand)]/5 px-2.5 py-2">
+                          <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--brand)]/70">
+                            Recommended next step
                           </div>
-                        )}
-                        {message.knowledge_gap && !message.isServiceError && (
-                          <div className="rounded-sm border border-[color:var(--warning)]/30 bg-[color:var(--warning)]/8 p-2.5">
-                            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--warning)]">Missing knowledge</div>
-                            <p className="text-[11px] leading-4 text-foreground">{message.knowledge_gap.message}</p>
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              <Button type="button" size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => prefillUploadFromGap(message.knowledge_gap!)}>
-                                Upload related document
-                              </Button>
-                              <Button
+                          <p className="text-[11px] leading-4 text-foreground">
+                            {message.next_step}
+                          </p>
+                        </div>
+                      )}
+                      {showAgentDetails && message.citations && message.citations.length > 0 && (
+                        <div className="mt-2.5 border-t border-border/50 pt-2">
+                          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                            Sources
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {message.citations.map((item) => (
+                              <button
+                                key={`${item.document_id}-${item.citation_label}`}
                                 type="button"
-                                size="sm"
-                                variant="ghost"
-                                className="h-7 text-[10px]"
-                                onClick={() => setWorkflowFilter("Needs review")}
+                                onClick={() =>
+                                  openDocumentWithChunk(item.document_id, item.chunk_id, true)
+                                }
+                                className="rounded-md border border-border/70 bg-secondary/50 px-2 py-1 text-[10px] text-foreground hover:bg-secondary"
                               >
-                                Review pending documents
-                              </Button>
-                            </div>
+                                {item.title}
+                                {item.relevance_score > 0 && (
+                                  <span className="ml-1 text-muted-foreground">
+                                    · {Math.round(item.relevance_score * 100)}%
+                                  </span>
+                                )}
+                              </button>
+                            ))}
                           </div>
-                        )}
-                      </div>
-                    )}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
                 );
               })
               )}
@@ -2602,7 +2381,9 @@ function KnowledgePage() {
                     <Bot className="h-3.5 w-3.5" />
                   </div>
                   <div className="rounded-md bg-card px-3 py-3 text-xs text-muted-foreground">
-                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Knowledge Agent</div>
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      Knowledge Agent
+                    </div>
                     <TypingIndicator />
                   </div>
                 </div>
@@ -2652,6 +2433,75 @@ function KnowledgePage() {
           </Card>
         </div>
 
+        <div className="hidden">
+          <Card className="border-transparent bg-card/80">
+            <div className="border-b border-border/70 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-3.5 w-3.5 text-[color:var(--brand)]" />
+                <span className="text-sm font-semibold tracking-tight text-foreground">
+                  Sources
+                </span>
+              </div>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {activeSources.length > 0
+                  ? `${activeSources.length} source${activeSources.length !== 1 ? "s" : ""} used`
+                  : "Ask a question to see sources"}
+              </p>
+            </div>
+
+            {activeSources.length === 0 ? (
+              <div className="flex flex-col items-center gap-3 px-4 py-8 text-center text-xs text-muted-foreground">
+                <FileText className="h-8 w-8 opacity-25" />
+                <span>Source documents will appear here after you ask a question.</span>
+              </div>
+            ) : (
+              <div className="space-y-2 px-3 py-3">
+                {activeSources.map((src, idx) => {
+                  const pct = Math.round(src.relevance_score * 100);
+                  return (
+                    <button
+                      key={`${src.document_id}-${idx}`}
+                      type="button"
+                      onClick={() => openDocumentWithChunk(src.document_id, src.chunk_id, true)}
+                      className="w-full rounded-md border border-border/70 bg-secondary/40 p-3 text-left hover:bg-secondary/80 transition-colors"
+                    >
+                      <div className="mb-1 flex items-start justify-between gap-2">
+                        <span className="line-clamp-2 text-[11px] font-semibold text-foreground leading-tight">
+                          {src.title}
+                        </span>
+                        {pct > 0 && (
+                          <span className="shrink-0 rounded-sm bg-[color:var(--brand)]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[color:var(--brand)]">
+                            {pct}%
+                          </span>
+                        )}
+                      </div>
+                      <div className="mb-2 text-[10px] text-muted-foreground">
+                        {src.source_type
+                          .replace(/_/g, " ")
+                          .replace(/\b\w/g, (c) => c.toUpperCase())}
+                        {src.folder_name ? ` · ${src.folder_name}` : ""}
+                        {src.page_number ? ` · p. ${src.page_number}` : ""}
+                      </div>
+                      {src.chunk_preview && (
+                        <p className="mb-2 line-clamp-3 text-[10px] leading-4 text-muted-foreground">
+                          {src.chunk_preview}
+                        </p>
+                      )}
+                      {pct > 0 && (
+                        <div className="h-1 w-full overflow-hidden rounded-full bg-border/60">
+                          <div
+                            className="h-full rounded-full bg-[color:var(--brand)]"
+                            style={{ width: `${Math.min(pct, 100)}%` }}
+                          />
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
+        </div>
       </div>
 
       <Dialog open={isDocumentOpen && !!selectedDoc} onOpenChange={setIsDocumentOpen}>
@@ -2675,43 +2525,270 @@ function KnowledgePage() {
 
               <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[1fr_18rem]">
                 <div className="min-h-0 rounded-md bg-secondary/50 p-4">
-                  <Tabs value={documentTab} onValueChange={handleDocumentTabChange} className="flex h-full min-h-0 flex-col">
+                  <Tabs
+                    value={documentTab}
+                    onValueChange={setDocumentTab}
+                    className="flex h-full min-h-0 flex-col"
+                  >
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <TabsList className="h-8 bg-card/70">
-                        <TabsTrigger value="preview" className="px-2.5 py-1 text-xs data-[state=active]:shadow-none">Preview</TabsTrigger>
-                        <TabsTrigger value="metadata" className="px-2.5 py-1 text-xs data-[state=active]:shadow-none">Metadata</TabsTrigger>
-                        <TabsTrigger value="chunks" className="px-2.5 py-1 text-xs data-[state=active]:shadow-none">Chunks</TabsTrigger>
-                        <TabsTrigger value="versions" className="px-2.5 py-1 text-xs data-[state=active]:shadow-none">Versions</TabsTrigger>
-                        <TabsTrigger value="evidence" className="px-2.5 py-1 text-xs data-[state=active]:shadow-none">Evidence</TabsTrigger>
+                        <TabsTrigger
+                          value="preview"
+                          className="px-2.5 py-1 text-xs data-[state=active]:shadow-none"
+                        >
+                          Preview
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="metadata"
+                          className="px-2.5 py-1 text-xs data-[state=active]:shadow-none"
+                        >
+                          Metadata
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="chunks"
+                          className="px-2.5 py-1 text-xs data-[state=active]:shadow-none"
+                        >
+                          Chunks
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="versions"
+                          className="px-2.5 py-1 text-xs data-[state=active]:shadow-none"
+                        >
+                          Versions
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="evidence"
+                          className="px-2.5 py-1 text-xs data-[state=active]:shadow-none"
+                        >
+                          Evidence
+                        </TabsTrigger>
                       </TabsList>
                       <div className="flex flex-wrap items-center gap-1.5">
-                        {selectedDoc.indexing && <DocBadge label={selectedDoc.processingLabel} tone="info" />}
-                        {selectedDoc.processingStatus === "ready" && <DocBadge label="Ready" tone="success" />}
-                        {selectedDoc.processingStatus === "failed" && <DocBadge label="Failed" tone="danger" />}
+                        {selectedDoc.indexing && (
+                          <DocBadge label={selectedDoc.processingLabel} tone="info" />
+                        )}
+                        {selectedDoc.processingStatus === "ready" && (
+                          <DocBadge label="Ready" tone="success" />
+                        )}
+                        {selectedDoc.processingStatus === "failed" && (
+                          <DocBadge label="Failed" tone="danger" />
+                        )}
                       </div>
                     </div>
                     {selectedDoc.indexing && (
                       <Progress value={processingProgress(selectedDoc.processingStatus)} className="h-1.5" />
                     )}
 
-                    {openedDocumentTabs.has(documentTab) && (
-                      <Suspense fallback={<DocumentTabFallback />}>
-                        <LazyKnowledgeDocumentTabPanels
-                          activeTab={documentTab}
-                          selectedDoc={selectedDoc}
-                          activeChunkId={activeChunkId}
-                          loadingDetail={loadingDetail}
-                          loadingVersions={loadingVersions}
-                          versions={versions}
-                          versionCompare={versionCompare}
-                          compareLeftId={compareLeftId}
-                          compareRightId={compareRightId}
-                          onCompareLeftChange={setCompareLeftId}
-                          onCompareRightChange={setCompareRightId}
-                          onRunVersionCompare={() => void runVersionCompare()}
+                    <TabsContent
+                      value="preview"
+                      className="mt-4 min-h-0 flex-1 overflow-y-auto pr-2"
+                    >
+                      <div className="space-y-3 text-sm leading-6">
+                        {selectedDoc.preview.map((paragraph) => (
+                          <FormattedPreview key={paragraph} text={paragraph} />
+                        ))}
+                      </div>
+                      {!isRetrievalReady(selectedDoc) && (
+                        <div className="mt-4 rounded-md bg-[color:var(--warning)]/10 p-3 text-xs leading-5 text-muted-foreground">
+                          This document is not currently eligible for Ask Knowledge Agent retrieval.
+                          It must be Approved and Ready.
+                        </div>
+                      )}
+                    </TabsContent>
+
+                    <TabsContent
+                      value="metadata"
+                      className="mt-4 min-h-0 flex-1 overflow-y-auto pr-2"
+                    >
+                      <div className="grid gap-2 text-xs sm:grid-cols-2">
+                        <InfoTile label="Source type" value={selectedDoc.sourceType} />
+                        <InfoTile label="Visibility" value={selectedDoc.visibility} />
+                        <InfoTile label="Workflow" value={selectedDoc.workflowState} />
+                        <InfoTile label="Status" value={selectedDoc.status} />
+                        <InfoTile label="Version" value={selectedDoc.version} />
+                        <InfoTile label="Owner/Approver" value={selectedDoc.owner} />
+                        <InfoTile
+                          label="Effective date"
+                          value={selectedDoc.effectiveDate || "Not set"}
                         />
-                      </Suspense>
-                    )}
+                        <InfoTile
+                          label="Approved by"
+                          value={selectedDoc.approvedByName || "Not approved"}
+                        />
+                        <InfoTile label="Chunks" value={String(selectedDoc.chunkCount)} />
+                        <InfoTile label="Citations" value={String(selectedDoc.citationCount)} />
+                      </div>
+                      {selectedDoc.qualityScore && (
+                        <div className="mt-4 rounded-md border border-border/70 bg-card/60 p-3">
+                          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                            Document quality
+                          </div>
+                          <QualityScoreBadge score={selectedDoc.qualityScore} detailed />
+                        </div>
+                      )}
+                    </TabsContent>
+
+                    <TabsContent
+                      value="chunks"
+                      className="mt-4 min-h-0 flex-1 overflow-y-auto pr-2"
+                    >
+                      {loadingDocDetail && selectedDoc.chunks.length === 0 ? (
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          Loading chunks...
+                        </div>
+                      ) : (
+                        <div className="space-y-2 text-xs">
+                          {selectedDoc.chunks.length === 0 &&
+                            selectedDoc.preview.map((paragraph, index) => (
+                              <div
+                                key={`${selectedDoc.id}-chunk-${index}`}
+                                className="rounded-md border border-border/70 bg-card/60 p-3"
+                              >
+                                <div className="mb-1 font-medium text-muted-foreground">
+                                  Chunk {index + 1}
+                                </div>
+                                <FormattedPreview text={paragraph} compact />
+                              </div>
+                            ))}
+                          {selectedDoc.chunks.map((chunk) => (
+                            <div
+                              key={chunk.id}
+                              id={`chunk-${chunk.id}`}
+                              className={cn(
+                                "rounded-md border bg-card/60 p-3",
+                                activeChunkId === chunk.id
+                                  ? "border-[color:var(--brand)] ring-2 ring-[color:var(--brand)]/20"
+                                  : "border-border/70",
+                              )}
+                            >
+                              <div className="mb-1 flex items-center justify-between gap-2 font-medium text-muted-foreground">
+                                <span>
+                                  Chunk {chunk.chunkIndex + 1}
+                                  {chunk.sectionTitle ? ` · ${chunk.sectionTitle}` : ""}
+                                  {chunk.pageNumber ? ` · p. ${chunk.pageNumber}` : ""}
+                                </span>
+                                {activeChunkId === chunk.id && (
+                                  <span className="rounded bg-[color:var(--brand)]/10 px-1.5 py-0.5 text-[10px] text-[color:var(--brand)]">
+                                    Cited
+                                  </span>
+                                )}
+                              </div>
+                              <FormattedPreview text={chunk.chunkText} compact />
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </TabsContent>
+
+                    <TabsContent
+                      value="versions"
+                      className="mt-4 min-h-0 flex-1 overflow-y-auto pr-2"
+                    >
+                      <div className="space-y-3 text-xs">
+                        {versions.map((version) => (
+                          <div
+                            key={version.id}
+                            className="rounded-md border border-border/70 bg-card/60 p-3"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="font-semibold text-foreground">{version.version}</div>
+                              {version.is_active && <DocBadge label="Active" tone="success" />}
+                            </div>
+                            <div className="mt-1 text-muted-foreground">
+                              Uploaded {new Date(version.uploaded_at).toLocaleString()}
+                              {version.uploaded_by_name ? ` by ${version.uploaded_by_name}` : ""}
+                            </div>
+                            <div className="mt-1 text-muted-foreground">
+                              {version.chunk_count} chunks
+                              {version.approved_by_name
+                                ? ` · Approved by ${version.approved_by_name}`
+                                : ""}
+                            </div>
+                          </div>
+                        ))}
+                        {versions.length >= 2 && (
+                          <div className="rounded-md border border-dashed border-border/70 bg-card/40 p-3">
+                            <div className="mb-2 flex items-center gap-2 font-semibold text-foreground">
+                              <GitCompare className="h-3.5 w-3.5" />
+                              Compare versions
+                            </div>
+                            <div className="grid gap-2 sm:grid-cols-2">
+                              <Select value={compareLeftId} onValueChange={setCompareLeftId}>
+                                <SelectTrigger className="h-8 text-xs">
+                                  <SelectValue placeholder="Left version" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {versions.map((v) => (
+                                    <SelectItem key={v.id} value={v.id}>
+                                      {v.version}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <Select value={compareRightId} onValueChange={setCompareRightId}>
+                                <SelectTrigger className="h-8 text-xs">
+                                  <SelectValue placeholder="Right version" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {versions.map((v) => (
+                                    <SelectItem key={v.id} value={v.id}>
+                                      {v.version}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <Button
+                              type="button"
+                              size="sm"
+                              className="mt-2 h-8 text-xs"
+                              onClick={() => void runVersionCompare()}
+                            >
+                              Compare
+                            </Button>
+                            {versionCompare && (
+                              <div className="mt-3 space-y-2 rounded-md bg-secondary/50 p-3">
+                                <div className="font-medium text-foreground">
+                                  {versionCompare.left_version} vs {versionCompare.right_version}
+                                </div>
+                                <p className="text-muted-foreground">{versionCompare.summary}</p>
+                                {versionCompare.added_sections.length > 0 && (
+                                  <div>
+                                    <div className="font-medium text-foreground">What changed</div>
+                                    <ul className="mt-1 list-disc pl-4 text-muted-foreground">
+                                      {versionCompare.added_sections.map((line) => (
+                                        <li key={line}>{line}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+                                {(versionCompare.left_approved_by ||
+                                  versionCompare.right_approved_by) && (
+                                  <div className="text-muted-foreground">
+                                    Approved by:{" "}
+                                    {versionCompare.right_approved_by ||
+                                      versionCompare.left_approved_by ||
+                                      "Unknown"}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </TabsContent>
+
+                    <TabsContent
+                      value="evidence"
+                      className="mt-4 min-h-0 flex-1 overflow-y-auto pr-2"
+                    >
+                      <div className="rounded-md border border-border/70 bg-card/60 p-4 text-xs leading-5 text-muted-foreground">
+                        {isRetrievalReady(selectedDoc)
+                          ? `This document has been cited ${selectedDoc.citationCount} time(s) and is eligible for Ask Knowledge Agent answers.`
+                          : "This document is visible for review, but it will not be used as answer evidence until it is approved and ready."}
+                      </div>
+                    </TabsContent>
                   </Tabs>
                 </div>
 
@@ -2747,26 +2824,40 @@ function KnowledgePage() {
                     </div>
                     <div className="grid grid-cols-[4.5rem_1fr] items-center gap-2 rounded-md border border-border/70 bg-card/60 px-2 py-1 text-xs">
                       <span className="text-muted-foreground">Folder</span>
-                      <Select value={selectedDoc.folderId} onValueChange={(value) => void updateDocument(selectedDoc.id, { folderId: value })}>
+                      <Select
+                        value={selectedDoc.folderId}
+                        onValueChange={(value) =>
+                          void updateDocument(selectedDoc.id, { folderId: value })
+                        }
+                      >
                         <SelectTrigger className="h-8 border-transparent bg-transparent px-2 text-xs shadow-none hover:bg-secondary/70">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
                           {libraryFolders.map((folder) => (
-                            <SelectItem key={folder.id} value={folder.id}>{folder.name}</SelectItem>
+                            <SelectItem key={folder.id} value={folder.id}>
+                              {folder.name}
+                            </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
                     </div>
                     <div className="grid grid-cols-[4.5rem_1fr] items-center gap-2 rounded-md border border-border/70 bg-card/60 px-2 py-1 text-xs">
                       <span className="text-muted-foreground">Status</span>
-                      <Select value={selectedDoc.status} onValueChange={(value) => void updateDocument(selectedDoc.id, { status: value as DocumentStatus })}>
+                      <Select
+                        value={selectedDoc.status}
+                        onValueChange={(value) =>
+                          void updateDocument(selectedDoc.id, { status: value as DocumentStatus })
+                        }
+                      >
                         <SelectTrigger className="h-8 border-transparent bg-transparent px-2 text-xs shadow-none hover:bg-secondary/70">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
                           {statuses.map((status) => (
-                            <SelectItem key={status} value={status}>{status}</SelectItem>
+                            <SelectItem key={status} value={status}>
+                              {status}
+                            </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
@@ -2845,15 +2936,19 @@ function KnowledgePage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={isUploadOpen} onOpenChange={(open) => {
-        setIsUploadOpen(open);
-        if (!open) resetUpload();
-      }}>
+      <Dialog
+        open={isUploadOpen}
+        onOpenChange={(open) => {
+          setIsUploadOpen(open);
+          if (!open) resetUpload();
+        }}
+      >
         <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle>Upload Document</DialogTitle>
             <DialogDescription>
-              Add a governed source. The agent can retrieve it only after it is approved and indexed.
+              Add a governed source. The agent can retrieve it only after it is approved and
+              indexed.
             </DialogDescription>
           </DialogHeader>
 
@@ -2869,8 +2964,12 @@ function KnowledgePage() {
               className="flex min-h-64 flex-col items-center justify-center rounded-md border border-dashed border-border/70 bg-secondary/40 p-6 text-center text-xs transition hover:bg-secondary/70"
             >
               <Upload className="mb-3 h-7 w-7 text-muted-foreground" />
-              <div className="font-medium text-foreground">{selectedFile ? selectedFile.name : "Drop file here"}</div>
-              <div className="mt-1 text-muted-foreground">or click to choose PDF, DOCX, TXT, MD, or CSV</div>
+              <div className="font-medium text-foreground">
+                {selectedFile ? selectedFile.name : "Drop file here"}
+              </div>
+              <div className="mt-1 text-muted-foreground">
+                or click to choose PDF, DOCX, TXT, MD, or CSV
+              </div>
             </button>
             <input
               ref={fileInputRef}
@@ -2882,44 +2981,101 @@ function KnowledgePage() {
 
             <div className="grid grid-cols-2 gap-3">
               <Field className="col-span-2" label="Document title">
-                <Input value={form.title} onChange={(event) => setField("title", event.target.value)} className="h-9 text-xs shadow-none" />
+                <Input
+                  value={form.title}
+                  onChange={(event) => setField("title", event.target.value)}
+                  className="h-9 text-xs shadow-none"
+                />
               </Field>
               <Field label="Folder">
-                <Select value={form.folderId} onValueChange={(value) => setField("folderId", value)}>
-                  <SelectTrigger className="h-9 text-xs shadow-none"><SelectValue placeholder="Select folder" /></SelectTrigger>
+                <Select
+                  value={form.folderId}
+                  onValueChange={(value) => setField("folderId", value)}
+                >
+                  <SelectTrigger className="h-9 text-xs shadow-none">
+                    <SelectValue placeholder="Select folder" />
+                  </SelectTrigger>
                   <SelectContent>
                     {libraryFolders.map((folder) => (
-                      <SelectItem key={folder.id} value={folder.id}>{folder.name}</SelectItem>
+                      <SelectItem key={folder.id} value={folder.id}>
+                        {folder.name}
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </Field>
               <Field label="Source type">
-                <Select value={form.sourceType} onValueChange={(value) => setField("sourceType", value as SourceType)}>
-                  <SelectTrigger className="h-9 text-xs shadow-none"><SelectValue /></SelectTrigger>
-                  <SelectContent>{sourceTypes.map((type) => <SelectItem key={type} value={type}>{type}</SelectItem>)}</SelectContent>
+                <Select
+                  value={form.sourceType}
+                  onValueChange={(value) => setField("sourceType", value as SourceType)}
+                >
+                  <SelectTrigger className="h-9 text-xs shadow-none">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {sourceTypes.map((type) => (
+                      <SelectItem key={type} value={type}>
+                        {type}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
                 </Select>
               </Field>
               <Field label="Version">
-                <Input value={form.version} onChange={(event) => setField("version", event.target.value)} className="h-9 text-xs shadow-none" />
+                <Input
+                  value={form.version}
+                  onChange={(event) => setField("version", event.target.value)}
+                  className="h-9 text-xs shadow-none"
+                />
               </Field>
               <Field label="Visibility">
-                <Select value={form.visibility} onValueChange={(value) => setField("visibility", value as Visibility)}>
-                  <SelectTrigger className="h-9 text-xs shadow-none"><SelectValue /></SelectTrigger>
-                  <SelectContent>{visibilities.map((visibility) => <SelectItem key={visibility} value={visibility}>{visibility}</SelectItem>)}</SelectContent>
+                <Select
+                  value={form.visibility}
+                  onValueChange={(value) => setField("visibility", value as Visibility)}
+                >
+                  <SelectTrigger className="h-9 text-xs shadow-none">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {visibilities.map((visibility) => (
+                      <SelectItem key={visibility} value={visibility}>
+                        {visibility}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
                 </Select>
               </Field>
               <Field label="Status">
-                <Select value={form.status} onValueChange={(value) => setField("status", value as DocumentStatus)}>
-                  <SelectTrigger className="h-9 text-xs shadow-none"><SelectValue /></SelectTrigger>
-                  <SelectContent>{statuses.map((status) => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent>
+                <Select
+                  value={form.status}
+                  onValueChange={(value) => setField("status", value as DocumentStatus)}
+                >
+                  <SelectTrigger className="h-9 text-xs shadow-none">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {statuses.map((status) => (
+                      <SelectItem key={status} value={status}>
+                        {status}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
                 </Select>
               </Field>
               <Field label="Effective date">
-                <Input type="date" value={form.effectiveDate} onChange={(event) => setField("effectiveDate", event.target.value)} className="h-9 text-xs shadow-none" />
+                <Input
+                  type="date"
+                  value={form.effectiveDate}
+                  onChange={(event) => setField("effectiveDate", event.target.value)}
+                  className="h-9 text-xs shadow-none"
+                />
               </Field>
               <Field className="col-span-2" label="Owner/Approver">
-                <Input value={form.owner} onChange={(event) => setField("owner", event.target.value)} className="h-9 text-xs shadow-none" />
+                <Input
+                  value={form.owner}
+                  onChange={(event) => setField("owner", event.target.value)}
+                  className="h-9 text-xs shadow-none"
+                />
               </Field>
             </div>
           </div>
@@ -2932,22 +3088,30 @@ function KnowledgePage() {
                   {uploadState === "success" && "Upload complete. Processing in background..."}
                   {uploadState === "error" && "Upload failed"}
                 </span>
-                {uploadState === "success" ? <CheckCircle2 className="h-4 w-4 text-[color:var(--success)]" /> : null}
-                {uploadState === "uploading" ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
+                {uploadState === "success" ? (
+                  <CheckCircle2 className="h-4 w-4 text-[color:var(--success)]" />
+                ) : null}
+                {uploadState === "uploading" ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                ) : null}
               </div>
               {uploadState !== "error" && <Progress value={uploadProgress} />}
-              {uploadState === "error" && <p className="text-[color:var(--danger)]">{uploadError}</p>}
-              {uploadWarning && (
-                <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-800 dark:text-amber-200">
-                  {uploadWarning}
+              {uploadState === "error" && (
+                <p className="text-[color:var(--danger)]">{uploadError}</p>
+              )}
+              {uploadState === "success" && (
+                <p className="mt-2 text-muted-foreground">
+                  The document is visible in the selected folder while chunks and embeddings are
+                  prepared.
                 </p>
               )}
-              {uploadState === "success" && <p className="mt-2 text-muted-foreground">The document is visible in the selected folder. Processing will continue automatically.</p>}
             </div>
           )}
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setIsUploadOpen(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setIsUploadOpen(false)}>
+              Cancel
+            </Button>
             <Button
               className="bg-[color:var(--brand)] text-[color:var(--brand-foreground)]"
               onClick={() => void handleUpload()}
@@ -2965,10 +3129,165 @@ function KnowledgePage() {
 function StructuredField({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</div>
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {label}
+      </div>
       <p className="mt-0.5 text-[11px] leading-4 text-foreground whitespace-pre-wrap">{value}</p>
     </div>
   );
+}
+
+function QualityScoreBadge({
+  score,
+  detailed = false,
+}: {
+  score: {
+    score: number;
+    max_score: number;
+    criteria: Array<{ key: string; label: string; passed: boolean }>;
+  };
+  detailed?: boolean;
+}) {
+  const pct = Math.round((score.score / Math.max(score.max_score, 1)) * 100);
+  return (
+    <div className="inline-flex flex-col gap-1">
+      <span className="inline-flex items-center gap-1 rounded bg-secondary px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground">
+        Quality {score.score}/{score.max_score} ({pct}%)
+      </span>
+      {detailed && (
+        <div className="flex flex-wrap gap-1">
+          {score.criteria.map((item) => (
+            <span
+              key={item.key}
+              className={cn(
+                "rounded px-1.5 py-0.5 text-[9px]",
+                item.passed
+                  ? "bg-[color:var(--success)]/10 text-[color:var(--success)]"
+                  : "bg-secondary text-muted-foreground",
+              )}
+            >
+              {item.label}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SummaryPill({ icon, label, value }: { icon: ReactNode; label: string; value: number }) {
+  return (
+    <div className="flex h-9 items-center gap-2 rounded-md bg-card px-3 text-xs">
+      <span className="text-muted-foreground">{icon}</span>
+      <span className="font-semibold text-foreground">{value}</span>
+      <span className="text-muted-foreground">{label}</span>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  children,
+  className,
+}: {
+  label: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <label className={cn("space-y-1.5 text-xs", className)}>
+      <span className="font-medium text-muted-foreground">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function MetaRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <dt>{label}</dt>
+      <dd className="max-w-[10rem] text-right font-medium text-foreground">{value}</dd>
+    </div>
+  );
+}
+
+function InfoTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border/70 bg-card/60 p-3">
+      <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+        {label}
+      </div>
+      <div className="mt-1 font-medium text-foreground">{value}</div>
+    </div>
+  );
+}
+
+function FormattedPreview({ text, compact = false }: { text: string; compact?: boolean }) {
+  const lines = formatPreviewLines(text);
+  return (
+    <div className={cn("space-y-2", compact && "space-y-1.5")}>
+      {lines.map((line, index) => {
+        if (line.kind === "heading") {
+          return (
+            <h4
+              key={`${line.text}-${index}`}
+              className="pt-1 text-sm font-semibold text-foreground"
+            >
+              {line.text}
+            </h4>
+          );
+        }
+        if (line.kind === "bullet") {
+          return (
+            <div key={`${line.text}-${index}`} className="flex gap-2 pl-2 text-sm leading-6">
+              <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
+              <span>{line.text}</span>
+            </div>
+          );
+        }
+        return (
+          <p key={`${line.text}-${index}`} className="text-sm leading-6 text-foreground">
+            {line.text}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+function formatPreviewLines(
+  text: string,
+): Array<{ kind: "heading" | "bullet" | "paragraph"; text: string }> {
+  const normalized = text
+    .replace(
+      /(Purpose|Scope|Procedure|Responsibilities|Requirements|Project Summary|Challenges Encountered|Actions Taken|Results|Recommendations|Best Practices|Lessons Learned|Quality Guidance)(?=[A-Z0-9-])/g,
+      "\n$1\n",
+    )
+    .replace(/(Phase\s+\d+:\s*[^-]+)-\s*/g, "\n$1\n- ")
+    .replace(/(?<![\d\n])([1-9]\d?\.\s+)/g, "\n$1")
+    .replace(/(?<=[a-z0-9)%])-\s*(?=[A-Z][A-Za-z]+(?:\s|$))/g, "\n- ")
+    .replace(/(?<=[.;:])\s+-\s*(?=[A-Z][A-Za-z]+(?:\s|$))/g, "\n- ");
+  return normalized
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const clean = line.replace(/^-\s*/, "").trim();
+      if (line.startsWith("-")) return { kind: "bullet", text: clean };
+      if (/^\d+[.)]\s+/.test(line)) return { kind: "bullet", text: line };
+      if (
+        /^(Purpose|Scope|Procedure|Responsibilities|Requirements|Project Summary|Challenges Encountered|Actions Taken|Results|Recommendations|Best Practices|Lessons Learned|Quality Guidance)$/i.test(
+          line,
+        )
+      ) {
+        return { kind: "heading", text: line };
+      }
+      if (/^Phase\s+\d+:/i.test(line)) return { kind: "heading", text: line };
+      if (/^[A-Z][A-Za-z0-9:() /-]{2,}$/.test(line) && line.length <= 90 && !/[.!?]$/.test(line)) {
+        return { kind: "heading", text: line };
+      }
+      return { kind: "paragraph", text: line };
+    });
 }
 
 function folderIcon(kind: KnowledgeFolderKind, name: string) {
@@ -2977,4 +3296,25 @@ function folderIcon(kind: KnowledgeFolderKind, name: string) {
   if (kind === "guides" || name === "Guides") return <Sparkles className={className} />;
   if (kind === "histories" || name === "Histories") return <History className={className} />;
   return <Folder className={className} />;
+}
+
+function DocBadge({ label, tone }: { label: string; tone?: "success" | "info" | "danger" }) {
+  if (label === "Approved" || label === "Draft" || label === "Archived")
+    return <StatusPill status={label} />;
+  const classes =
+    tone === "success"
+      ? "border-[color:var(--success)]/30 bg-[color:var(--success)]/15 text-[color:var(--success)]"
+      : tone === "danger"
+        ? "border-[color:var(--danger)]/30 bg-[color:var(--danger)]/10 text-[color:var(--danger)]"
+        : "border-[color:var(--info)]/30 bg-[color:var(--info)]/15 text-[color:var(--info)]";
+  return (
+    <span
+      className={cn(
+        "inline-flex rounded-full border px-1.5 py-0.5 text-[9px] font-medium",
+        classes,
+      )}
+    >
+      {label}
+    </span>
+  );
 }

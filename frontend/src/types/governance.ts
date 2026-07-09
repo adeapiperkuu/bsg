@@ -6,7 +6,6 @@ export type GovernanceDependencyStatus = "open" | "blocking" | "resolved";
 export type GovernanceEscalationSeverity = "low" | "medium" | "high" | "critical";
 export type GovernanceEscalationStatus = "open" | "in_progress" | "resolved";
 export type GovernanceActionStatus = "open" | "in_progress" | "completed" | "overdue";
-export type GovernanceSummaryStatus = "draft" | "approved";
 export type GovernanceCharterStatus = "draft" | "approved" | "archived";
 export type KnowledgeVisibility = "internal_only" | "leadership_only" | "client_safe";
 export type GovernanceEvidenceSourceType =
@@ -25,6 +24,36 @@ export type GovernanceKpis = {
   blocking_dependencies: number;
   at_risk_items: number;
   sla_adherence_pct: number;
+};
+
+export type GovernanceListPagination = {
+  items: number;
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+};
+
+export type PaginatedGovernanceList<T> = {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+};
+
+export type GovernanceListParams = {
+  limit?: number;
+  offset?: number;
+  project_id?: string;
+  status?: string;
+  severity?: string;
+  dependency_type?: string;
+  owner_id?: string;
+  assigned_to?: string;
+  search?: string;
+  date_from?: string;
+  date_to?: string;
 };
 
 /** Alias for KPI block in bootstrap responses. */
@@ -118,21 +147,6 @@ export type GovernanceEvidenceLink = {
   project_name?: string | null;
 };
 
-export type GovernanceWeeklySummary = {
-  id: string;
-  org_id: string;
-  summary_week: string;
-  summary_text: string;
-  status: GovernanceSummaryStatus;
-  generated_by_ai: boolean;
-  approved_by: string | null;
-  approved_at: string | null;
-  created_at: string;
-  updated_at: string;
-  evidence_links: GovernanceEvidenceLink[];
-  approved_by_name?: string | null;
-};
-
 export type ProjectCharter = {
   id: string;
   org_id: string;
@@ -153,22 +167,65 @@ export type ProjectCharter = {
   project_name?: string | null;
 };
 
-export type GovernanceCharterReference = {
-  document_id: string;
-  title: string;
-  project: string | null;
-  version: string;
-  status: string;
-  visibility: string;
-};
+export type ProjectDependencyListItem = Pick<
+  ProjectDependency,
+  | "id"
+  | "project_id"
+  | "title"
+  | "dependency_type"
+  | "owner_id"
+  | "due_date"
+  | "status"
+  | "overdue_days"
+  | "project_name"
+  | "owner_name"
+>;
+
+export type GovernanceEscalationListItem = Pick<
+  GovernanceEscalation,
+  | "id"
+  | "project_id"
+  | "title"
+  | "severity"
+  | "status"
+  | "raised_at"
+  | "source_type"
+  | "source_id"
+  | "project_name"
+  | "raised_by_name"
+  | "assigned_to_name"
+>;
+
+export type GovernanceActionListItem = Pick<
+  GovernanceAction,
+  | "id"
+  | "project_id"
+  | "title"
+  | "owner_id"
+  | "due_date"
+  | "status"
+  | "project_name"
+  | "owner_name"
+>;
 
 export type GovernanceBootstrap = {
   kpis: GovernanceKpis;
-  dependencies: ProjectDependency[];
-  escalations: GovernanceEscalation[];
-  actions: GovernanceAction[];
+  dependencies: ProjectDependencyListItem[];
+  escalations: GovernanceEscalationListItem[];
+  actions: GovernanceActionListItem[];
   scope_states: ProjectScopeState[];
-  charter_references: GovernanceCharterReference[];
+};
+
+export type GovernanceRegisterRowApi = {
+  project_id: string;
+  project_name: string;
+  scope_status: GovernanceScopeStatus | null;
+  scope_version: string | null;
+  open_dependencies: number;
+  blocking_dependencies: number;
+  open_actions: number;
+  open_escalations: number;
+  health: "green" | "amber" | "red";
 };
 
 export type GovernanceAnalyticsEvidence = {
@@ -240,34 +297,31 @@ export type GovernanceTrendPoint = {
   sla_adherence_pct: number;
 };
 
-export type GovernanceAnalyticsKpis = {
-  portfolio_score: number;
-  projects_at_risk: number;
-  leadership_attention_projects: number;
-  blocking_dependencies: number;
-  critical_escalations: number;
-  pending_scope_approvals: number;
-  upcoming_governance_meetings: number;
-  governance_sla_pct: number;
-  avg_dependency_resolution_days: number | null;
-  avg_escalation_resolution_days: number | null;
-  avg_action_completion_days: number | null;
-  open_dependencies: number;
-  open_actions: number;
-  overdue_actions: number;
-  projects_red: number;
-  projects_amber: number;
-  projects_green: number;
-  weekly_trend: number;
-  monthly_trend: number;
-};
-
 export type GovernanceAnalytics = {
   generated_at: string;
   date_range_days: number;
-  kpis: GovernanceAnalyticsKpis;
   project_health: GovernanceHealthProject[];
   portfolio_risk_ranking: GovernanceHealthProject[];
+  insights: GovernanceAnalyticsInsight[];
+  recommendations: GovernanceAnalyticsRecommendation[];
+  trends: GovernanceTrendPoint[];
+  charts: Record<string, GovernanceChartPoint[]>;
+  recent_activity: GovernanceAnalyticsEvidence[];
+  export_sections: string[];
+};
+
+export type GovernanceAnalyticsSummary = {
+  generated_at: string;
+  date_range_days: number;
+  project_health: GovernanceHealthProject[];
+  portfolio_risk_ranking: GovernanceHealthProject[];
+  charts: Record<string, GovernanceChartPoint[]>;
+  export_sections: string[];
+};
+
+export type GovernanceAnalyticsDetail = {
+  generated_at: string;
+  date_range_days: number;
   insights: GovernanceAnalyticsInsight[];
   recommendations: GovernanceAnalyticsRecommendation[];
   trends: GovernanceTrendPoint[];
@@ -342,15 +396,6 @@ export type ProjectScopeStateUpdatePayload = {
   version_label?: string;
   notes?: string | null;
   linked_charter_document_id?: string | null;
-};
-
-export type GovernanceWeeklySummaryCreatePayload = {
-  summary_week: string;
-  summary_text: string;
-  evidence_links?: Array<{
-    source_type: GovernanceEvidenceSourceType;
-    source_id: string;
-  }>;
 };
 
 export type ProjectCharterGeneratePayload = {

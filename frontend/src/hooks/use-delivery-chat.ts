@@ -1,10 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { ApiError, getDeliveryChatConversation, streamDeliveryChatMessage } from "@/lib/api";
-import { sanitizeDeliveryMarkdown } from "@/components/delivery/delivery-markdown";
-import { queryKeys } from "@/lib/queries/keys";
-import { DELIVERY_CHAT_MAX_MESSAGE_LENGTH, generateDeliverySuggestions } from "@/types/delivery-chat";
-import type { DeliveryChatMessage, DeliveryChatTurn } from "@/types/delivery-chat";
+import { useCallback, useRef, useState } from "react";
+import { sendDeliveryChatMessage } from "@/lib/api";
+import { sanitizeDeliveryMarkdown } from "@/components/delivery/delivery-markdown-utils";
+import { generateDeliverySuggestions } from "@/types/delivery-chat";
+import type { DeliveryChatMessage } from "@/types/delivery-chat";
 
 function createMessageId(): string {
   return crypto.randomUUID();
@@ -225,11 +223,24 @@ export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
           }
         }
       } catch (err) {
-        const message = describeDeliveryChatError(err);
-        setMessages((current) => [
-          ...current,
-          { id: createMessageId(), role: "agent", text: message, error: true },
-        ]);
+        const message =
+          err instanceof Error
+            ? err.message
+            : "The delivery agent could not complete your request.";
+        setError(message);
+        setMessages((current) => {
+          const next: DeliveryChatMessage[] = [
+            ...current,
+            {
+              id: createMessageId(),
+              role: "agent",
+              text: message,
+              error: true,
+            },
+          ];
+          setAnimatingMessageIndex(next.length - 1);
+          return next;
+        });
       } finally {
         setAsking(false);
         setStreamingMessageId(null);

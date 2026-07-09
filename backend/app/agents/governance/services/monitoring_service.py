@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.governance.query_handler import PROJECT_GOVERNANCE_AGENT_NAME
 from app.agents.governance.schemas.governance import GovernanceMonitoringRead
+from app.agents.governance.timing import governance_db_timed
 from app.core.security import CurrentUser
 from app.db.models import AgentQuery, AppRole
 from app.db.models.audit_log import AuditLog
@@ -64,3 +65,6 @@ async def get_governance_monitoring(
         + event_counts.get("governance.charter.exported", 0),
         recent_event_types=dict(event_counts.most_common(12)),
     )
+
+
+get_governance_monitoring = governance_db_timed(get_governance_monitoring)

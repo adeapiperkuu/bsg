@@ -1573,6 +1573,34 @@ class GovernanceAction(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
 
 
+class ProjectGovernanceSummary(Base, UuidPrimaryKey, UpdatedAt):
+    __tablename__ = "project_governance_summary"
+    __table_args__ = (
+        Index(
+            "project_governance_summary_org_project_key",
+            "org_id",
+            "project_id",
+            unique=True,
+        ),
+        Index("project_governance_summary_org_id_idx", "org_id"),
+        Index("project_governance_summary_project_id_idx", "project_id"),
+        Index("project_governance_summary_org_updated_idx", "org_id", "updated_at"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    open_dependencies_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    blocked_dependencies_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    blocking_overdue_dependencies_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    open_actions_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    overdue_actions_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    open_escalations_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    critical_escalations_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    pending_scope_changes_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
 class GovernanceWeeklySummary(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     __tablename__ = "governance_weekly_summaries"
     __table_args__ = (

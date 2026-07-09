@@ -22,7 +22,12 @@ export function visiblePages(currentPage: number, totalPages: number): number[] 
 export function initials(name: string | null, email: string): string {
   if (name) {
     const parts = name.trim().split(/\s+/);
-    return parts.slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "?";
+    return (
+      parts
+        .slice(0, 2)
+        .map((part) => part[0]?.toUpperCase() ?? "")
+        .join("") || "?"
+    );
   }
   return email[0]?.toUpperCase() ?? "?";
 }

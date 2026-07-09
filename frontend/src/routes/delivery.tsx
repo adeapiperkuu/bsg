@@ -9,16 +9,8 @@ import {
   Tooltip,
 } from "recharts";
 import { useEffect, useMemo, useRef } from "react";
-import {
-  Card,
-  SectionHeader,
-  KpiCard,
-  AiBadge,
-  StatusPill,
-} from "@/components/bsg/widgets";
-import {
-  type DeliveryDashboardResponse,
-} from "@/lib/api";
+import { Card, SectionHeader, KpiCard, AiBadge, StatusPill } from "@/components/bsg/widgets";
+import { type DeliveryDashboardResponse } from "@/lib/api";
 import {
   useDeliveryDashboardQuery,
   useDeliveryPortfolioQuery,
@@ -162,8 +154,8 @@ function DeliveryPage() {
   const organisationsQuery = useOrganisationsQuery();
   const portfolioQuery = useDeliveryPortfolioQuery();
 
-  const projects = projectsQuery.data ?? [];
-  const organisations = organisationsQuery.data ?? [];
+  const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
+  const organisations = useMemo(() => organisationsQuery.data ?? [], [organisationsQuery.data]);
 
   const resolvedProjectId = useMemo(() => {
     if (projects.length === 0) return null;
@@ -196,12 +188,10 @@ function DeliveryPage() {
   }, [portfolioQuery.data]);
 
   const selectedProject = projects.find((project) => project.id === resolvedProjectId);
-  const selectedDashboard = resolvedProjectId
-    ? selectedDashboardQuery.data ?? portfolioDashboards[resolvedProjectId]
-    : undefined;
+  const selectedDashboard = resolvedProjectId ? dashboards[resolvedProjectId] : undefined;
   const portfolioMilestones = useMemo(
-    () => (portfolioQuery.data?.projects ?? []).flatMap((entry) => entry.dashboard.milestones),
-    [portfolioQuery.data],
+    () => portfolioQuery.data?.milestones ?? [],
+    [portfolioQuery.data?.milestones],
   );
 
   const loading =
@@ -329,9 +319,7 @@ function DeliveryPage() {
           <SectionHeader
             title="Root Cause Analysis"
             sub={
-              selectedProject
-                ? `Why is ${selectedProject.name} at risk?`
-                : "Root cause breakdown"
+              selectedProject ? `Why is ${selectedProject.name} at risk?` : "Root cause breakdown"
             }
             right={
               selectedDashboard && !hasSufficientData(selectedDashboard) ? (
@@ -471,13 +459,7 @@ function DeliveryPage() {
                           </td>
                           <td className="py-2.5 pr-3">
                             {dashboard ? (
-                              <StatusPill
-                                status={
-                                  hasSufficientData(dashboard)
-                                    ? riskLabel(tier)
-                                    : "Insufficient data"
-                                }
-                              />
+                              <StatusPill status={riskLabel(dashboard.traffic_light, tier)} />
                             ) : (
                               "—"
                             )}
