@@ -7,9 +7,6 @@ import type { DeliveryChatMessage, DeliveryChatSource } from "@/types/delivery-c
 
 type Props = {
   message: DeliveryChatMessage;
-  isAnimating: boolean;
-  onAnimationProgress?: () => void;
-  onAnimationComplete?: () => void;
 };
 
 const SOURCE_TYPE_LABELS: Record<string, string> = {
@@ -40,13 +37,9 @@ function DeliverySourceCard({ source }: { source: DeliveryChatSource }) {
   );
 }
 
-export function DeliveryMessage({
-  message,
-  isAnimating,
-  onAnimationProgress,
-  onAnimationComplete,
-}: Props) {
-  const showAgentDetails = message.role === "agent" && !isAnimating;
+export function DeliveryMessage({ message }: Props) {
+  const isStreaming = message.role === "agent" && message.streaming === true;
+  const showAgentDetails = message.role === "agent" && !isStreaming;
 
   return (
     <div className={cn("flex gap-3", message.role === "user" ? "justify-end" : "justify-start")}>
@@ -73,15 +66,16 @@ export function DeliveryMessage({
           {message.role === "user" ? "You" : "Delivery Agent"}
         </div>
 
-        {isAnimating ? (
-          <TypewriterText
-            text={deliveryMarkdownPreview(message.text)}
-            className="text-[11px] leading-5 text-foreground"
-            onProgress={onAnimationProgress}
-            onComplete={onAnimationComplete}
-          />
-        ) : message.role === "agent" ? (
-          <DeliveryMarkdown content={message.text} />
+        {message.role === "agent" ? (
+          <>
+            <DeliveryMarkdown content={message.text} />
+            {isStreaming && (
+              <span
+                aria-hidden="true"
+                className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-muted-foreground align-middle"
+              />
+            )}
+          </>
         ) : (
           <p className="text-[11px] leading-5">{message.text}</p>
         )}

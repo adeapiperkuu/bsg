@@ -147,6 +147,62 @@
   animation: page-fade-up 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+.governance-no-shadow button,
+.governance-no-shadow input,
+.governance-no-shadow textarea,
+.governance-no-shadow [role="combobox"],
+[data-governance-select-content] {
+  box-shadow: none !important;
+}
+
+.governance-table-shell {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.governance-table-shell table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.governance-table-shell thead {
+  background: var(--elevated);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.governance-table-shell th {
+  height: 40px;
+  padding: 0 16px;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.governance-table-shell td {
+  height: 36px;
+  padding: 0 16px;
+  vertical-align: middle;
+}
+
+.governance-table-shell tbody tr {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+  transition: background-color 140ms ease;
+}
+
+.governance-table-shell tbody tr:last-child {
+  border-bottom: 0;
+}
+
+.governance-table-shell tbody tr:hover {
+  background-color: color-mix(in srgb, var(--elevated) 65%, transparent);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .page-enter {
     animation: none;

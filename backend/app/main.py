@@ -1,11 +1,14 @@
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.agents.delivery.routes import chat as delivery_chat
 from app.agents.delivery.routes import dashboard as delivery_dashboard
+from app.agents.governance.routes import governance as governance_routes
 from app.api.routes import (
     agents,
     auth,
@@ -25,12 +28,33 @@ from app.api.routes import (
 from app.core.config import get_settings
 from app.core.csrf import CsrfMiddleware
 from app.core.exceptions import register_exception_handlers
-from app.db.session import dispose_engine
+from app.db.session import AsyncSessionLocal, dispose_engine
+from app.db.models import ScanTrigger
+from app.services.quality import scan_all_projects
+from app.services.signal_dispatcher import dispatch_pending_signals
+
+logger = logging.getLogger(__name__)
+
+
+async def _scheduled_quality_scan() -> None:
+    """Scheduler wrapper: opens its own DB session (no FastAPI DI)."""
+    async with AsyncSessionLocal() as session:
+        try:
+            run = await scan_all_projects(session, trigger=ScanTrigger.SCHEDULER)
+            logger.info("Scheduled quality scan complete run_id=%s status=%s", run.id, run.status)
+            totals = await dispatch_pending_signals(session)
+            logger.info("Post-scan signal dispatch: %s", totals)
+        except Exception:
+            logger.exception("Scheduled quality scan failed")
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(_scheduled_quality_scan, "cron", day_of_week="mon", hour=2)
+    scheduler.start()
     yield
+    scheduler.shutdown()
     await dispose_engine()
 
 
@@ -71,6 +95,7 @@ def create_app() -> FastAPI:
     app.include_router(metrics.router, prefix=api_prefix)
     app.include_router(csat.router, prefix=api_prefix)
     app.include_router(knowledge.router, prefix=api_prefix)
+    app.include_router(governance_routes.router, prefix=api_prefix)
     return app
 
 

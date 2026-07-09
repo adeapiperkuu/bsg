@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Card, SectionHeader, AiBadge, StatusPill } from "@/components/bsg/widgets";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -23,26 +24,41 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   askKnowledgeAgent,
   compareKnowledgeDocumentVersions,
-  createKnowledgeFolder,
-  deleteKnowledgeDocument,
   downloadKnowledgeDocumentFile,
-  getKnowledgeDocument,
-  listKnowledgeDocumentVersions,
-  listKnowledgeDocuments,
-  listKnowledgeFolders,
-  reindexKnowledgeDocument,
-  updateKnowledgeDocument,
-  uploadKnowledgeDocument,
+  getKnowledgeConversation,
+  streamKnowledgeAsk,
+  submitKnowledgeFeedback,
 } from "@/lib/api";
-import { KnowledgeRetrievalPanel } from "@/components/knowledge/KnowledgeRetrievalPanel";
+import { queryKeys } from "@/lib/queries/keys";
+import {
+  invalidateKnowledgeAgentQueries,
+  patchKnowledgeDocumentsCache,
+  useCreateKnowledgeFolderMutation,
+  useDeleteKnowledgeDocumentMutation,
+  useKnowledgeBootstrapQuery,
+  useKnowledgeDocumentsQuery,
+  useKnowledgeLibraryHealthQuery,
+  useKnowledgeRetrievalSettingsQuery,
+  useReindexKnowledgeDocumentMutation,
+  useResolveKnowledgeGapMutation,
+  useUpdateKnowledgeDocumentMutation,
+  useUpdateKnowledgeRetrievalSettingsMutation,
+  useUploadKnowledgeDocumentMutation,
+} from "@/lib/queries/knowledge";
+import { KnowledgeHistoryPopover } from "@/components/knowledge/KnowledgeHistoryPopover";
+import { DocBadge, Field, MetaRow, QualityScoreBadge } from "@/components/knowledge/knowledge-ui";
 import { TypewriterText } from "@/components/knowledge/TypewriterText";
 import { TypingIndicator } from "@/components/knowledge/TypingIndicator";
+import { useDocumentTabLoader, type DocumentDetailTab } from "@/hooks/useDocumentTabLoader";
+import { useLazyWhenVisible } from "@/hooks/useLazyWhenVisible";
 import { useAuthStore } from "@/stores/useAuthStore";
 import {
   documentFromApi,
+  documentSummaryFromApi,
   documentToApiPatch,
   isRetrievalReady,
   uploadFormToApi,
@@ -54,16 +70,22 @@ import {
 } from "@/lib/knowledge-mappers";
 import type {
   KnowledgeAskResponseApi,
-  KnowledgeCitationApi,
+  KnowledgeConversationSummaryApi,
+  KnowledgeConversationTurnApi,
   KnowledgeDocumentVersionApi,
   KnowledgeFolderKind,
   KnowledgeGapApi,
+  KnowledgeGapTodoApi,
+  KnowledgeLibraryHealthApi,
+  KnowledgeProcessingStatusApi,
   KnowledgeRetrievalSettingsApi,
+  KnowledgeRetrievalDebugApi,
   KnowledgeStructuredAnswerApi,
   KnowledgeVersionCompareApi,
 } from "@/types/knowledge";
 import {
-  Archive,
+  AlertTriangle,
+  Copy,
   Bot,
   CheckCircle2,
   ChevronDown,
@@ -72,27 +94,41 @@ import {
   FileText,
   Filter,
   Folder,
-  GitCompare,
   History,
-  Library,
   Loader2,
   Plus,
   Send,
   RefreshCw,
   Search,
-  Settings2,
-  ShieldCheck,
   Sparkles,
+  ThumbsDown,
+  ThumbsUp,
   Trash2,
   Upload,
 } from "lucide-react";
 
 export const Route = createFileRoute("/knowledge")({ component: KnowledgePage });
 
+const LazyKnowledgeDocumentTabPanels = lazy(() =>
+  import("@/components/knowledge/KnowledgeDocumentTabPanels").then((module) => ({
+    default: module.KnowledgeDocumentTabPanels,
+  })),
+);
+
+function DocumentTabFallback() {
+  return (
+    <div className="mt-4 flex items-center gap-2 text-xs text-muted-foreground">
+      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      Loading panel...
+    </div>
+  );
+}
+
 type UploadState = "idle" | "uploading" | "success" | "error";
 type SortMode = "recent" | "title" | "approved" | "indexed";
-type HealthFilter = "all" | "ready" | "needs_approval" | "indexing" | "archived";
+type HealthFilter = "all" | "ready" | "needs_approval" | "indexing" | "archived" | "expired" | "needs_reindex";
 type ChatMessage = {
+  id: string;
   role: "user" | "agent";
   text: string;
   next_step?: string;
@@ -100,7 +136,18 @@ type ChatMessage = {
   confidence_reasons?: string[];
   structured_answer?: KnowledgeStructuredAnswerApi | null;
   knowledge_gap?: KnowledgeGapApi | null;
-  citations?: KnowledgeCitationApi[];
+  retrieval_debug?: KnowledgeRetrievalDebugApi | null;
+  regenerationSummary?: string;
+  query_id?: string | null;
+  feedback?: "up" | "down";
+  feedbackComment?: string;
+  isServiceError?: boolean;
+  isStreaming?: boolean;
+  streamPhase?: "searching" | "reading" | "generating";
+  wasStreamed?: boolean;
+  isHistorical?: boolean;
+  retryQuestion?: string;
+  detailsExpanded?: boolean;
 };
 type LibraryFolder = { id: string; kind: KnowledgeFolderKind; name: string };
 
@@ -124,33 +171,413 @@ const visibilities: Visibility[] = ["Internal-only", "Leadership-only", "Client-
 const statuses: DocumentStatus[] = ["Draft", "Approved", "Archived"];
 const acceptedExtensions = [".pdf", ".docx", ".txt", ".md", ".csv"];
 const folderPreviewLimit = 6;
-const suggestedQuestions = [
+const SUGGESTED_QUESTION_LIMIT = 4;
+const FALLBACK_SUGGESTED_QUESTIONS = [
   "When should a quality escalation be triggered?",
-  "What actions improved quality in Project Alpha?",
   "What are the onboarding steps before production launch?",
+  "What actions improved quality in past projects?",
 ];
+const FOLDER_SUGGESTIONS: Partial<Record<KnowledgeFolderKind, string>> = {
+  sops: "What quality and escalation SOPs are available?",
+  guides: "Ask about Guides — what onboarding steps are documented?",
+  histories: "Ask about Histories — what lessons learned are captured?",
+};
+const TYPEWRITER_MAX_CHARS = 4000;
+const STREAM_PHASE_LABELS: Record<NonNullable<ChatMessage["streamPhase"]>, string> = {
+  searching: "Searching sources…",
+  reading: "Reading documents…",
+  generating: "Generating answer…",
+};
+const LOW_CONFIDENCE_THRESHOLD = 0.5;
+const NO_KNOWLEDGE_ANSWER =
+  "I could not find this information in the uploaded knowledge base.";
+const KNOWLEDGE_CHAT_STORAGE_PREFIX = "bsg:knowledge-chat";
+const KNOWLEDGE_LIBRARY_SNAPSHOT_KEY = "bsg:knowledge-library-snapshot";
+const KNOWLEDGE_LIBRARY_SNAPSHOT_TTL_MS = 30 * 60 * 1000;
+const CHAT_SCROLL_THRESHOLD_PX = 80;
+const LIBRARY_DEBOUNCE_MS = 120;
 
-const initialDocuments: KnowledgeDocument[] = [];
+type KnowledgeChatSession = {
+  conversationId: string | null;
+  messages: ChatMessage[];
+};
+
+type KnowledgeLibrarySnapshot = {
+  documents: KnowledgeDocument[];
+  folders: LibraryFolder[];
+  libraryHealth: KnowledgeLibraryHealthApi;
+  savedAt: number;
+};
+
+function createChatMessageId() {
+  return crypto.randomUUID();
+}
+
+function useDebouncedValue<T>(value: T, delayMs: number) {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebouncedValue(value), delayMs);
+    return () => window.clearTimeout(timeout);
+  }, [delayMs, value]);
+
+  return debouncedValue;
+}
+
+function loadKnowledgeLibrarySnapshot(): KnowledgeLibrarySnapshot | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(KNOWLEDGE_LIBRARY_SNAPSHOT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as KnowledgeLibrarySnapshot;
+    if (!Array.isArray(parsed.documents) || !Array.isArray(parsed.folders)) return null;
+    if (!parsed.libraryHealth || typeof parsed.savedAt !== "number") return null;
+    if (Date.now() - parsed.savedAt > KNOWLEDGE_LIBRARY_SNAPSHOT_TTL_MS) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function saveKnowledgeLibrarySnapshot(snapshot: KnowledgeLibrarySnapshot) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(KNOWLEDGE_LIBRARY_SNAPSHOT_KEY, JSON.stringify(snapshot));
+  } catch {
+    // Ignore storage quota and private browsing failures.
+  }
+}
+
+function getKnowledgeLibrarySnapshotSignature(
+  documents: KnowledgeDocument[],
+  folders: LibraryFolder[],
+  libraryHealth: KnowledgeLibraryHealthApi,
+) {
+  return JSON.stringify({
+    documents: documents.map((document) => [
+      document.id,
+      document.title,
+      document.folderId,
+      document.version,
+      document.status,
+      document.workflowState,
+      document.processingStatus,
+      document.indexed,
+      document.indexing,
+      document.effectiveDate,
+    ]),
+    folders: folders.map((folder) => [folder.id, folder.kind, folder.name]),
+    health: [
+      libraryHealth.ready_count,
+      libraryHealth.needs_review_count,
+      libraryHealth.expired_count,
+      libraryHealth.needs_reindex_count,
+      libraryHealth.indexing_count,
+      libraryHealth.draft_count,
+      libraryHealth.archived_count,
+      ...libraryHealth.open_gaps.map((gap) => gap.id),
+    ],
+  });
+}
+
+function normalizeChatMessage(value: unknown): ChatMessage | null {
+  if (!value || typeof value !== "object") return null;
+  const msg = value as ChatMessage;
+  if (msg.role !== "user" && msg.role !== "agent") return null;
+  if (typeof msg.text !== "string") return null;
+  return { ...msg, id: msg.id ?? createChatMessageId() };
+}
+
+function createUserMessage(text: string): ChatMessage {
+  return { id: createChatMessageId(), role: "user", text };
+}
+
+function getKnowledgeChatStorageKey(userId: string) {
+  return `${KNOWLEDGE_CHAT_STORAGE_PREFIX}:${userId}`;
+}
+
+function isChatMessage(value: unknown): value is ChatMessage {
+  return normalizeChatMessage(value) !== null;
+}
+
+function loadKnowledgeChatSession(userId: string): KnowledgeChatSession | null {
+  try {
+    const raw = sessionStorage.getItem(getKnowledgeChatStorageKey(userId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as KnowledgeChatSession;
+    if (!Array.isArray(parsed.messages)) return null;
+    const messages = parsed.messages
+      .map(normalizeChatMessage)
+      .filter((message): message is ChatMessage => message !== null);
+    if (messages.length !== parsed.messages.length) return null;
+    const conversationId =
+      typeof (parsed as KnowledgeChatSession).conversationId === "string"
+        ? (parsed as KnowledgeChatSession).conversationId
+        : null;
+    return { messages, conversationId };
+  } catch {
+    return null;
+  }
+}
+
+function saveKnowledgeChatSession(userId: string, session: KnowledgeChatSession) {
+  try {
+    sessionStorage.setItem(getKnowledgeChatStorageKey(userId), JSON.stringify(session));
+  } catch {
+    // ignore quota errors or private browsing
+  }
+}
+
+function clearKnowledgeChatSession(userId: string) {
+  try {
+    sessionStorage.removeItem(getKnowledgeChatStorageKey(userId));
+  } catch {
+    // ignore
+  }
+}
+
+function buildSuggestedQuestions(
+  documents: KnowledgeDocument[],
+  folders: LibraryFolder[],
+  limit = SUGGESTED_QUESTION_LIMIT,
+): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  const add = (question: string) => {
+    const text = question.trim();
+    const key = text.toLowerCase();
+    if (!text || seen.has(key) || result.length >= limit) return;
+    seen.add(key);
+    result.push(text);
+  };
+
+  const readyDocs = documents.filter(isRetrievalReady);
+
+  for (const doc of readyDocs.filter((item) => item.sourceType === "SOP").slice(0, 2)) {
+    add(`What does the "${doc.title}" SOP cover?`);
+  }
+
+  for (const folder of folders) {
+    if (result.length >= limit) break;
+    const hasReady = readyDocs.some((doc) => doc.folderId === folder.id);
+    if (!hasReady) continue;
+    const template = FOLDER_SUGGESTIONS[folder.kind];
+    if (template) add(template);
+    else if (folder.kind === "custom") add(`Ask about ${folder.name} — what's documented there?`);
+  }
+
+  for (const fallback of FALLBACK_SUGGESTED_QUESTIONS) {
+    if (result.length >= limit) break;
+    add(fallback);
+  }
+
+  return result.slice(0, limit);
+}
+
+function formatRetrievalScopeLabel(settings: KnowledgeRetrievalSettingsApi | null): string | null {
+  if (!settings) return null;
+  const parts: string[] = [];
+  if (settings.project) parts.push(`Project: ${settings.project}`);
+  if (settings.department) parts.push(`Department: ${settings.department}`);
+  if (!settings.include_histories) parts.push("Histories off");
+  if (parts.length === 0) return null;
+  return parts.join(" / ");
+}
+
+const KNOWLEDGE_CONVERSATION_TURN_LIMIT = 6;
+
+function buildConversationHistory(messages: ChatMessage[]) {
+  return messages
+    .filter((message) => !message.isServiceError)
+    .slice(-KNOWLEDGE_CONVERSATION_TURN_LIMIT)
+    .map((message) => ({
+      role: message.role === "user" ? ("user" as const) : ("assistant" as const),
+      content: message.text,
+    }));
+}
+
+function findPrecedingUserQuestion(messages: ChatMessage[], agentMessageId: string): string | null {
+  const agentIndex = messages.findIndex((message) => message.id === agentMessageId);
+  if (agentIndex < 0) return null;
+  for (let i = agentIndex - 1; i >= 0; i -= 1) {
+    if (messages[i].role === "user") return messages[i].text;
+  }
+  return null;
+}
+
+function agentMessageFromResponse(
+  response: KnowledgeAskResponseApi,
+  options?: { isHistorical?: boolean },
+): ChatMessage {
+  return {
+    id: createChatMessageId(),
+    role: "agent",
+    text: response.answer_text,
+    next_step: response.next_step,
+    confidence_score: response.confidence_score,
+    confidence_reasons: response.confidence_reasons,
+    structured_answer: response.structured_answer,
+    knowledge_gap: response.knowledge_gap,
+    retrieval_debug: response.retrieval_debug ?? null,
+    query_id: response.query_id,
+    isHistorical: options?.isHistorical ?? false,
+    wasStreamed: options?.isHistorical ? false : undefined,
+    detailsExpanded:
+      (response.confidence_score ?? 1) < LOW_CONFIDENCE_THRESHOLD || !!response.knowledge_gap,
+  };
+}
+
+function messagesFromConversation(turns: KnowledgeConversationTurnApi[]): ChatMessage[] {
+  const messages: ChatMessage[] = [];
+  for (const turn of turns) {
+    messages.push(createUserMessage(turn.query_text));
+    messages.push(agentMessageFromResponse(turn.answer, { isHistorical: true }));
+  }
+  return messages;
+}
+
+function inferAnswerMode(question: string): "internal" | "client_safe" {
+  const lowered = question.toLowerCase();
+  return /\b(client|customer|external|client-safe|customer-facing)\b/.test(lowered)
+    ? "client_safe"
+    : "internal";
+}
+
+function shouldAnimateAnswer(text: string) {
+  return text.trim().length > 0 && text.length <= TYPEWRITER_MAX_CHARS;
+}
+
+function buildAgentDisplayText(
+  message: Pick<ChatMessage, "text" | "structured_answer" | "next_step">,
+): string {
+  const direct = message.text?.trim();
+  if (direct) return direct;
+  const sa = message.structured_answer;
+  if (sa) {
+    const parts = [sa.policy, sa.steps, sa.owner, sa.evidence, sa.next_action]
+      .map((part) => part?.trim())
+      .filter(Boolean);
+    if (parts.length > 0) return parts.join("\n\n");
+  }
+  const nextStep = message.next_step?.trim();
+  if (nextStep) return nextStep;
+  return "";
+}
+
+function resolveAgentAnswerText(
+  message: Pick<ChatMessage, "text" | "structured_answer" | "next_step">,
+  answerText?: string | null,
+  options?: { useFallback?: boolean },
+): string {
+  const merged = {
+    ...message,
+    text: answerText?.trim() || message.text,
+  };
+  const display = buildAgentDisplayText(merged);
+  if (display) return display;
+  if (options?.useFallback === false) return "";
+  return NO_KNOWLEDGE_ANSWER;
+}
+
+function isLowConfidenceMessage(message: ChatMessage) {
+  return (message.confidence_score ?? 1) < LOW_CONFIDENCE_THRESHOLD;
+}
+
+function isMessageDetailsOpen(message: ChatMessage) {
+  return message.detailsExpanded ?? (isLowConfidenceMessage(message) || !!message.knowledge_gap);
+}
+
+function summarizeRegeneration(
+  previous: ChatMessage,
+  next: Pick<ChatMessage, "text" | "confidence_score">,
+): string {
+  const parts: string[] = [];
+  if (previous.confidence_score !== undefined && next.confidence_score !== undefined) {
+    const delta = Math.round((next.confidence_score - previous.confidence_score) * 100);
+    if (delta !== 0) parts.push(`Confidence ${delta > 0 ? "+" : ""}${delta} pts`);
+  }
+  if (previous.text.trim() !== next.text.trim()) parts.push("Updated answer text");
+  if (parts.length === 0) return "Regenerated answer";
+  return parts.join(" · ");
+}
+
+function hasCollapsibleDetails(message: ChatMessage) {
+  if (message.role !== "agent" || message.isServiceError) return false;
+  const sa = message.structured_answer;
+  const hasStructured = Boolean(
+    sa?.policy || sa?.steps || sa?.owner || sa?.evidence || sa?.next_action,
+  );
+  return !!(
+    hasStructured ||
+    message.confidence_reasons?.length ||
+    message.regenerationSummary ||
+    message.retrieval_debug ||
+    message.next_step ||
+    message.knowledge_gap
+  );
+}
+
+function processingProgress(status: KnowledgeProcessingStatusApi): number {
+  switch (status) {
+    case "uploaded":
+      return 10;
+    case "extracting":
+      return 25;
+    case "extracted":
+      return 40;
+    case "chunking":
+      return 55;
+    case "chunked":
+      return 70;
+    case "embedding":
+      return 85;
+    case "ready":
+    case "failed":
+      return 100;
+    default:
+      return 0;
+  }
+}
 
 function KnowledgePage() {
   const user = useAuthStore((s) => s.user);
-  const canManageRetrieval = user?.role === "bsg_leadership" || user?.role === "super_admin";
-  const [documents, setDocuments] = useState<KnowledgeDocument[]>(initialDocuments);
-  const [libraryFolders, setLibraryFolders] = useState<LibraryFolder[]>([]);
-  const [loadingFolders, setLoadingFolders] = useState(true);
+  const queryClient = useQueryClient();
+  const { ref: librarySectionRef } = useLazyWhenVisible();
+  const { ref: askPanelRef, isVisible: askPanelVisible } = useLazyWhenVisible();
+  const [retrievalSettingsRequested, setRetrievalSettingsRequested] = useState(false);
+  const [processingPollActive, setProcessingPollActive] = useState(false);
+
+  const bootstrapQuery = useKnowledgeBootstrapQuery();
+  const [librarySnapshot, setLibrarySnapshot] = useState<KnowledgeLibrarySnapshot | null>(() =>
+    loadKnowledgeLibrarySnapshot(),
+  );
+  const libraryHealthQuery = useKnowledgeLibraryHealthQuery(
+    true,
+    processingPollActive,
+    librarySnapshot?.libraryHealth,
+  );
+  const retrievalSettingsQuery = useKnowledgeRetrievalSettingsQuery(
+    Boolean(user?.id) && askPanelVisible && retrievalSettingsRequested,
+  );
+  const uploadMutation = useUploadKnowledgeDocumentMutation();
+  const updateDocumentMutation = useUpdateKnowledgeDocumentMutation();
+  const deleteDocumentMutation = useDeleteKnowledgeDocumentMutation();
+  const reindexDocumentMutation = useReindexKnowledgeDocumentMutation();
+  const createFolderMutation = useCreateKnowledgeFolderMutation();
+  const resolveGapMutation = useResolveKnowledgeGapMutation();
+  const updateRetrievalSettingsMutation = useUpdateKnowledgeRetrievalSettingsMutation();
+
   const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
   const [createFolderName, setCreateFolderName] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [createFolderError, setCreateFolderError] = useState("");
   const [docId, setDocId] = useState<string | null>(null);
   const [activeChunkId, setActiveChunkId] = useState<string | null>(null);
-  const [documentTab, setDocumentTab] = useState("preview");
-  const [loadingDocs, setLoadingDocs] = useState(true);
-  const [loadingDocDetail, setLoadingDocDetail] = useState(false);
-  const [docsLoadError, setDocsLoadError] = useState("");
+  const [documentTab, setDocumentTab] = useState<DocumentDetailTab>("preview");
+  const [openedDocumentTabs, setOpenedDocumentTabs] = useState<Set<DocumentDetailTab>>(new Set());
   const [askInput, setAskInput] = useState("");
   const [asking, setAsking] = useState(false);
-  const [animatingMessageIndex, setAnimatingMessageIndex] = useState<number | null>(null);
+  const [animatingMessageId, setAnimatingMessageId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [activeSources, setActiveSources] = useState<KnowledgeCitationApi[]>([]);
   const [lastConfidence, setLastConfidence] = useState<number | null>(null);
@@ -167,6 +594,7 @@ function KnowledgePage() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadState, setUploadState] = useState<UploadState>("idle");
   const [uploadError, setUploadError] = useState("");
+  const [uploadWarning, setUploadWarning] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [activeFolder, setActiveFolder] = useState<string | "All">("All");
@@ -176,8 +604,12 @@ function KnowledgePage() {
   const [healthFilter, setHealthFilter] = useState<HealthFilter>("all");
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const [pendingDocumentIds, setPendingDocumentIds] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const followChatScrollRef = useRef(true);
+  const chatHydratedUserIdRef = useRef<string | null>(null);
   const [form, setForm] = useState({
     title: "",
     folderId: "",
@@ -189,47 +621,229 @@ function KnowledgePage() {
     effectiveDate: new Date().toISOString().slice(0, 10),
   });
 
-  const libraryLoading = loadingDocs || loadingFolders;
+  const documentsQuery = useKnowledgeDocumentsQuery(
+    true,
+    processingPollActive,
+    librarySnapshot?.documents,
+  );
+  const debouncedSearchTerm = useDebouncedValue(searchTerm, LIBRARY_DEBOUNCE_MS);
+  const debouncedActiveFolder = useDebouncedValue(activeFolder, LIBRARY_DEBOUNCE_MS);
+  const debouncedStatusFilter = useDebouncedValue(statusFilter, LIBRARY_DEBOUNCE_MS);
+  const debouncedWorkflowFilter = useDebouncedValue(workflowFilter, LIBRARY_DEBOUNCE_MS);
+  const debouncedSortMode = useDebouncedValue(sortMode, LIBRARY_DEBOUNCE_MS);
+  const debouncedHealthFilter = useDebouncedValue(healthFilter, LIBRARY_DEBOUNCE_MS);
+
+  const libraryFolders = useMemo<LibraryFolder[]>(
+    () => {
+      if (!bootstrapQuery.data) return librarySnapshot?.folders ?? [];
+      return bootstrapQuery.data.folders.map((row) => ({
+        id: row.id,
+        kind: row.folder_kind,
+        name: row.name,
+      }));
+    },
+    [bootstrapQuery.data, librarySnapshot?.folders],
+  );
+  const bootstrapDocuments = useMemo(
+    () =>
+      bootstrapQuery.data
+        ? bootstrapQuery.data.recent_documents.map(documentSummaryFromApi)
+        : [],
+    [bootstrapQuery.data],
+  );
+  const documents =
+    documentsQuery.data ??
+    librarySnapshot?.documents ??
+    bootstrapDocuments;
+  const knowledgePermissions = bootstrapQuery.data?.permissions ?? null;
+  const libraryHealth: KnowledgeLibraryHealthApi = useMemo(() => {
+    if (libraryHealthQuery.data) return libraryHealthQuery.data;
+    if (bootstrapQuery.data) {
+      return {
+        ...EMPTY_LIBRARY_HEALTH,
+        ...bootstrapQuery.data.library_health,
+        open_gaps: [],
+      };
+    }
+    return librarySnapshot?.libraryHealth ?? EMPTY_LIBRARY_HEALTH;
+  }, [bootstrapQuery.data, libraryHealthQuery.data, librarySnapshot?.libraryHealth]);
+  const hasLibraryContent = documents.length > 0 || libraryFolders.length > 0;
+  const loadingDocs = bootstrapQuery.isLoading && !bootstrapQuery.data && !librarySnapshot && !hasLibraryContent;
+  const showingLibrarySnapshot = Boolean(librarySnapshot && documents === librarySnapshot.documents);
+  const docsLoadError = bootstrapQuery.isError
+    ? bootstrapQuery.error instanceof Error
+      ? bootstrapQuery.error.message
+      : "Could not load knowledge documents."
+    : "";
+
   const selectedDoc = documents.find((item) => item.id === docId) ?? null;
   const selectedDocId = selectedDoc?.id ?? null;
   const approvedIndexedDocs = documents.filter(isRetrievalReady);
+  const canAsk = (libraryHealth.ready_count ?? 0) > 0 || approvedIndexedDocs.length > 0;
+  const suggestedQuestions = useMemo(
+    () => buildSuggestedQuestions(documents, libraryFolders),
+    [documents, libraryFolders],
+  );
+  const retrievalScopeLabel = useMemo(
+    () => formatRetrievalScopeLabel(retrievalScope),
+    [retrievalScope],
+  );
+  const canAdjustScope =
+    knowledgePermissions?.can_adjust_retrieval_scope ??
+    (user?.role === "bsg_leadership" || user?.role === "super_admin");
+
+  const handleDocumentLoaded = useCallback(
+    (document: KnowledgeDocument) => {
+      patchKnowledgeDocumentsCache(queryClient, (current) =>
+        current.map((item) => (item.id === document.id ? document : item)),
+      );
+    },
+    [queryClient],
+  );
+
+  const { loadingDetail, loadingVersions } = useDocumentTabLoader({
+    documentId: selectedDoc?.id ?? null,
+    isOpen: isDocumentOpen,
+    enabled: openedDocumentTabs.has(documentTab),
+    activeTab: documentTab,
+    onDocumentLoaded: handleDocumentLoaded,
+    onVersionsLoaded: setVersions,
+  });
+
+  useEffect(() => {
+    if (!isDocumentOpen) {
+      setOpenedDocumentTabs(new Set());
+      setVersions([]);
+      setVersionCompare(null);
+      setCompareLeftId("");
+      setCompareRightId("");
+      return;
+    }
+    setOpenedDocumentTabs((current) => new Set(current).add(documentTab));
+  }, [documentTab, isDocumentOpen, selectedDoc?.id]);
+
+  useEffect(() => {
+    setVersions([]);
+  }, [selectedDoc?.id]);
+
+  const handleDocumentTabChange = (tab: string) => {
+    setDocumentTab(tab as DocumentDetailTab);
+    setOpenedDocumentTabs((current) => new Set(current).add(tab as DocumentDetailTab));
+  };
+
   const draftCount = documents.filter((item) => item.status === "Draft").length;
   const indexingCount = documents.filter((item) => item.indexing).length;
   const archivedCount = documents.filter((item) => item.status === "Archived").length;
+  const expiredCount = documents.filter((item) => item.workflowState === "Expired").length;
+  const needsReindexCount = documents.filter((item) => item.workflowState === "Needs re-index").length;
   const healthFilters = [
     { id: "all" as const, label: "All", count: documents.length },
-    { id: "ready" as const, label: "Ready", count: approvedIndexedDocs.length },
-    { id: "needs_approval" as const, label: "Needs approval", count: draftCount },
-    { id: "indexing" as const, label: "Indexing", count: indexingCount },
-    { id: "archived" as const, label: "Archived", count: archivedCount },
+    { id: "ready" as const, label: "Ready", count: libraryHealth.ready_count || approvedIndexedDocs.length },
+    { id: "needs_approval" as const, label: "Needs approval", count: libraryHealth.draft_count || draftCount },
+    { id: "expired" as const, label: "Expired", count: libraryHealth.expired_count || expiredCount },
+    { id: "needs_reindex" as const, label: "Needs re-index", count: libraryHealth.needs_reindex_count || needsReindexCount },
+    { id: "indexing" as const, label: "Indexing", count: libraryHealth.indexing_count || indexingCount },
+    { id: "archived" as const, label: "Archived", count: libraryHealth.archived_count || archivedCount },
   ];
+  const libraryTodos = libraryHealth.open_gaps;
+  const hasLibraryTodos =
+    libraryTodos.length > 0 ||
+    (libraryHealth.expired_count || expiredCount) > 0 ||
+    (libraryHealth.needs_reindex_count || needsReindexCount) > 0 ||
+    (!canAsk && documents.length > 0);
+  const librarySnapshotSignature = useMemo(
+    () => getKnowledgeLibrarySnapshotSignature(documents, libraryFolders, libraryHealth),
+    [documents, libraryFolders, libraryHealth],
+  );
+  const cachedLibrarySnapshotSignature = useMemo(
+    () =>
+      librarySnapshot
+        ? getKnowledgeLibrarySnapshotSignature(
+            librarySnapshot.documents,
+            librarySnapshot.folders,
+            librarySnapshot.libraryHealth,
+          )
+        : "",
+    [librarySnapshot],
+  );
+
+  useEffect(() => {
+    const hasResolvedData = Boolean(bootstrapQuery.data || documentsQuery.data || libraryHealthQuery.data);
+    if (!hasResolvedData || (documents.length === 0 && libraryFolders.length === 0)) return;
+    if (librarySnapshotSignature === cachedLibrarySnapshotSignature) return;
+    const snapshot = {
+      documents,
+      folders: libraryFolders,
+      libraryHealth,
+      savedAt: Date.now(),
+    };
+    setLibrarySnapshot(snapshot);
+    saveKnowledgeLibrarySnapshot(snapshot);
+  }, [
+    bootstrapQuery.data,
+    cachedLibrarySnapshotSignature,
+    documents,
+    documentsQuery.data,
+    libraryFolders,
+    libraryHealth,
+    librarySnapshotSignature,
+    libraryHealthQuery.data,
+  ]);
+
+  useEffect(() => {
+    if (indexingCount > 0 && !processingPollActive) {
+      setProcessingPollActive(true);
+    }
+    if (processingPollActive && indexingCount === 0 && !documentsQuery.isFetching && !libraryHealthQuery.isFetching) {
+      setProcessingPollActive(false);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBootstrap });
+    }
+  }, [
+    documentsQuery.isFetching,
+    indexingCount,
+    libraryHealthQuery.isFetching,
+    processingPollActive,
+    queryClient,
+  ]);
 
   const activeFilterCount = [
     activeFolder !== "All",
     statusFilter !== "All",
     workflowFilter !== "All",
     sortMode !== "recent",
+    healthFilter !== "all",
   ].filter(Boolean).length;
+  const isLibraryControlSettling =
+    searchTerm !== debouncedSearchTerm ||
+    activeFolder !== debouncedActiveFolder ||
+    statusFilter !== debouncedStatusFilter ||
+    workflowFilter !== debouncedWorkflowFilter ||
+    sortMode !== debouncedSortMode ||
+    healthFilter !== debouncedHealthFilter;
 
   const clearLibraryFilters = () => {
     setActiveFolder("All");
     setStatusFilter("All");
     setWorkflowFilter("All");
     setSortMode("recent");
+    setHealthFilter("all");
+    setSearchTerm("");
   };
 
   const filteredDocuments = useMemo(() => {
-    const query = searchTerm.trim().toLowerCase();
+    const query = debouncedSearchTerm.trim().toLowerCase();
     const filtered = documents.filter((item) => {
-      const matchesFolder = activeFolder === "All" || item.folderId === activeFolder;
-      const matchesStatus = statusFilter === "All" || item.status === statusFilter;
-      const matchesWorkflow = workflowFilter === "All" || item.workflowState === workflowFilter;
+      const matchesFolder = debouncedActiveFolder === "All" || item.folderId === debouncedActiveFolder;
+      const matchesStatus = debouncedStatusFilter === "All" || item.status === debouncedStatusFilter;
+      const matchesWorkflow = debouncedWorkflowFilter === "All" || item.workflowState === debouncedWorkflowFilter;
       const matchesHealth =
-        healthFilter === "all" ||
-        (healthFilter === "ready" && isRetrievalReady(item)) ||
-        (healthFilter === "needs_approval" && item.status === "Draft") ||
-        (healthFilter === "indexing" && item.indexing) ||
-        (healthFilter === "archived" && item.status === "Archived");
+        debouncedHealthFilter === "all" ||
+        (debouncedHealthFilter === "ready" && isRetrievalReady(item)) ||
+        (debouncedHealthFilter === "needs_approval" && item.status === "Draft") ||
+        (debouncedHealthFilter === "expired" && item.workflowState === "Expired") ||
+        (debouncedHealthFilter === "needs_reindex" && item.workflowState === "Needs re-index") ||
+        (debouncedHealthFilter === "indexing" && item.indexing) ||
+        (debouncedHealthFilter === "archived" && item.status === "Archived");
       const matchesSearch =
         !query ||
         [item.title, item.sourceType, item.owner, item.fileName, item.version]
@@ -241,12 +855,12 @@ function KnowledgePage() {
 
     const statusRank: Record<DocumentStatus, number> = { Approved: 0, Draft: 1, Archived: 2 };
     return [...filtered].sort((left, right) => {
-      if (sortMode === "title") return left.title.localeCompare(right.title);
-      if (sortMode === "approved") {
+      if (debouncedSortMode === "title") return left.title.localeCompare(right.title);
+      if (debouncedSortMode === "approved") {
         const rankDelta = statusRank[left.status] - statusRank[right.status];
         return rankDelta || left.title.localeCompare(right.title);
       }
-      if (sortMode === "indexed") {
+      if (debouncedSortMode === "indexed") {
         const indexedDelta = Number(right.indexed) - Number(left.indexed);
         return indexedDelta || left.title.localeCompare(right.title);
       }
@@ -254,12 +868,20 @@ function KnowledgePage() {
       const rightTime = Date.parse(right.effectiveDate || "") || 0;
       return rightTime - leftTime || left.title.localeCompare(right.title);
     });
-  }, [activeFolder, documents, healthFilter, searchTerm, sortMode, statusFilter, workflowFilter]);
+  }, [
+    debouncedActiveFolder,
+    debouncedHealthFilter,
+    debouncedSearchTerm,
+    debouncedSortMode,
+    debouncedStatusFilter,
+    debouncedWorkflowFilter,
+    documents,
+  ]);
 
   const groupedDocuments = useMemo(
     () =>
       libraryFolders
-        .filter((folder) => activeFolder === "All" || folder.id === activeFolder)
+        .filter((folder) => debouncedActiveFolder === "All" || folder.id === debouncedActiveFolder)
         .map((folder) => ({
           id: folder.id,
           kind: folder.kind,
@@ -267,7 +889,7 @@ function KnowledgePage() {
           items: filteredDocuments.filter((item) => item.folderId === folder.id),
           total: documents.filter((item) => item.folderId === folder.id).length,
         })),
-    [activeFolder, documents, filteredDocuments, libraryFolders],
+    [debouncedActiveFolder, documents, filteredDocuments, libraryFolders],
   );
 
   const loadLibraryFolders = async (options?: { silent?: boolean }) => {
@@ -351,13 +973,83 @@ function KnowledgePage() {
     setCompareRightId("");
   }, [isDocumentOpen, selectedDocId]);
 
-  const scrollChatToEnd = () => {
+  const scrollChatToEnd = (force = false) => {
+    if (!force && !followChatScrollRef.current) return;
     chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   };
 
+  const isNearChatBottom = () => {
+    const container = chatScrollRef.current;
+    if (!container) return true;
+    return container.scrollHeight - container.scrollTop - container.clientHeight <= CHAT_SCROLL_THRESHOLD_PX;
+  };
+
+  const handleChatScroll = () => {
+    const following = isNearChatBottom();
+    followChatScrollRef.current = following;
+    setShowJumpToBottom(!following);
+  };
+
+  const jumpToChatBottom = () => {
+    followChatScrollRef.current = true;
+    setShowJumpToBottom(false);
+    scrollChatToEnd(true);
+  };
+
+  const announceAgentMessage = (text: string) => {
+    setLiveAnnouncement(`Knowledge Agent: ${text}`);
+  };
+
+  const finishAgentAnswer = (
+    messageId: string,
+    text: string,
+    options?: { skipAnimation?: boolean; isHistorical?: boolean },
+  ) => {
+    const displayText = text.trim();
+    if (!displayText) {
+      announceAgentMessage(NO_KNOWLEDGE_ANSWER);
+      return;
+    }
+    if (options?.skipAnimation || options?.isHistorical || !shouldAnimateAnswer(displayText)) {
+      announceAgentMessage(displayText);
+      return;
+    }
+    setAnimatingMessageId(messageId);
+  };
+
+  useEffect(() => {
+    if (!liveAnnouncement) return;
+    const timer = window.setTimeout(() => setLiveAnnouncement(""), 1500);
+    return () => window.clearTimeout(timer);
+  }, [liveAnnouncement]);
+
   useEffect(() => {
     scrollChatToEnd();
-  }, [asking, messages.length, animatingMessageIndex]);
+  }, [asking, messages.length, animatingMessageId]);
+
+  useEffect(() => {
+    const userId = user?.id;
+    if (!userId) {
+      chatHydratedUserIdRef.current = null;
+      return;
+    }
+    if (chatHydratedUserIdRef.current === userId) return;
+    chatHydratedUserIdRef.current = userId;
+    const stored = loadKnowledgeChatSession(userId);
+    setMessages(stored?.messages ?? []);
+    setActiveConversationId(stored?.conversationId ?? null);
+    setAnimatingMessageId(null);
+  }, [user?.id]);
+
+  useEffect(() => {
+    const userId = user?.id;
+    if (!userId || chatHydratedUserIdRef.current !== userId) return;
+    if (messages.length === 0) {
+      clearKnowledgeChatSession(userId);
+      return;
+    }
+    saveKnowledgeChatSession(userId, { messages, conversationId: activeConversationId });
+  }, [user?.id, messages, activeConversationId]);
 
   useEffect(() => {
     if (!isDocumentOpen || !activeChunkId || documentTab !== "chunks") return;
@@ -394,6 +1086,7 @@ function KnowledgePage() {
     setUploadState("idle");
     setUploadProgress(0);
     setUploadError("");
+    setUploadWarning("");
     setSelectedFile(null);
     setForm({
       title: "",
@@ -414,21 +1107,28 @@ function KnowledgePage() {
       setUploadError(error || "Document title, folder, and owner/approver are required.");
       return;
     }
+    if (form.status === "Approved" && !form.effectiveDate) {
+      setUploadState("error");
+      setUploadError("Approved uploads require an effective date before indexing.");
+      return;
+    }
 
     const file = selectedFile;
     if (!file) return;
 
     setUploadState("uploading");
     setUploadError("");
+    setUploadWarning("");
     setUploadProgress(38);
     try {
       const fields = uploadFormToApi(form);
       const apiFields = Object.fromEntries(
         Object.entries(fields).map(([key, value]) => [key, value ?? ""]),
       ) as Record<string, string>;
-      const row = await uploadKnowledgeDocument(file, apiFields);
+      const row = await uploadMutation.mutateAsync({ file, fields: apiFields });
       const newDocument = documentFromApi(row);
-      setDocuments((current) => {
+      setProcessingPollActive(true);
+      patchKnowledgeDocumentsCache(queryClient, (current) => {
         const exists = current.some((item) => item.id === newDocument.id);
         return exists
           ? current.map((item) => (item.id === newDocument.id ? newDocument : item))
@@ -445,6 +1145,9 @@ function KnowledgePage() {
       });
       setUploadProgress(100);
       setUploadState("success");
+      if (newDocument.qualityWarnings.length > 0) {
+        setUploadWarning(newDocument.qualityWarnings.join(" "));
+      }
       window.setTimeout(() => {
         setIsUploadOpen(false);
         resetUpload();
@@ -455,24 +1158,30 @@ function KnowledgePage() {
     }
   };
 
-  const syncDocument = (mapped: KnowledgeDocument) => {
-    setDocuments((current) => current.map((item) => (item.id === mapped.id ? mapped : item)));
-  };
-
   const updateDocument = async (id: string, patch: Partial<KnowledgeDocument>) => {
     const current = documents.find((item) => item.id === id);
     if (!current) return;
     const optimistic = { ...current, ...patch };
-    setDocuments((rows) => rows.map((item) => (item.id === id ? optimistic : item)));
+    setPendingDocumentIds((ids) => new Set(ids).add(id));
+    patchKnowledgeDocumentsCache(queryClient, (rows) =>
+      rows.map((item) => (item.id === id ? optimistic : item)),
+    );
     try {
       const apiPatch = documentToApiPatch(patch);
       const cleaned = Object.fromEntries(
         Object.entries(apiPatch).filter(([, value]) => value !== undefined),
       ) as Record<string, string>;
-      const row = await updateKnowledgeDocument(id, cleaned);
-      syncDocument(documentFromApi(row));
+      await updateDocumentMutation.mutateAsync({ id, patch: cleaned });
     } catch {
-      setDocuments((rows) => rows.map((item) => (item.id === id ? current : item)));
+      patchKnowledgeDocumentsCache(queryClient, (rows) =>
+        rows.map((item) => (item.id === id ? current : item)),
+      );
+    } finally {
+      setPendingDocumentIds((ids) => {
+        const next = new Set(ids);
+        next.delete(id);
+        return next;
+      });
     }
   };
 
@@ -491,14 +1200,23 @@ function KnowledgePage() {
     );
     setIsDocumentOpen(false);
     try {
-      await deleteKnowledgeDocument(document.id);
+      await deleteDocumentMutation.mutateAsync(document.id);
     } catch {
-      setDocuments(previous);
+      queryClient.setQueryData(queryKeys.knowledgeDocuments, previous);
+      setDocId(previousDocId);
+    } finally {
+      setPendingDocumentIds((ids) => {
+        const next = new Set(ids);
+        next.delete(document.id);
+        return next;
+      });
     }
   };
 
   const reindexDocument = async (document: KnowledgeDocument) => {
-    setDocuments((rows) =>
+    setProcessingPollActive(true);
+    setPendingDocumentIds((ids) => new Set(ids).add(document.id));
+    patchKnowledgeDocumentsCache(queryClient, (rows) =>
       rows.map((item) =>
         item.id === document.id
           ? {
@@ -512,10 +1230,9 @@ function KnowledgePage() {
       ),
     );
     try {
-      const row = await reindexKnowledgeDocument(document.id);
-      syncDocument(documentFromApi(row));
+      await reindexDocumentMutation.mutateAsync(document.id);
     } catch {
-      setDocuments((rows) =>
+      patchKnowledgeDocumentsCache(queryClient, (rows) =>
         rows.map((item) =>
           item.id === document.id
             ? {
@@ -528,6 +1245,12 @@ function KnowledgePage() {
             : item,
         ),
       );
+    } finally {
+      setPendingDocumentIds((ids) => {
+        const next = new Set(ids);
+        next.delete(document.id);
+        return next;
+      });
     }
   };
 
@@ -547,12 +1270,51 @@ function KnowledgePage() {
     }
   };
 
-  const submitAsk = async () => {
-    const question = askInput.trim();
-    if (!question || asking || animatingMessageIndex !== null) return;
-    setMessages((current) => [...current, { role: "user", text: question }]);
-    setAskInput("");
+  const submitAsk = async (questionOverride?: string, options?: { skipUserMessage?: boolean }) => {
+    const question = (questionOverride ?? askInput).trim();
+    if (!question || asking || !canAsk) return;
+    followChatScrollRef.current = true;
+    setShowJumpToBottom(false);
+    if (!options?.skipUserMessage) {
+      setMessages((current) => [...current, createUserMessage(question)]);
+      if (!questionOverride) setAskInput("");
+    }
     setAsking(true);
+    const conversationHistory = buildConversationHistory(messages);
+    const agentMsgId = createChatMessageId();
+
+    // Create a stub agent message immediately so the user sees a response forming
+    const stub: ChatMessage = {
+      id: agentMsgId,
+      role: "agent",
+      text: "",
+      isStreaming: true,
+    };
+    setMessages((current) => [...current, stub]);
+
+    let gotDone = false;
+    let streamAnswer = "";
+    let streamFlushRaf: number | null = null;
+    const flushStreamToUi = () => {
+      streamFlushRaf = null;
+      const liveText = streamAnswer;
+      setMessages((current) =>
+        current.map((msg) =>
+          msg.id === agentMsgId ? { ...msg, text: liveText, wasStreamed: true } : msg,
+        ),
+      );
+      scrollChatToEnd();
+    };
+    const scheduleStreamFlush = () => {
+      if (streamFlushRaf !== null) return;
+      streamFlushRaf = window.requestAnimationFrame(flushStreamToUi);
+    };
+    const askOptions = {
+      conversationHistory,
+      answerMode: inferAnswerMode(question),
+      conversationId: activeConversationId,
+    };
+
     try {
       const response = await askKnowledgeAgent(question, {
         includeHistories: retrievalSettings?.include_histories ?? true,
@@ -586,36 +1348,258 @@ function KnowledgePage() {
         );
       }
     } catch {
-      const fallback = "I could not find this information in the uploaded knowledge base.";
-      setMessages((current) => {
-        const next = [
-          ...current,
-          {
-            role: "agent" as const,
-            text: fallback,
-            confidence_score: 0,
-            confidence_reasons: ["The knowledge service could not complete the request."],
-            knowledge_gap: {
-              message: fallback,
-              suggested_title: question.slice(0, 80),
-              suggested_source_type: "sop",
-              suggested_folder_kind: "sops",
-            },
-          },
-        ];
-        setAnimatingMessageIndex(next.length - 1);
-        return next;
-      });
-      setActiveSources([]);
-      setLastConfidence(0);
+      setMessages((current) =>
+        current.map((msg) =>
+          msg.id === agentMsgId
+            ? { ...msg, text: msg.text || "Couldn't reach the agent — retry?", isStreaming: false, isServiceError: !msg.text, retryQuestion: !msg.text ? question : undefined }
+            : msg,
+        ),
+      );
+    } finally {
+      if (streamFlushRaf !== null) {
+        window.cancelAnimationFrame(streamFlushRaf);
+      }
+      setMessages((current) =>
+        current.map((msg) =>
+          msg.id === agentMsgId && msg.isStreaming ? { ...msg, isStreaming: false } : msg,
+        ),
+      );
+      setAsking(false);
+      void invalidateKnowledgeAgentQueries(queryClient);
+    }
+  };
+
+  const regenerateAgentAnswer = async (agentMessageId: string) => {
+    if (asking || !canAsk) return;
+    const agentIndex = messages.findIndex((message) => message.id === agentMessageId);
+    if (agentIndex < 0) return;
+    const previousAgentMessage = messages[agentIndex];
+    const question = findPrecedingUserQuestion(messages, agentMessageId);
+    if (!question) return;
+
+    const priorMessages = messages.slice(0, agentIndex);
+    const conversationHistory = buildConversationHistory(priorMessages.slice(0, -1));
+    const agentMsgId = createChatMessageId();
+
+    followChatScrollRef.current = true;
+    setShowJumpToBottom(false);
+    setMessages((current) => {
+      const next = current.filter((message) => message.id !== agentMessageId);
+      next.splice(agentIndex, 0, { id: agentMsgId, role: "agent", text: "", isStreaming: true });
+      return next;
+    });
+    setAnimatingMessageId(null);
+    setAsking(true);
+
+    let gotDone = false;
+    let streamAnswer = "";
+    const askOptions = {
+      conversationHistory,
+      answerMode: inferAnswerMode(question),
+      conversationId: activeConversationId,
+    };
+
+    try {
+      for await (const event of streamKnowledgeAsk(question, askOptions)) {
+        if (event.type === "status") {
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId ? { ...msg, streamPhase: event.phase } : msg,
+            ),
+          );
+        } else if (event.type === "delta") {
+          streamAnswer += event.text;
+          const liveText = streamAnswer;
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId ? { ...msg, text: liveText, wasStreamed: true } : msg,
+            ),
+          );
+          scrollChatToEnd();
+        } else if (event.type === "done") {
+          gotDone = true;
+          const resolvedText = resolveAgentAnswerText(
+            { text: streamAnswer, structured_answer: event.structured_answer, next_step: event.next_step },
+            event.answer_text,
+          );
+          const agentMsg: ChatMessage = {
+            id: agentMsgId,
+            role: "agent",
+            text: resolvedText,
+            isStreaming: false,
+            wasStreamed: true,
+            query_id: event.query_id,
+            confidence_score: event.confidence_score,
+            confidence_reasons: event.confidence_reasons,
+            next_step: event.next_step || undefined,
+            structured_answer: event.structured_answer ?? null,
+            retrieval_debug: event.retrieval_debug ?? null,
+            regenerationSummary: summarizeRegeneration(previousAgentMessage, {
+              text: resolvedText,
+              confidence_score: event.confidence_score,
+            }),
+            detailsExpanded: (event.confidence_score ?? 1) < LOW_CONFIDENCE_THRESHOLD,
+          };
+          setMessages((current) =>
+            current.map((msg) => (msg.id === agentMsgId ? agentMsg : msg)),
+          );
+          if (event.conversation_id) {
+            setActiveConversationId(event.conversation_id);
+          }
+          finishAgentAnswer(agentMsgId, resolvedText, { skipAnimation: true });
+        } else if (event.type === "error") {
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId
+                ? { ...msg, text: "Couldn't reach the agent — retry?", isStreaming: false, isServiceError: true, retryQuestion: question }
+                : msg,
+            ),
+          );
+        }
+      }
+      if (!gotDone && !streamAnswer.trim()) {
+        setMessages((current) =>
+          current.map((msg) =>
+            msg.id === agentMsgId
+              ? { ...msg, text: "Couldn't reach the agent — retry?", isStreaming: false, isServiceError: true, retryQuestion: question }
+              : msg,
+          ),
+        );
+      }
+    } catch {
+      setMessages((current) =>
+        current.map((msg) =>
+          msg.id === agentMsgId
+            ? { ...msg, text: "Couldn't reach the agent — retry?", isStreaming: false, isServiceError: true, retryQuestion: question }
+            : msg,
+        ),
+      );
     } finally {
       setAsking(false);
+      void invalidateKnowledgeAgentQueries(queryClient);
+    }
+  };
+
+  const setMessageFeedback = async (messageId: string, feedback: "up" | "down", comment?: string) => {
+    let queryId: string | null = null;
+    let previousFeedback: "up" | "down" | undefined;
+    let nextFeedback: "up" | "down" | undefined;
+
+    setMessages((current) => {
+      const target = current.find((msg) => msg.id === messageId);
+      if (!target || target.role !== "agent") return current;
+
+      queryId = target.query_id ?? null;
+      previousFeedback = target.feedback;
+      const togglingOff = target.feedback === feedback && comment === undefined;
+      nextFeedback = togglingOff ? undefined : feedback;
+
+      return current.map((msg) => {
+        if (msg.id !== messageId) return msg;
+        return {
+          ...msg,
+          feedback: nextFeedback,
+          feedbackComment: comment !== undefined ? comment : msg.feedbackComment,
+        };
+      });
+    });
+
+    if (!nextFeedback || !queryId) return;
+
+    try {
+      await submitKnowledgeFeedback({
+        query_id: queryId,
+        rating: feedback,
+        comment: comment ?? null,
+      });
+    } catch {
+      setMessages((current) =>
+        current.map((msg) => (msg.id === messageId ? { ...msg, feedback: previousFeedback } : msg)),
+      );
+    }
+  };
+
+  const setFeedbackComment = (messageId: string, comment: string) => {
+    setMessages((current) =>
+      current.map((msg) => (msg.id === messageId ? { ...msg, feedbackComment: comment } : msg)),
+    );
+  };
+
+  const retryAsk = async (question: string, errorMessageId: string) => {
+    if (!question || asking || !canAsk) return;
+    setMessages((current) => current.filter((message) => message.id !== errorMessageId));
+    await submitAsk(question, { skipUserMessage: true });
+  };
+
+  const openConversation = async (conversation: KnowledgeConversationSummaryApi) => {
+    if (asking) return;
+    try {
+      const loaded = await getKnowledgeConversation(conversation.id);
+      setAnimatingMessageId(null);
+      setActiveConversationId(loaded.id);
+      setMessages(messagesFromConversation(loaded.turns));
+      followChatScrollRef.current = true;
+      setShowJumpToBottom(false);
+      scrollChatToEnd(true);
+    } catch {
+      window.alert("Could not load that conversation.");
+    }
+  };
+
+  const saveRetrievalScope = async () => {
+    if (!scopeDraft || savingScope) return;
+    setSavingScope(true);
+    try {
+      const saved = await updateRetrievalSettingsMutation.mutateAsync({
+        ...scopeDraft,
+        project: scopeDraft.project?.trim() || null,
+        department: scopeDraft.department?.trim() || null,
+      });
+      setRetrievalScope(saved);
+      setScopeDraft(saved);
+    } catch {
+      window.alert("Could not update retrieval scope.");
+    } finally {
+      setSavingScope(false);
+    }
+  };
+
+  const toggleMessageDetails = (messageId: string) => {
+    setMessages((current) =>
+      current.map((msg) =>
+        msg.id === messageId && msg.role === "agent"
+          ? { ...msg, detailsExpanded: !isMessageDetailsOpen(msg) }
+          : msg,
+      ),
+    );
+  };
+
+  const copyAgentAnswer = async (messageId: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedMessageId(messageId);
+      window.setTimeout(() => {
+        setCopiedMessageId((current) => (current === messageId ? null : current));
+      }, 2000);
+    } catch {
+      window.alert("Could not copy to clipboard.");
     }
   };
 
   const handleAsk = (event: FormEvent) => {
     event.preventDefault();
     void submitAsk();
+  };
+
+  const clearConversation = () => {
+    setMessages([]);
+    setActiveConversationId(null);
+    setAnimatingMessageId(null);
+    setCopiedMessageId(null);
+    setAskInput("");
+    followChatScrollRef.current = true;
+    setShowJumpToBottom(false);
+    if (user?.id) clearKnowledgeChatSession(user.id);
   };
 
   const toggleFolder = (folderId: string) => {
@@ -641,13 +1625,15 @@ function KnowledgePage() {
   };
 
   const openDocumentWithChunk = (id: string, chunkId: string | null, openDialog = true) => {
+    const tab: DocumentDetailTab = chunkId ? "chunks" : "preview";
     setDocId(id);
     setActiveChunkId(chunkId);
-    setDocumentTab(chunkId ? "chunks" : "preview");
+    setDocumentTab(tab);
+    setOpenedDocumentTabs((current) => new Set(current).add(tab));
     if (openDialog) setIsDocumentOpen(true);
   };
 
-  const prefillUploadFromGap = (gap: KnowledgeGapApi) => {
+  const prefillUploadFromGap = (gap: KnowledgeGapApi | KnowledgeGapTodoApi) => {
     const sourceMap: Record<string, SourceType> = {
       sop: "SOP",
       guide: "Guide",
@@ -669,6 +1655,22 @@ function KnowledgePage() {
     setIsUploadOpen(true);
   };
 
+  const handleResolveGap = async (gapId: string) => {
+    const previousHealth = queryClient.getQueryData<KnowledgeLibraryHealthApi>(queryKeys.knowledgeLibraryHealth);
+    queryClient.setQueryData<KnowledgeLibraryHealthApi>(queryKeys.knowledgeLibraryHealth, (current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        open_gaps: current.open_gaps.filter((gap) => gap.id !== gapId),
+      };
+    });
+    try {
+      await resolveGapMutation.mutateAsync(gapId);
+    } catch {
+      if (previousHealth) queryClient.setQueryData(queryKeys.knowledgeLibraryHealth, previousHealth);
+    }
+  };
+
   const openCreateFolder = () => {
     setCreateFolderName("");
     setCreateFolderError("");
@@ -682,8 +1684,7 @@ function KnowledgePage() {
     setCreatingFolder(true);
     setCreateFolderError("");
     try {
-      const created = await createKnowledgeFolder({ name });
-      await loadLibraryFolders({ silent: true });
+      const created = await createFolderMutation.mutateAsync({ name });
       setCollapsedFolders((current) => {
         const next = new Set(current);
         next.delete(created.id);
@@ -1134,7 +2135,7 @@ function KnowledgePage() {
           </Card>
         </div>
 
-        <div className="col-span-12 min-h-0 xl:col-span-8">
+        <div ref={askPanelRef} className="col-span-12 min-h-0 xl:col-span-8">
           <Card className="flex h-full min-h-0 flex-col border-transparent bg-card/80 p-0">
             <div className="border-b border-border/70 px-5 py-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1372,8 +2373,9 @@ function KnowledgePage() {
                     </div>
                   </div>
                 );
-              })}
-              {asking && (
+              })
+              )}
+              {asking && !messages.some((message) => message.isStreaming) && (
                 <div className="flex gap-3">
                   <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-card text-muted-foreground">
                     <Bot className="h-3.5 w-3.5" />
@@ -1387,13 +2389,27 @@ function KnowledgePage() {
                 </div>
               )}
               <div ref={chatEndRef} aria-hidden="true" />
+              </div>
+              {showJumpToBottom && (
+                <button
+                  type="button"
+                  onClick={jumpToChatBottom}
+                  className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-border/70 bg-card px-3 py-1.5 text-[10px] font-medium text-foreground shadow-sm transition-colors hover:bg-secondary"
+                >
+                  Jump to latest
+                </button>
+              )}
             </div>
 
-            <form className="flex shrink-0 gap-2 p-5 pt-4" onSubmit={handleAsk}>
-              <input
-                placeholder="Ask about an SOP, guide, or historical issue..."
+            <form className="flex shrink-0 flex-col gap-2 p-5 pt-4" onSubmit={handleAsk}>
+              {!loadingDocs && !canAsk && (
+                <p className="text-xs text-muted-foreground">Upload and approve documents first.</p>
+              )}
+              <div className="flex items-center gap-2">
+              <Textarea
+                placeholder={loadingDocs ? "" : canAsk ? "Ask about an SOP, guide, or historical issue..." : "Upload and approve documents first"}
                 value={askInput}
-                disabled={asking || animatingMessageIndex !== null}
+                disabled={loadingDocs || asking || !canAsk}
                 onChange={(event) => setAskInput(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
@@ -1401,16 +2417,18 @@ function KnowledgePage() {
                     void submitAsk();
                   }
                 }}
-                className="min-h-10 flex-1 rounded-md border border-border bg-card px-3 py-2 text-sm outline-none focus:border-[color:var(--brand)]"
+                rows={1}
+                className="min-h-10 flex-1 resize-none rounded-md border-border bg-card py-2.5 text-sm shadow-none focus-visible:border-[color:var(--brand)] focus-visible:ring-0"
               />
               <Button
                 type="submit"
-                disabled={asking || animatingMessageIndex !== null}
-                className="h-10 gap-2 bg-[color:var(--brand)] px-4 text-xs text-[color:var(--brand-foreground)]"
+                disabled={loadingDocs || asking || !canAsk}
+                className="h-10 shrink-0 gap-2 bg-[color:var(--brand)] px-4 text-xs text-[color:var(--brand-foreground)]"
               >
                 <Send className="h-3.5 w-3.5" />
-                {asking ? "Asking" : animatingMessageIndex !== null ? "Replying" : "Ask"}
+                {asking ? "Asking" : "Ask"}
               </Button>
+              </div>
             </form>
           </Card>
         </div>
@@ -1498,8 +2516,10 @@ function KnowledgePage() {
                       {selectedDoc.folder} | {selectedDoc.fileName}
                     </DialogDescription>
                   </div>
-                  <DocBadge label={selectedDoc.workflowState} />
-                  <DocBadge label={selectedDoc.status} />
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {selectedDoc.workflowState !== selectedDoc.status && <DocBadge label={selectedDoc.workflowState} />}
+                    <DocBadge label={selectedDoc.status} />
+                  </div>
                 </div>
               </DialogHeader>
 
@@ -1555,6 +2575,9 @@ function KnowledgePage() {
                         )}
                       </div>
                     </div>
+                    {selectedDoc.indexing && (
+                      <Progress value={processingProgress(selectedDoc.processingStatus)} className="h-1.5" />
+                    )}
 
                     <TabsContent
                       value="preview"
@@ -2062,7 +3085,7 @@ function KnowledgePage() {
               <div className="mb-2 flex items-center justify-between">
                 <span className="font-medium">
                   {uploadState === "uploading" && "Uploading document..."}
-                  {uploadState === "success" && "Upload complete. Indexing..."}
+                  {uploadState === "success" && "Upload complete. Processing in background..."}
                   {uploadState === "error" && "Upload failed"}
                 </span>
                 {uploadState === "success" ? (

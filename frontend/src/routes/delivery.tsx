@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+﻿import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
   LineChart,
   Line,
@@ -59,34 +59,37 @@ function formatNumber(value: number): string {
   return value.toLocaleString();
 }
 
-function formatRelativeTime(value: string): string {
+function formatTimestamp(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  const diffMs = Date.now() - date.getTime();
-  const minutes = Math.floor(diffMs / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 }
 
-function riskLabel(
-  trafficLight: DeliveryDashboardResponse["traffic_light"],
-  tier?: string,
-): string {
-  if (tier === "critical" || trafficLight === "red") return "Critical";
+function riskLabel(tier?: string): string {
+  if (tier === "critical") return "Critical";
   if (tier === "high") return "High";
-  if (tier === "medium" || trafficLight === "yellow") return "Medium";
-  if (trafficLight === "green") return "Low";
+  if (tier === "medium") return "Medium";
+  if (tier === "low") return "Low";
   return "Medium";
 }
 
-function latestThroughputUnits(dashboard: DeliveryDashboardResponse | undefined): number {
+function hasSufficientData(dashboard: DeliveryDashboardResponse | undefined): boolean {
+  const overview = asRecord(dashboard?.overview);
+  return overview?.has_sufficient_data !== false;
+}
+
+function avgDailyThroughputUnits(dashboard: DeliveryDashboardResponse | undefined): number {
   const overview = asRecord(dashboard?.overview);
   const latest = asRecord(overview?.latest_throughput);
-  return typeof latest?.units_completed === "number" ? latest.units_completed : 0;
+  return typeof latest?.rolling_7day_units === "number"
+    ? Math.round(latest.rolling_7day_units / 7)
+    : 0;
 }
 
 function buildRootCauses(dashboard: DeliveryDashboardResponse) {
@@ -129,20 +132,6 @@ function buildConfidenceChart(
       forecast: null as number | null,
     };
   });
-
-  const lastIndex = chart.length - 1;
-  const lastScore = chart[lastIndex]?.confidence;
-  if (lastScore != null && sorted[lastIndex]?.forecast_completion_date) {
-    chart[lastIndex] = { ...chart[lastIndex], forecast: lastScore };
-    for (let i = 1; i <= 4 && lastIndex + i < chart.length + 4; i += 1) {
-      const forecastScore = Math.max(50, lastScore - i * 2);
-      chart.push({
-        week: `F${i}`,
-        confidence: null,
-        forecast: forecastScore,
-      });
-    }
-  }
 
   return chart;
 }
@@ -198,16 +187,6 @@ function DeliveryPage() {
     );
   }, [portfolioQuery.data]);
 
-  const dashboards = useMemo(() => {
-    if (!resolvedProjectId || !selectedDashboardQuery.data) {
-      return portfolioDashboards;
-    }
-    return {
-      ...portfolioDashboards,
-      [resolvedProjectId]: selectedDashboardQuery.data,
-    };
-  }, [portfolioDashboards, resolvedProjectId, selectedDashboardQuery.data]);
-
   const selectedProject = projects.find((project) => project.id === resolvedProjectId);
   const selectedDashboard = resolvedProjectId ? dashboards[resolvedProjectId] : undefined;
   const portfolioMilestones = useMemo(
@@ -223,22 +202,23 @@ function DeliveryPage() {
     (portfolioQuery.error instanceof Error ? portfolioQuery.error.message : null);
 
   const portfolioKpis = useMemo(() => {
-    const dashboardList = Object.values(dashboards);
+    const dashboardList = Object.values(portfolioDashboards);
+    const scoredDashboards = dashboardList.filter((dashboard) => hasSufficientData(dashboard));
     const totalThroughput = dashboardList.reduce(
-      (sum, dashboard) => sum + latestThroughputUnits(dashboard),
+      (sum, dashboard) => sum + avgDailyThroughputUnits(dashboard),
       0,
     );
     const avgConfidence =
-      dashboardList.length > 0
-        ? dashboardList.reduce((sum, dashboard) => sum + dashboard.confidence, 0) /
-          dashboardList.length
+      scoredDashboards.length > 0
+        ? scoredDashboards.reduce((sum, dashboard) => sum + dashboard.confidence, 0) /
+          scoredDashboards.length
         : 0;
-    const atRiskProjects = dashboardList.filter(
+    const atRiskProjects = scoredDashboards.filter(
       (dashboard) => dashboard.traffic_light !== "green",
     ).length;
     const milestoneHitRate = computeMilestoneHitRate(portfolioMilestones);
 
-    const confidenceValues = dashboardList.map((dashboard) => dashboard.confidence);
+    const confidenceValues = scoredDashboards.map((dashboard) => dashboard.confidence);
     const confidenceDelta =
       confidenceValues.length >= 2
         ? `${(confidenceValues[confidenceValues.length - 1] - confidenceValues[0]).toFixed(1)} pts`
@@ -252,7 +232,7 @@ function DeliveryPage() {
       throughputDelta: undefined,
       confidenceDelta,
     };
-  }, [dashboards, portfolioMilestones]);
+  }, [portfolioDashboards, portfolioMilestones]);
 
   const rootCauses = selectedDashboard ? buildRootCauses(selectedDashboard) : [];
   const confidenceChart = buildConfidenceChart(confidenceQuery.data ?? []);
@@ -308,7 +288,7 @@ function DeliveryPage() {
 
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           <KpiCard
-            label="Throughput"
+            label="Throughput (7-day avg)"
             value={loading ? "—" : `${formatNumber(portfolioKpis.totalThroughput)}/d`}
             delta={portfolioKpis.throughputDelta}
             tone="success"
@@ -341,7 +321,17 @@ function DeliveryPage() {
             sub={
               selectedProject ? `Why is ${selectedProject.name} at risk?` : "Root cause breakdown"
             }
-            right={<AiBadge confidence={Math.round(selectedDashboard?.confidence ?? 0)} />}
+            right={
+              selectedDashboard && !hasSufficientData(selectedDashboard) ? (
+                <AiBadge label="Insufficient data" source="formula" />
+              ) : (
+                <AiBadge
+                  label="Risk score"
+                  source="formula"
+                  confidence={Math.round(selectedDashboard?.confidence ?? 0)}
+                />
+              )
+            }
           />
           {loading ? (
             <div className="h-2 overflow-hidden rounded bg-elevated">
@@ -374,7 +364,7 @@ function DeliveryPage() {
                   key={attachment}
                   className="rounded border border-border bg-elevated px-2 py-0.5 text-muted-foreground"
                 >
-                  📎 {attachment}
+                  📄 {attachment}
                 </span>
               ))}
             </div>
@@ -429,7 +419,7 @@ function DeliveryPage() {
                 <tr className="border-b border-border">
                   <th className="py-2 pr-3 font-medium">Project</th>
                   <th className="py-2 pr-3 font-medium">Client</th>
-                  <th className="py-2 pr-3 font-medium">Throughput</th>
+                  <th className="py-2 pr-3 font-medium">Throughput (7d avg)</th>
                   <th className="py-2 pr-3 font-medium">Confidence</th>
                   <th className="py-2 pr-3 font-medium">Risk</th>
                   <th className="py-2 pr-3 font-medium">Updated</th>
@@ -446,7 +436,7 @@ function DeliveryPage() {
                       </tr>
                     ))
                   : projects.map((project) => {
-                      const dashboard = dashboards[project.id];
+                      const dashboard = portfolioDashboards[project.id];
                       const overview = asRecord(dashboard?.overview);
                       const calculatedRisk = asRecord(overview?.calculated_risk);
                       const tier =
@@ -458,10 +448,14 @@ function DeliveryPage() {
                             {orgById.get(project.org_id) ?? project.vertical}
                           </td>
                           <td className="py-2.5 pr-3">
-                            {formatNumber(latestThroughputUnits(dashboard))}/d
+                            {formatNumber(avgDailyThroughputUnits(dashboard))}/d
                           </td>
                           <td className="py-2.5 pr-3">
-                            {dashboard ? `${Math.round(dashboard.confidence)}%` : "—"}
+                            {!dashboard
+                              ? "—"
+                              : hasSufficientData(dashboard)
+                                ? `${Math.round(dashboard.confidence)}%`
+                                : "Insufficient data"}
                           </td>
                           <td className="py-2.5 pr-3">
                             {dashboard ? (
@@ -471,7 +465,7 @@ function DeliveryPage() {
                             )}
                           </td>
                           <td className="py-2.5 pr-3 text-muted-foreground">
-                            {formatRelativeTime(project.updated_at)}
+                            {formatTimestamp(project.updated_at)}
                           </td>
                           <td className="py-2.5 pr-3">
                             <button

@@ -1,8 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
-import { Card, SectionHeader, KpiCard, AiBadge, StatusPill } from "@/components/bsg/widgets";
-import { clients } from "@/lib/bsg/data";
-import { Star } from "lucide-react";
+import { createFileRoute, useRouter } from "@tanstack/react-router";
+import { ArrowLeft } from "lucide-react";
 
 export const Route = createFileRoute("/client-intelligence")({ component: ClientIntelPage });
 
@@ -20,8 +17,7 @@ function Sparkline() {
 }
 
 function ClientIntelPage() {
-  const [sel, setSel] = useState<string | null>(null);
-  const selected = clients.find((c) => c.name === sel);
+  const router = useRouter();
 
   return (
     <div className="space-y-5">

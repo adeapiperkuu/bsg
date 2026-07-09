@@ -3,6 +3,8 @@ export const queryKeys = {
   organisations: ["organisations"] as const,
   deliveryPortfolio: ["delivery", "portfolio"] as const,
   deliveryDashboard: (projectId: string) => ["delivery", "dashboard", projectId] as const,
+  deliveryConversations: (projectId: string | null) =>
+    ["delivery", "conversations", projectId ?? "__portfolio__"] as const,
   projectDeliveryConfidence: (projectId: string) =>
     ["projects", projectId, "delivery-confidence"] as const,
   projectThroughput: (projectId: string) => ["projects", projectId, "throughput"] as const,
@@ -32,3 +34,4 @@ export const queryKeys = {
 };
 
 export const STALE_TIME_MS = 5 * 60 * 1000;
+export const KNOWLEDGE_BOOTSTRAP_STALE_TIME_MS = 10 * 60 * 1000;

@@ -36,15 +36,55 @@ const tip = {
 };
 
 function QualityPage() {
+  const queryClient = useQueryClient();
+  const { data: projects = [] } = useQuery({ queryKey: ["projects"], queryFn: listProjects });
+  const [projectId, setProjectId] = useState<string | undefined>(undefined);
+  const activeProjectId = projectId ?? projects[0]?.id;
+
+  const { data: dashboard, isLoading, isError } = useQuery({
+    queryKey: ["quality-dashboard", activeProjectId],
+    queryFn: () => fetchQualityDashboard(activeProjectId!),
+    enabled: Boolean(activeProjectId),
+  });
+
+  const { data: calibrationBrief } = useQuery({
+    queryKey: ["calibration-brief", activeProjectId],
+    queryFn: () => fetchCalibrationBrief(activeProjectId!),
+    enabled: Boolean(activeProjectId),
+  });
+
+  const { data: sopFlags = [] } = useQuery({
+    queryKey: ["sop-flags", activeProjectId],
+    queryFn: () => fetchSopAmbiguityFlags(activeProjectId!),
+    enabled: Boolean(activeProjectId),
+  });
+
+  const { data: reviewerScorecards = [] } = useQuery({
+    queryKey: ["reviewer-scorecards", activeProjectId],
+    queryFn: () => fetchReviewerScorecards(activeProjectId!),
+    enabled: Boolean(activeProjectId),
+  });
+
+  const handleResolveAlert = async (alertId: string) => {
+    await resolveRiskAlert(alertId, "Resolved from Quality dashboard");
+    await queryClient.invalidateQueries({ queryKey: ["quality-dashboard", activeProjectId] });
+  };
+
+  const trendData =
+    dashboard?.trend.map((t) => ({
+      week: `W${t.iso_week}`,
+      goldAccuracy: t.gold_set_accuracy_pct != null ? Number(t.gold_set_accuracy_pct) : null,
+      iaa: t.iaa_krippendorff_alpha != null ? Number(t.iaa_krippendorff_alpha) : null,
+    })) ?? [];
+
+  const errorCategories =
+    dashboard?.error_breakdown.map((e) => ({
+      cat: ERROR_CATEGORY_LABELS[e.error_category] ?? e.error_category,
+      count: Number(e.share_pct),
+    })) ?? [];
+
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <KpiCard label="Gold-Set Accuracy" value="94.2%" delta="+0.3 WoW" tone="success" />
-        <KpiCard label="IAA (Krippendorff α)" value="0.87" delta="−0.02" tone="warning" />
-        <KpiCard label="Rework Rate" value="6.4%" delta="+0.8%" tone="warning" />
-        <KpiCard label="Active Drift Alerts" value="2" delta="Radiology · NLP" tone="danger" />
-      </div>
-
       <Card>
         <SectionHeader
           title="Quality Trend"
@@ -107,8 +147,42 @@ function QualityPage() {
                 </span>
               </span>
             ))}
+          </select>
+        </div>
+      </Card>
+
+      {isLoading && <p className="text-sm text-muted-foreground">Loading quality dashboard…</p>}
+      {isError && <p className="text-sm text-[color:var(--danger)]">Failed to load quality data.</p>}
+
+      {dashboard && (
+        <>
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            <KpiCard
+              label="Gold-Set Accuracy"
+              value={fmtPct(dashboard.kpis.gold_set_accuracy_pct)}
+              tone={kpiTone(dashboard.kpis.gold_set_accuracy_pct, "accuracy")}
+            />
+            <KpiCard
+              label="IAA (Krippendorff α)"
+              value={fmtIaa(dashboard.kpis.iaa_krippendorff_alpha)}
+              tone={kpiTone(dashboard.kpis.iaa_krippendorff_alpha, "iaa")}
+            />
+            <KpiCard
+              label="Rework Rate"
+              value={fmtPct(dashboard.kpis.rework_rate_pct)}
+              delta={
+                dashboard.kpis.rework_rate_target_pct != null && dashboard.kpis.rework_rate_pct != null
+                  ? `target ≤${Number(dashboard.kpis.rework_rate_target_pct).toFixed(1)}%`
+                  : undefined
+              }
+              tone={kpiTone(dashboard.kpis.rework_rate_pct, "rework")}
+            />
+            <KpiCard
+              label="Active Drift Alerts"
+              value={String(dashboard.kpis.active_drift_alerts)}
+              tone={kpiTone(dashboard.kpis.active_drift_alerts, "alerts")}
+            />
           </div>
-        </Card>
 
         <Card>
           <SectionHeader

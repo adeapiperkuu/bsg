@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.delivery.audit.audit_logger import AuditLogger
@@ -336,9 +336,6 @@ class RiskAlertHandler:
 
         alert_ids: list[UUID] = []
         for milestone in milestones:
-            if milestone.status not in {MilestoneStatus.AT_RISK, MilestoneStatus.MISSED}:
-                continue
-
             risk_tier = (
                 RiskTier.CRITICAL
                 if milestone.status == MilestoneStatus.MISSED
@@ -553,12 +550,15 @@ async def _fetch_confidence_for_milestone_on_date(
     milestone_id: UUID,
     as_of_date: date,
 ) -> DeliveryConfidenceScore | None:
+    start_of_day = datetime.combine(as_of_date, datetime.min.time())
+    start_of_next_day = start_of_day + timedelta(days=1)
     row = await session.execute(
         select(DeliveryConfidenceScore)
         .where(
             DeliveryConfidenceScore.project_id == project_id,
             DeliveryConfidenceScore.milestone_id == milestone_id,
-            func.date(DeliveryConfidenceScore.created_at) == as_of_date,
+            DeliveryConfidenceScore.created_at >= start_of_day,
+            DeliveryConfidenceScore.created_at < start_of_next_day,
         )
         .order_by(DeliveryConfidenceScore.created_at.desc())
         .limit(1)
@@ -655,6 +655,14 @@ def _risk_alert_probability_pct(alert: RiskAlertSnapshot | None) -> Decimal | No
 
 
 async def _fetch_notification_recipients(session: AsyncSession, org_id: UUID) -> list[User]:
+    # Intentionally org-wide, not project-scoped: DELIVERY_MANAGER and BSG_LEADERSHIP
+    # are org-level roles by design (see app.services.scoping.scoped_project_query /
+    # can_access_project — both roles see every project in their org without a
+    # per-project assignment row). ProjectAssignment in this schema only links CLIENT
+    # users to specific projects, so it cannot be used to scope these recipients.
+    # If project-scoped manager/leadership notifications are wanted in the future,
+    # that requires a new assignment relationship (e.g. a manager/leadership variant
+    # of ProjectAssignment, or a project-team membership table) — not present today.
     rows = await session.execute(
         select(User).where(
             User.org_id == org_id,

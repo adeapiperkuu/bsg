@@ -37,7 +37,7 @@ DEFAULT_SEED = SCRIPT_DIR / "seed.sql"
 
 def load_env_values() -> dict[str, str]:
     values: dict[str, str] = {}
-    for env_path in (SCRIPT_DIR / ".env", REPO_ROOT / ".env"):
+    for env_path in (SCRIPT_DIR / ".env", REPO_ROOT / ".env", REPO_ROOT / "backend" / ".env"):
         if not env_path.exists():
             continue
         for line in env_path.read_text(encoding="utf-8").splitlines():

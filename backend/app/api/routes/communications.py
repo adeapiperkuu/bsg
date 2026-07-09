@@ -6,11 +6,32 @@ from sqlalchemy import select
 from app.api.deps import SessionDep, UserDep
 from app.core.exceptions import ApiError
 from app.core.security import require_role
-from app.db.models import AppRole, ClientCommunication, CommunicationEvidenceLink, CommunicationStatus, ThroughputSnapshot
+from app.db.models import (
+    AlertStatus,
+    AlertType,
+    AppRole,
+    ClientCommunication,
+    CommunicationEvidenceLink,
+    CommunicationStatus,
+    CommunicationType,
+    QualitySnapshot,
+    RiskAlert,
+    ThroughputSnapshot,
+)
 from app.schemas.common import DataResponse, EvidenceLinkRead, ListResponse, Pagination
 from app.schemas.domain import CommunicationApprove, CommunicationDraftCreate, CommunicationRead, CommunicationReview
-from app.services.communications import approve, create_draft, get_visible_communication, move_to_review, reject, send
-from app.services.evidence import EvidenceInput
+from app.services.communications import (
+    approve,
+    create_draft,
+    generate_comms_draft_body,
+    get_visible_communication,
+    move_to_review,
+    reject,
+    send,
+)
+from datetime import datetime, timezone
+
+from app.services.quality import generate_quality_summary
 from app.services.scoping import get_visible_project
 
 router = APIRouter(tags=["communications"])
@@ -34,7 +55,7 @@ async def draft_communication(
     current_user = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
 ) -> DataResponse[CommunicationRead]:
     project = await get_visible_project(session, project_id, current_user)
-    latest_snapshot = (
+    latest_throughput = (
         await session.execute(
             select(ThroughputSnapshot)
             .where(ThroughputSnapshot.project_id == project.id)
@@ -42,11 +63,92 @@ async def draft_communication(
             .limit(1)
         )
     ).scalar_one_or_none()
-    if latest_snapshot is None:
+    if latest_throughput is None:
         raise ApiError(409, "EVIDENCE_REQUIRED", "Communication draft requires at least one evidence row.")
-    body = (
-        "Draft generation is ready for LLM integration. "
-        "This placeholder is evidence-backed and must be reviewed before sending."
+
+    evidence: list[EvidenceInput] = [
+        EvidenceInput(
+            source_table="throughput_snapshots",
+            source_row_id=latest_throughput.id,
+            description="Latest throughput snapshot for communication grounding.",
+        )
+    ]
+
+    quality_snaps: list[QualitySnapshot] = []
+    drift_alerts: list[RiskAlert] = []
+    quality_summary = None
+
+    # For weekly summaries, attach sanitized §8.4 quality summary when available.
+    if payload.comm_type == CommunicationType.WEEKLY_SUMMARY:
+        now = datetime.now(timezone.utc)
+        iso_year, iso_week, _ = now.isocalendar()
+        quality_summary = await generate_quality_summary(
+            session, project, iso_year, iso_week, current_user
+        )
+        evidence.append(
+            EvidenceInput(
+                source_table="quality_summaries",
+                source_row_id=project.id,
+                description=f"Sanitized quality summary W{iso_week}/{iso_year}.",
+            )
+        )
+
+        quality_snaps = list(
+            (
+                await session.execute(
+                    select(QualitySnapshot)
+                    .where(QualitySnapshot.project_id == project.id)
+                    .order_by(QualitySnapshot.iso_year.desc(), QualitySnapshot.iso_week.desc())
+                    .limit(10)
+                )
+            ).scalars()
+        )
+        # Deduplicate: one row per team (latest week only).
+        seen_teams: set[UUID] = set()
+        deduped_snaps: list[QualitySnapshot] = []
+        for snap in quality_snaps:
+            if snap.team_id not in seen_teams:
+                seen_teams.add(snap.team_id)
+                deduped_snaps.append(snap)
+                evidence.append(
+                    EvidenceInput(
+                        source_table="quality_snapshots",
+                        source_row_id=snap.id,
+                        description=f"Quality snapshot W{snap.iso_week}/{snap.iso_year} for team {snap.team_id}.",
+                    )
+                )
+        quality_snaps = deduped_snaps
+
+        drift_alerts = list(
+            (
+                await session.execute(
+                    select(RiskAlert).where(
+                        RiskAlert.project_id == project.id,
+                        RiskAlert.alert_type == AlertType.QUALITY_DRIFT,
+                        RiskAlert.deleted_at.is_(None),
+                        RiskAlert.status.in_([AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED]),
+                    )
+                    .order_by(RiskAlert.created_at.desc())
+                    .limit(5)
+                )
+            ).scalars()
+        )
+        for alert in drift_alerts:
+            evidence.append(
+                EvidenceInput(
+                    source_table="risk_alerts",
+                    source_row_id=alert.id,
+                    description=f"Open quality drift alert: {alert.title}",
+                )
+            )
+
+    body = await generate_comms_draft_body(
+        project,
+        latest_throughput,
+        payload.comm_type,
+        quality_summary=quality_summary,
+        quality_snaps=quality_snaps,
+        drift_alerts=drift_alerts,
     )
     communication = await create_draft(
         session,
@@ -54,13 +156,7 @@ async def draft_communication(
         payload.subject,
         body,
         payload.comm_type,
-        [
-            EvidenceInput(
-                source_table="throughput_snapshots",
-                source_row_id=latest_snapshot.id,
-                description="Latest throughput snapshot for communication grounding.",
-            )
-        ],
+        evidence,
     )
     await session.commit()
     await session.refresh(communication)

@@ -53,9 +53,91 @@ export interface KnowledgeFolderApi {
   display_order: number;
 }
 
+export interface KnowledgeDocumentSummaryApi {
+  id: string;
+  folder_id: string;
+  folder_name: string;
+  folder_kind: KnowledgeFolderKind;
+  title: string;
+  source_type: KnowledgeSourceTypeApi;
+  version: string;
+  visibility: KnowledgeVisibilityApi;
+  status: KnowledgeStatusApi;
+  owner_approver: string;
+  effective_date: string | null;
+  file_name: string;
+  processing_status: KnowledgeProcessingStatusApi;
+  processing_error: string | null;
+  indexing_status: KnowledgeIndexingStatusApi;
+  workflow_state: KnowledgeWorkflowState;
+  updated_at: string;
+}
+
+export interface KnowledgeFolderTreeNodeApi {
+  id: string;
+  name: string;
+  folder_kind: KnowledgeFolderKind;
+  display_order: number;
+  document_count: number;
+}
+
+export interface KnowledgeDocumentCountsApi {
+  total: number;
+  by_folder_id: Record<string, number>;
+}
+
+export interface KnowledgePermissionsApi {
+  can_upload: boolean;
+  can_manage_eval: boolean;
+  can_adjust_retrieval_scope: boolean;
+  can_resolve_gaps: boolean;
+}
+
+export interface KnowledgeLibraryHealthCountsApi {
+  ready_count: number;
+  needs_review_count: number;
+  expired_count: number;
+  needs_reindex_count: number;
+  indexing_count: number;
+  draft_count: number;
+  archived_count: number;
+}
+
+export interface KnowledgeBootstrapApi {
+  folders: KnowledgeFolderApi[];
+  folder_tree: KnowledgeFolderTreeNodeApi[];
+  recent_documents: KnowledgeDocumentSummaryApi[];
+  document_counts: KnowledgeDocumentCountsApi;
+  permissions: KnowledgePermissionsApi;
+  library_health: KnowledgeLibraryHealthCountsApi;
+}
+
+export interface KnowledgeGapTodoApi {
+  id: string;
+  query_text: string;
+  message: string;
+  suggested_title: string | null;
+  suggested_source_type: string | null;
+  suggested_folder_kind: string | null;
+  agent_query_id: string | null;
+  created_at: string;
+}
+
+export interface KnowledgeLibraryHealthApi {
+  ready_count: number;
+  needs_review_count: number;
+  expired_count: number;
+  needs_reindex_count: number;
+  indexing_count: number;
+  draft_count: number;
+  archived_count: number;
+  open_gaps: KnowledgeGapTodoApi[];
+}
+
 export interface KnowledgeDocumentApi {
   id: string;
   folder_id: string;
+  active_version_id?: string | null;
   folder_name: string;
   folder_kind: KnowledgeFolderKind;
   title: string;
@@ -74,6 +156,7 @@ export interface KnowledgeDocumentApi {
   preview: string[];
   workflow_state: KnowledgeWorkflowState;
   quality_score: KnowledgeQualityScoreApi | null;
+  quality_warnings: string[];
   chunk_count: number;
   citation_count: number;
   approved_by_name: string | null;
@@ -84,28 +167,19 @@ export interface KnowledgeDocumentApi {
   updated_at: string;
 }
 
-export interface KnowledgeCitationApi {
-  document_id: string;
-  chunk_id: string | null;
-  citation_label: string;
-  title: string;
-  source_type: string;
-  version: string;
-  folder_name: string;
-  folder_kind: string;
-  relevance_score: number;
-  page_number: number | null;
-  chunk_index: number | null;
-  chunk_preview: string;
-  section_title: string | null;
-}
-
 export interface KnowledgeStructuredAnswerApi {
   policy: string;
   steps: string;
   owner: string;
   evidence: string;
   next_action: string;
+}
+
+export type KnowledgeConversationHistoryRoleApi = "user" | "assistant";
+
+export interface KnowledgeConversationHistoryTurnApi {
+  role: KnowledgeConversationHistoryRoleApi;
+  content: string;
 }
 
 export interface KnowledgeGapApi {
@@ -122,9 +196,44 @@ export interface KnowledgeAskResponseApi {
   confidence_reasons: string[];
   structured_answer: KnowledgeStructuredAnswerApi | null;
   knowledge_gap: KnowledgeGapApi | null;
-  citations: KnowledgeCitationApi[];
   query_id: string | null;
+  conversation_id?: string | null;
   model_used: string | null;
+  retrieval_debug?: KnowledgeRetrievalDebugApi | null;
+}
+
+export interface KnowledgeConversationSummaryApi {
+  id: string;
+  title: string;
+  turn_count: number;
+  updated_at: string;
+}
+
+export interface KnowledgeConversationTurnApi {
+  query_id: string;
+  query_text: string;
+  answer: KnowledgeAskResponseApi;
+}
+
+export interface KnowledgeConversationApi {
+  id: string;
+  turns: KnowledgeConversationTurnApi[];
+}
+
+export type KnowledgeAnswerModeApi = "internal" | "client_safe";
+
+export interface KnowledgeRetrievalDebugApi {
+  query_text?: string;
+  retrieval_query?: string;
+  answer_mode?: KnowledgeAnswerModeApi | string;
+  include_histories?: boolean;
+  max_sources?: number;
+  min_relevance_score?: number;
+  project?: string | null;
+  department?: string | null;
+  eligible_doc_count?: number;
+  has_embeddings?: boolean;
+  confidence_score?: number;
 }
 
 export interface KnowledgeDocumentVersionApi {
@@ -158,6 +267,34 @@ export interface KnowledgeRetrievalSettingsApi {
   department: string | null;
 }
 
+export type KnowledgeFeedbackRatingApi = "up" | "down";
+
+export interface KnowledgeFeedbackRequestApi {
+  query_id: string;
+  rating: KnowledgeFeedbackRatingApi;
+  comment?: string | null;
+}
+
+export interface KnowledgeFeedbackResponseApi {
+  id: string;
+  query_id: string;
+  rating: KnowledgeFeedbackRatingApi;
+  comment: string | null;
+  created_at: string;
+}
+
+export interface AgentQueryApi {
+  id: string;
+  agent_name: string;
+  project_id: string | null;
+  query_text: string;
+  answer_text: string;
+  model_used: string | null;
+  latency_ms: number | null;
+  created_at: string;
+  retrieval_params?: Record<string, unknown> | null;
+}
+
 export interface KnowledgeDocumentFilters {
   sourceType?: string;
   owner?: string;
@@ -167,4 +304,5 @@ export interface KnowledgeDocumentFilters {
   effectiveDateFrom?: string;
   effectiveDateTo?: string;
   semanticQuery?: string;
+  aiRank?: boolean;
 }

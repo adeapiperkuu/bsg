@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-import { fetchMe, login as apiLogin, logout as apiLogout } from "@/lib/api";
+import { fetchMe, login as apiLogin, logout as apiLogout, resetAuthSession } from "@/lib/api";
 import type { MeUser } from "@/types/auth";
 
 type AuthState = {
@@ -15,6 +15,11 @@ type AuthState = {
 
 let sessionRequestId = 0;
 
+function hasSessionHint() {
+  if (typeof document === "undefined") return false;
+  return /(?:^|; )csrf_token=/.test(document.cookie);
+}
+
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   isLoading: true,
@@ -23,6 +28,10 @@ export const useAuthStore = create<AuthState>((set) => ({
   bootstrap: async () => {
     if (typeof window === "undefined") return;
     const requestId = ++sessionRequestId;
+    if (!hasSessionHint()) {
+      set({ user: null, isAuthenticated: false, isLoading: false });
+      return;
+    }
     set({ isLoading: true });
     try {
       const user = await fetchMe();
@@ -30,6 +39,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       set({ user, isAuthenticated: true, isLoading: false });
     } catch {
       if (requestId !== sessionRequestId) return;
+      resetAuthSession();
       set({ user: null, isAuthenticated: false, isLoading: false });
     }
   },

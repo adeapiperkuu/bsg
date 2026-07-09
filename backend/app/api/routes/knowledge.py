@@ -1,12 +1,17 @@
 from datetime import date
+import json
 from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
-from fastapi.responses import Response
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, Query, UploadFile
+from fastapi.responses import Response, StreamingResponse
 
-from app.api.deps import SessionDep
+from app.api.deps import ExplicitUserActionDep, SessionDep
+from app.core.constants import SUPPORTED_KNOWLEDGE_EXTENSIONS
+from app.core.exceptions import ApiError
 from app.core.security import CurrentUser, require_role
+from app.db.rls import set_rls_context
+from app.db.session import AsyncSessionLocal
 from app.db.models import AppRole
 from app.db.models.entities import (
     KnowledgeDocumentStatus,
@@ -18,11 +23,18 @@ from app.schemas.common import DataResponse, ListResponse, Pagination
 from app.schemas.domain import (
     KnowledgeAskCreate,
     KnowledgeAskRead,
+    KnowledgeBootstrapRead,
+    KnowledgeConversationRead,
+    KnowledgeConversationSummaryRead,
     KnowledgeDocumentRead,
     KnowledgeDocumentUpdate,
     KnowledgeDocumentVersionRead,
+    KnowledgeFeedbackCreate,
+    KnowledgeFeedbackRead,
     KnowledgeFolderCreate,
     KnowledgeFolderRead,
+    KnowledgeGapTodoRead,
+    KnowledgeLibraryHealthRead,
     KnowledgeRetrievalSettingsRead,
     KnowledgeRetrievalSettingsUpdate,
     KnowledgeVersionCompareRead,
@@ -30,23 +42,32 @@ from app.schemas.domain import (
 from app.services.knowledge import (
     ask_knowledge_agent,
     compare_document_versions,
-    create_knowledge_folder_by_name,
     create_document_from_upload,
+    create_knowledge_folder_by_name,
     delete_document,
     get_document,
     get_document_file_download,
+    get_knowledge_bootstrap,
+    get_knowledge_conversation,
+    get_knowledge_library_health,
+    get_knowledge_query_answer,
     get_retrieval_settings,
     list_document_versions,
     list_documents,
+    list_knowledge_conversations,
     list_knowledge_folders,
+    process_knowledge_document_job,
+    record_knowledge_feedback,
     reindex_document,
+    resolve_knowledge_gap,
+    prepare_stream_knowledge_ask,
+    stream_prepared_knowledge_ask,
     update_document,
     update_retrieval_settings,
 )
 
 router = APIRouter(tags=["knowledge"])
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".csv"}
 MIME_BY_EXT = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -63,6 +84,26 @@ def _parse_enum(value: str, enum_cls, field_name: str):
         from app.core.exceptions import ApiError
 
         raise ApiError(400, "VALIDATION_ERROR", f"Invalid {field_name}.") from exc
+
+
+@router.get("/knowledge/bootstrap", response_model=DataResponse[KnowledgeBootstrapRead])
+async def knowledge_bootstrap(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[KnowledgeBootstrapRead]:
+    data = await get_knowledge_bootstrap(session, current_user)
+    await session.commit()
+    return DataResponse(data=data)
+
+
+@router.get("/knowledge/library-health", response_model=DataResponse[KnowledgeLibraryHealthRead])
+async def knowledge_library_health(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[KnowledgeLibraryHealthRead]:
+    row = await get_knowledge_library_health(session, current_user)
+    await session.commit()
+    return DataResponse(data=row)
 
 
 @router.get("/knowledge/folders", response_model=ListResponse[KnowledgeFolderRead])
@@ -119,7 +160,11 @@ async def list_knowledge_documents(
     effective_date_from: date | None = None,
     effective_date_to: date | None = None,
     semantic_query: str | None = None,
+    ai_rank: bool = False,
+    user_action: str | None = Header(default=None, alias="X-BSG-User-Action"),
 ) -> ListResponse[KnowledgeDocumentRead]:
+    if ai_rank and user_action != "true":
+        raise ApiError(400, "USER_ACTION_REQUIRED", "AI document ranking requires an explicit user action.")
     rows = await list_documents(
         session,
         current_user,
@@ -131,6 +176,7 @@ async def list_knowledge_documents(
         effective_date_from=effective_date_from,
         effective_date_to=effective_date_to,
         semantic_query=semantic_query,
+        ai_rank=ai_rank,
     )
     await session.commit()
     return ListResponse(data=rows, pagination=Pagination(limit=len(rows)))
@@ -165,6 +211,7 @@ async def download_knowledge_document(
 
 @router.post("/knowledge/documents", response_model=DataResponse[KnowledgeDocumentRead])
 async def upload_knowledge_document(
+    background_tasks: BackgroundTasks,
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
     file: UploadFile = File(...),
@@ -186,7 +233,7 @@ async def upload_knowledge_document(
 
     file_name = file.filename or "document.txt"
     suffix = "." + file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
-    if suffix not in ALLOWED_EXTENSIONS:
+    if suffix not in SUPPORTED_KNOWLEDGE_EXTENSIONS:
         raise ApiError(400, "VALIDATION_ERROR", "Unsupported file type. Use PDF, DOCX, TXT, MD, or CSV.")
     file_bytes = await file.read()
     if not file_bytes:
@@ -220,6 +267,7 @@ async def upload_knowledge_document(
         file_bytes=file_bytes,
     )
     await session.commit()
+    background_tasks.add_task(process_knowledge_document_job, row.id, row.active_version_id)
     return DataResponse(data=row)
 
 
@@ -248,11 +296,14 @@ async def delete_knowledge_document(
 @router.post("/knowledge/documents/{document_id}/index", response_model=DataResponse[KnowledgeDocumentRead])
 async def index_knowledge_document(
     document_id: UUID,
+    background_tasks: BackgroundTasks,
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+    _user_action: ExplicitUserActionDep = None,
 ) -> DataResponse[KnowledgeDocumentRead]:
     row = await reindex_document(session, current_user, document_id)
     await session.commit()
+    background_tasks.add_task(process_knowledge_document_job, row.id, row.active_version_id)
     return DataResponse(data=row)
 
 
@@ -261,18 +312,146 @@ async def ask_knowledge(
     payload: KnowledgeAskCreate,
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+    _user_action: ExplicitUserActionDep = None,
 ) -> DataResponse[KnowledgeAskRead]:
     org_settings = await get_retrieval_settings(session, current_user.org_id)
     row = await ask_knowledge_agent(
         session,
         current_user,
         payload.query_text.strip(),
+        conversation_history=payload.conversation_history,
+        answer_mode=payload.answer_mode,
         include_histories=payload.include_histories if payload.include_histories is not None else org_settings.include_histories,
         max_sources=payload.max_sources or org_settings.max_sources,
         min_relevance_score=payload.min_relevance_score if payload.min_relevance_score is not None else org_settings.min_confidence,
         project=payload.project or org_settings.project,
         department=payload.department or org_settings.department,
+        folder_id=payload.folder_id,
+        source_type=payload.source_type,
+        effective_date_from=payload.effective_date_from,
+        effective_date_to=payload.effective_date_to,
+        only_approved=org_settings.only_approved,
+        conversation_id=payload.conversation_id,
     )
+    await session.commit()
+    return DataResponse(data=row)
+
+
+@router.post("/knowledge/ask/stream")
+async def stream_knowledge(
+    payload: KnowledgeAskCreate,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+    _user_action: ExplicitUserActionDep = None,
+) -> StreamingResponse:
+    query_text = payload.query_text.strip()
+
+    async def _generate():
+        async with AsyncSessionLocal() as prep_session:
+            await set_rls_context(prep_session, json.dumps({"sub": str(current_user.id)}))
+            org_settings = await get_retrieval_settings(prep_session, current_user.org_id)
+            include_histories = (
+                payload.include_histories if payload.include_histories is not None else org_settings.include_histories
+            )
+            max_sources = payload.max_sources or org_settings.max_sources
+            min_relevance_score = (
+                payload.min_relevance_score
+                if payload.min_relevance_score is not None
+                else org_settings.min_confidence
+            )
+            project = payload.project or org_settings.project
+            department = payload.department or org_settings.department
+            early_events, prepared = await prepare_stream_knowledge_ask(
+                prep_session,
+                current_user,
+                query_text,
+                conversation_history=payload.conversation_history,
+                answer_mode=payload.answer_mode,
+                include_histories=include_histories,
+                max_sources=max_sources,
+                min_relevance_score=min_relevance_score,
+                project=project,
+                department=department,
+                folder_id=payload.folder_id,
+                source_type=payload.source_type,
+                effective_date_from=payload.effective_date_from,
+                effective_date_to=payload.effective_date_to,
+                only_approved=org_settings.only_approved,
+                conversation_id=payload.conversation_id,
+            )
+            await prep_session.commit()
+        for chunk in early_events:
+            yield chunk
+        if prepared is not None:
+            async for chunk in stream_prepared_knowledge_ask(prepared):
+                yield chunk
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/knowledge/gaps/{gap_id}/resolve", response_model=DataResponse[KnowledgeGapTodoRead])
+async def resolve_gap(
+    gap_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[KnowledgeGapTodoRead]:
+    row = await resolve_knowledge_gap(session, current_user, gap_id)
+    await session.commit()
+    return DataResponse(data=row)
+
+
+@router.post("/knowledge/feedback", response_model=DataResponse[KnowledgeFeedbackRead])
+async def submit_knowledge_feedback(
+    payload: KnowledgeFeedbackCreate,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[KnowledgeFeedbackRead]:
+    row = await record_knowledge_feedback(
+        session,
+        current_user,
+        query_id=payload.query_id,
+        rating=payload.rating,
+        comment=payload.comment,
+    )
+    await session.commit()
+    return DataResponse(data=row)
+
+
+@router.get("/knowledge/queries/{query_id}", response_model=DataResponse[KnowledgeAskRead])
+async def get_knowledge_query(
+    query_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[KnowledgeAskRead]:
+    row = await get_knowledge_query_answer(session, current_user, query_id)
+    await session.commit()
+    return DataResponse(data=row)
+
+
+@router.get("/knowledge/conversations", response_model=ListResponse[KnowledgeConversationSummaryRead])
+async def list_knowledge_conversation_history(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+    limit: int = Query(default=30, ge=1, le=100),
+) -> ListResponse[KnowledgeConversationSummaryRead]:
+    rows = await list_knowledge_conversations(session, current_user, limit=limit)
+    await session.commit()
+    return ListResponse(data=rows, pagination=Pagination(limit=limit))
+
+
+@router.get("/knowledge/conversations/{conversation_id}", response_model=DataResponse[KnowledgeConversationRead])
+async def get_knowledge_conversation_history(
+    conversation_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)),
+) -> DataResponse[KnowledgeConversationRead]:
+    row = await get_knowledge_conversation(session, current_user, conversation_id)
     await session.commit()
     return DataResponse(data=row)
 
@@ -320,3 +499,4 @@ async def patch_knowledge_retrieval_settings(
     row = await update_retrieval_settings(session, current_user, payload)
     await session.commit()
     return DataResponse(data=row)
+

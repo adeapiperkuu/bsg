@@ -14,6 +14,7 @@ import appCss from "../styles.css?url";
 import { RoleProvider } from "../lib/bsg/role";
 import { Shell } from "../components/bsg/Shell";
 import { AuthProvider } from "../components/AuthProvider";
+import { Toaster } from "../components/ui/sonner";
 import { PageTransition } from "../components/PageTransition";
 
 const PUBLIC_PATHS = ["/login", "/unauthorized"];
@@ -128,6 +129,7 @@ function RootComponent() {
     <QueryClientProvider client={queryClient}>
       <RoleProvider>
         <AuthProvider>
+          <Toaster richColors position="top-right" />
           {isPublic ? (
             <PageTransition>
               <Outlet />

@@ -7,7 +7,7 @@ except ImportError:
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, Numeric, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, Numeric, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import UserDefinedType
@@ -100,7 +100,34 @@ class NotificationType(StrEnum):
     COMMUNICATION_PENDING = "communication_pending"
     MILESTONE_AT_RISK = "milestone_at_risk"
     QUALITY_DRIFT_DETECTED = "quality_drift_detected"
+    SKILL_GAP_DETECTED = "skill_gap_detected"
+    CALIBRATION_REQUIRED = "calibration_required"
+    SOP_AMBIGUITY_FLAGGED = "sop_ambiguity_flagged"
     SYSTEM = "system"
+
+
+
+class SignalType(StrEnum):
+    QUALITY_RISK = "quality_risk"
+    SKILL_GAP = "skill_gap"
+    QUALITY_ESCALATION = "quality_escalation"
+
+
+class SignalStatus(StrEnum):
+    PENDING = "pending"
+    CONSUMED = "consumed"
+    FAILED = "failed"
+
+
+class ScanTrigger(StrEnum):
+    SCHEDULER = "scheduler"
+    MANUAL = "manual"
+
+
+class ScanStatus(StrEnum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class KnowledgeFolderKind(StrEnum):
@@ -221,6 +248,80 @@ class KnowledgeExtractionStatus(StrEnum):
     FAILED = "failed"
 
 
+class KnowledgeFeedbackRating(StrEnum):
+    UP = "up"
+    DOWN = "down"
+
+
+class KnowledgeGapStatus(StrEnum):
+    OPEN = "open"
+    RESOLVED = "resolved"
+
+
+class GovernanceScopeStatus(StrEnum):
+    APPROVED = "approved"
+    PENDING_REVISION = "pending_revision"
+    LOCKED = "locked"
+
+
+class GovernanceDependencyType(StrEnum):
+    CLIENT_ACTION = "client_action"
+    INTERNAL = "internal"
+    EXTERNAL = "external"
+
+
+class GovernanceDependencyStatus(StrEnum):
+    OPEN = "open"
+    BLOCKING = "blocking"
+    RESOLVED = "resolved"
+
+
+class GovernanceEscalationSeverity(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class GovernanceEscalationStatus(StrEnum):
+    OPEN = "open"
+    IN_PROGRESS = "in_progress"
+    RESOLVED = "resolved"
+
+
+class GovernanceActionStatus(StrEnum):
+    OPEN = "open"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    OVERDUE = "overdue"
+
+
+class GovernanceSummaryStatus(StrEnum):
+    DRAFT = "draft"
+    APPROVED = "approved"
+
+
+class GovernanceCharterStatus(StrEnum):
+    DRAFT = "draft"
+    APPROVED = "approved"
+    ARCHIVED = "archived"
+
+
+class GovernanceEvidenceSourceType(StrEnum):
+    DEPENDENCY = "dependency"
+    ESCALATION = "escalation"
+    ACTION = "action"
+    SCOPE_STATE = "scope_state"
+    KNOWLEDGE_DOCUMENT = "knowledge_document"
+    DELIVERY_SIGNAL = "delivery_signal"
+    WEEKLY_SUMMARY = "weekly_summary"
+
+
+class GovernanceEscalationSourceType(StrEnum):
+    DELIVERY_RISK = "delivery_risk"
+    KNOWLEDGE_DOCUMENT = "knowledge_document"
+
+
 app_role = Enum(AppRole, name="app_role", values_callable=lambda x: [e.value for e in x])
 delivery_site = Enum(DeliverySite, name="delivery_site", values_callable=lambda x: [e.value for e in x])
 project_status = Enum(ProjectStatus, name="project_status", values_callable=lambda x: [e.value for e in x])
@@ -287,6 +388,66 @@ knowledge_processing_status = Enum(
 knowledge_extraction_status = Enum(
     KnowledgeExtractionStatus,
     name="knowledge_extraction_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+knowledge_feedback_rating = Enum(
+    KnowledgeFeedbackRating,
+    name="knowledge_feedback_rating",
+    values_callable=lambda x: [e.value for e in x],
+)
+knowledge_gap_status = Enum(
+    KnowledgeGapStatus,
+    name="knowledge_gap_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_scope_status = Enum(
+    GovernanceScopeStatus,
+    name="governance_scope_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_dependency_type = Enum(
+    GovernanceDependencyType,
+    name="governance_dependency_type",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_dependency_status = Enum(
+    GovernanceDependencyStatus,
+    name="governance_dependency_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_escalation_severity = Enum(
+    GovernanceEscalationSeverity,
+    name="governance_escalation_severity",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_escalation_status = Enum(
+    GovernanceEscalationStatus,
+    name="governance_escalation_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_action_status = Enum(
+    GovernanceActionStatus,
+    name="governance_action_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_summary_status = Enum(
+    GovernanceSummaryStatus,
+    name="governance_summary_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_charter_status = Enum(
+    GovernanceCharterStatus,
+    name="governance_charter_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_evidence_source_type = Enum(
+    GovernanceEvidenceSourceType,
+    name="governance_evidence_source_type",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_escalation_source_type = Enum(
+    GovernanceEscalationSourceType,
+    name="governance_escalation_source_type",
     values_callable=lambda x: [e.value for e in x],
 )
 
@@ -616,8 +777,21 @@ class QualitySnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     gold_set_accuracy_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     iaa_krippendorff_alpha: Mapped[Decimal | None] = mapped_column(Numeric(4, 3))
     rework_rate_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    evaluated_item_count: Mapped[int | None] = mapped_column(Integer)
     has_drift_alert: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     drift_alert_detail: Mapped[str | None] = mapped_column(Text)
+    root_cause: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    confidence_level: Mapped[str | None] = mapped_column(Text)
+
+
+class QualityErrorCategory(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "quality_error_categories"
+
+    code: Mapped[str] = mapped_column(Text, unique=True)
+    name: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    severity_weight: Mapped[Decimal | None] = mapped_column(Numeric(3, 2))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
 
 
 class QualityErrorEntry(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
@@ -643,6 +817,8 @@ class RiskAlert(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     slippage_probability: Mapped[Decimal | None] = mapped_column(Numeric(4, 3))
     contributing_causes: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     status: Mapped[AlertStatus] = mapped_column(alert_status, default=AlertStatus.OPEN)
+    source_table: Mapped[str | None] = mapped_column(Text, index=True)
+    source_row_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), index=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resolved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
 
@@ -715,6 +891,10 @@ class CommunicationEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
 
 class AgentQuery(Base, UuidPrimaryKey, CreatedAt):
     __tablename__ = "agent_queries"
+    __table_args__ = (
+        Index("agent_queries_org_agent_created_idx", "org_id", "agent_name", "created_at"),
+        Index("agent_queries_org_user_agent_project_created_idx", "org_id", "user_id", "agent_name", "project_id", "created_at"),
+    )
 
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
@@ -724,6 +904,11 @@ class AgentQuery(Base, UuidPrimaryKey, CreatedAt):
     answer_text: Mapped[str] = mapped_column(Text)
     model_used: Mapped[str | None] = mapped_column(Text)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
+    retrieval_params: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    conversation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_queries.id", ondelete="SET NULL"),
+        index=True,
+    )
 
 
 class AgentQueryEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
@@ -733,6 +918,42 @@ class AgentQueryEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
     source_table: Mapped[str] = mapped_column(Text)
     source_row_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
     description: Mapped[str] = mapped_column(Text)
+
+
+class DeliveryConversation(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "delivery_conversations"
+    __table_args__ = (
+        Index("delivery_conversations_user_updated_idx", "user_id", "updated_at"),
+        Index(
+            "delivery_conversations_org_user_project_updated_idx",
+            "org_id",
+            "user_id",
+            "project_id",
+            "updated_at",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
+    project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), index=True)
+    title: Mapped[str] = mapped_column(Text, default="New conversation", server_default="New conversation")
+
+
+class DeliveryMessage(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "delivery_messages"
+    __table_args__ = (Index("delivery_messages_conversation_created_idx", "conversation_id", "created_at"),)
+
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("delivery_conversations.id", ondelete="CASCADE"),
+        index=True,
+    )
+    role: Mapped[str] = mapped_column(Text)
+    content: Mapped[str] = mapped_column(Text)
+    agent_query_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_queries.id", ondelete="SET NULL"),
+        index=True,
+    )
+    metadata_: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB)
 
 
 class ClientCsatScore(Base, UuidPrimaryKey, CreatedAt):
@@ -757,6 +978,7 @@ class MetricConfiguration(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete
     is_client_visible: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     display_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     description: Mapped[str | None] = mapped_column(Text)
+    threshold_config: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
 
 class DeliveryConfidenceScore(Base, UuidPrimaryKey, CreatedAt):
@@ -785,9 +1007,203 @@ class Notification(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+
+class QualityScanRun(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "quality_scan_runs"
+
+    trigger: Mapped[ScanTrigger] = mapped_column(Text)
+    triggered_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    iso_year: Mapped[int] = mapped_column(Integer)
+    iso_week: Mapped[int] = mapped_column(Integer)
+    status: Mapped[ScanStatus] = mapped_column(Text, default=ScanStatus.RUNNING)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    projects_scanned: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    snapshots_evaluated: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    alerts_created: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    data_gaps: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    per_project_results: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
+    error_message: Mapped[str | None] = mapped_column(Text)
+
+
+class KnowledgeLesson(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "knowledge_lessons"
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
+    title: Mapped[str] = mapped_column(Text)
+    body: Mapped[str] = mapped_column(Text)
+    tags: Mapped[list[Any]] = mapped_column(JSONB, default=list, server_default="[]")
+    linked_quality_event_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    linked_alert_id: Mapped[UUID | None] = mapped_column(ForeignKey("risk_alerts.id", ondelete="SET NULL"), index=True)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+
+
+class SopDocument(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "sop_documents"
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
+    title: Mapped[str] = mapped_column(Text)
+    version: Mapped[str] = mapped_column(Text)
+    content_text: Mapped[str] = mapped_column(Text)
+    tags: Mapped[list[Any]] = mapped_column(JSONB, default=list, server_default="[]")
+    effective_date: Mapped[date] = mapped_column(Date)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+
+
+class ReviewerScorecard(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "reviewer_scorecards"
+    __table_args__ = (
+        UniqueConstraint("annotator_id", "project_id", "iso_year", "iso_week", name="reviewer_scorecards_unique_week"),
+        Index("reviewer_scorecards_project_idx", "project_id"),
+    )
+
+    annotator_id: Mapped[UUID] = mapped_column(ForeignKey("annotators.id", ondelete="CASCADE"), index=True)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    iso_year: Mapped[int] = mapped_column(Integer)
+    iso_week: Mapped[int] = mapped_column(Integer)
+    items_evaluated: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    accuracy_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    error_breakdown: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+
+class GoldSetEvaluationLog(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "gold_set_evaluation_logs"
+
+    annotator_id: Mapped[UUID] = mapped_column(ForeignKey("annotators.id", ondelete="CASCADE"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    item_id: Mapped[str] = mapped_column(Text)
+    score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    error_category: Mapped[str | None] = mapped_column(Text)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class IaaMeasurementRecord(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "iaa_measurement_records"
+
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    team_id: Mapped[UUID | None] = mapped_column(ForeignKey("teams.id", ondelete="SET NULL"))
+    reviewer_a_id: Mapped[UUID] = mapped_column(ForeignKey("annotators.id", ondelete="CASCADE"))
+    reviewer_b_id: Mapped[UUID] = mapped_column(ForeignKey("annotators.id", ondelete="CASCADE"))
+    task_type: Mapped[str | None] = mapped_column(Text)
+    krippendorff_alpha: Mapped[Decimal | None] = mapped_column(Numeric(4, 3))
+    iso_year: Mapped[int] = mapped_column(Integer)
+    iso_week: Mapped[int] = mapped_column(Integer)
+
+
+class ReworkLog(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "rework_logs"
+
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    annotator_id: Mapped[UUID | None] = mapped_column(ForeignKey("annotators.id", ondelete="SET NULL"))
+    item_id: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str | None] = mapped_column(Text)
+    rework_date: Mapped[date] = mapped_column(Date)
+
+
+class OnboardingRecord(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "onboarding_records"
+
+    annotator_id: Mapped[UUID] = mapped_column(ForeignKey("annotators.id", ondelete="CASCADE"), index=True)
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    onboarding_date: Mapped[date] = mapped_column(Date)
+    calibration_status: Mapped[str] = mapped_column(Text, default="pending", server_default="pending")
+    notes: Mapped[str | None] = mapped_column(Text)
+
+
+class SopVersionHistory(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "sop_version_history"
+
+    sop_document_id: Mapped[UUID] = mapped_column(ForeignKey("sop_documents.id", ondelete="CASCADE"), index=True)
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    version: Mapped[str] = mapped_column(Text)
+    change_summary: Mapped[str | None] = mapped_column(Text)
+    effective_date: Mapped[date] = mapped_column(Date)
+
+
+class GoldSetMetadata(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "gold_set_metadata"
+
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    version: Mapped[str] = mapped_column(Text)
+    item_count: Mapped[int] = mapped_column(Integer)
+    last_updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class QualityLessonLink(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "quality_lesson_links"
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    quality_snapshot_id: Mapped[UUID | None] = mapped_column(ForeignKey("quality_snapshots.id", ondelete="SET NULL"))
+    risk_alert_id: Mapped[UUID | None] = mapped_column(ForeignKey("risk_alerts.id", ondelete="SET NULL"))
+    knowledge_lesson_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_lessons.id", ondelete="CASCADE"), index=True)
+
+
+class QualitySopLink(Base, UuidPrimaryKey, CreatedAt):
+    """Audit trail linking a quality SOP ambiguity event to a resolved SOP version (BR-09)."""
+
+    __tablename__ = "quality_sop_links"
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    risk_alert_id: Mapped[UUID] = mapped_column(ForeignKey("risk_alerts.id", ondelete="CASCADE"), index=True)
+    sop_version_id: Mapped[UUID] = mapped_column(ForeignKey("sop_version_history.id", ondelete="CASCADE"), index=True)
+    confirmed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class InterAgentSignal(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "inter_agent_signals"
+
+    signal_type: Mapped[str] = mapped_column(Text, index=True)
+    source_agent: Mapped[str] = mapped_column(Text, default="quality_intelligence_agent")
+    target_agent: Mapped[str] = mapped_column(Text)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    status: Mapped[str] = mapped_column(Text, default=SignalStatus.PENDING, server_default="pending", index=True)
+    project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    org_id: Mapped[UUID | None] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+
+
+class WorkforceSkill(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "workforce_skills"
+    __table_args__ = (
+        UniqueConstraint("annotator_id", "skill_code", name="workforce_skills_annotator_skill_key"),
+        Index("workforce_skills_annotator_id_idx", "annotator_id"),
+        Index("workforce_skills_org_id_idx", "org_id"),
+    )
+
+    annotator_id: Mapped[UUID] = mapped_column(ForeignKey("annotators.id", ondelete="CASCADE"))
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    skill_code: Mapped[str] = mapped_column(Text)
+    proficiency_level: Mapped[str] = mapped_column(Text)
+    certified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WorkforceUtilizationSnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "workforce_utilization_snapshots"
+    __table_args__ = (
+        UniqueConstraint("team_id", "iso_year", "iso_week", name="workforce_utilization_team_week_key"),
+        Index("workforce_utilization_team_id_idx", "team_id"),
+        Index("workforce_utilization_org_id_idx", "org_id"),
+    )
+
+    team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"))
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    iso_year: Mapped[int] = mapped_column(Integer)
+    iso_week: Mapped[int] = mapped_column(Integer)
+    target_hours: Mapped[Decimal] = mapped_column(Numeric(6, 2))
+    logged_hours: Mapped[Decimal] = mapped_column(Numeric(6, 2))
+    utilization_pct: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+
+
 class KnowledgeFolder(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     __tablename__ = "knowledge_folders"
-    __table_args__ = (Index("knowledge_folders_org_idx", "org_id"),)
+    __table_args__ = (
+        Index("knowledge_folders_org_idx", "org_id"),
+        Index("knowledge_folders_org_deleted_order_idx", "org_id", "deleted_at", "display_order"),
+    )
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
     name: Mapped[str] = mapped_column(Text)
@@ -800,6 +1216,59 @@ class KnowledgeDocument(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     __table_args__ = (
         Index("knowledge_documents_org_folder_idx", "org_id", "folder_id"),
         Index("knowledge_documents_retrieval_idx", "org_id", "status", "indexing_status", "visibility"),
+        Index(
+            "knowledge_documents_org_deleted_title_idx",
+            "org_id",
+            "deleted_at",
+            "title",
+        ),
+        Index(
+            "knowledge_documents_org_folder_deleted_title_idx",
+            "org_id",
+            "folder_id",
+            "deleted_at",
+            "title",
+        ),
+        Index(
+            "knowledge_documents_org_uploaded_created_idx",
+            "org_id",
+            "uploaded_by",
+            "created_at",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "knowledge_documents_org_status_created_idx",
+            "org_id",
+            "status",
+            "created_at",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "knowledge_documents_org_document_type_created_idx",
+            "org_id",
+            "document_type",
+            "created_at",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "knowledge_documents_org_source_updated_idx",
+            "org_id",
+            "status",
+            "source_type",
+            "updated_at",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "knowledge_documents_retrieval_scope_idx",
+            "org_id",
+            "status",
+            "indexing_status",
+            "processing_status",
+            "visibility",
+            "project",
+            "department",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
     )
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
@@ -847,6 +1316,7 @@ class KnowledgeDocumentVersion(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
         UniqueConstraint("document_id", "version", name="knowledge_document_versions_document_version_key"),
         Index("knowledge_document_versions_document_idx", "document_id"),
         Index("knowledge_document_versions_active_idx", "document_id", "is_active"),
+        Index("knowledge_document_versions_document_uploaded_idx", "document_id", "uploaded_at"),
     )
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
@@ -881,6 +1351,8 @@ class KnowledgeDocumentExtraction(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     )
     extraction_error: Mapped[str | None] = mapped_column(Text)
     extracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    diagnostics: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    quality_score: Mapped[int | None] = mapped_column(Integer)
 
 
 class KnowledgeDocumentChunk(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
@@ -889,6 +1361,8 @@ class KnowledgeDocumentChunk(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
         UniqueConstraint("version_id", "chunk_index", name="knowledge_document_chunks_version_index_key"),
         Index("knowledge_document_chunks_document_idx", "document_id"),
         Index("knowledge_document_chunks_version_idx", "version_id"),
+        Index("knowledge_document_chunks_document_version_index_idx", "document_id", "version_id", "chunk_index"),
+        Index("knowledge_document_chunks_org_document_index_idx", "org_id", "document_id", "chunk_index"),
     )
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
@@ -905,6 +1379,8 @@ class KnowledgeDocumentChunk(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     visibility: Mapped[KnowledgeVisibility | None] = mapped_column(knowledge_visibility)
     project: Mapped[str | None] = mapped_column(Text)
     department: Mapped[str | None] = mapped_column(Text)
+    chunk_type: Mapped[str] = mapped_column(Text, default="text", server_default="text")
+    section_path: Mapped[str | None] = mapped_column(Text)
     embedding: Mapped[list[float] | None] = mapped_column(VectorType(1536))
 
 
@@ -928,6 +1404,8 @@ class KnowledgeEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
     __table_args__ = (
         Index("knowledge_evidence_links_query_idx", "agent_query_id"),
         Index("knowledge_evidence_links_document_idx", "document_id"),
+        Index("knowledge_evidence_links_query_document_idx", "agent_query_id", "document_id"),
+        Index("knowledge_evidence_links_org_document_created_idx", "org_id", "document_id", "created_at"),
     )
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
@@ -936,3 +1414,212 @@ class KnowledgeEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
     chunk_id: Mapped[UUID | None] = mapped_column(ForeignKey("knowledge_document_chunks.id", ondelete="SET NULL"))
     citation_label: Mapped[str] = mapped_column(Text)
     relevance_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+
+
+class KnowledgeQueryFeedback(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "knowledge_query_feedback"
+    __table_args__ = (
+        UniqueConstraint("agent_query_id", "user_id", name="knowledge_query_feedback_query_user_key"),
+        Index("knowledge_query_feedback_org_idx", "org_id"),
+        Index("knowledge_query_feedback_query_idx", "agent_query_id"),
+        Index("knowledge_query_feedback_rating_idx", "org_id", "rating"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    agent_query_id: Mapped[UUID] = mapped_column(ForeignKey("agent_queries.id", ondelete="CASCADE"))
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    rating: Mapped[KnowledgeFeedbackRating] = mapped_column(knowledge_feedback_rating)
+    comment: Mapped[str | None] = mapped_column(Text)
+
+
+class KnowledgeGap(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "knowledge_gaps"
+    __table_args__ = (
+        Index("knowledge_gaps_org_status_idx", "org_id", "status"),
+        Index("knowledge_gaps_org_status_created_idx", "org_id", "status", "created_at"),
+        Index("knowledge_gaps_query_idx", "agent_query_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    agent_query_id: Mapped[UUID | None] = mapped_column(ForeignKey("agent_queries.id", ondelete="SET NULL"))
+    query_text: Mapped[str] = mapped_column(Text)
+    message: Mapped[str] = mapped_column(Text)
+    suggested_title: Mapped[str | None] = mapped_column(Text)
+    suggested_source_type: Mapped[str | None] = mapped_column(Text)
+    suggested_folder_kind: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[KnowledgeGapStatus] = mapped_column(knowledge_gap_status, default=KnowledgeGapStatus.OPEN)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class ProjectScopeState(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "project_scope_states"
+    __table_args__ = (
+        Index("project_scope_states_org_id_idx", "org_id"),
+        Index("project_scope_states_project_id_idx", "project_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    scope_status: Mapped[GovernanceScopeStatus] = mapped_column(
+        governance_scope_status,
+        default=GovernanceScopeStatus.APPROVED,
+    )
+    version_label: Mapped[str] = mapped_column(Text, default="v1")
+    notes: Mapped[str | None] = mapped_column(Text)
+    linked_charter_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="SET NULL")
+    )
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class ProjectDependency(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "project_dependencies"
+    __table_args__ = (
+        Index("project_dependencies_org_id_idx", "org_id"),
+        Index("project_dependencies_project_id_idx", "project_id"),
+        Index("project_dependencies_status_idx", "org_id", "status"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    dependency_type: Mapped[GovernanceDependencyType] = mapped_column(governance_dependency_type)
+    owner_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    due_date: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[GovernanceDependencyStatus] = mapped_column(
+        governance_dependency_status,
+        default=GovernanceDependencyStatus.OPEN,
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class GovernanceEscalation(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "governance_escalations"
+    __table_args__ = (
+        Index("governance_escalations_org_id_idx", "org_id"),
+        Index("governance_escalations_project_id_idx", "project_id"),
+        Index("governance_escalations_status_idx", "org_id", "status"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    severity: Mapped[GovernanceEscalationSeverity] = mapped_column(
+        governance_escalation_severity,
+        default=GovernanceEscalationSeverity.MEDIUM,
+    )
+    status: Mapped[GovernanceEscalationStatus] = mapped_column(
+        governance_escalation_status,
+        default=GovernanceEscalationStatus.OPEN,
+    )
+    raised_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    assigned_to: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    raised_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_type: Mapped[GovernanceEscalationSourceType | None] = mapped_column(
+        governance_escalation_source_type
+    )
+    source_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+
+
+class GovernanceAction(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "governance_actions"
+    __table_args__ = (
+        Index("governance_actions_org_id_idx", "org_id"),
+        Index("governance_actions_project_id_idx", "project_id"),
+        Index("governance_actions_status_idx", "org_id", "status"),
+        Index("governance_actions_due_date_idx", "org_id", "due_date"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    owner_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    due_date: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[GovernanceActionStatus] = mapped_column(
+        governance_action_status,
+        default=GovernanceActionStatus.OPEN,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    linked_knowledge_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="SET NULL")
+    )
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class GovernanceWeeklySummary(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "governance_weekly_summaries"
+    __table_args__ = (
+        Index("governance_weekly_summaries_org_id_idx", "org_id"),
+        Index("governance_weekly_summaries_week_idx", "org_id", "summary_week"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    summary_week: Mapped[date] = mapped_column(Date)
+    summary_text: Mapped[str] = mapped_column(Text)
+    status: Mapped[GovernanceSummaryStatus] = mapped_column(
+        governance_summary_status,
+        default=GovernanceSummaryStatus.DRAFT,
+    )
+    generated_by_ai: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    approved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class GovernanceEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "governance_evidence_links"
+    __table_args__ = (
+        Index("governance_evidence_links_summary_idx", "summary_id"),
+        Index("governance_evidence_links_charter_idx", "charter_id"),
+        Index("governance_evidence_links_org_idx", "org_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    summary_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("governance_weekly_summaries.id", ondelete="CASCADE")
+    )
+    charter_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("project_charters.id", ondelete="CASCADE")
+    )
+    source_type: Mapped[GovernanceEvidenceSourceType] = mapped_column(governance_evidence_source_type)
+    source_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
+
+
+class ProjectCharter(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "project_charters"
+    __table_args__ = (
+        UniqueConstraint("project_id", "version", name="project_charters_project_version_key"),
+        Index("project_charters_org_id_idx", "org_id"),
+        Index("project_charters_project_id_idx", "project_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    version: Mapped[str] = mapped_column(Text)
+    status: Mapped[GovernanceCharterStatus] = mapped_column(
+        governance_charter_status,
+        default=GovernanceCharterStatus.DRAFT,
+    )
+    generated_text: Mapped[str] = mapped_column(Text)
+    generated_by_ai: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    previous_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("project_charters.id", ondelete="SET NULL")
+    )
+    knowledge_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="SET NULL")
+    )
+    visibility: Mapped[KnowledgeVisibility] = mapped_column(
+        knowledge_visibility,
+        default=KnowledgeVisibility.INTERNAL_ONLY,
+    )
+    approved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

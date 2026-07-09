@@ -23,22 +23,32 @@ class Settings(BaseSettings):
     supabase_service_role_key: str
     secret_key: str
     environment: Literal["dev", "staging", "prod"] = "dev"
-    allowed_origins: str = "http://localhost:5173,http://localhost:3000,http://localhost:8080"
+    allowed_origins: str = "http://localhost:5173,http://localhost:3000,http://localhost:8080,http://localhost:8081"
     supabase_jwt_secret: str | None = None
     auth_cookie_secure: bool = False
     auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
     llm_api_key: str | None = None
     llm_base_url: str | None = None
     llm_model: str | None = None
+    llm_intent_routing: bool = False
+    oka_base_url: str | None = None
     openai_model: str = "gpt-4o-mini"
     openai_api_key: str | None = None
     openai_base_url: str | None = None
     knowledge_embedding_model: str = "text-embedding-3-small"
     knowledge_embedding_dimensions: int = 1536
+    # Model used for low-confidence retry (more capable, slower)
+    knowledge_strong_model: str = "gpt-4o"
     email_api_key: str | None = None
     email_from_address: str | None = None
     knowledge_storage_bucket: str = "knowledge-documents"
     knowledge_upload_dir: str = str(BACKEND_ROOT / "data" / "knowledge")
+    # Delivery chat hardening (see app/agents/delivery/routes/chat.py)
+    delivery_chat_user_rate_limit_per_minute: int = 10
+    delivery_chat_org_rate_limit_per_minute: int = 60
+    delivery_chat_max_message_length: int = 2000
+    delivery_chat_retry_max_attempts: int = 3
+    delivery_chat_retry_base_delay_seconds: float = 0.5
 
     model_config = SettingsConfigDict(
         env_file=(

@@ -40,17 +40,31 @@ function parseTableRow(line: string): string[] {
     .map((cell) => cell.trim());
 }
 
-export function DeliveryMarkdown({ content, className }: Props) {
-  const sanitized = sanitizeDeliveryMarkdown(content);
-  const lines = sanitized.split("\n");
+type ListItem = { text: string; depth: number };
+
+function DeliveryMarkdownComponent({ content, className }: Props) {
+  // Content is already sanitized server-side (markdown tags / code fences stripped)
+  // before it reaches this component, so we trust it as-is here.
+  const lines = content.split("\n");
   const blocks: ReactNode[] = [];
-  let listItems: string[] = [];
+  let listItems: ListItem[] = [];
   let listOrdered = false;
   let tableRows: string[][] = [];
 
   const flushList = () => {
     if (listItems.length === 0) return;
     const ListTag = listOrdered ? "ol" : "ul";
+
+    type GroupedItem = { text: string; children: string[] };
+    const grouped: GroupedItem[] = [];
+    for (const item of listItems) {
+      if (item.depth === 0 || grouped.length === 0) {
+        grouped.push({ text: item.text, children: [] });
+      } else {
+        grouped[grouped.length - 1].children.push(item.text);
+      }
+    }
+
     blocks.push(
       <ListTag
         key={`list-${blocks.length}`}
@@ -59,9 +73,18 @@ export function DeliveryMarkdown({ content, className }: Props) {
           listOrdered ? "list-decimal" : "list-disc",
         )}
       >
-        {listItems.map((item, index) => (
+        {grouped.map((item, index) => (
           <li key={index} className="pl-0.5">
-            {renderInline(item)}
+            {renderInline(item.text)}
+            {item.children.length > 0 && (
+              <ul className="mt-1.5 space-y-1.5 pl-4 list-disc">
+                {item.children.map((child, childIndex) => (
+                  <li key={childIndex} className="pl-0.5">
+                    {renderInline(child)}
+                  </li>
+                ))}
+              </ul>
+            )}
           </li>
         ))}
       </ListTag>,
@@ -167,20 +190,20 @@ export function DeliveryMarkdown({ content, className }: Props) {
     }
 
     if (nestedBulletMatch) {
-      listItems.push(`  ${nestedBulletMatch[1]}`);
+      listItems.push({ text: nestedBulletMatch[1], depth: 1 });
       continue;
     }
 
     if (orderedMatch) {
       if (listItems.length > 0 && !listOrdered) flushList();
       listOrdered = true;
-      listItems.push(orderedMatch[1]);
+      listItems.push({ text: orderedMatch[1], depth: 0 });
       continue;
     }
 
     if (bulletMatch) {
       if (listItems.length > 0 && listOrdered) flushList();
-      listItems.push(bulletMatch[1]);
+      listItems.push({ text: bulletMatch[1], depth: 0 });
       continue;
     }
 

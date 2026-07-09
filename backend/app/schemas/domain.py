@@ -1,9 +1,24 @@
+import logging
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+logger = logging.getLogger(__name__)
+
+# Canonical error taxonomy codes (spec §7.3). Names are lowercased for matching.
+CANONICAL_ERROR_CODES: dict[str, str] = {
+    "ERR-01": "boundary precision",
+    "ERR-02": "class confusion",
+    "ERR-03": "missed object",
+    "ERR-04": "guideline ambiguity",
+    "ERR-05": "false positive",
+    "ERR-06": "attribute error",
+    "ERR-07": "tool error",
+    "ERR-OTHER": "other",
+}
 
 from app.db.models import (
     AlertStatus,
@@ -545,6 +560,11 @@ class ThroughputSnapshotRead(ORMModel):
     rolling_7day_units: int | None
     created_at: datetime
     updated_at: datetime
+    # Populated only by the create endpoint (never by list reads, where scoring already
+    # ran previously). "failed" means the snapshot was stored but confidence/risk scoring
+    # did not complete — never silently hidden from the caller.
+    scoring_status: str | None = None
+    scoring_error: str | None = None
 
 
 class ThroughputSnapshotCreate(BaseModel):
@@ -565,6 +585,28 @@ class QualityErrorEntryCreate(BaseModel):
     error_category: str
     share_pct: Decimal = Field(ge=0, le=100)
     recommended_action: str | None = None
+    error_note: str | None = None
+
+    @field_validator("error_category", mode="before")
+    @classmethod
+    def normalize_error_category(cls, v: str) -> str:
+        """Accept canonical code (ERR-01) or canonical name; reject unknown categories."""
+        raw = str(v).strip()
+        upper = raw.upper()
+        if upper in CANONICAL_ERROR_CODES:
+            return upper
+        lower = raw.lower()
+        for code, name in CANONICAL_ERROR_CODES.items():
+            if lower == name:
+                return code
+        allowed = ", ".join(sorted(CANONICAL_ERROR_CODES.keys()))
+        raise ValueError(f"Unknown error category {raw!r}. Use one of: {allowed}")
+
+    @model_validator(mode="after")
+    def require_note_for_other(self) -> "QualityErrorEntryCreate":
+        if self.error_category == "ERR-OTHER" and not self.error_note:
+            raise ValueError("error_note is required when error_category is ERR-OTHER")
+        return self
 
 
 class QualitySnapshotRead(ORMModel):
@@ -576,10 +618,21 @@ class QualitySnapshotRead(ORMModel):
     gold_set_accuracy_pct: Decimal | None
     iaa_krippendorff_alpha: Decimal | None
     rework_rate_pct: Decimal | None
+    evaluated_item_count: int | None
     has_drift_alert: bool
     drift_alert_detail: str | None
+    root_cause: dict | None
+    confidence_level: str | None
     created_at: datetime
     updated_at: datetime
+    error_entries: list[QualityErrorEntryRead] = []
+
+
+class QualitySnapshotUpdate(BaseModel):
+    gold_set_accuracy_pct: Decimal | None = Field(default=None, ge=0, le=100)
+    iaa_krippendorff_alpha: Decimal | None = Field(default=None, ge=0, le=1)
+    rework_rate_pct: Decimal | None = Field(default=None, ge=0, le=100)
+    evaluated_item_count: int | None = Field(default=None, ge=0)
 
 
 class QualitySnapshotCreate(BaseModel):
@@ -589,6 +642,7 @@ class QualitySnapshotCreate(BaseModel):
     gold_set_accuracy_pct: Decimal | None = Field(default=None, ge=0, le=100)
     iaa_krippendorff_alpha: Decimal | None = Field(default=None, ge=0, le=1)
     rework_rate_pct: Decimal | None = Field(default=None, ge=0, le=100)
+    evaluated_item_count: int | None = Field(default=None, ge=0)
     error_entries: list[QualityErrorEntryCreate] = []
 
 
@@ -601,8 +655,10 @@ class RiskAlertRead(ORMModel):
     title: str
     detail: str
     slippage_probability: Decimal | None
-    contributing_causes: dict[str, float] | None
+    contributing_causes: dict | None
     status: AlertStatus
+    source_table: str | None = None
+    source_row_id: UUID | None = None
     resolved_at: datetime | None
     resolved_by: UUID | None
     created_at: datetime
@@ -648,8 +704,43 @@ class OwnerOptionRead(BaseModel):
     label: str
 
 
+class GroupedRecommendationRiskRead(BaseModel):
+    """One risk-level member within a GroupedMitigationRecommendationRead."""
+
+    recommendation_id: UUID
+    source_risk_id: UUID | None
+    source_risk_title: str | None = None
+    description: str | None
+    status: str
+    confidence_score: Decimal
+    # True when confidence_score fell back to a static per-tier constant rather than
+    # being computed from the linked risk's slippage_probability.
+    is_estimated: bool = False
+    owner_type: str | None = None
+    owner_id: UUID | None = None
+    owner_label: str | None = None
+
+
+class GroupedMitigationRecommendationRead(BaseModel):
+    """Recommendations sharing the same action title, grouped for display.
+
+    This is a read-time aggregation of MitigationRecommendationRead rows —
+    each linked risk keeps its own id/status/confidence in `risks` so
+    accept/reject/assign-owner continue to act on individual recommendations.
+    """
+
+    title: str
+    severity: str
+    confidence_score: Decimal
+    is_estimated: bool = False
+    project_id: UUID
+    risks: list[GroupedRecommendationRiskRead]
+    statuses: list[str]
+    descriptions: list[str]
+
+
 class ProjectRecommendationsResponse(BaseModel):
-    data: list[MitigationRecommendationRead]
+    data: list[GroupedMitigationRecommendationRead]
     assignable_owners: list[OwnerOptionRead]
     pagination: Pagination
 
@@ -658,6 +749,7 @@ class AgentQueryCreate(BaseModel):
     agent_name: str
     project_id: UUID | None = None
     query_text: str = Field(min_length=1)
+    filters: dict[str, object] | None = None
 
 
 class AgentQueryRead(ORMModel):
@@ -669,7 +761,12 @@ class AgentQueryRead(ORMModel):
     model_used: str | None
     latency_ms: int | None
     created_at: datetime
+    retrieval_params: dict[str, object] | None = None
     evidence_links: list[EvidenceLinkRead] = []
+    confidence_level: str | None = None
+    insufficient_evidence: bool = False
+    related_records: list[dict[str, object]] = []
+    source_agents_used: list[str] = []
 
 
 class CommunicationDraftCreate(BaseModel):
@@ -713,6 +810,7 @@ class MetricConfigurationRead(ORMModel):
     is_client_visible: bool
     display_order: int
     description: str | None
+    threshold_config: dict | None = None
 
 
 class MetricConfigurationCreate(BaseModel):
@@ -728,6 +826,123 @@ class MetricConfigurationUpdate(BaseModel):
     is_client_visible: bool | None = None
     display_order: int | None = None
     description: str | None = None
+    threshold_config: dict | None = None
+
+
+class QualityDashboardKpis(BaseModel):
+    gold_set_accuracy_pct: Decimal | None = None
+    iaa_krippendorff_alpha: Decimal | None = None
+    rework_rate_pct: Decimal | None = None
+    rework_rate_target_pct: Decimal | None = None
+    active_drift_alerts: int = 0
+
+
+class QualityTrendPoint(BaseModel):
+    iso_year: int
+    iso_week: int
+    gold_set_accuracy_pct: Decimal | None = None
+    iaa_krippendorff_alpha: Decimal | None = None
+
+
+class QualityErrorBreakdown(BaseModel):
+    error_category: str
+    share_pct: Decimal
+
+
+class QualityTeamScorecard(BaseModel):
+    team_id: UUID
+    team_name: str
+    gold_set_accuracy_pct: Decimal | None = None
+    iaa_krippendorff_alpha: Decimal | None = None
+    rework_rate_pct: Decimal | None = None
+    status: str
+    has_drift_alert: bool = False
+    has_data_gap: bool = False
+    evaluated_item_count: int | None = None
+
+
+class QualityDashboardRead(BaseModel):
+    kpis: QualityDashboardKpis
+    trend: list[QualityTrendPoint]
+    error_breakdown: list[QualityErrorBreakdown]
+    team_scorecard: list[QualityTeamScorecard]
+    drift_alerts: list[RiskAlertRead] = []
+    narrative: str | None = None
+    data_gap_teams: list[str] = []
+
+
+class QualityDriftEvent(BaseModel):
+    team: str
+    week: int
+    status: str
+    resolution_summary: str | None = None
+
+
+class QualitySummaryRead(BaseModel):
+    report_type: str = "quality_summary"
+    period: str
+    project_id: UUID
+    overall_status: str
+    gold_set_accuracy_blended: str | None
+    rework_rate: str | None
+    rework_rate_target: str
+    iaa_score: str | None
+    drift_events_this_period: list[QualityDriftEvent] = []
+    client_narrative: str | None
+    confidence: str
+
+
+class QualityScanRunRead(ORMModel):
+    id: UUID
+    trigger: str
+    triggered_by: UUID | None
+    iso_year: int
+    iso_week: int
+    status: str
+    started_at: datetime
+    finished_at: datetime | None
+    projects_scanned: int
+    snapshots_evaluated: int
+    alerts_created: int
+    data_gaps: int
+    per_project_results: list[dict] | None = None
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminProjectRead(BaseModel):
+    id: UUID
+    name: str
+    org_id: UUID
+    org_name: str
+    status: ProjectStatus
+    vertical: str
+    start_date: date
+    target_end_date: date
+    latest_iso_year: int | None = None
+    latest_iso_week: int | None = None
+    active_drift_alerts: int = 0
+    data_gap_teams: list[str] = []
+
+
+class QualityPortfolioProjectRead(BaseModel):
+    project_id: UUID
+    name: str
+    org_name: str
+    status: str
+    active_drift_alerts: int = 0
+    latest_gold_accuracy: str | None = None
+    data_gap: bool = False
+
+
+class QualityPortfolioRead(BaseModel):
+    portfolio_week: str
+    projects_total: int
+    projects_with_drift: int
+    blended_gold_accuracy: str | None = None
+    blended_rework_rate: str | None = None
+    per_project: list[QualityPortfolioProjectRead] = []
 
 
 class NotificationRead(ORMModel):
@@ -753,6 +968,32 @@ class ClientCsatCreate(BaseModel):
     @classmethod
     def validate_month_start(cls, value: date) -> date:
         return ensure_month_start(value)
+
+
+# --- Phase 2.0 Quality Intelligence schemas ---
+
+
+class ReviewerScorecardCreate(BaseModel):
+    annotator_id: UUID
+    iso_year: int = Field(ge=2024)
+    iso_week: int = Field(ge=1, le=53)
+    items_evaluated: int = Field(ge=0)
+    accuracy_pct: Decimal | None = Field(default=None, ge=0, le=100)
+    error_breakdown: dict | None = None
+
+
+class ReviewerScorecardRead(ORMModel):
+    id: UUID
+    annotator_id: UUID
+    project_id: UUID
+    org_id: UUID
+    iso_year: int
+    iso_week: int
+    items_evaluated: int
+    accuracy_pct: Decimal | None
+    error_breakdown: dict | None
+    created_at: datetime
+    updated_at: datetime
 
 
 class KnowledgeFolderRead(ORMModel):
@@ -790,6 +1031,332 @@ class KnowledgeChunkRead(BaseModel):
 class KnowledgeDocumentRead(ORMModel):
     id: UUID
     folder_id: UUID
+    active_version_id: UUID | None = None
+    folder_name: str
+    folder_kind: str
+    title: str
+    source_type: str
+    version: str
+    visibility: str
+    status: str
+    owner_approver: str
+    effective_date: date | None
+    file_name: str
+    file_mime_type: str
+    file_url: str | None = None
+    processing_status: str
+    processing_error: str | None = None
+    indexing_status: str
+    preview: list[str]
+    workflow_state: str = "needs_review"
+    quality_score: KnowledgeQualityScore | None = None
+    chunk_count: int = 0
+    citation_count: int = 0
+    approved_by_name: str | None = None
+    approved_at: datetime | None = None
+    chunks: list[KnowledgeChunkRead] = []
+    semantic_relevance: float | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class GoldSetEvaluationLogCreate(BaseModel):
+    annotator_id: UUID
+    item_id: str
+    score: Decimal | None = Field(default=None, ge=0, le=100)
+    error_category: str | None = None
+    evaluated_at: datetime | None = None
+
+    @field_validator("error_category", mode="before")
+    @classmethod
+    def normalize_eval_error_category(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        raw = str(v).strip()
+        upper = raw.upper()
+        if upper in CANONICAL_ERROR_CODES:
+            return upper
+        lower = raw.lower()
+        for code, name in CANONICAL_ERROR_CODES.items():
+            if lower == name:
+                return code
+        allowed = ", ".join(sorted(CANONICAL_ERROR_CODES.keys()))
+        raise ValueError(f"Unknown error category {raw!r}. Use one of: {allowed}")
+
+
+class GoldSetEvaluationLogRead(ORMModel):
+    id: UUID
+    annotator_id: UUID
+    project_id: UUID
+    org_id: UUID
+    item_id: str
+    score: Decimal | None
+    error_category: str | None
+    evaluated_at: datetime
+    created_at: datetime
+
+
+class ReworkLogCreate(BaseModel):
+    annotator_id: UUID | None = None
+    item_id: str
+    reason: str | None = None
+    rework_date: date
+
+
+class ReworkLogRead(ORMModel):
+    id: UUID
+    project_id: UUID
+    org_id: UUID
+    annotator_id: UUID | None
+    item_id: str
+    reason: str | None
+    rework_date: date
+    created_at: datetime
+
+
+class SopAmbiguityConfirm(BaseModel):
+    alert_id: UUID
+    sop_version_id: UUID
+
+
+class QualitySopLinkRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    risk_alert_id: UUID
+    sop_version_id: UUID
+    confirmed_by: UUID | None
+    created_at: datetime
+
+
+class IaaMeasurementCreate(BaseModel):
+    team_id: UUID | None = None
+    reviewer_a_id: UUID
+    reviewer_b_id: UUID
+    task_type: str | None = None
+    krippendorff_alpha: Decimal | None = Field(default=None, ge=0, le=1)
+    iso_year: int = Field(ge=2024)
+    iso_week: int = Field(ge=1, le=53)
+
+
+class IaaMeasurementRead(ORMModel):
+    id: UUID
+    project_id: UUID
+    org_id: UUID
+    team_id: UUID | None
+    reviewer_a_id: UUID
+    reviewer_b_id: UUID
+    task_type: str | None
+    krippendorff_alpha: Decimal | None
+    iso_year: int
+    iso_week: int
+    created_at: datetime
+
+
+class SopVersionCreate(BaseModel):
+    sop_document_id: UUID
+    version: str
+    change_summary: str | None = None
+    effective_date: date
+
+
+class SopVersionRead(ORMModel):
+    id: UUID
+    sop_document_id: UUID
+    org_id: UUID
+    version: str
+    change_summary: str | None
+    effective_date: date
+    created_at: datetime
+
+
+class GoldSetMetadataCreate(BaseModel):
+    version: str
+    item_count: int = Field(ge=0)
+
+
+class GoldSetMetadataRead(ORMModel):
+    id: UUID
+    project_id: UUID
+    org_id: UUID
+    version: str
+    item_count: int
+    last_updated: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+class OnboardingRecordCreate(BaseModel):
+    annotator_id: UUID
+    onboarding_date: date
+    calibration_status: str = "pending"
+    notes: str | None = None
+
+
+class OnboardingRecordRead(ORMModel):
+    id: UUID
+    annotator_id: UUID
+    org_id: UUID
+    onboarding_date: date
+    calibration_status: str
+    notes: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class QualitySkillGapSignalRead(BaseModel):
+    """Inter-agent skill_gap payload emitted by quality calibration."""
+    signal_type: str = "skill_gap"
+    reviewer_ids: list[str]
+    project_id: UUID
+    task_type: str | None = None
+    error_category: str | None = None
+    recommendation: str
+    urgency: str
+
+
+class CalibrationCandidateRead(BaseModel):
+    annotator_id: UUID
+    accuracy_pct: float | None
+    items_evaluated: int
+    error_category: str | None = None
+    priority: str
+    reason: str
+
+
+class CalibrationBriefRead(BaseModel):
+    project_id: UUID
+    iso_year: int
+    iso_week: int
+    candidates: list[CalibrationCandidateRead] = []
+    brief_text: str | None = None
+    signal_sent_at: datetime | None = None
+
+
+class SopAmbiguityFlagRead(BaseModel):
+    alert_id: UUID | None = None
+    task_type: str | None = None
+    affected_reviewer_count: int = 0
+    sop_version: str | None = None
+    draft_amendment: str | None = None
+    detail: str | None = None
+
+
+class WhatIfQueryRead(BaseModel):
+    scenario: str
+    projected_outcome: str
+    assumptions: list[str] = []
+    confidence: str
+    no_precedent: bool = False
+    comparable_lessons: list[dict] = []
+
+
+class InterAgentSignalRead(ORMModel):
+    id: UUID
+    signal_type: str
+    source_agent: str
+    target_agent: str
+    payload: dict
+    status: str
+    project_id: UUID | None
+    org_id: UUID | None
+    created_at: datetime
+
+
+class RiskAlertResolve(BaseModel):
+    resolution_summary: str | None = None
+
+
+# --- Workforce dashboard schemas ---
+
+
+class SkillGapSignal(BaseModel):
+    id: UUID
+    title: str
+    body: str
+    source_row_id: UUID | None = None
+    created_at: datetime
+    is_read: bool
+
+
+class TeamUtilizationRead(BaseModel):
+    team_id: UUID
+    team_name: str
+    iso_year: int
+    iso_week: int
+    target_hours: Decimal
+    logged_hours: Decimal
+    utilization_pct: Decimal | None = None
+    status: str
+
+
+class SkillMatrixEntry(BaseModel):
+    skill_code: str
+    proficiency_counts: dict[str, int]
+
+
+class WorkforceDashboardKpis(BaseModel):
+    teams_tracked: int
+    avg_utilization_pct: str | None = None
+    sme_certified_count: int
+    skill_records: int
+    open_skill_gaps: int
+
+
+class WorkforceDashboardRead(BaseModel):
+    kpis: WorkforceDashboardKpis
+    team_utilization: list[TeamUtilizationRead] = []
+    skill_matrix: list[SkillMatrixEntry] = []
+    skill_gap_signals: list[SkillGapSignal] = []
+
+
+class SmeAllocationRead(BaseModel):
+    annotator_id: UUID
+    team_id: UUID
+    team_name: str
+    site: str
+    skills: list[str]
+    utilization_pct: Decimal | None = None
+
+
+# --- Knowledge library schemas ---
+
+
+class KnowledgeFolderRead(ORMModel):
+    id: UUID
+    name: str
+    folder_kind: str
+    display_order: int
+
+
+class KnowledgeFolderCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class KnowledgeQualityCriterion(BaseModel):
+    key: str
+    label: str
+    passed: bool
+
+
+class KnowledgeQualityScore(BaseModel):
+    score: int
+    max_score: int = 6
+    criteria: list[KnowledgeQualityCriterion]
+
+
+class KnowledgeChunkRead(BaseModel):
+    id: UUID
+    chunk_index: int
+    section_title: str | None = None
+    page_number: int | None = None
+    chunk_text: str
+    token_count: int | None = None
+
+
+class KnowledgeDocumentRead(ORMModel):
+    id: UUID
+    folder_id: UUID
+    active_version_id: UUID | None = None
     folder_name: str
     folder_kind: str
     title: str
@@ -830,29 +1397,25 @@ class KnowledgeDocumentUpdate(BaseModel):
     effective_date: date | None = None
 
 
+class KnowledgeConversationTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=8000)
+
+
 class KnowledgeAskCreate(BaseModel):
-    query_text: str = Field(min_length=1)
+    query_text: str = Field(min_length=1, max_length=8000)
+    conversation_id: UUID | None = None
+    conversation_history: list[KnowledgeConversationTurn] = Field(default_factory=list, max_length=6)
+    answer_mode: Literal["internal", "client_safe"] = "internal"
     include_histories: bool = True
-    max_sources: int = Field(default=5, ge=1, le=10)
+    max_sources: int = Field(default=3, ge=1, le=10)
     min_relevance_score: float = Field(default=0.25, ge=0.0, le=1.0)
     project: str | None = None
     department: str | None = None
-
-
-class KnowledgeCitationRead(BaseModel):
-    document_id: UUID
-    chunk_id: UUID | None = None
-    citation_label: str
-    title: str
-    source_type: str
-    version: str
-    folder_name: str = ""
-    folder_kind: str = ""
-    relevance_score: float = 0.0
-    page_number: int | None = None
-    chunk_index: int | None = None
-    chunk_preview: str = ""
-    section_title: str | None = None
+    folder_id: UUID | None = None
+    source_type: str | None = None
+    effective_date_from: date | None = None
+    effective_date_to: date | None = None
 
 
 class KnowledgeStructuredAnswer(BaseModel):
@@ -870,6 +1433,87 @@ class KnowledgeGapRead(BaseModel):
     suggested_folder_kind: str | None = None
 
 
+class KnowledgeGapTodoRead(BaseModel):
+    id: UUID
+    query_text: str
+    message: str
+    suggested_title: str | None = None
+    suggested_source_type: str | None = None
+    suggested_folder_kind: str | None = None
+    agent_query_id: UUID | None = None
+    created_at: datetime
+
+
+class KnowledgeLibraryHealthRead(BaseModel):
+    ready_count: int = 0
+    needs_review_count: int = 0
+    expired_count: int = 0
+    needs_reindex_count: int = 0
+    indexing_count: int = 0
+    draft_count: int = 0
+    archived_count: int = 0
+    open_gaps: list[KnowledgeGapTodoRead] = Field(default_factory=list)
+
+
+class KnowledgeLibraryHealthCountsRead(BaseModel):
+    ready_count: int = 0
+    needs_review_count: int = 0
+    expired_count: int = 0
+    needs_reindex_count: int = 0
+    indexing_count: int = 0
+    draft_count: int = 0
+    archived_count: int = 0
+
+
+class KnowledgeDocumentSummaryRead(BaseModel):
+    id: UUID
+    folder_id: UUID
+    folder_name: str
+    folder_kind: str
+    title: str
+    source_type: str
+    version: str
+    visibility: str
+    status: str
+    owner_approver: str
+    effective_date: date | None
+    file_name: str
+    processing_status: str
+    processing_error: str | None = None
+    indexing_status: str
+    workflow_state: str = "needs_review"
+    updated_at: datetime
+
+
+class KnowledgeFolderTreeNodeRead(BaseModel):
+    id: UUID
+    name: str
+    folder_kind: str
+    display_order: int
+    document_count: int = 0
+
+
+class KnowledgeDocumentCountsRead(BaseModel):
+    total: int = 0
+    by_folder_id: dict[str, int] = Field(default_factory=dict)
+
+
+class KnowledgePermissionsRead(BaseModel):
+    can_upload: bool = False
+    can_manage_eval: bool = False
+    can_adjust_retrieval_scope: bool = False
+    can_resolve_gaps: bool = False
+
+
+class KnowledgeBootstrapRead(BaseModel):
+    folders: list[KnowledgeFolderRead]
+    folder_tree: list[KnowledgeFolderTreeNodeRead]
+    recent_documents: list[KnowledgeDocumentSummaryRead]
+    document_counts: KnowledgeDocumentCountsRead
+    permissions: KnowledgePermissionsRead
+    library_health: KnowledgeLibraryHealthCountsRead
+
+
 class KnowledgeAskRead(BaseModel):
     answer_text: str
     next_step: str = ""
@@ -877,9 +1521,28 @@ class KnowledgeAskRead(BaseModel):
     confidence_reasons: list[str] = []
     structured_answer: KnowledgeStructuredAnswer | None = None
     knowledge_gap: KnowledgeGapRead | None = None
-    citations: list[KnowledgeCitationRead]
     query_id: UUID | None = None
+    conversation_id: UUID | None = None
     model_used: str | None = None
+    retrieval_debug: dict[str, object] | None = None
+
+
+class KnowledgeConversationSummaryRead(BaseModel):
+    id: UUID
+    title: str
+    turn_count: int
+    updated_at: datetime
+
+
+class KnowledgeConversationTurnRead(BaseModel):
+    query_id: UUID
+    query_text: str
+    answer: KnowledgeAskRead
+
+
+class KnowledgeConversationRead(BaseModel):
+    id: UUID
+    turns: list[KnowledgeConversationTurnRead]
 
 
 class KnowledgeDocumentVersionRead(BaseModel):
@@ -908,7 +1571,7 @@ class KnowledgeRetrievalSettingsRead(BaseModel):
     only_approved: bool = True
     include_histories: bool = True
     min_confidence: float = 0.25
-    max_sources: int = 5
+    max_sources: int = 3
     project: str | None = None
     department: str | None = None
 
@@ -920,3 +1583,69 @@ class KnowledgeRetrievalSettingsUpdate(BaseModel):
     max_sources: int | None = Field(default=None, ge=1, le=10)
     project: str | None = None
     department: str | None = None
+
+
+class KnowledgeFeedbackCreate(BaseModel):
+    query_id: UUID
+    rating: Literal["up", "down"]
+    comment: str | None = Field(default=None, max_length=2000)
+
+
+class KnowledgeFeedbackRead(BaseModel):
+    id: UUID
+    query_id: UUID
+    rating: str
+    comment: str | None = None
+    created_at: datetime
+
+
+# --- Workforce dashboard schemas ---
+
+
+class TeamUtilizationRead(BaseModel):
+    team_id: UUID
+    team_name: str
+    iso_year: int
+    iso_week: int
+    target_hours: Decimal | None = None
+    logged_hours: Decimal | None = None
+    utilization_pct: Decimal | None = None
+    status: str
+
+
+class SkillMatrixEntry(BaseModel):
+    skill_code: str
+    proficiency_counts: dict[str, int]
+
+
+class SkillGapSignal(BaseModel):
+    id: UUID
+    title: str
+    body: str
+    source_row_id: UUID | None = None
+    created_at: datetime
+    is_read: bool
+
+
+class WorkforceDashboardKpis(BaseModel):
+    teams_tracked: int = 0
+    avg_utilization_pct: str | None = None
+    sme_certified_count: int = 0
+    skill_records: int = 0
+    open_skill_gaps: int = 0
+
+
+class WorkforceDashboardRead(BaseModel):
+    kpis: WorkforceDashboardKpis
+    team_utilization: list[TeamUtilizationRead] = []
+    skill_matrix: list[SkillMatrixEntry] = []
+    skill_gap_signals: list[SkillGapSignal] = []
+
+
+class SmeAllocationRead(BaseModel):
+    annotator_id: UUID
+    team_id: UUID
+    team_name: str
+    site: str
+    skills: list[str] = []
+    utilization_pct: Decimal | None = None

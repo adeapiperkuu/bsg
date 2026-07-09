@@ -118,21 +118,6 @@ function navForUser(user: MeUser | null) {
   }
 }
 
-function roleLabel(role: AppRole): string {
-  switch (role) {
-    case "client":
-      return "Client";
-    case "delivery_manager":
-      return "Delivery Manager";
-    case "bsg_leadership":
-      return "BSG Leadership";
-    case "super_admin":
-      return "Super Admin";
-    default:
-      return role;
-  }
-}
-
 function initials(name: string | null, email: string): string {
   if (name) {
     const parts = name.trim().split(/\s+/);

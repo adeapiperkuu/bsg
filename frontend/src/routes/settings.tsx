@@ -1,14 +1,26 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { Card, SectionHeader } from "@/components/bsg/widgets";
+import { roleLabel } from "@/lib/roleLabels";
 import { cn } from "@/lib/utils";
+import { useAuthStore } from "@/stores/useAuthStore";
 
 export const Route = createFileRoute("/settings")({ component: SettingsPage });
 
 const tabs = ["Profile", "Notifications", "Layout", "Integrations"] as const;
 
+const inputClass = "mt-1 w-full rounded border border-border bg-elevated px-2.5 py-1.5";
+
 function SettingsPage() {
   const [tab, setTab] = useState<(typeof tabs)[number]>("Profile");
+  const user = useAuthStore((s) => s.user);
+
+  if (!user) {
+    return (
+      <div className="text-sm text-muted-foreground">Loading profile…</div>
+    );
+  }
+
   return (
     <div className="space-y-5">
       <div className="flex gap-1 rounded-md border border-border bg-card p-1 text-xs">

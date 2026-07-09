@@ -8,32 +8,164 @@ function createMessageId(): string {
   return crypto.randomUUID();
 }
 
+function conversationStorageKey(projectId: string | null | undefined): string {
+  return `delivery-chat:conversation:${projectId ?? "__portfolio__"}`;
+}
+
+function persistConversationId(projectId: string | null | undefined, conversationId: string): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(conversationStorageKey(projectId), conversationId);
+}
+
+function clearPersistedConversationId(projectId: string | null | undefined): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(conversationStorageKey(projectId));
+}
+
+function turnsToMessages(turns: DeliveryChatTurn[]): DeliveryChatMessage[] {
+  return turns.flatMap((turn) => [
+    { id: `${turn.id}:q`, role: "user" as const, text: turn.query_text },
+    {
+      id: `${turn.id}:a`,
+      role: "agent" as const,
+      text: sanitizeDeliveryMarkdown(turn.answer_text),
+      sources: turn.sources,
+    },
+  ]);
+}
+
+/** Distinct, accurate copy per failure category — never the same generic message twice. */
+function describeDeliveryChatError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === "RATE_LIMITED") {
+      return "You're sending messages too quickly. Please wait a moment and try again.";
+    }
+    if (err.code === "VALIDATION_ERROR") {
+      return "That message couldn't be sent — please check its length and content and try again.";
+    }
+    if (err.status === 401 || err.status === 403) {
+      return "Your session no longer has access to this conversation. Please refresh and sign in again.";
+    }
+    if (err.status >= 500) {
+      return "The delivery agent hit an unexpected server error. Please try again shortly.";
+    }
+    return err.message;
+  }
+  if (err instanceof TypeError) {
+    return "Could not reach the delivery agent — check your connection and try again.";
+  }
+  return err instanceof Error ? err.message : "The delivery agent could not complete your request.";
+}
+
 type UseDeliveryChatOptions = {
   projectId?: string | null;
 };
 
 export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
+  const queryClient = useQueryClient();
   const [messages, setMessages] = useState<DeliveryChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [asking, setAsking] = useState(false);
-  const [animatingMessageIndex, setAnimatingMessageIndex] = useState<number | null>(null);
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const conversationIdRef = useRef<string | null>(null);
+
+  const syncConversationId = useCallback((conversationId: string | null) => {
+    conversationIdRef.current = conversationId;
+    setActiveConversationId(conversationId);
+    if (conversationId) {
+      persistConversationId(projectId, conversationId);
+    }
+  }, [projectId]);
+
+  const invalidateConversationHistory = useCallback(async () => {
+    await queryClient.invalidateQueries({
+      queryKey: queryKeys.deliveryConversations(projectId ?? null),
+    });
+  }, [projectId, queryClient]);
+
+  useEffect(() => {
+    setError(null);
+  }, [input]);
 
   const resetConversation = useCallback(() => {
     conversationIdRef.current = null;
+    setActiveConversationId(null);
+    clearPersistedConversationId(projectId);
     setMessages([]);
     setInput("");
     setError(null);
-    setAnimatingMessageIndex(null);
+    setStreamingMessageId(null);
     setSuggestions([]);
-  }, []);
+  }, [projectId]);
+
+  const loadConversation = useCallback(
+    async (conversationId: string) => {
+      setLoadingHistory(true);
+      setError(null);
+      setSuggestions([]);
+      try {
+        const conversation = await getDeliveryChatConversation(conversationId);
+        syncConversationId(conversation.conversation_id);
+        setMessages(turnsToMessages(conversation.turns));
+      } catch (err) {
+        setError(describeDeliveryChatError(err));
+        if (conversationIdRef.current === conversationId) {
+          resetConversation();
+        }
+      } finally {
+        setLoadingHistory(false);
+      }
+    },
+    [resetConversation, syncConversationId],
+  );
+
+  useEffect(() => {
+    conversationIdRef.current = null;
+    setActiveConversationId(null);
+    setMessages([]);
+    setInput("");
+    setError(null);
+    setStreamingMessageId(null);
+    setSuggestions([]);
+
+    const storedId =
+      typeof window !== "undefined" ? window.localStorage.getItem(conversationStorageKey(projectId)) : null;
+    if (!storedId) return;
+
+    let cancelled = false;
+    setLoadingHistory(true);
+    getDeliveryChatConversation(storedId)
+      .then((conversation) => {
+        if (cancelled) return;
+        syncConversationId(conversation.conversation_id);
+        setMessages(turnsToMessages(conversation.turns));
+      })
+      .catch(() => {
+        clearPersistedConversationId(projectId);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingHistory(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, syncConversationId]);
 
   const sendMessage = useCallback(
     async (text: string) => {
       const question = text.trim();
-      if (!question || asking || animatingMessageIndex !== null) return;
+      if (!question || asking || streamingMessageId) return;
+      if (question.length > DELIVERY_CHAT_MAX_MESSAGE_LENGTH) {
+        setError(
+          `Your message is ${question.length} characters — the limit is ${DELIVERY_CHAT_MAX_MESSAGE_LENGTH}. Please shorten it and try again.`,
+        );
+        return;
+      }
 
       setMessages((current) => [
         ...current,
@@ -44,28 +176,52 @@ export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
       setError(null);
       setSuggestions([]);
 
+      const agentMessageId = createMessageId();
+      let streamStarted = false;
+
       try {
-        const response = await sendDeliveryChatMessage({
+        for await (const event of streamDeliveryChatMessage({
           message: question,
           project_id: projectId ?? null,
           conversation_id: conversationIdRef.current,
-        });
-        conversationIdRef.current = response.conversation_id;
-        setSuggestions(generateDeliverySuggestions(response.answer));
-
-        setMessages((current) => {
-          const next: DeliveryChatMessage[] = [
-            ...current,
-            {
-              id: createMessageId(),
-              role: "agent",
-              text: sanitizeDeliveryMarkdown(response.answer),
-              sources: response.sources,
-            },
-          ];
-          setAnimatingMessageIndex(next.length - 1);
-          return next;
-        });
+        })) {
+          if (event.type === "delta") {
+            if (!streamStarted) {
+              streamStarted = true;
+              setAsking(false);
+              setStreamingMessageId(agentMessageId);
+              setMessages((current) => [
+                ...current,
+                { id: agentMessageId, role: "agent", text: event.text, streaming: true },
+              ]);
+            } else {
+              setMessages((current) =>
+                current.map((m) =>
+                  m.id === agentMessageId ? { ...m, text: m.text + event.text } : m,
+                ),
+              );
+            }
+          } else if (event.type === "done") {
+            syncConversationId(event.conversation_id);
+            void invalidateConversationHistory();
+            const finalText = sanitizeDeliveryMarkdown(event.answer);
+            setSuggestions(generateDeliverySuggestions(event.answer));
+            setMessages((current) => {
+              const hasStreamedMessage = current.some((m) => m.id === agentMessageId);
+              if (hasStreamedMessage) {
+                return current.map((m) =>
+                  m.id === agentMessageId
+                    ? { ...m, text: finalText, sources: event.sources, streaming: false }
+                    : m,
+                );
+              }
+              return [
+                ...current,
+                { id: agentMessageId, role: "agent", text: finalText, sources: event.sources },
+              ];
+            });
+          }
+        }
       } catch (err) {
         const message =
           err instanceof Error
@@ -87,28 +243,27 @@ export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
         });
       } finally {
         setAsking(false);
+        setStreamingMessageId(null);
       }
     },
-    [animatingMessageIndex, asking, projectId],
+    [asking, invalidateConversationHistory, projectId, streamingMessageId, syncConversationId],
   );
 
-  const onAnimationComplete = useCallback(() => {
-    setAnimatingMessageIndex(null);
-  }, []);
-
-  const isInputDisabled = asking || animatingMessageIndex !== null;
+  const isInputDisabled = asking || streamingMessageId !== null;
 
   return {
     messages,
     input,
     setInput,
     asking,
-    animatingMessageIndex,
-    error,
+    loadingHistory,
+    isStreaming: streamingMessageId !== null,
     isInputDisabled,
+    error,
     suggestions,
+    activeConversationId,
     sendMessage,
-    onAnimationComplete,
     resetConversation,
+    loadConversation,
   };
 }

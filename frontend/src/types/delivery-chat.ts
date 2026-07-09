@@ -1,5 +1,10 @@
 export type DeliveryChatRole = "user" | "agent";
 
+// Must match backend `delivery_chat_max_message_length` (backend/app/core/config.py),
+// enforced again server-side in DeliveryChatCreate — this is a UX convenience, not the
+// source of truth.
+export const DELIVERY_CHAT_MAX_MESSAGE_LENGTH = 2000;
+
 export interface DeliveryChatSource {
   title: string;
   type: string;
@@ -19,12 +24,38 @@ export interface DeliveryChatResponse {
   conversation_id: string;
 }
 
+export interface DeliveryChatTurn {
+  id: string;
+  query_text: string;
+  answer_text: string;
+  created_at: string;
+  sources: DeliveryChatSource[];
+}
+
+export interface DeliveryChatConversation {
+  conversation_id: string;
+  project_id: string | null;
+  title?: string | null;
+  turns: DeliveryChatTurn[];
+}
+
+export interface DeliveryChatConversationSummary {
+  id: string;
+  title: string;
+  project_id: string | null;
+  turn_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface DeliveryChatMessage {
   id: string;
   role: DeliveryChatRole;
   text: string;
   sources?: DeliveryChatSource[];
   error?: boolean;
+  /** True while an agent message is still receiving streamed tokens. */
+  streaming?: boolean;
 }
 
 export const DELIVERY_SUGGESTED_PROMPTS = [

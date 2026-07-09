@@ -36,7 +36,6 @@ import {
 } from "@/lib/workforcePermissions";
 import { useAuthStore } from "@/stores/useAuthStore";
 import type {
-  AgentQueryRead,
   AnnotatorRead,
   SkillMatrixRow,
   TrainingGapRow,
@@ -242,27 +241,6 @@ function WorkforcePage() {
   const selectedAnnotatorTeam = selectedAnnotator
     ? summary.teams.find((team) => team.id === selectedAnnotator.team_id)
     : undefined;
-
-  const [agentQuestion, setAgentQuestion] = useState("");
-  const [agentAnswer, setAgentAnswer] = useState<AgentQueryRead | null>(null);
-  const agentQueryMutation = useMutation({
-    mutationFn: (question: string) =>
-      createAgentQuery({
-        agent_name: WORKFORCE_AGENT_NAME,
-        project_id: resolvedProjectId,
-        query_text: question,
-      }),
-    onSuccess: (result) => {
-      setAgentAnswer(result);
-    },
-  });
-
-  const submitAgentQuestion = (question: string) => {
-    const trimmed = question.trim();
-    if (!trimmed || !resolvedProjectId) return;
-    setAgentAnswer(null);
-    agentQueryMutation.mutate(trimmed);
-  };
 
   const selectedProject = projects.find((project) => project.id === resolvedProjectId);
 

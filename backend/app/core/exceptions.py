@@ -1,8 +1,13 @@
+import logging
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
+from sqlalchemy.exc import DBAPIError, OperationalError, ProgrammingError
+
+logger = logging.getLogger(__name__)
 
 
 class ApiError(HTTPException):
@@ -29,6 +34,32 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def handle_validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
         return error_response(422, "VALIDATION_ERROR", "Request validation failed.", {"errors": exc.errors()})
 
+    @app.exception_handler(ValidationError)
+    async def handle_pydantic_validation_error(_: Request, exc: ValidationError) -> JSONResponse:
+        logger.exception("Response validation failed")
+        return error_response(500, "INTERNAL_SERVER_ERROR", "An unexpected server error occurred.")
+
+    @app.exception_handler(OperationalError)
+    @app.exception_handler(DBAPIError)
+    async def handle_database_error(_: Request, exc: Exception) -> JSONResponse:
+        logger.exception("Database error")
+        message = "Database is temporarily unavailable. Please try again."
+        detail = str(getattr(exc, "orig", exc)).lower()
+        if "emaxconnsession" in detail or "max clients reached" in detail:
+            message = "Database connection limit reached. Restart the backend or use the transaction pooler (port 6543)."
+        return error_response(503, "DATABASE_UNAVAILABLE", message)
+
+    @app.exception_handler(ProgrammingError)
+    async def handle_programming_error(_: Request, exc: ProgrammingError) -> JSONResponse:
+        logger.exception("Database schema error")
+        detail = str(getattr(exc, "orig", exc)).lower()
+        if "does not exist" in detail:
+            return error_response(
+                503,
+                "SCHEMA_NOT_READY",
+                "A required database table is missing. Apply pending Supabase migrations and try again.",
+            )
+        return error_response(500, "DATABASE_ERROR", "A database query failed.")
     @app.exception_handler(Exception)
     async def handle_unexpected_error(_: Request, exc: Exception) -> JSONResponse:
         _ = exc

@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Card, SectionHeader, KpiCard, AiBadge, StatusPill } from "@/components/bsg/widgets";
-import { dependencies, escalations } from "@/lib/bsg/data";
+
+import { GovernanceDashboard } from "@/features/governance/GovernanceDashboard";
 
 export const Route = createFileRoute("/governance")({ component: GovernancePage });
 
