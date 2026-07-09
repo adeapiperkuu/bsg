@@ -717,6 +717,154 @@ export function canAccessPath(role: AppRole, path: string): boolean {
   return !isClientPortalPath(path) && !path.startsWith("/admin");
 }
 
+type LegacyKnowledgeBootstrapApi = Partial<KnowledgeBootstrapApi> & {
+  documents?: KnowledgeDocumentApi[];
+  library_health?: KnowledgeLibraryHealthApi;
+};
+
+const DEFAULT_KNOWLEDGE_PERMISSIONS: KnowledgeBootstrapApi["permissions"] = {
+  can_upload: true,
+  can_manage_eval: true,
+  can_adjust_retrieval_scope: true,
+  can_resolve_gaps: true,
+};
+
+const EMPTY_KNOWLEDGE_LIBRARY_HEALTH: KnowledgeLibraryHealthApi = {
+  ready_count: 0,
+  needs_review_count: 0,
+  expired_count: 0,
+  needs_reindex_count: 0,
+  indexing_count: 0,
+  draft_count: 0,
+  archived_count: 0,
+  open_gaps: [],
+};
+
+function toDocumentSummary(doc: KnowledgeDocumentApi): KnowledgeDocumentSummaryApi {
+  return {
+    id: doc.id,
+    folder_id: doc.folder_id,
+    folder_name: doc.folder_name,
+    folder_kind: doc.folder_kind,
+    title: doc.title,
+    source_type: doc.source_type,
+    version: doc.version,
+    visibility: doc.visibility,
+    status: doc.status,
+    owner_approver: doc.owner_approver,
+    effective_date: doc.effective_date,
+    file_name: doc.file_name,
+    processing_status: doc.processing_status,
+    processing_error: doc.processing_error,
+    indexing_status: doc.indexing_status,
+    workflow_state: doc.workflow_state,
+    updated_at: doc.updated_at,
+  };
+}
+
+function buildBootstrapFromDocuments(
+  folders: KnowledgeFolderApi[],
+  documents: KnowledgeDocumentApi[],
+  libraryHealth?: KnowledgeLibraryHealthApi,
+): KnowledgeBootstrapApi {
+  const byFolderId = documents.reduce<Record<string, number>>((acc, doc) => {
+    acc[doc.folder_id] = (acc[doc.folder_id] ?? 0) + 1;
+    return acc;
+  }, {});
+  return {
+    folders,
+    folder_tree: folders.map((folder) => ({
+      ...folder,
+      document_count: byFolderId[folder.id] ?? 0,
+    })),
+    recent_documents: documents.slice(0, 30).map(toDocumentSummary),
+    document_counts: {
+      total: documents.length,
+      by_folder_id: byFolderId,
+    },
+    permissions: DEFAULT_KNOWLEDGE_PERMISSIONS,
+    library_health: {
+      ready_count:
+        libraryHealth?.ready_count ?? documents.filter((d) => d.workflow_state === "approved").length,
+      needs_review_count:
+        libraryHealth?.needs_review_count ??
+        documents.filter((d) => d.workflow_state === "needs_review").length,
+      expired_count:
+        libraryHealth?.expired_count ?? documents.filter((d) => d.workflow_state === "expired").length,
+      needs_reindex_count:
+        libraryHealth?.needs_reindex_count ??
+        documents.filter((d) => d.workflow_state === "needs_reindex").length,
+      indexing_count: libraryHealth?.indexing_count ?? 0,
+      draft_count: libraryHealth?.draft_count ?? documents.filter((d) => d.status === "draft").length,
+      archived_count:
+        libraryHealth?.archived_count ?? documents.filter((d) => d.status === "archived").length,
+    },
+  };
+}
+
+function normalizeKnowledgeBootstrap(data: LegacyKnowledgeBootstrapApi): KnowledgeBootstrapApi {
+  if (data.recent_documents && data.document_counts) {
+    return {
+      folders: data.folders ?? [],
+      folder_tree:
+        data.folder_tree ??
+        (data.folders ?? []).map((folder) => ({
+          ...folder,
+          document_count: data.document_counts?.by_folder_id?.[folder.id] ?? 0,
+        })),
+      recent_documents: data.recent_documents,
+      document_counts: data.document_counts,
+      permissions: data.permissions ?? DEFAULT_KNOWLEDGE_PERMISSIONS,
+      library_health: {
+        ready_count: data.library_health?.ready_count ?? 0,
+        needs_review_count: data.library_health?.needs_review_count ?? 0,
+        expired_count: data.library_health?.expired_count ?? 0,
+        needs_reindex_count: data.library_health?.needs_reindex_count ?? 0,
+        indexing_count: data.library_health?.indexing_count ?? 0,
+        draft_count: data.library_health?.draft_count ?? 0,
+        archived_count: data.library_health?.archived_count ?? 0,
+      },
+    };
+  }
+
+  const folders = data.folders ?? [];
+  const documents = data.documents ?? [];
+  return buildBootstrapFromDocuments(folders, documents, data.library_health);
+}
+
+export async function getKnowledgeBootstrap(): Promise<KnowledgeBootstrapApi> {
+  try {
+    const body = await apiFetch<{ data: LegacyKnowledgeBootstrapApi }>("/knowledge/bootstrap");
+    return normalizeKnowledgeBootstrap(body.data);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      const [folders, documents] = await Promise.all([
+        listKnowledgeFolders(),
+        listKnowledgeDocuments(),
+      ]);
+      return buildBootstrapFromDocuments(folders, documents);
+    }
+    throw error;
+  }
+}
+
+export async function getKnowledgeLibraryHealth(): Promise<KnowledgeLibraryHealthApi> {
+  try {
+    const body = await apiFetch<{ data: KnowledgeLibraryHealthApi }>("/knowledge/library-health");
+    return body.data;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      const bootstrap = await getKnowledgeBootstrap();
+      return {
+        ...EMPTY_KNOWLEDGE_LIBRARY_HEALTH,
+        ...bootstrap.library_health,
+        open_gaps: [],
+      };
+    }
+    throw error;
+  }
+}
+
 export async function listKnowledgeDocuments(
   filters: KnowledgeDocumentFilters = {},
 ): Promise<KnowledgeDocumentApi[]> {
@@ -733,6 +881,9 @@ export async function listKnowledgeDocuments(
   const query = params.toString();
   const body = await apiFetch<{ data: KnowledgeDocumentApi[] }>(
     `/knowledge/documents${query ? `?${query}` : ""}`,
+    {
+      headers: filters.aiRank ? { "X-BSG-User-Action": "true" } : undefined,
+    },
   );
   return body.data;
 }
@@ -809,10 +960,45 @@ export type KnowledgeAskOptions = {
   conversationId?: string | null;
 };
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function isUuid(value: string): boolean {
+  return UUID_PATTERN.test(value);
+}
+
+function sanitizeKnowledgeConversationHistory(
+  history: KnowledgeConversationHistoryTurnApi[] = [],
+): KnowledgeConversationHistoryTurnApi[] {
+  return history
+    .filter((turn) => turn.content.trim().length > 0)
+    .slice(-6)
+    .map((turn) => ({
+      role: turn.role,
+      content: turn.content.trim(),
+    }));
+}
+
+function knowledgeConversationId(value: string | null | undefined): string | undefined {
+  if (!value || !isUuid(value)) return undefined;
+  return value;
+}
+
 export async function askKnowledgeAgent(
   queryText: string,
   options: KnowledgeAskOptions = {},
 ): Promise<KnowledgeAskResponseApi> {
+  const payload: Record<string, unknown> = {
+    query_text: queryText.trim(),
+    conversation_history: sanitizeKnowledgeConversationHistory(options.conversationHistory),
+  };
+  if (options.answerMode !== undefined) {
+    payload.answer_mode = options.answerMode;
+  }
+  const conversationId = knowledgeConversationId(options.conversationId);
+  if (conversationId) {
+    payload.conversation_id = conversationId;
+  }
   const body = await apiFetch<{ data: KnowledgeAskResponseApi }>("/knowledge/ask", {
     method: "POST",
     headers: { "X-BSG-User-Action": "true" },
@@ -834,11 +1020,12 @@ export async function* streamKnowledgeAsk(
   options: KnowledgeAskOptions = {},
 ): AsyncGenerator<KnowledgeStreamEvent> {
   const payload: Record<string, unknown> = {
-    query_text: queryText,
-    conversation_history: options.conversationHistory ?? [],
+    query_text: queryText.trim(),
+    conversation_history: sanitizeKnowledgeConversationHistory(options.conversationHistory),
   };
   if (options.answerMode !== undefined) payload.answer_mode = options.answerMode;
-  if (options.conversationId) payload.conversation_id = options.conversationId;
+  const conversationId = knowledgeConversationId(options.conversationId);
+  if (conversationId) payload.conversation_id = conversationId;
 
   const headers = new Headers({ "Content-Type": "application/json", "X-BSG-User-Action": "true" });
   const csrf = document.cookie.match(/(?:^|; )csrf_token=([^;]*)/)?.[1];
@@ -852,8 +1039,14 @@ export async function* streamKnowledgeAsk(
   });
 
   if (!response.ok || !response.body) {
-    const err = await response.json().catch(() => ({})) as { error?: { code?: string; message?: string } };
-    throw new ApiError(response.status, err.error?.code ?? "API_ERROR", err.error?.message ?? "Stream request failed.");
+    const err = (await response.json().catch(() => ({}))) as {
+      error?: { code?: string; message?: string; details?: { errors?: unknown } };
+    };
+    const detail =
+      err.error?.code === "VALIDATION_ERROR"
+        ? "The request was rejected by the server. Try starting a new chat."
+        : (err.error?.message ?? "Stream request failed.");
+    throw new ApiError(response.status, err.error?.code ?? "API_ERROR", detail);
   }
 
   const reader = response.body.getReader();
@@ -1065,6 +1258,55 @@ export async function updateKnowledgeRetrievalSettings(
       body: JSON.stringify(payload),
     },
   );
+  return body.data;
+}
+
+export async function getKnowledgeQueryAnswer(queryId: string): Promise<KnowledgeAskResponseApi> {
+  const body = await apiFetch<{ data: KnowledgeAskResponseApi }>(`/knowledge/queries/${queryId}`);
+  return body.data;
+}
+
+export async function listKnowledgeConversations(
+  limit = 30,
+): Promise<KnowledgeConversationSummaryApi[]> {
+  const body = await apiFetch<{ data: KnowledgeConversationSummaryApi[] }>(
+    `/knowledge/conversations?limit=${limit}`,
+  );
+  return body.data;
+}
+
+export async function getKnowledgeConversation(
+  conversationId: string,
+): Promise<KnowledgeConversationApi> {
+  const body = await apiFetch<{ data: KnowledgeConversationApi }>(
+    `/knowledge/conversations/${conversationId}`,
+  );
+  return body.data;
+}
+
+export async function listAgentQueries(limit = 20): Promise<AgentQueryApi[]> {
+  const body = await apiFetch<{ data: AgentQueryApi[] }>(`/agent-queries?limit=${limit}`);
+  return body.data;
+}
+
+export async function submitKnowledgeFeedback(
+  payload: KnowledgeFeedbackRequestApi,
+): Promise<KnowledgeFeedbackResponseApi> {
+  const body = await apiFetch<{ data: KnowledgeFeedbackResponseApi }>("/knowledge/feedback", {
+    method: "POST",
+    body: JSON.stringify({
+      query_id: payload.query_id,
+      rating: payload.rating,
+      comment: payload.comment ?? null,
+    }),
+  });
+  return body.data;
+}
+
+export async function resolveKnowledgeGap(gapId: string): Promise<KnowledgeGapTodoApi> {
+  const body = await apiFetch<{ data: KnowledgeGapTodoApi }>(`/knowledge/gaps/${gapId}/resolve`, {
+    method: "POST",
+  });
   return body.data;
 }
 

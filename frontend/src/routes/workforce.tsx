@@ -1,5 +1,4 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useMutation } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, SectionHeader } from "@/components/bsg/widgets";
 import { EmployeeProfileDrawer } from "@/components/bsg/EmployeeProfileDrawer";
@@ -9,10 +8,9 @@ import { SkillCoverageMatrixSection } from "@/components/bsg/workforce/SkillCove
 import { TeamSummarySection } from "@/components/bsg/workforce/TeamSummarySection";
 import { TrainingGapsSection } from "@/components/bsg/workforce/TrainingGapsSection";
 import { WorkforceUtilizationSection } from "@/components/bsg/workforce/WorkforceUtilizationSection";
-import { WorkforceAgentSection } from "@/components/bsg/workforce/WorkforceAgentSection";
+import { WorkforceAgentSection } from "@/components/bsg/workforce/agent/WorkforceAgentSection";
 import { WorkforceKpiStrip } from "@/components/bsg/workforce/WorkforceKpiStrip";
 import { WorkforceRecommendationsPanel } from "@/components/bsg/WorkforceRecommendationsPanel";
-import { createAgentQuery } from "@/lib/api";
 import { useProjectsQuery } from "@/lib/queries/delivery";
 import {
   UTILIZATION_CAPACITY_THRESHOLD,
@@ -86,16 +84,6 @@ function summarizeTrainingGapsDelta(summary: TrainingGapSummaryRead | undefined)
 }
 
 const EMPTY_LIST: never[] = [];
-
-const WORKFORCE_AGENT_NAME = "workforce_capability_agent";
-
-const WORKFORCE_STARTER_QUESTIONS = [
-  "Which teams are overloaded?",
-  "Do we have enough SME coverage?",
-  "What are the biggest capability gaps?",
-  "Which skills are missing for this project?",
-  "Are training gaps creating risk?",
-];
 
 function WorkforcePage() {
   const navigate = useNavigate({ from: "/workforce" });
@@ -514,13 +502,7 @@ function WorkforcePage() {
 
           <WorkforceAgentSection
             canReadInternalWorkforce={canReadInternalWorkforce}
-            resolvedProjectId={resolvedProjectId}
-            starterQuestions={WORKFORCE_STARTER_QUESTIONS}
-            agentQuestion={agentQuestion}
-            onAgentQuestionChange={setAgentQuestion}
-            submitAgentQuestion={submitAgentQuestion}
-            agentQueryMutation={agentQueryMutation}
-            agentAnswer={agentAnswer}
+            projectId={resolvedProjectId}
           />
         </div>
       </div>

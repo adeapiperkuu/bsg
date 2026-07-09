@@ -188,7 +188,9 @@ function DeliveryPage() {
   }, [portfolioQuery.data]);
 
   const selectedProject = projects.find((project) => project.id === resolvedProjectId);
-  const selectedDashboard = resolvedProjectId ? dashboards[resolvedProjectId] : undefined;
+  const selectedDashboard = resolvedProjectId
+    ? selectedDashboardQuery.data ?? portfolioDashboards[resolvedProjectId]
+    : undefined;
   const portfolioMilestones = useMemo(
     () => portfolioQuery.data?.milestones ?? [],
     [portfolioQuery.data?.milestones],

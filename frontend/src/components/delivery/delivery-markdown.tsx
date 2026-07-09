@@ -220,3 +220,5 @@ function DeliveryMarkdownComponent({ content, className }: Props) {
 
   return <div className={cn("space-y-1", className)}>{blocks}</div>;
 }
+
+export const DeliveryMarkdown = DeliveryMarkdownComponent;

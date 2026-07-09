@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useRole } from "@/lib/bsg/use-role";
+import { roleLabel } from "@/lib/roleLabels";
 import { cn } from "@/lib/utils";
 import { notifications } from "@/lib/bsg/data";
 import { StatusPill } from "./widgets";
