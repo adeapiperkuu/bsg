@@ -24,6 +24,7 @@ from app.agents.governance.services.governance_service import (
 from app.agents.governance.services.knowledge_link_service import (
     list_approved_governance_document_refs,
 )
+from app.agents.governance.timing import governance_db_timed
 from app.core.config import get_settings
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
@@ -964,3 +965,16 @@ async def build_project_charter_read(
             "project_name": project_names.get(charter.project_id),
         }
     )
+
+
+_CHARTER_DB_TIMED = (
+    "list_project_charters",
+    "get_project_charter_or_404",
+    "generate_project_charter",
+    "update_project_charter_draft",
+    "approve_project_charter",
+    "archive_project_charter",
+    "build_project_charter_read",
+)
+for _name in _CHARTER_DB_TIMED:
+    globals()[_name] = governance_db_timed(globals()[_name])

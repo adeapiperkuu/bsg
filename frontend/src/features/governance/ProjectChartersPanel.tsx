@@ -234,7 +234,7 @@ export function ProjectChartersPanel({
 
   return (
     <>
-      <Card>
+      <Card className="flex h-[640px] flex-col overflow-hidden">
         <SectionHeader
           title="Project Charters"
           sub="AI-generated drafts, approval workflow, version history, and exports"
@@ -275,15 +275,15 @@ export function ProjectChartersPanel({
           }
         />
 
-        <div>
-          <div className="rounded-md border border-border bg-elevated p-3">
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex min-h-0 flex-1 flex-col rounded-md border border-border bg-elevated p-3">
             {chartersQuery.isLoading ? (
-              <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+              <div className="flex flex-1 items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 Loading charters...
               </div>
             ) : displayCharter ? (
-              <>
+              <div className="flex min-h-0 flex-1 flex-col">
                 <div className="mb-3 flex flex-wrap items-center gap-2">
                   <StatusPill status={formatCharterStatus(displayCharter.status)} />
                   {displayCharter.generated_by_ai && <AiBadge label="AI Generated" />}
@@ -302,10 +302,10 @@ export function ProjectChartersPanel({
                       : ""}
                   </p>
                 )}
-                <div className="max-h-72 overflow-y-auto">
+                <div className="min-h-0 flex-1 overflow-y-auto">
                   <DeliveryMarkdown content={displayCharter.generated_text} />
                 </div>
-                <div className="mt-3 flex flex-wrap gap-2">
+                <div className="mt-3 flex shrink-0 flex-wrap gap-2">
                   <Button
                     type="button"
                     size="sm"
@@ -339,14 +339,14 @@ export function ProjectChartersPanel({
                     DOCX
                   </Button>
                 </div>
-              </>
+              </div>
             ) : (
-              <div className="py-8 text-sm text-muted-foreground">
+              <div className="flex flex-1 items-center text-sm text-muted-foreground">
                 No project charter exists for this project yet.
               </div>
             )}
 
-            <div className="mt-3 flex flex-wrap gap-2">
+            <div className="mt-3 flex shrink-0 flex-wrap gap-2">
               {canWrite && (
                 <Button
                   type="button"

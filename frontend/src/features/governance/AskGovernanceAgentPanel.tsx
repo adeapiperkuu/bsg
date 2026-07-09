@@ -108,7 +108,13 @@ function buildFallbackAnswer(queryText: string, selectedProjectId: string): Agen
   };
 }
 
-export function AskGovernanceAgentPanel({ projects }: { projects: ProjectOption[] }) {
+export function AskGovernanceAgentPanel({
+  projects,
+  onNeedsProjects,
+}: {
+  projects: ProjectOption[];
+  onNeedsProjects?: () => void;
+}) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState<string>(ALL_PROJECTS_VALUE);
@@ -215,7 +221,7 @@ export function AskGovernanceAgentPanel({ projects }: { projects: ProjectOption[
     .find((message) => message.role === "user")?.text;
 
   return (
-    <Card className="overflow-hidden p-0">
+    <Card className="flex h-[640px] flex-col overflow-hidden p-0">
       <div className="border-b border-border px-5 py-4">
         <SectionHeader
           title="Ask Governance Agent"
@@ -223,7 +229,13 @@ export function AskGovernanceAgentPanel({ projects }: { projects: ProjectOption[
           right={<EvidenceBadge />}
         />
         <div className="flex flex-wrap items-center gap-2">
-          <Select value={selectedProjectId} onValueChange={setSelectedProjectId}>
+          <Select
+            value={selectedProjectId}
+            onValueChange={setSelectedProjectId}
+            onOpenChange={(open) => {
+              if (open) onNeedsProjects?.();
+            }}
+          >
             <SelectTrigger className="h-9 w-full shadow-none sm:w-72">
               <SelectValue placeholder="Portfolio" />
             </SelectTrigger>
@@ -256,12 +268,12 @@ export function AskGovernanceAgentPanel({ projects }: { projects: ProjectOption[
         </div>
       </div>
 
-      <div className="grid min-h-[560px] gap-0 lg:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(0,1fr)_340px]">
         <div className="flex min-h-0 flex-col">
-          <div className="min-h-0 flex-1 p-5">
+          <div className="flex min-h-0 flex-1 flex-col p-5">
             <div
               ref={chatScrollRef}
-              className="h-[430px] space-y-4 overflow-y-auto rounded-md bg-secondary/35 p-4 text-xs"
+              className="min-h-0 flex-1 space-y-4 overflow-y-auto rounded-md bg-secondary/35 p-4 text-xs"
             >
               {messages.length === 0 ? (
                 <div className="flex h-full flex-col items-center justify-center text-center">
@@ -424,7 +436,7 @@ export function AskGovernanceAgentPanel({ projects }: { projects: ProjectOption[
           </div>
         </div>
 
-        <aside className="border-t border-border bg-elevated p-4 lg:border-l lg:border-t-0">
+        <aside className="flex min-h-0 flex-col border-t border-border bg-elevated p-4 lg:border-l lg:border-t-0">
           <div className="mb-3 flex items-start justify-between gap-2">
             <div>
               <p className="text-xs font-semibold">Evidence</p>
@@ -457,7 +469,7 @@ export function AskGovernanceAgentPanel({ projects }: { projects: ProjectOption[
             </div>
           ) : null}
 
-          <div className="max-h-[500px] space-y-3 overflow-y-auto">
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
             {Object.entries(evidenceGroups).length === 0 ? (
               <p className="rounded-md border border-border bg-card p-3 text-xs text-muted-foreground">
                 Select an answer to inspect its evidence links.

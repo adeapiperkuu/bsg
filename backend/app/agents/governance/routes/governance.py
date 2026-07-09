@@ -1,22 +1,27 @@
 import csv
 import io
+from datetime import date
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import select
 
 from app.agents.governance.analytics.sla import dependency_overdue_days, effective_action_status
 from app.agents.governance.schemas.governance import (
     GovernanceActionCreate,
+    GovernanceActionListRead,
     GovernanceActionRead,
     GovernanceActionUpdate,
     GovernanceAnalyticsRead,
+    GovernanceAnalyticsDetailRead,
+    GovernanceAnalyticsSummaryRead,
     GovernanceBootstrapRead,
-    GovernanceCharterReferenceRead,
     GovernanceEscalationCreate,
+    GovernanceEscalationListRead,
     GovernanceEscalationRead,
     GovernanceEscalationUpdate,
     GovernanceMonitoringRead,
+    GovernanceRegisterRowRead,
     GovernanceWeeklySummaryCreate,
     GovernanceWeeklySummaryGenerateRequest,
     GovernanceWeeklySummaryRead,
@@ -25,13 +30,18 @@ from app.agents.governance.schemas.governance import (
     ProjectCharterRead,
     ProjectCharterUpdate,
     ProjectDependencyCreate,
+    ProjectDependencyListRead,
     ProjectDependencyRead,
     ProjectDependencyUpdate,
     ProjectScopeStateRead,
     ProjectScopeStateUpdate,
     PromoteRiskAlertRequest,
 )
-from app.agents.governance.services.analytics_service import get_governance_analytics
+from app.agents.governance.services.analytics_service import (
+    get_governance_analytics,
+    get_governance_analytics_detail,
+    get_governance_analytics_summary,
+)
 from app.agents.governance.services.audit_service import log_governance_event
 from app.agents.governance.services.charter_export import (
     CharterExportDocument,
@@ -48,8 +58,8 @@ from app.agents.governance.services.charter_service import (
     update_project_charter_draft,
 )
 from app.agents.governance.services.dashboard_service import get_governance_bootstrap
-from app.agents.governance.services.knowledge_link_service import list_approved_charter_references
 from app.agents.governance.services.delivery_integration import promote_risk_alert_to_escalation
+from app.agents.governance.services.register_service import list_governance_register_page
 from app.agents.governance.services.governance_service import (
     approve_weekly_summary,
     can_read_internal_governance,
@@ -57,17 +67,24 @@ from app.agents.governance.services.governance_service import (
     create_dependency,
     create_escalation,
     create_weekly_summary,
+    enriched_action_read,
+    enriched_dependency_read,
+    enriched_escalation_read,
+    get_action_or_404,
+    get_dependency_or_404,
+    get_escalation_or_404,
     get_latest_weekly_summary,
     get_scope_state_for_project,
     get_weekly_summary_by_id,
+    list_governance_actions_page,
+    list_governance_dependencies_page,
+    list_governance_escalations_page,
+    list_governance_scope_states_page,
     list_weekly_summaries,
-    load_project_names,
-    load_user_names,
+    map_action_list_row,
+    map_dependency_list_row,
+    map_escalation_list_row,
     resolve_dependency,
-    scoped_actions_query,
-    scoped_dependencies_query,
-    scoped_escalations_query,
-    scoped_scope_states_query,
     soft_delete_action,
     soft_delete_dependency,
     soft_delete_escalation,
@@ -82,6 +99,7 @@ from app.agents.governance.services.summary_service import (
     build_weekly_summary_read,
     generate_weekly_governance_summary,
 )
+from app.agents.governance.timing import instrument_governance_routes
 from app.api.deps import ExplicitUserActionDep, SessionDep
 from app.core.security import CurrentUser, require_role
 from app.db.models import AppRole, Project
@@ -95,6 +113,16 @@ WRITE_ROLES = (AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)
 MONITORING_ROLES = (AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
 
 
+def _pagination(total: int, limit: int, offset: int, item_count: int) -> Pagination:
+    return Pagination(
+        limit=limit,
+        offset=offset,
+        total=total,
+        items=item_count,
+        has_more=offset + item_count < total,
+    )
+
+
 @router.get("/governance/bootstrap", response_model=DataResponse[GovernanceBootstrapRead])
 async def governance_bootstrap(
     session: SessionDep,
@@ -103,18 +131,50 @@ async def governance_bootstrap(
     return DataResponse(data=await get_governance_bootstrap(session, current_user))
 
 
-@router.get(
-    "/governance/charter-references",
-    response_model=ListResponse[GovernanceCharterReferenceRead],
-)
-async def list_governance_charter_references(
+@router.get("/governance/register", response_model=ListResponse[GovernanceRegisterRowRead])
+async def list_governance_register(
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
-) -> ListResponse[GovernanceCharterReferenceRead]:
-    if not can_read_internal_governance(current_user):
-        return ListResponse(data=[], pagination=Pagination(limit=0))
-    refs = await list_approved_charter_references(session, current_user)
-    return ListResponse(data=refs, pagination=Pagination(limit=len(refs)))
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    project_id: UUID | None = None,
+    status: str | None = None,
+    search: str | None = None,
+) -> ListResponse[GovernanceRegisterRowRead]:
+    page = await list_governance_register_page(
+        session,
+        current_user,
+        limit=limit,
+        offset=offset,
+        project_id=project_id,
+        status=status,
+        search=search,
+    )
+    data = page.items
+    return ListResponse(
+        data=data,
+        pagination=_pagination(page.total, page.limit, page.offset, len(data)),
+    )
+
+
+@router.get("/governance/analytics/summary", response_model=DataResponse[GovernanceAnalyticsSummaryRead])
+async def governance_analytics_summary(
+    session: SessionDep,
+    days: int = 30,
+    current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
+) -> DataResponse[GovernanceAnalyticsSummaryRead]:
+    return DataResponse(
+        data=await get_governance_analytics_summary(session, current_user, days=days)
+    )
+
+
+@router.get("/governance/analytics/detail", response_model=DataResponse[GovernanceAnalyticsDetailRead])
+async def governance_analytics_detail(
+    session: SessionDep,
+    days: int = 30,
+    current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
+) -> DataResponse[GovernanceAnalyticsDetailRead]:
+    return DataResponse(data=await get_governance_analytics_detail(session, current_user, days=days))
 
 
 @router.get("/governance/analytics", response_model=DataResponse[GovernanceAnalyticsRead])
@@ -123,6 +183,9 @@ async def governance_analytics(
     days: int = 30,
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
 ) -> DataResponse[GovernanceAnalyticsRead]:
+    # TODO(deprecate): Monolithic analytics payload. The live /governance UI uses
+    # GET /governance/analytics/summary + GET /governance/analytics/detail instead.
+    # Keep this route for backward compatibility until external callers are confirmed gone.
     return DataResponse(data=await get_governance_analytics(session, current_user, days=days))
 
 
@@ -205,11 +268,6 @@ async def export_governance_analytics_pdf(
     body = (
         f"Generated: {data.generated_at.isoformat()}\n"
         f"Range: {data.date_range_days} days\n\n"
-        f"Portfolio Score: {data.kpis.portfolio_score}\n"
-        f"Projects at Risk: {data.kpis.projects_at_risk}\n"
-        f"Blocking Dependencies: {data.kpis.blocking_dependencies}\n"
-        f"Critical Escalations: {data.kpis.critical_escalations}\n"
-        f"Governance SLA: {data.kpis.governance_sla_pct}%\n\n"
         "Portfolio Risk Ranking\n"
         + "\n".join(
             f"- {project.project_name}: score={project.score}, risk={project.risk_level}"
@@ -242,52 +300,74 @@ async def export_governance_analytics_pdf(
 
 
 @router.get(
-    "/projects/{project_id}/dependencies", response_model=ListResponse[ProjectDependencyRead]
+    "/projects/{project_id}/dependencies",
+    response_model=ListResponse[ProjectDependencyListRead],
 )
 async def list_project_dependencies(
     project_id: UUID,
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
-) -> ListResponse[ProjectDependencyRead]:
-    deps = [
-        d
-        for d in await scoped_dependencies_query(session, current_user)
-        if d.project_id == project_id
-    ]
-    project_names = await load_project_names(session, {project_id})
-    user_names = await load_user_names(session, {d.owner_id for d in deps if d.owner_id})
-    data = [
-        ProjectDependencyRead.model_validate(dep, from_attributes=True).model_copy(
-            update={
-                "overdue_days": dependency_overdue_days(dep),
-                "project_name": project_names.get(project_id),
-                "owner_name": user_names.get(dep.owner_id) if dep.owner_id else None,
-            }
-        )
-        for dep in deps
-    ]
-    return ListResponse(data=data, pagination=Pagination(limit=len(data)))
+) -> ListResponse[ProjectDependencyListRead]:
+    page = await list_governance_dependencies_page(
+        session,
+        current_user,
+        limit=100,
+        offset=0,
+        project_id=project_id,
+    )
+    data = [map_dependency_list_row(row) for row in page.items]
+    return ListResponse(
+        data=data,
+        pagination=_pagination(page.total, page.limit, page.offset, len(data)),
+    )
 
 
-@router.get("/governance/dependencies", response_model=ListResponse[ProjectDependencyRead])
+@router.get("/governance/dependencies", response_model=ListResponse[ProjectDependencyListRead])
 async def list_governance_dependencies(
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
-) -> ListResponse[ProjectDependencyRead]:
-    deps = await scoped_dependencies_query(session, current_user)
-    project_names = await load_project_names(session, {d.project_id for d in deps})
-    user_names = await load_user_names(session, {d.owner_id for d in deps if d.owner_id})
-    data = [
-        ProjectDependencyRead.model_validate(dep, from_attributes=True).model_copy(
-            update={
-                "overdue_days": dependency_overdue_days(dep),
-                "project_name": project_names.get(dep.project_id),
-                "owner_name": user_names.get(dep.owner_id) if dep.owner_id else None,
-            }
-        )
-        for dep in deps
-    ]
-    return ListResponse(data=data, pagination=Pagination(limit=len(data)))
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    project_id: UUID | None = None,
+    status: str | None = None,
+    severity: str | None = None,
+    dependency_type: str | None = None,
+    owner_id: UUID | None = None,
+    assigned_to: UUID | None = None,
+    search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> ListResponse[ProjectDependencyListRead]:
+    page = await list_governance_dependencies_page(
+        session,
+        current_user,
+        limit=limit,
+        offset=offset,
+        project_id=project_id,
+        status=status,
+        severity=severity,
+        dependency_type=dependency_type,
+        owner_id=owner_id,
+        assigned_to=assigned_to,
+        search=search,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    data = [map_dependency_list_row(row) for row in page.items]
+    return ListResponse(
+        data=data,
+        pagination=_pagination(page.total, page.limit, page.offset, len(data)),
+    )
+
+
+@router.get("/dependencies/{dependency_id}", response_model=DataResponse[ProjectDependencyRead])
+async def get_dependency(
+    dependency_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
+) -> DataResponse[ProjectDependencyRead]:
+    dep = await get_dependency_or_404(session, dependency_id, current_user)
+    return DataResponse(data=await enriched_dependency_read(session, dep))
 
 
 @router.post(
@@ -353,29 +433,55 @@ async def resolve_project_dependency(
     )
 
 
-@router.get("/governance/escalations", response_model=ListResponse[GovernanceEscalationRead])
+@router.get("/governance/escalations", response_model=ListResponse[GovernanceEscalationListRead])
 async def list_escalations(
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
-) -> ListResponse[GovernanceEscalationRead]:
-    escalations = await scoped_escalations_query(session, current_user)
-    project_names = await load_project_names(session, {e.project_id for e in escalations})
-    user_ids = {
-        *(e.raised_by for e in escalations if e.raised_by),
-        *(e.assigned_to for e in escalations if e.assigned_to),
-    }
-    user_names = await load_user_names(session, user_ids)
-    data = [
-        GovernanceEscalationRead.model_validate(esc, from_attributes=True).model_copy(
-            update={
-                "project_name": project_names.get(esc.project_id),
-                "raised_by_name": user_names.get(esc.raised_by) if esc.raised_by else None,
-                "assigned_to_name": user_names.get(esc.assigned_to) if esc.assigned_to else None,
-            }
-        )
-        for esc in escalations
-    ]
-    return ListResponse(data=data, pagination=Pagination(limit=len(data)))
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    project_id: UUID | None = None,
+    status: str | None = None,
+    severity: str | None = None,
+    dependency_type: str | None = None,
+    owner_id: UUID | None = None,
+    assigned_to: UUID | None = None,
+    search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> ListResponse[GovernanceEscalationListRead]:
+    page = await list_governance_escalations_page(
+        session,
+        current_user,
+        limit=limit,
+        offset=offset,
+        project_id=project_id,
+        status=status,
+        severity=severity,
+        dependency_type=dependency_type,
+        owner_id=owner_id,
+        assigned_to=assigned_to,
+        search=search,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    data = [map_escalation_list_row(row) for row in page.items]
+    return ListResponse(
+        data=data,
+        pagination=_pagination(page.total, page.limit, page.offset, len(data)),
+    )
+
+
+@router.get(
+    "/governance/escalations/{escalation_id}",
+    response_model=DataResponse[GovernanceEscalationRead],
+)
+async def get_escalation(
+    escalation_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
+) -> DataResponse[GovernanceEscalationRead]:
+    escalation = await get_escalation_or_404(session, escalation_id, current_user)
+    return DataResponse(data=await enriched_escalation_read(session, escalation))
 
 
 @router.post("/governance/escalations", response_model=DataResponse[GovernanceEscalationRead])
@@ -421,25 +527,55 @@ async def patch_escalation(
     )
 
 
-@router.get("/governance/actions", response_model=ListResponse[GovernanceActionRead])
+@router.get("/governance/actions", response_model=ListResponse[GovernanceActionListRead])
 async def list_governance_actions(
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
-) -> ListResponse[GovernanceActionRead]:
-    actions = await scoped_actions_query(session, current_user)
-    project_names = await load_project_names(session, {a.project_id for a in actions})
-    user_names = await load_user_names(session, {a.owner_id for a in actions if a.owner_id})
-    data = [
-        GovernanceActionRead.model_validate(action, from_attributes=True).model_copy(
-            update={
-                "status": effective_action_status(action),
-                "project_name": project_names.get(action.project_id),
-                "owner_name": user_names.get(action.owner_id) if action.owner_id else None,
-            }
-        )
-        for action in actions
-    ]
-    return ListResponse(data=data, pagination=Pagination(limit=len(data)))
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    project_id: UUID | None = None,
+    status: str | None = None,
+    severity: str | None = None,
+    dependency_type: str | None = None,
+    owner_id: UUID | None = None,
+    assigned_to: UUID | None = None,
+    search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> ListResponse[GovernanceActionListRead]:
+    page = await list_governance_actions_page(
+        session,
+        current_user,
+        limit=limit,
+        offset=offset,
+        project_id=project_id,
+        status=status,
+        severity=severity,
+        dependency_type=dependency_type,
+        owner_id=owner_id,
+        assigned_to=assigned_to,
+        search=search,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    data = [map_action_list_row(row) for row in page.items]
+    return ListResponse(
+        data=data,
+        pagination=_pagination(page.total, page.limit, page.offset, len(data)),
+    )
+
+
+@router.get(
+    "/governance/actions/{action_id}",
+    response_model=DataResponse[GovernanceActionRead],
+)
+async def get_action(
+    action_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
+) -> DataResponse[GovernanceActionRead]:
+    action = await get_action_or_404(session, action_id, current_user)
+    return DataResponse(data=await enriched_action_read(session, action))
 
 
 @router.post("/governance/actions", response_model=DataResponse[GovernanceActionRead])
@@ -500,10 +636,39 @@ async def get_project_scope(
 async def list_governance_scope_states(
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    project_id: UUID | None = None,
+    status: str | None = None,
+    severity: str | None = None,
+    dependency_type: str | None = None,
+    owner_id: UUID | None = None,
+    assigned_to: UUID | None = None,
+    search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
 ) -> ListResponse[ProjectScopeStateRead]:
-    scopes = await scoped_scope_states_query(session, current_user)
+    page = await list_governance_scope_states_page(
+        session,
+        current_user,
+        limit=limit,
+        offset=offset,
+        project_id=project_id,
+        status=status,
+        severity=severity,
+        dependency_type=dependency_type,
+        owner_id=owner_id,
+        assigned_to=assigned_to,
+        search=search,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    scopes = page.items
     data = [ProjectScopeStateRead.model_validate(scope, from_attributes=True) for scope in scopes]
-    return ListResponse(data=data, pagination=Pagination(limit=len(data)))
+    return ListResponse(
+        data=data,
+        pagination=_pagination(page.total, page.limit, page.offset, len(data)),
+    )
 
 
 @router.patch("/projects/{project_id}/scope", response_model=DataResponse[ProjectScopeStateRead])
@@ -949,3 +1114,6 @@ async def post_weekly_summary(
         evidence_links=payload.evidence_links,
     )
     return DataResponse(data=await build_weekly_summary_read(session, summary))
+
+
+instrument_governance_routes(router)

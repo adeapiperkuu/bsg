@@ -31,6 +31,29 @@ export const queryKeys = {
   projectSkillMatrix: (projectId: string) => ["projects", projectId, "skill-matrix"] as const,
   projectTrainingGaps: (projectId: string) => ["projects", projectId, "training-gaps"] as const,
   projectCapabilityGaps: (projectId: string) => ["projects", projectId, "capability-gaps"] as const,
+  governanceBootstrap: ["governance", "bootstrap"] as const,
+  governanceAnalyticsSummary: (days: number) =>
+    ["governance", "analytics", "summary", days] as const,
+  governanceAnalyticsDetail: (days: number) => ["governance", "analytics", "detail", days] as const,
+  governanceDependencies: (params: Record<string, unknown> = {}) =>
+    ["governance", "dependencies", params] as const,
+  governanceActions: (params: Record<string, unknown> = {}) =>
+    ["governance", "actions", params] as const,
+  governanceEscalations: (params: Record<string, unknown> = {}) =>
+    ["governance", "escalations", params] as const,
+  governanceScopeStates: (params: Record<string, unknown> = {}) =>
+    ["governance", "scope-states", params] as const,
+  governanceRegister: (params: Record<string, unknown> = {}) =>
+    ["governance", "register", params] as const,
+  knowledgeBootstrap: ["knowledge", "bootstrap"] as const,
+  knowledgeDocuments: ["knowledge", "documents"] as const,
+  knowledgeLibraryHealth: ["knowledge", "library-health"] as const,
+  knowledgeRetrievalSettings: ["knowledge", "retrieval-settings"] as const,
+  knowledgeDocument: (documentId: string) => ["knowledge", "document", documentId] as const,
+  knowledgeDocumentVersions: (documentId: string) =>
+    ["knowledge", "document", documentId, "versions"] as const,
+  knowledgeAgentQueries: ["knowledge", "agent-queries"] as const,
+  knowledgeConversations: ["knowledge", "conversations"] as const,
 };
 
 export const STALE_TIME_MS = 5 * 60 * 1000;
