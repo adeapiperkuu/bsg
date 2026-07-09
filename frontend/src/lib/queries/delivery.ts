@@ -2,9 +2,9 @@ import { queryOptions, useQuery } from "@tanstack/react-query";
 import {
   fetchDeliveryDashboard,
   fetchDeliveryPortfolio,
+  listDeliveryConversations,
   listOrganisations,
   listProjectDeliveryConfidence,
-  listProjectThroughput,
   listProjects,
 } from "@/lib/api";
 import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
@@ -36,19 +36,19 @@ export function deliveryDashboardQueryOptions(projectId: string | null) {
   });
 }
 
-export function projectDeliveryConfidenceQueryOptions(projectId: string | null) {
+export function deliveryConversationsQueryOptions(projectId: string | null, enabled = true) {
   return queryOptions({
-    queryKey: queryKeys.projectDeliveryConfidence(projectId ?? ""),
-    queryFn: () => listProjectDeliveryConfidence(projectId!),
-    enabled: Boolean(projectId),
+    queryKey: queryKeys.deliveryConversations(projectId),
+    queryFn: () => listDeliveryConversations(projectId),
+    enabled,
     staleTime: STALE_TIME_MS,
   });
 }
 
-export function projectThroughputQueryOptions(projectId: string | null) {
+export function projectDeliveryConfidenceQueryOptions(projectId: string | null) {
   return queryOptions({
-    queryKey: queryKeys.projectThroughput(projectId ?? ""),
-    queryFn: () => listProjectThroughput(projectId!),
+    queryKey: queryKeys.projectDeliveryConfidence(projectId ?? ""),
+    queryFn: () => listProjectDeliveryConfidence(projectId!),
     enabled: Boolean(projectId),
     staleTime: STALE_TIME_MS,
   });
@@ -70,10 +70,10 @@ export function useDeliveryDashboardQuery(projectId: string | null) {
   return useQuery(deliveryDashboardQueryOptions(projectId));
 }
 
-export function useProjectDeliveryConfidenceQuery(projectId: string | null) {
-  return useQuery(projectDeliveryConfidenceQueryOptions(projectId));
+export function useDeliveryConversationsQuery(projectId: string | null, enabled = true) {
+  return useQuery(deliveryConversationsQueryOptions(projectId, enabled));
 }
 
-export function useProjectThroughputQuery(projectId: string | null) {
-  return useQuery(projectThroughputQueryOptions(projectId));
+export function useProjectDeliveryConfidenceQuery(projectId: string | null) {
+  return useQuery(projectDeliveryConfidenceQueryOptions(projectId));
 }

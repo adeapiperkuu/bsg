@@ -32,5 +32,4 @@ class AuditLogger:
             payload=payload,
         )
         self._session.add(entry)
-        await self._session.flush()
         return entry

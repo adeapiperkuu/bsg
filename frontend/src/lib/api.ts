@@ -29,23 +29,29 @@ import type {
 import type {
   KnowledgeBootstrapApi,
   KnowledgeDocumentApi,
+  KnowledgeDocumentSummaryApi,
   KnowledgeAskResponseApi,
   KnowledgeAnswerModeApi,
   AgentQueryApi,
-  KnowledgeEvalMetricsApi,
-  KnowledgeEvalQuestionApi,
-  KnowledgeEvalRunApi,
-  KnowledgeConversationTurnApi,
+  KnowledgeConversationApi,
+  KnowledgeConversationSummaryApi,
+  KnowledgeConversationHistoryTurnApi,
   KnowledgeDocumentFilters,
   KnowledgeDocumentVersionApi,
   KnowledgeFeedbackRequestApi,
   KnowledgeFeedbackResponseApi,
   KnowledgeFolderApi,
   KnowledgeGapTodoApi,
+  KnowledgeLibraryHealthApi,
   KnowledgeRetrievalSettingsApi,
   KnowledgeVersionCompareApi,
 } from "@/types/knowledge";
-import type { DeliveryChatRequest, DeliveryChatResponse } from "@/types/delivery-chat";
+import type {
+  DeliveryChatConversation,
+  DeliveryChatConversationSummary,
+  DeliveryChatRequest,
+  DeliveryChatSource,
+} from "@/types/delivery-chat";
 
 export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
@@ -88,6 +94,19 @@ function getCsrfToken(): string | null {
 function clearSessionHintCookie() {
   if (typeof document === "undefined") return;
   document.cookie = "csrf_token=; Max-Age=0; path=/; SameSite=Lax";
+}
+
+function clearClientAuthState() {
+  if (typeof window === "undefined") return;
+  void import("@/stores/useAuthStore").then(({ useAuthStore }) => {
+    useAuthStore.setState({ user: null, isAuthenticated: false, isLoading: false });
+  });
+}
+
+/** Clear stale browser session hints after auth failure (invalid/expired session or wrong API). */
+export function resetAuthSession() {
+  clearSessionHintCookie();
+  clearClientAuthState();
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {
@@ -142,7 +161,7 @@ export async function apiFetch<T>(
       return apiFetch<T>(path, init, true);
     }
     if (refreshed.status === 401) {
-      clearSessionHintCookie();
+      resetAuthSession();
     }
     throw error;
   }
@@ -172,7 +191,7 @@ export async function apiFetchBlob(
       return apiFetchBlob(path, init, true);
     }
     if (refreshed.status === 401) {
-      clearSessionHintCookie();
+      resetAuthSession();
     }
     throw error;
   }
@@ -195,9 +214,22 @@ export async function logout(): Promise<void> {
   await apiFetch<void>("/auth/logout", { method: "POST" });
 }
 
-export async function fetchMe(): Promise<MeUser> {
-  const body = await apiFetch<{ data: MeUser }>("/me");
-  return body.data;
+const SESSION_REQUEST_TIMEOUT_MS = 15_000;
+
+export async function fetchMe(timeoutMs = SESSION_REQUEST_TIMEOUT_MS): Promise<MeUser> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(
+      () => reject(new ApiError(408, "SESSION_TIMEOUT", "Session request timed out.")),
+      timeoutMs,
+    );
+  });
+  try {
+    const body = await Promise.race([apiFetch<{ data: MeUser }>("/me"), timeout]);
+    return body.data;
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
 }
 
 export async function listUsers(): Promise<UserRead[]> {
@@ -914,33 +946,150 @@ export function canAccessPath(role: AppRole, path: string): boolean {
   return !isClientPortalPath(path) && !path.startsWith("/admin");
 }
 
+type LegacyKnowledgeBootstrapApi = Partial<KnowledgeBootstrapApi> & {
+  documents?: KnowledgeDocumentApi[];
+  library_health?: KnowledgeLibraryHealthApi;
+};
+
+const DEFAULT_KNOWLEDGE_PERMISSIONS: KnowledgeBootstrapApi["permissions"] = {
+  can_upload: true,
+  can_manage_eval: true,
+  can_adjust_retrieval_scope: true,
+  can_resolve_gaps: true,
+};
+
+function toDocumentSummary(doc: KnowledgeDocumentApi): KnowledgeDocumentSummaryApi {
+  return {
+    id: doc.id,
+    folder_id: doc.folder_id,
+    folder_name: doc.folder_name,
+    folder_kind: doc.folder_kind,
+    title: doc.title,
+    source_type: doc.source_type,
+    version: doc.version,
+    visibility: doc.visibility,
+    status: doc.status,
+    owner_approver: doc.owner_approver,
+    effective_date: doc.effective_date,
+    file_name: doc.file_name,
+    processing_status: doc.processing_status,
+    processing_error: doc.processing_error,
+    indexing_status: doc.indexing_status,
+    workflow_state: doc.workflow_state,
+    updated_at: doc.updated_at,
+  };
+}
+
+function buildBootstrapFromDocuments(
+  folders: KnowledgeFolderApi[],
+  documents: KnowledgeDocumentApi[],
+  libraryHealth?: KnowledgeLibraryHealthApi,
+): KnowledgeBootstrapApi {
+  const byFolderId = documents.reduce<Record<string, number>>((acc, doc) => {
+    acc[doc.folder_id] = (acc[doc.folder_id] ?? 0) + 1;
+    return acc;
+  }, {});
+  return {
+    folders,
+    folder_tree: folders.map((folder) => ({
+      ...folder,
+      document_count: byFolderId[folder.id] ?? 0,
+    })),
+    recent_documents: documents.slice(0, 30).map(toDocumentSummary),
+    document_counts: {
+      total: documents.length,
+      by_folder_id: byFolderId,
+    },
+    permissions: DEFAULT_KNOWLEDGE_PERMISSIONS,
+    library_health: {
+      ready_count: libraryHealth?.ready_count ?? documents.filter((d) => d.workflow_state === "approved").length,
+      needs_review_count:
+        libraryHealth?.needs_review_count ?? documents.filter((d) => d.workflow_state === "needs_review").length,
+      expired_count: libraryHealth?.expired_count ?? documents.filter((d) => d.workflow_state === "expired").length,
+      needs_reindex_count:
+        libraryHealth?.needs_reindex_count ?? documents.filter((d) => d.workflow_state === "needs_reindex").length,
+      indexing_count: libraryHealth?.indexing_count ?? 0,
+      draft_count: libraryHealth?.draft_count ?? documents.filter((d) => d.status === "draft").length,
+      archived_count: libraryHealth?.archived_count ?? documents.filter((d) => d.status === "archived").length,
+    },
+  };
+}
+
+function normalizeKnowledgeBootstrap(data: LegacyKnowledgeBootstrapApi): KnowledgeBootstrapApi {
+  if (data.recent_documents && data.document_counts) {
+    return {
+      folders: data.folders ?? [],
+      folder_tree: data.folder_tree ?? (data.folders ?? []).map((folder) => ({
+        ...folder,
+        document_count: data.document_counts?.by_folder_id?.[folder.id] ?? 0,
+      })),
+      recent_documents: data.recent_documents,
+      document_counts: data.document_counts,
+      permissions: data.permissions ?? DEFAULT_KNOWLEDGE_PERMISSIONS,
+      library_health: {
+        ready_count: data.library_health?.ready_count ?? 0,
+        needs_review_count: data.library_health?.needs_review_count ?? 0,
+        expired_count: data.library_health?.expired_count ?? 0,
+        needs_reindex_count: data.library_health?.needs_reindex_count ?? 0,
+        indexing_count: data.library_health?.indexing_count ?? 0,
+        draft_count: data.library_health?.draft_count ?? 0,
+        archived_count: data.library_health?.archived_count ?? 0,
+      },
+    };
+  }
+
+  const folders = data.folders ?? [];
+  const documents = data.documents ?? [];
+  return buildBootstrapFromDocuments(folders, documents, data.library_health);
+}
+
 export async function getKnowledgeBootstrap(): Promise<KnowledgeBootstrapApi> {
   try {
-    const body = await apiFetch<{ data: KnowledgeBootstrapApi }>("/knowledge/bootstrap");
+    const body = await apiFetch<{ data: LegacyKnowledgeBootstrapApi }>("/knowledge/bootstrap");
+    return normalizeKnowledgeBootstrap(body.data);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      const [folders, documents] = await Promise.all([
+        listKnowledgeFolders(),
+        listKnowledgeDocuments(),
+      ]);
+      return buildBootstrapFromDocuments(folders, documents);
+    }
+    throw error;
+  }
+}
+
+export async function getKnowledgeLibraryHealth(): Promise<KnowledgeLibraryHealthApi> {
+  try {
+    const body = await apiFetch<{ data: KnowledgeLibraryHealthApi }>("/knowledge/library-health");
     return body.data;
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) {
-      const [folders, documents] = await Promise.all([listKnowledgeFolders(), listKnowledgeDocuments()]);
+      const bootstrap = await getKnowledgeBootstrap();
       return {
-        folders,
-        documents,
-        library_health: {
-          ready_count: documents.filter((d) => d.workflow_state === "approved").length,
-          needs_review_count: documents.filter((d) => d.workflow_state === "needs_review").length,
-          expired_count: documents.filter((d) => d.workflow_state === "expired").length,
-          needs_reindex_count: documents.filter((d) => d.workflow_state === "needs_reindex").length,
-          indexing_count: 0,
-          draft_count: documents.filter((d) => d.status === "draft").length,
-          archived_count: documents.filter((d) => d.status === "archived").length,
-          open_gaps: [],
-        },
+        ...EMPTY_KNOWLEDGE_LIBRARY_HEALTH,
+        ...bootstrap.library_health,
+        open_gaps: [],
       };
     }
     throw error;
   }
 }
 
-export async function listKnowledgeDocuments(filters: KnowledgeDocumentFilters = {}): Promise<KnowledgeDocumentApi[]> {
+const EMPTY_KNOWLEDGE_LIBRARY_HEALTH: KnowledgeLibraryHealthApi = {
+  ready_count: 0,
+  needs_review_count: 0,
+  expired_count: 0,
+  needs_reindex_count: 0,
+  indexing_count: 0,
+  draft_count: 0,
+  archived_count: 0,
+  open_gaps: [],
+};
+
+export async function listKnowledgeDocuments(
+  filters: KnowledgeDocumentFilters = {},
+): Promise<KnowledgeDocumentApi[]> {
   const params = new URLSearchParams();
   if (filters.sourceType) params.set("source_type", filters.sourceType);
   if (filters.owner) params.set("owner", filters.owner);
@@ -950,8 +1099,11 @@ export async function listKnowledgeDocuments(filters: KnowledgeDocumentFilters =
   if (filters.effectiveDateFrom) params.set("effective_date_from", filters.effectiveDateFrom);
   if (filters.effectiveDateTo) params.set("effective_date_to", filters.effectiveDateTo);
   if (filters.semanticQuery) params.set("semantic_query", filters.semanticQuery);
+  if (filters.aiRank) params.set("ai_rank", "true");
   const query = params.toString();
-  const body = await apiFetch<{ data: KnowledgeDocumentApi[] }>(`/knowledge/documents${query ? `?${query}` : ""}`);
+  const body = await apiFetch<{ data: KnowledgeDocumentApi[] }>(`/knowledge/documents${query ? `?${query}` : ""}`, {
+    headers: filters.aiRank ? { "X-BSG-User-Action": "true" } : undefined,
+  });
   return body.data;
 }
 
@@ -991,6 +1143,7 @@ export async function deleteKnowledgeDocument(documentId: string): Promise<void>
 export async function reindexKnowledgeDocument(documentId: string): Promise<KnowledgeDocumentApi> {
   const body = await apiFetch<{ data: KnowledgeDocumentApi }>(`/knowledge/documents/${documentId}/index`, {
     method: "POST",
+    headers: { "X-BSG-User-Action": "true" },
   });
   return body.data;
 }
@@ -1012,9 +1165,9 @@ export async function downloadKnowledgeDocumentFile(documentId: string): Promise
 }
 
 export type KnowledgeAskOptions = {
-  conversationHistory?: KnowledgeConversationTurnApi[];
+  conversationHistory?: KnowledgeConversationHistoryTurnApi[];
   answerMode?: KnowledgeAnswerModeApi;
-  maxSources?: number;
+  conversationId?: string | null;
 };
 
 export async function askKnowledgeAgent(queryText: string, options: KnowledgeAskOptions = {}): Promise<KnowledgeAskResponseApi> {
@@ -1025,21 +1178,23 @@ export async function askKnowledgeAgent(queryText: string, options: KnowledgeAsk
   if (options.answerMode !== undefined) {
     payload.answer_mode = options.answerMode;
   }
-  if (options.maxSources !== undefined) {
-    payload.max_sources = options.maxSources;
+  if (options.conversationId) {
+    payload.conversation_id = options.conversationId;
   }
   const body = await apiFetch<{ data: KnowledgeAskResponseApi }>("/knowledge/ask", {
     method: "POST",
+    headers: { "X-BSG-User-Action": "true" },
     body: JSON.stringify(payload),
   });
   return body.data;
 }
 
 export type KnowledgeStreamEvent =
-  | { type: "meta"; query_id?: string; citations: KnowledgeAskResponseApi["citations"]; confidence_estimate: number }
+  | { type: "meta"; query_id?: string; confidence_estimate: number }
+  | { type: "status"; phase: "searching" | "reading" | "generating" }
   | { type: "delta"; text: string }
   | { type: "replace"; text: string }
-  | { type: "done"; query_id?: string | null; answer_text: string; confidence_score: number; confidence_reasons: string[]; next_step: string; structured_answer: KnowledgeAskResponseApi["structured_answer"]; model_used: string | null; retrieval_debug?: KnowledgeAskResponseApi["retrieval_debug"] }
+  | { type: "done"; query_id?: string | null; conversation_id?: string | null; answer_text: string; confidence_score: number; confidence_reasons: string[]; next_step: string; structured_answer: KnowledgeAskResponseApi["structured_answer"]; model_used: string | null; retrieval_debug?: KnowledgeAskResponseApi["retrieval_debug"] }
   | { type: "error"; message: string };
 
 export async function* streamKnowledgeAsk(
@@ -1051,9 +1206,9 @@ export async function* streamKnowledgeAsk(
     conversation_history: options.conversationHistory ?? [],
   };
   if (options.answerMode !== undefined) payload.answer_mode = options.answerMode;
-  if (options.maxSources !== undefined) payload.max_sources = options.maxSources;
+  if (options.conversationId) payload.conversation_id = options.conversationId;
 
-  const headers = new Headers({ "Content-Type": "application/json" });
+  const headers = new Headers({ "Content-Type": "application/json", "X-BSG-User-Action": "true" });
   const csrf = document.cookie.match(/(?:^|; )csrf_token=([^;]*)/)?.[1];
   if (csrf) headers.set("X-CSRF-Token", decodeURIComponent(csrf));
 
@@ -1103,18 +1258,122 @@ export async function* streamKnowledgeAsk(
   }
 }
 
-export async function sendDeliveryChatMessage(
+export type DeliveryChatStreamEvent =
+  | { type: "delta"; text: string }
+  | { type: "done"; answer: string; sources: DeliveryChatSource[]; conversation_id: string };
+
+export async function* streamDeliveryChatMessage(
   payload: DeliveryChatRequest,
-): Promise<DeliveryChatResponse> {
-  const body = await apiFetch<{ data: DeliveryChatResponse }>("/delivery/chat", {
+): AsyncGenerator<DeliveryChatStreamEvent> {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  const csrf = getCsrfToken();
+  if (csrf) headers.set("X-CSRF-Token", csrf);
+
+  const response = await fetch(`${API_BASE}/delivery/chat/stream`, {
     method: "POST",
+    headers,
+    credentials: "include",
     body: JSON.stringify({
       message: payload.message,
       project_id: payload.project_id ?? null,
       conversation_id: payload.conversation_id ?? null,
     }),
   });
+
+  if (!response.ok || !response.body) {
+    throw await parseApiError(response);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+
+  const parseLine = (line: string): DeliveryChatStreamEvent | null => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data: ")) return null;
+    const raw = trimmed.slice(6).trim();
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as DeliveryChatStreamEvent;
+    } catch {
+      return null;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split(/\r?\n/);
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      const event = parseLine(line);
+      if (event) yield event;
+    }
+  }
+
+  if (buf.trim()) {
+    const event = parseLine(buf);
+    if (event) yield event;
+  }
+}
+
+export async function getDeliveryChatConversation(
+  conversationId: string,
+): Promise<DeliveryChatConversation> {
+  const body = await apiFetch<{ data: DeliveryChatConversation }>(
+    `/delivery/chat/conversations/${conversationId}`,
+  );
   return body.data;
+}
+
+export async function listDeliveryConversations(
+  projectId?: string | null,
+): Promise<DeliveryChatConversationSummary[]> {
+  const params = new URLSearchParams();
+  if (projectId) params.set("project_id", projectId);
+  const query = params.toString();
+  const body = await apiFetch<{ data: DeliveryChatConversationSummary[] }>(
+    `/delivery/chat/conversations${query ? `?${query}` : ""}`,
+  );
+  return body.data;
+}
+
+export async function createDeliveryConversation(
+  projectId?: string | null,
+  title?: string,
+): Promise<DeliveryChatConversationSummary> {
+  const body = await apiFetch<{ data: DeliveryChatConversationSummary }>(
+    "/delivery/chat/conversations",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        project_id: projectId ?? null,
+        title: title ?? null,
+      }),
+    },
+  );
+  return body.data;
+}
+
+export async function renameDeliveryConversation(
+  conversationId: string,
+  title: string,
+): Promise<DeliveryChatConversationSummary> {
+  const body = await apiFetch<{ data: DeliveryChatConversationSummary }>(
+    `/delivery/chat/conversations/${conversationId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    },
+  );
+  return body.data;
+}
+
+export async function deleteDeliveryConversation(conversationId: string): Promise<void> {
+  await apiFetch<void>(`/delivery/chat/conversations/${conversationId}`, {
+    method: "DELETE",
+  });
 }
 
 export async function uploadKnowledgeDocument(
@@ -1133,8 +1392,12 @@ export async function uploadKnowledgeDocument(
   return body.data;
 }
 
-export async function listKnowledgeDocumentVersions(documentId: string): Promise<KnowledgeDocumentVersionApi[]> {
-  const body = await apiFetch<{ data: KnowledgeDocumentVersionApi[] }>(`/knowledge/documents/${documentId}/versions`);
+export async function listKnowledgeDocumentVersions(
+  documentId: string,
+): Promise<KnowledgeDocumentVersionApi[]> {
+  const body = await apiFetch<{ data: KnowledgeDocumentVersionApi[] }>(
+    `/knowledge/documents/${documentId}/versions`,
+  );
   return body.data;
 }
 
@@ -1173,48 +1436,22 @@ export async function getKnowledgeQueryAnswer(queryId: string): Promise<Knowledg
   return body.data;
 }
 
+export async function listKnowledgeConversations(limit = 30): Promise<KnowledgeConversationSummaryApi[]> {
+  const body = await apiFetch<{ data: KnowledgeConversationSummaryApi[] }>(
+    `/knowledge/conversations?limit=${limit}`,
+  );
+  return body.data;
+}
+
+export async function getKnowledgeConversation(conversationId: string): Promise<KnowledgeConversationApi> {
+  const body = await apiFetch<{ data: KnowledgeConversationApi }>(
+    `/knowledge/conversations/${conversationId}`,
+  );
+  return body.data;
+}
+
 export async function listAgentQueries(limit = 20): Promise<AgentQueryApi[]> {
   const body = await apiFetch<{ data: AgentQueryApi[] }>(`/agent-queries?limit=${limit}`);
-  return body.data;
-}
-
-export async function getKnowledgeEvalMetrics(days = 30): Promise<KnowledgeEvalMetricsApi> {
-  const body = await apiFetch<{ data: KnowledgeEvalMetricsApi }>(`/knowledge/eval/metrics?days=${days}`);
-  return body.data;
-}
-
-export async function listKnowledgeEvalQuestions(): Promise<KnowledgeEvalQuestionApi[]> {
-  const body = await apiFetch<{ data: KnowledgeEvalQuestionApi[] }>("/knowledge/eval/questions");
-  return body.data;
-}
-
-export async function createKnowledgeEvalQuestion(payload: {
-  question_text: string;
-  expected_document_ids: string[];
-  expected_answer_notes?: string | null;
-}): Promise<KnowledgeEvalQuestionApi> {
-  const body = await apiFetch<{ data: KnowledgeEvalQuestionApi }>("/knowledge/eval/questions", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-  return body.data;
-}
-
-export async function updateKnowledgeEvalQuestion(
-  questionId: string,
-  payload: Partial<Pick<KnowledgeEvalQuestionApi, "question_text" | "expected_document_ids" | "expected_answer_notes" | "is_active">>,
-): Promise<KnowledgeEvalQuestionApi> {
-  const body = await apiFetch<{ data: KnowledgeEvalQuestionApi }>(`/knowledge/eval/questions/${questionId}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-  });
-  return body.data;
-}
-
-export async function runKnowledgeEval(limit = 50): Promise<KnowledgeEvalRunApi> {
-  const body = await apiFetch<{ data: KnowledgeEvalRunApi }>(`/knowledge/eval/run?limit=${limit}`, {
-    method: "POST",
-  });
   return body.data;
 }
 

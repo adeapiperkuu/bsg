@@ -82,7 +82,7 @@ from app.agents.governance.services.summary_service import (
     build_weekly_summary_read,
     generate_weekly_governance_summary,
 )
-from app.api.deps import SessionDep
+from app.api.deps import ExplicitUserActionDep, SessionDep
 from app.core.security import CurrentUser, require_role
 from app.db.models import AppRole, Project
 from app.schemas.common import DataResponse, ListResponse, Pagination
@@ -566,6 +566,7 @@ async def generate_governance_project_charter(
     payload: ProjectCharterGenerateRequest,
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(*WRITE_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
 ) -> DataResponse[ProjectCharterRead]:
     charter = await generate_project_charter(
         session,
@@ -812,6 +813,7 @@ async def generate_governance_weekly_summary(
     payload: GovernanceWeeklySummaryGenerateRequest,
     session: SessionDep,
     current_user: CurrentUser = Depends(require_role(*WRITE_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
 ) -> DataResponse[GovernanceWeeklySummaryRead]:
     summary = await generate_weekly_governance_summary(
         session,

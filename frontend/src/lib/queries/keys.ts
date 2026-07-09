@@ -3,6 +3,8 @@ export const queryKeys = {
   organisations: ["organisations"] as const,
   deliveryPortfolio: ["delivery", "portfolio"] as const,
   deliveryDashboard: (projectId: string) => ["delivery", "dashboard", projectId] as const,
+  deliveryConversations: (projectId: string | null) =>
+    ["delivery", "conversations", projectId ?? "__portfolio__"] as const,
   projectDeliveryConfidence: (projectId: string) =>
     ["projects", projectId, "delivery-confidence"] as const,
   projectThroughput: (projectId: string) => ["projects", projectId, "throughput"] as const,
@@ -35,6 +37,16 @@ export const queryKeys = {
   governanceScopeStates: ["governance", "scope-states"] as const,
   governanceCharterReferences: ["governance", "charter-references"] as const,
   qualityPage: (projectId: string) => ["quality", "page", projectId] as const,
+  knowledgeBootstrap: ["knowledge", "bootstrap"] as const,
+  knowledgeDocuments: ["knowledge", "documents"] as const,
+  knowledgeLibraryHealth: ["knowledge", "library-health"] as const,
+  knowledgeRetrievalSettings: ["knowledge", "retrieval-settings"] as const,
+  knowledgeDocument: (documentId: string) => ["knowledge", "document", documentId] as const,
+  knowledgeDocumentVersions: (documentId: string) =>
+    ["knowledge", "document", documentId, "versions"] as const,
+  knowledgeAgentQueries: ["knowledge", "agent-queries"] as const,
+  knowledgeConversations: ["knowledge", "conversations"] as const,
 };
 
 export const STALE_TIME_MS = 5 * 60 * 1000;
+export const KNOWLEDGE_BOOTSTRAP_STALE_TIME_MS = 10 * 60 * 1000;

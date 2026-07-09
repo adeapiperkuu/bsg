@@ -7,7 +7,7 @@ except ImportError:
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, Numeric, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, Numeric, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import UserDefinedType
@@ -891,6 +891,10 @@ class CommunicationEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
 
 class AgentQuery(Base, UuidPrimaryKey, CreatedAt):
     __tablename__ = "agent_queries"
+    __table_args__ = (
+        Index("agent_queries_org_agent_created_idx", "org_id", "agent_name", "created_at"),
+        Index("agent_queries_org_user_agent_project_created_idx", "org_id", "user_id", "agent_name", "project_id", "created_at"),
+    )
 
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
@@ -901,6 +905,10 @@ class AgentQuery(Base, UuidPrimaryKey, CreatedAt):
     model_used: Mapped[str | None] = mapped_column(Text)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     retrieval_params: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    conversation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_queries.id", ondelete="SET NULL"),
+        index=True,
+    )
 
 
 class AgentQueryEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
@@ -910,6 +918,42 @@ class AgentQueryEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
     source_table: Mapped[str] = mapped_column(Text)
     source_row_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
     description: Mapped[str] = mapped_column(Text)
+
+
+class DeliveryConversation(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "delivery_conversations"
+    __table_args__ = (
+        Index("delivery_conversations_user_updated_idx", "user_id", "updated_at"),
+        Index(
+            "delivery_conversations_org_user_project_updated_idx",
+            "org_id",
+            "user_id",
+            "project_id",
+            "updated_at",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
+    project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), index=True)
+    title: Mapped[str] = mapped_column(Text, default="New conversation", server_default="New conversation")
+
+
+class DeliveryMessage(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "delivery_messages"
+    __table_args__ = (Index("delivery_messages_conversation_created_idx", "conversation_id", "created_at"),)
+
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("delivery_conversations.id", ondelete="CASCADE"),
+        index=True,
+    )
+    role: Mapped[str] = mapped_column(Text)
+    content: Mapped[str] = mapped_column(Text)
+    agent_query_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_queries.id", ondelete="SET NULL"),
+        index=True,
+    )
+    metadata_: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB)
 
 
 class ClientCsatScore(Base, UuidPrimaryKey, CreatedAt):
@@ -1173,7 +1217,10 @@ class WorkforceUtilizationSnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
 
 class KnowledgeFolder(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     __tablename__ = "knowledge_folders"
-    __table_args__ = (Index("knowledge_folders_org_idx", "org_id"),)
+    __table_args__ = (
+        Index("knowledge_folders_org_idx", "org_id"),
+        Index("knowledge_folders_org_deleted_order_idx", "org_id", "deleted_at", "display_order"),
+    )
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
     name: Mapped[str] = mapped_column(Text)
@@ -1186,6 +1233,59 @@ class KnowledgeDocument(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     __table_args__ = (
         Index("knowledge_documents_org_folder_idx", "org_id", "folder_id"),
         Index("knowledge_documents_retrieval_idx", "org_id", "status", "indexing_status", "visibility"),
+        Index(
+            "knowledge_documents_org_deleted_title_idx",
+            "org_id",
+            "deleted_at",
+            "title",
+        ),
+        Index(
+            "knowledge_documents_org_folder_deleted_title_idx",
+            "org_id",
+            "folder_id",
+            "deleted_at",
+            "title",
+        ),
+        Index(
+            "knowledge_documents_org_uploaded_created_idx",
+            "org_id",
+            "uploaded_by",
+            "created_at",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "knowledge_documents_org_status_created_idx",
+            "org_id",
+            "status",
+            "created_at",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "knowledge_documents_org_document_type_created_idx",
+            "org_id",
+            "document_type",
+            "created_at",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "knowledge_documents_org_source_updated_idx",
+            "org_id",
+            "status",
+            "source_type",
+            "updated_at",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "knowledge_documents_retrieval_scope_idx",
+            "org_id",
+            "status",
+            "indexing_status",
+            "processing_status",
+            "visibility",
+            "project",
+            "department",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
     )
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
@@ -1233,6 +1333,7 @@ class KnowledgeDocumentVersion(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
         UniqueConstraint("document_id", "version", name="knowledge_document_versions_document_version_key"),
         Index("knowledge_document_versions_document_idx", "document_id"),
         Index("knowledge_document_versions_active_idx", "document_id", "is_active"),
+        Index("knowledge_document_versions_document_uploaded_idx", "document_id", "uploaded_at"),
     )
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
@@ -1267,6 +1368,8 @@ class KnowledgeDocumentExtraction(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     )
     extraction_error: Mapped[str | None] = mapped_column(Text)
     extracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    diagnostics: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    quality_score: Mapped[int | None] = mapped_column(Integer)
 
 
 class KnowledgeDocumentChunk(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
@@ -1275,6 +1378,8 @@ class KnowledgeDocumentChunk(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
         UniqueConstraint("version_id", "chunk_index", name="knowledge_document_chunks_version_index_key"),
         Index("knowledge_document_chunks_document_idx", "document_id"),
         Index("knowledge_document_chunks_version_idx", "version_id"),
+        Index("knowledge_document_chunks_document_version_index_idx", "document_id", "version_id", "chunk_index"),
+        Index("knowledge_document_chunks_org_document_index_idx", "org_id", "document_id", "chunk_index"),
     )
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
@@ -1291,6 +1396,8 @@ class KnowledgeDocumentChunk(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     visibility: Mapped[KnowledgeVisibility | None] = mapped_column(knowledge_visibility)
     project: Mapped[str | None] = mapped_column(Text)
     department: Mapped[str | None] = mapped_column(Text)
+    chunk_type: Mapped[str] = mapped_column(Text, default="text", server_default="text")
+    section_path: Mapped[str | None] = mapped_column(Text)
     embedding: Mapped[list[float] | None] = mapped_column(VectorType(1536))
 
 
@@ -1314,6 +1421,8 @@ class KnowledgeEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
     __table_args__ = (
         Index("knowledge_evidence_links_query_idx", "agent_query_id"),
         Index("knowledge_evidence_links_document_idx", "document_id"),
+        Index("knowledge_evidence_links_query_document_idx", "agent_query_id", "document_id"),
+        Index("knowledge_evidence_links_org_document_created_idx", "org_id", "document_id", "created_at"),
     )
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
@@ -1344,6 +1453,7 @@ class KnowledgeGap(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     __tablename__ = "knowledge_gaps"
     __table_args__ = (
         Index("knowledge_gaps_org_status_idx", "org_id", "status"),
+        Index("knowledge_gaps_org_status_created_idx", "org_id", "status", "created_at"),
         Index("knowledge_gaps_query_idx", "agent_query_id"),
     )
 

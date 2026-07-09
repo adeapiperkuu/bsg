@@ -41,6 +41,7 @@ from app.services.workforce_agent import (
     answer_workforce_query,
     build_workforce_answer,
     classify_workforce_question,
+    detect_utilization_focus,
     gather_workforce_evidence,
 )
 from tests.conftest import ORG_A, ORG_B, client_a, override_user
@@ -603,8 +604,97 @@ async def test_overloaded_question_reports_overloaded_teams() -> None:
         snapshots=[_snapshot(ORG_A, project.id, team.id, 105)],
     )
     answer = await _ask("Which teams are overloaded?", session)
+    assert "Overloaded teams for" in answer
+    assert "Overloaded:" in answer
+    assert "Underloaded teams for" not in answer
+
+
+@pytest.mark.asyncio
+async def test_underloaded_question_reports_underloaded_teams() -> None:
+    project = _project(ORG_A)
+    overloaded_team = _team(ORG_A, project.id, name="Pod A")
+    underloaded_team = _team(ORG_A, project.id, name="Pod B")
+    session = FakeSession(
+        project=project,
+        teams=[overloaded_team, underloaded_team],
+        snapshots=[
+            _snapshot(ORG_A, project.id, overloaded_team.id, 108),
+            _snapshot(ORG_A, project.id, underloaded_team.id, 48),
+        ],
+    )
+    answer = await _ask("Which team is underloaded?", session)
+    assert "Underloaded teams for" in answer
+    assert "Pod B (48%)" in answer
+    assert "Pod A" not in answer
+    assert "Overloaded teams for" not in answer
+
+
+@pytest.mark.asyncio
+async def test_underloaded_question_says_none_when_no_underloaded_teams() -> None:
+    project = _project(ORG_A)
+    team = _team(ORG_A, project.id, name="Pod A")
+    session = FakeSession(
+        project=project,
+        teams=[team],
+        snapshots=[_snapshot(ORG_A, project.id, team.id, 105)],
+    )
+    answer = await _ask("Which teams are underutilized?", session)
+    assert "No underloaded teams found" in answer
+
+
+@pytest.mark.asyncio
+async def test_general_utilization_question_mentions_both_groups() -> None:
+    project = _project(ORG_A)
+    overloaded_team = _team(ORG_A, project.id, name="Pod A")
+    underloaded_team = _team(ORG_A, project.id, name="Pod B")
+    session = FakeSession(
+        project=project,
+        teams=[overloaded_team, underloaded_team],
+        snapshots=[
+            _snapshot(ORG_A, project.id, overloaded_team.id, 108),
+            _snapshot(ORG_A, project.id, underloaded_team.id, 48),
+        ],
+    )
+    answer = await _ask("What is team utilization?", session)
     assert "Utilization for" in answer
-    assert "Overloaded" in answer
+    assert "Overloaded:" in answer
+    assert "Underloaded:" in answer
+    assert "Pod A (108%)" in answer
+    assert "Pod B (48%)" in answer
+
+
+@pytest.mark.asyncio
+async def test_overloaded_and_underloaded_questions_return_different_answers() -> None:
+    project = _project(ORG_A)
+    overloaded_team = _team(ORG_A, project.id, name="Pod A")
+    underloaded_team = _team(ORG_A, project.id, name="Pod B")
+
+    def fresh() -> FakeSession:
+        return FakeSession(
+            project=project,
+            teams=[overloaded_team, underloaded_team],
+            snapshots=[
+                _snapshot(ORG_A, project.id, overloaded_team.id, 108),
+                _snapshot(ORG_A, project.id, underloaded_team.id, 48),
+            ],
+        )
+
+    overloaded_answer = await _ask("Which teams are overloaded?", fresh())
+    underloaded_answer = await _ask("which team is underloaded?", fresh())
+    assert overloaded_answer != underloaded_answer
+    assert "Pod A (108%)" in overloaded_answer
+    assert "Pod B (48%)" in underloaded_answer
+    assert "Pod B (48%)" not in overloaded_answer
+    assert "Pod A (108%)" not in underloaded_answer
+
+
+def test_detect_utilization_focus_matches_common_wording() -> None:
+    assert detect_utilization_focus("Which teams are overloaded?") == "overload"
+    assert detect_utilization_focus("which team is underloaded?") == "underload"
+    assert detect_utilization_focus("Any teams below 60% utilization?") == "underload"
+    assert detect_utilization_focus("Who is above 85% capacity?") == "overload"
+    assert detect_utilization_focus("Show utilization for all teams") == "general"
+    assert detect_utilization_focus("Which teams are overloaded or underloaded?") == "general"
 
 
 @pytest.mark.asyncio
@@ -687,7 +777,7 @@ async def test_different_questions_return_different_answers() -> None:
     util_answer = await _ask("Which teams are overloaded?", fresh())
     assert sme_answer != util_answer
     assert "SME coverage" in sme_answer
-    assert "Utilization for" in util_answer
+    assert "Overloaded teams for" in util_answer
 
 
 @pytest.mark.asyncio
@@ -736,7 +826,7 @@ async def test_stale_utilization_snapshot_warns_and_medium_confidence() -> None:
         snapshots=[_stale_snapshot(ORG_A, project.id, team.id, 105, age_days=30)],
     )
     answer = await _ask("Which teams are overloaded?", session)
-    assert "Utilization for" in answer
+    assert "Overloaded teams for" in answer
     assert "stale" in answer.lower()
     assert "30 days old" in answer
     assert "Confidence: Medium." in answer

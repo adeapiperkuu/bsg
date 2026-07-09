@@ -17,6 +17,9 @@ MIGRATIONS = [
     REPO_ROOT / "supabase/migrations/20260625130000_quality_phase2_schema.sql",
     REPO_ROOT / "supabase/migrations/20260625140000_inter_agent_signals.sql",
     REPO_ROOT / "supabase/migrations/20260702100000_calibration_briefs.sql",
+    REPO_ROOT / "supabase/migrations/20260701100000_knowledge_agent_performance_indexes.sql",
+    REPO_ROOT / "supabase/migrations/20260702120000_knowledge_extraction_metadata.sql",
+    REPO_ROOT / "supabase/migrations/20260702140000_knowledge_conversations.sql",
 ]
 
 
@@ -54,6 +57,7 @@ async def apply_file(conn: asyncpg.Connection, path: Path) -> None:
 
 async def main() -> int:
     load_dotenv(REPO_ROOT / ".env")
+    load_dotenv(REPO_ROOT / "backend/.env", override=False)
     import os
 
     database_url = os.environ.get("DATABASE_URL")
@@ -63,7 +67,9 @@ async def main() -> int:
 
     conn = await asyncpg.connect(database_url)
     try:
-        for path in MIGRATIONS:
+        requested = sys.argv[1:]
+        migrations = [REPO_ROOT / "supabase/migrations" / name for name in requested] if requested else MIGRATIONS
+        for path in migrations:
             if not path.exists():
                 print(f"Missing migration: {path}", file=sys.stderr)
                 return 1

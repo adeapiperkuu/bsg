@@ -1,3 +1,7 @@
-from app.agents.knowledge.query_handler import answer_knowledge_query
+from app.agents.knowledge.lesson_log import write_lesson_on_alert_resolve
+from app.agents.knowledge.retrieval import keyword_search
 
-__all__ = ["answer_knowledge_query"]
+__all__ = [
+    "keyword_search",
+    "write_lesson_on_alert_resolve",
+]

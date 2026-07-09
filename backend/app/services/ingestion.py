@@ -1,5 +1,7 @@
 import logging
+from dataclasses import dataclass
 from datetime import date, timedelta
+from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import select
@@ -13,11 +15,25 @@ from app.schemas.domain import ThroughputSnapshotCreate
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class ThroughputIngestResult:
+    """Result of persisting a throughput snapshot plus the scoring outcome.
+
+    The snapshot write always succeeds independently of scoring — callers must surface
+    `scoring_status`/`scoring_error` to the API response instead of hiding a scoring
+    failure behind an unconditional "success".
+    """
+
+    snapshot: ThroughputSnapshot
+    scoring_status: Literal["ok", "failed"]
+    scoring_error: str | None
+
+
 async def upsert_throughput_snapshot(
     session: AsyncSession,
     project: Project,
     payload: ThroughputSnapshotCreate,
-) -> ThroughputSnapshot:
+) -> ThroughputIngestResult:
     existing = (
         await session.execute(
             select(ThroughputSnapshot).where(
@@ -50,16 +66,32 @@ async def upsert_throughput_snapshot(
     )
     await session.flush()
 
-    # Scoring runs in a savepoint so a failure cannot corrupt the snapshot.
+    # Scoring runs in a savepoint so a failure cannot corrupt the snapshot. A failure here
+    # is never hidden from the caller: it is surfaced as scoring_status="failed" on the
+    # ingest result so the API response (and therefore the dashboard) can reflect that
+    # confidence/risk may be stale rather than silently reporting success.
+    scoring_status: Literal["ok", "failed"] = "ok"
+    scoring_error: str | None = None
     try:
         async with session.begin_nested():
-            await run_delivery_scoring(
+            run_result = await run_delivery_scoring(
                 session,
                 project_id=project.id,
                 as_of_date=payload.snapshot_date,
                 project=project,
             )
-    except Exception:
+        scoring_status = run_result.scoring_status
+        scoring_error = run_result.scoring_error
+        if scoring_status == "failed":
+            logger.warning(
+                "Delivery scoring completed with a failed handler for project %s on %s: %s",
+                project.id,
+                payload.snapshot_date,
+                scoring_error,
+            )
+    except Exception as exc:
+        scoring_status = "failed"
+        scoring_error = f"scoring raised {type(exc).__name__}"
         logger.warning(
             "Delivery scoring failed for project %s on %s; snapshot preserved.",
             project.id,
@@ -67,7 +99,11 @@ async def upsert_throughput_snapshot(
             exc_info=True,
         )
 
-    return snapshot
+    return ThroughputIngestResult(
+        snapshot=snapshot,
+        scoring_status=scoring_status,
+        scoring_error=scoring_error,
+    )
 
 
 async def _compute_rolling_7day_units(

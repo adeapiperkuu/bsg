@@ -478,6 +478,116 @@ def detect_workforce_intent(question: str) -> str:
     return "summary"
 
 
+_UTILIZATION_UNDERLOAD_KEYWORDS: tuple[str, ...] = (
+    "underloaded",
+    "underload",
+    "under-load",
+    "under loaded",
+    "underutilized",
+    "under-utilized",
+    "underutilised",
+    "under-utilised",
+    "low utilization",
+    "low utilisation",
+    "below capacity",
+    "below 60",
+    "under capacity",
+)
+
+_UTILIZATION_OVERLOAD_KEYWORDS: tuple[str, ...] = (
+    "overloaded",
+    "overload",
+    "overutilized",
+    "over-utilized",
+    "overutilised",
+    "over-utilised",
+    "high utilization",
+    "high utilisation",
+    "above capacity",
+    "above 85",
+    "at capacity",
+)
+
+
+def detect_utilization_focus(question: str) -> str:
+    """Return overload, underload, or general for utilization questions."""
+    lowered = question.lower()
+    asks_under = any(keyword in lowered for keyword in _UTILIZATION_UNDERLOAD_KEYWORDS)
+    asks_over = any(keyword in lowered for keyword in _UTILIZATION_OVERLOAD_KEYWORDS)
+    if asks_under and asks_over:
+        return "general"
+    if asks_under:
+        return "underload"
+    if asks_over:
+        return "overload"
+    return "general"
+
+
+def _format_team_utilization_list(teams: list[tuple[str, float]], *, limit: int = 5) -> str:
+    return ", ".join(f"{name} ({pct:.0f}%)" for name, pct in teams[:limit])
+
+
+def _build_utilization_answer(
+    question: str,
+    bundle: WorkforceEvidenceBundle,
+    *,
+    footer: str,
+) -> str:
+    metrics = bundle.metrics
+    label = bundle.project_name or "the selected project"
+    over = float(UTILIZATION_OVERLOAD_THRESHOLD)
+    under = float(UTILIZATION_UNDERLOAD_THRESHOLD)
+    focus = detect_utilization_focus(question)
+
+    overloaded_teams = [(name, pct) for name, pct in metrics.team_utilization if pct >= over]
+    underloaded_teams = [(name, pct) for name, pct in metrics.team_utilization if pct < under]
+
+    if focus == "overload":
+        if not overloaded_teams:
+            lines = [f"No overloaded teams found for {label} (none at or above {over:.0f}%)."]
+        else:
+            lines = [
+                f"Overloaded teams for {label}: {len(overloaded_teams)} team(s) "
+                f"at or above {over:.0f}%."
+            ]
+            lines.append(
+                "Overloaded: " + _format_team_utilization_list(overloaded_teams) + "."
+            )
+    elif focus == "underload":
+        if not underloaded_teams:
+            lines = [f"No underloaded teams found for {label} (none below {under:.0f}%)."]
+        else:
+            lines = [
+                f"Underloaded teams for {label}: {len(underloaded_teams)} team(s) "
+                f"below {under:.0f}%."
+            ]
+            lines.append(
+                "Underloaded: " + _format_team_utilization_list(underloaded_teams) + "."
+            )
+    else:
+        lines = [
+            f"Utilization for {label}: {metrics.teams_overloaded} team(s) at or above "
+            f"{over:.0f}% and {metrics.teams_underloaded} below {under:.0f}% "
+            f"(of {len(metrics.team_utilization)} team(s) with snapshots)."
+        ]
+        if overloaded_teams:
+            lines.append(
+                "Overloaded: " + _format_team_utilization_list(overloaded_teams) + "."
+            )
+        if underloaded_teams:
+            lines.append(
+                "Underloaded: " + _format_team_utilization_list(underloaded_teams) + "."
+            )
+
+    if metrics.utilization_stale:
+        lines.append(
+            f"Caution: the latest utilization snapshot is {metrics.utilization_age_days} days "
+            f"old (older than {UTILIZATION_STALE_DAYS} days), so these figures may be stale."
+        )
+    lines.append(footer)
+    return "\n".join(lines)
+
+
 def rank_evidence_for_intent(
     evidence: list[EvidenceInput],
     intent: str,
@@ -622,8 +732,6 @@ def build_workforce_answer(question: str, bundle: WorkforceEvidenceBundle) -> st
     metrics = bundle.metrics
     label = bundle.project_name or "the selected project"
     footer = _footer(bundle, intent)
-    over = float(UTILIZATION_OVERLOAD_THRESHOLD)
-    under = float(UTILIZATION_UNDERLOAD_THRESHOLD)
 
     if intent == "sme":
         if metrics.active_annotators == 0:
@@ -647,21 +755,7 @@ def build_workforce_answer(question: str, bundle: WorkforceEvidenceBundle) -> st
                 f"No utilization snapshots are available for {label} yet, so I cannot confirm "
                 f"overloaded or underloaded teams from utilization data.\n{footer}"
             )
-        lines = [
-            f"Utilization for {label}: {metrics.teams_overloaded} team(s) at or above "
-            f"{over:.0f}% and {metrics.teams_underloaded} below {under:.0f}% "
-            f"(of {len(metrics.team_utilization)} team(s) with snapshots)."
-        ]
-        overloaded = [f"{name} ({pct:.0f}%)" for name, pct in metrics.team_utilization if pct >= over]
-        if overloaded:
-            lines.append("Overloaded: " + ", ".join(overloaded[:5]) + ".")
-        if metrics.utilization_stale:
-            lines.append(
-                f"Caution: the latest utilization snapshot is {metrics.utilization_age_days} days "
-                f"old (older than {UTILIZATION_STALE_DAYS} days), so these figures may be stale."
-            )
-        lines.append(footer)
-        return "\n".join(lines)
+        return _build_utilization_answer(question, bundle, footer=footer)
 
     if intent == "capacity":
         if metrics.active_annotators == 0:
