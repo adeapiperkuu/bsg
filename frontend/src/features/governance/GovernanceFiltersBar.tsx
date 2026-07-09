@@ -26,6 +26,7 @@ type GovernanceFiltersBarProps = {
   projects: Option[];
   users: Option[];
   showInternalFilters: boolean;
+  onFiltersOpenChange?: (open: boolean) => void;
 };
 
 const governanceSearchClass =
@@ -79,6 +80,7 @@ export function GovernanceFiltersBar({
   projects,
   users,
   showInternalFilters,
+  onFiltersOpenChange,
 }: GovernanceFiltersBarProps) {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -93,6 +95,10 @@ export function GovernanceFiltersBar({
       searchInputRef.current?.focus();
     }
   }, [searchOpen]);
+
+  useEffect(() => {
+    onFiltersOpenChange?.(filtersOpen);
+  }, [filtersOpen, onFiltersOpenChange]);
 
   const clearFilters = () => {
     onChange(emptyGovernanceFilters());

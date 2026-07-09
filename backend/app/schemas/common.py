@@ -10,6 +10,10 @@ T = TypeVar("T")
 
 class Pagination(BaseModel):
     limit: int = 50
+    offset: int = 0
+    total: int | None = None
+    items: int | None = None
+    has_more: bool = False
     next_cursor: str | None = None
 
 

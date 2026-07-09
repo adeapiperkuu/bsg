@@ -28,6 +28,7 @@ from app.agents.governance.services.governance_service import (
 from app.agents.governance.services.knowledge_link_service import (
     list_approved_governance_document_refs,
 )
+from app.agents.governance.timing import governance_db_timed
 from app.core.config import get_settings
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
@@ -738,3 +739,11 @@ async def build_weekly_summary_read(
             "approved_by_name": approved_by_name,
         }
     )
+
+
+_SUMMARY_DB_TIMED = (
+    "generate_weekly_governance_summary",
+    "build_weekly_summary_read",
+)
+for _name in _SUMMARY_DB_TIMED:
+    globals()[_name] = governance_db_timed(globals()[_name])

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, FileText } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 
 import { StatusPill } from "@/components/bsg/widgets";
 import { Button } from "@/components/ui/button";
@@ -86,9 +86,6 @@ export function ProjectGovernanceSheet({
   const actions = data.actions.filter((a) => a.project_id === row.projectId);
   const escalations = data.escalations.filter((e) => e.project_id === row.projectId);
   const deliveryEntry = portfolio?.projects.find((p) => p.project_id === row.projectId);
-  const charterRef = data.charter_references.find(
-    (c) => scope?.linked_charter_document_id === c.document_id,
-  );
 
   return (
     <Sheet open={open} onOpenChange={(next) => !next && onClose()}>
@@ -124,12 +121,6 @@ export function ProjectGovernanceSheet({
                 <span className="text-muted-foreground">v{row.scopeVersion ?? "—"}</span>
               </div>
               {scope?.notes && <p className="text-foreground/90">{scope.notes}</p>}
-              {charterRef && (
-                <div className="flex items-center gap-2 pt-1 text-muted-foreground">
-                  <FileText className="h-3.5 w-3.5" />
-                  Charter: {charterRef.title}
-                </div>
-              )}
             </div>
           </section>
 

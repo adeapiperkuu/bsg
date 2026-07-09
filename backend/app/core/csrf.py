@@ -2,12 +2,11 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import Response
 
-from app.core.cookies import ACCESS_COOKIE, CSRF_COOKIE
+from app.core.cookies import ACCESS_COOKIE, CSRF_COOKIE, REFRESH_COOKIE
 from app.core.exceptions import error_response
 
 CSRF_EXEMPT_PREFIXES = (
     "/api/v1/auth/login",
-    "/api/v1/auth/refresh",
     "/health",
     "/ready",
     "/docs",
@@ -25,7 +24,7 @@ class CsrfMiddleware(BaseHTTPMiddleware):
         if any(path.startswith(prefix) for prefix in CSRF_EXEMPT_PREFIXES):
             return await call_next(request)
 
-        if ACCESS_COOKIE not in request.cookies:
+        if ACCESS_COOKIE not in request.cookies and REFRESH_COOKIE not in request.cookies:
             return await call_next(request)
 
         cookie_token = request.cookies.get(CSRF_COOKIE)

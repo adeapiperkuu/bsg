@@ -1,4 +1,5 @@
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   LayoutDashboard, Activity, ShieldCheck, Users, GitBranch, Briefcase,
   BookOpen, FolderKanban, ListChecks, Settings2, FileText, Folder, BarChart3, Settings,
@@ -22,6 +23,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { PageTransition } from "@/components/PageTransition";
+import { prefetchGovernanceNav } from "@/features/governance/governance-prefetch";
 
 type NavItem = { to: string; label: string; icon: React.ComponentType<{ className?: string }> };
 
@@ -97,6 +99,7 @@ function initials(name: string | null, email: string): string {
 
 export function Shell({ children }: { children: ReactNode }) {
   const { theme, toggleTheme } = useRole();
+  const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const navigate = useNavigate();
@@ -106,6 +109,10 @@ export function Shell({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
 
   const nav = navForUser(user);
+
+  function prefetchGovernance() {
+    prefetchGovernanceNav(queryClient);
+  }
 
   const currentTitle =
     [...internalNav, ...clientNav, ...leadershipNav, ...adminNav].flatMap((s) => s.items).find((i) => i.to === pathname)?.label ??
@@ -147,6 +154,8 @@ export function Shell({ children }: { children: ReactNode }) {
                     <Link
                       to={item.to}
                       title={!mobile && collapsed ? item.label : undefined}
+                      onMouseEnter={item.to === "/governance" ? prefetchGovernance : undefined}
+                      onFocus={item.to === "/governance" ? prefetchGovernance : undefined}
                       onClick={() => {
                         if (mobile) setMobileNavOpen(false);
                       }}

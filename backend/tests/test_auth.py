@@ -45,3 +45,19 @@ async def test_csrf_blocks_cookie_mutation_without_token(api_client: AsyncClient
     response = await api_client.post("/api/v1/users", json={})
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "CSRF_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_csrf_blocks_refresh_cookie_without_token(api_client: AsyncClient) -> None:
+    api_client.cookies.set("refresh_token", "fake", path="/api/v1/auth")
+    response = await api_client.post("/api/v1/auth/refresh")
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "CSRF_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_security_headers_present(api_client: AsyncClient) -> None:
+    response = await api_client.get("/health")
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["X-Frame-Options"] == "DENY"
+    assert response.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
