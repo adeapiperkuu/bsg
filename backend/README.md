@@ -33,8 +33,28 @@ Copy `../.env.example` to `../.env` and set:
 | `SUPABASE_SERVICE_ROLE_KEY` | Service role (user provisioning) |
 | `SUPABASE_JWT_SECRET` | JWT secret from Supabase dashboard (HS256) or JWKS URL |
 | `SECRET_KEY` | CSRF/session signing fallback in dev |
-| `AUTH_COOKIE_SECURE` | `false` locally, `true` in staging/prod |
+| `AUTH_COOKIE_SECURE` | `false` locally; required `true` in production |
 | `ALLOWED_ORIGINS` | Comma-separated frontend origins (required for cookies) |
+| `ENVIRONMENT` | `dev`, `staging`, or `prod` |
+
+### Production security requirements
+
+When `ENVIRONMENT=prod`, startup fails unless:
+
+- `AUTH_COOKIE_SECURE=true` (httpOnly auth cookies must use HTTPS)
+- `SUPABASE_JWT_SECRET` is set (HS256 secret or Supabase JWKS URL)
+- `ALLOWED_ORIGINS` lists explicit origins (no `*` wildcard, no empty list)
+
+When `ENVIRONMENT=staging`, `SUPABASE_JWT_SECRET` is also required at startup.
+
+Dev (`ENVIRONMENT=dev`) keeps permissive defaults: insecure cookies are allowed, and
+`SECRET_KEY` may be used as a JWT fallback when `SUPABASE_JWT_SECRET` is unset.
+
+Cookie auth safety in all environments:
+
+- `refresh_token` cookie path is limited to `/api/v1/auth`
+- CSRF is enforced for cookie-authenticated mutating requests (`X-CSRF-Token` header)
+- Do not commit `.env` files or log secret values
 
 ## Bootstrap first super_admin
 

@@ -11,6 +11,8 @@ export const queryKeys = {
   projectRecommendations: (projectId: string) =>
     ["projects", projectId, "recommendations"] as const,
   projectTeams: (projectId: string) => ["projects", projectId, "teams"] as const,
+  projectWorkforceSummary: (projectId: string) =>
+    ["projects", projectId, "workforce-summary"] as const,
   teamAnnotators: (teamId: string) => ["teams", teamId, "annotators"] as const,
   projectUtilization: (
     projectId: string,

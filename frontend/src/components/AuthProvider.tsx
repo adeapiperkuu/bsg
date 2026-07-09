@@ -37,7 +37,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    if (isAuthenticated && user && !isPublicPath && !canAccessPath(user.role, pathname)) {
+    if (
+      isAuthenticated &&
+      user &&
+      !PUBLIC_PATHS.includes(pathname) &&
+      !canAccessPath(user.role, pathname)
+    ) {
       void navigate({ to: "/unauthorized", replace: true });
     }
   }, [isLoading, isAuthenticated, isPublicPath, pathname, user, navigate]);

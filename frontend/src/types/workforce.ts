@@ -18,6 +18,20 @@ export type TeamRead = {
   updated_at: string;
 };
 
+export type TeamCreatePayload = {
+  name: string;
+  site: DeliverySite;
+  domain: string;
+  is_active?: boolean;
+};
+
+export type TeamUpdatePayload = {
+  name?: string;
+  site?: DeliverySite;
+  domain?: string;
+  is_active?: boolean;
+};
+
 export type AnnotatorRead = {
   id: string;
   org_id: string;
@@ -28,6 +42,27 @@ export type AnnotatorRead = {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+};
+
+export type AnnotatorCreatePayload = {
+  full_name: string;
+  site: DeliverySite;
+  is_sme_certified?: boolean;
+  is_active?: boolean;
+};
+
+export type AnnotatorUpdatePayload = {
+  full_name?: string;
+  site?: DeliverySite;
+  is_sme_certified?: boolean;
+  is_active?: boolean;
+  team_id?: string;
+};
+
+export type ProjectWorkforceSummaryRead = {
+  project_id: string;
+  teams: TeamRead[];
+  annotators: AnnotatorRead[];
 };
 
 export type UtilizationSnapshotRead = {
@@ -46,6 +81,20 @@ export type UtilizationSnapshotRead = {
   created_at: string;
   updated_at: string;
 };
+
+export type UtilizationSnapshotCreatePayload = {
+  team_id?: string | null;
+  annotator_id?: string | null;
+  snapshot_date: string;
+  allocated_hours: number;
+  available_hours: number;
+  utilization_pct?: number | null;
+  billable_hours?: number | null;
+  non_billable_hours?: number | null;
+  notes?: string | null;
+};
+
+export type UtilizationSnapshotUpdatePayload = Partial<UtilizationSnapshotCreatePayload>;
 
 export type ProjectUtilizationFilters = {
   team_id?: string;
@@ -78,6 +127,21 @@ export type ProjectSkillRequirementRead = {
   priority: SkillRequirementPriority;
   created_at: string;
   updated_at: string;
+};
+
+export type ProjectSkillRequirementCreatePayload = {
+  skill_id: string;
+  required_proficiency_level: ProficiencyLevel;
+  required_headcount?: number;
+  required_sme_count?: number;
+  priority?: SkillRequirementPriority;
+};
+
+export type ProjectSkillRequirementUpdatePayload = {
+  required_proficiency_level?: ProficiencyLevel;
+  required_headcount?: number;
+  required_sme_count?: number;
+  priority?: SkillRequirementPriority;
 };
 
 export type SkillMatrixSiteSummary = {

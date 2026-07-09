@@ -1,9 +1,4 @@
-import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-  type QueryClient,
-} from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   acceptRecommendation,
   assignRecommendationOwner,
@@ -32,12 +27,7 @@ function updateRecommendationInCache(
       if (!current) return current;
       return {
         ...current,
-        data: current.data.map((group) => ({
-          ...group,
-          risks: group.risks.map((risk) =>
-            risk.recommendation_id === recommendationId ? updater(risk) : risk,
-          ),
-        })),
+        data: current.data.map((item) => (item.id === recommendationId ? updater(item) : item)),
       };
     },
   );
@@ -135,11 +125,10 @@ export function useAssignRecommendationOwnerMutation(projectId: string | null) {
       const ownerLabel =
         payload.owner_id == null
           ? null
-          : previous?.assignable_owners.find(
+          : (previous?.assignable_owners.find(
               (owner) =>
-                owner.owner_id === payload.owner_id &&
-                owner.owner_type === payload.owner_type,
-            )?.label ?? "Assigned";
+                owner.owner_id === payload.owner_id && owner.owner_type === payload.owner_type,
+            )?.label ?? "Assigned");
       updateRecommendationInCache(queryClient, projectId, recommendationId, (item) => ({
         ...item,
         owner_type: payload.owner_type,

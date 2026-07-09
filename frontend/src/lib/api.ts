@@ -1,31 +1,5 @@
 import type { AppRole, AuthSession, MeUser, OrganisationRead, UserRead } from "@/types/auth";
-import type {
-  AgentQueryCreate,
-  AgentQueryRead,
-  AnnotatorRead,
-  AnnotatorSkillCreatePayload,
-  AnnotatorSkillRead,
-  AnnotatorSkillUpdatePayload,
-  CapabilityGapDetectionResponse,
-  CapabilityGapRead,
-  CapabilityGapUpdatePayload,
-  CertificationRead,
-  EmployeeCertificationCreatePayload,
-  EmployeeCertificationRead,
-  EmployeeCertificationUpdatePayload,
-  ProjectUtilizationFilters,
-  ProjectSkillRequirementRead,
-  SkillMatrixRead,
-  SkillRead,
-  TeamRead,
-  TrainingGapSummaryRead,
-  TrainingProgramRead,
-  TrainingRecordCreatePayload,
-  TrainingRecordRead,
-  TrainingRecordUpdatePayload,
-  UtilizationSnapshotRead,
-  WorkforceRecommendationGenerateResponse,
-} from "@/types/workforce";
+import type { AgentQueryCreate, AgentQueryRead } from "@/types/workforce";
 import type {
   KnowledgeBootstrapApi,
   KnowledgeDocumentApi,
@@ -404,9 +378,7 @@ export type MilestoneRead = {
   status: "pending" | "on_track" | "at_risk" | "completed" | "missed";
 };
 
-export async function listProjectThroughput(
-  projectId: string,
-): Promise<ThroughputSnapshotRead[]> {
+export async function listProjectThroughput(projectId: string): Promise<ThroughputSnapshotRead[]> {
   const body = await apiFetch<{ data: ThroughputSnapshotRead[] }>(
     `/projects/${projectId}/throughput?limit=100`,
   );
@@ -423,232 +395,12 @@ export async function listProjectDeliveryConfidence(
 }
 
 export async function listProjectRiskAlerts(projectId: string): Promise<RiskAlertRead[]> {
-  const body = await apiFetch<{ data: RiskAlertRead[] }>(
-    `/projects/${projectId}/risk-alerts`,
-  );
+  const body = await apiFetch<{ data: RiskAlertRead[] }>(`/projects/${projectId}/risk-alerts`);
   return body.data;
 }
 
 export async function listProjectMilestones(projectId: string): Promise<MilestoneRead[]> {
-  const body = await apiFetch<{ data: MilestoneRead[] }>(
-    `/projects/${projectId}/milestones`,
-  );
-  return body.data;
-}
-
-export async function listProjectTeams(projectId: string): Promise<TeamRead[]> {
-  const body = await apiFetch<{ data: TeamRead[] }>(`/projects/${projectId}/teams?limit=100`);
-  return body.data;
-}
-
-export async function listTeamAnnotators(teamId: string): Promise<AnnotatorRead[]> {
-  const body = await apiFetch<{ data: AnnotatorRead[] }>(`/teams/${teamId}/annotators?limit=100`);
-  return body.data;
-}
-
-export async function listProjectUtilization(
-  projectId: string,
-  filters: ProjectUtilizationFilters = {},
-): Promise<UtilizationSnapshotRead[]> {
-  const params = new URLSearchParams();
-  if (filters.team_id) params.set("team_id", filters.team_id);
-  if (filters.annotator_id) params.set("annotator_id", filters.annotator_id);
-  if (filters.from_date) params.set("from_date", filters.from_date);
-  if (filters.to_date) params.set("to_date", filters.to_date);
-  params.set("limit", String(filters.limit ?? 100));
-  const query = params.toString();
-  const body = await apiFetch<{ data: UtilizationSnapshotRead[] }>(
-    `/projects/${projectId}/utilization?${query}`,
-  );
-  return body.data;
-}
-
-export async function listWorkforceSkills(): Promise<SkillRead[]> {
-  const body = await apiFetch<{ data: SkillRead[] }>("/workforce/skills?limit=100");
-  return body.data;
-}
-
-export async function listWorkforceCertifications(): Promise<CertificationRead[]> {
-  const body = await apiFetch<{ data: CertificationRead[] }>("/workforce/certifications?limit=100");
-  return body.data;
-}
-
-export async function listWorkforceTrainingPrograms(): Promise<TrainingProgramRead[]> {
-  const body = await apiFetch<{ data: TrainingProgramRead[] }>(
-    "/workforce/training-programs?limit=100",
-  );
-  return body.data;
-}
-
-export async function listAnnotatorSkills(annotatorId: string): Promise<AnnotatorSkillRead[]> {
-  const body = await apiFetch<{ data: AnnotatorSkillRead[] }>(
-    `/annotators/${annotatorId}/skills?limit=100`,
-  );
-  return body.data;
-}
-
-export async function createAnnotatorSkill(
-  annotatorId: string,
-  payload: AnnotatorSkillCreatePayload,
-): Promise<AnnotatorSkillRead> {
-  const body = await apiFetch<{ data: AnnotatorSkillRead }>(`/annotators/${annotatorId}/skills`, {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-  return body.data;
-}
-
-export async function updateAnnotatorSkill(
-  annotatorSkillId: string,
-  payload: AnnotatorSkillUpdatePayload,
-): Promise<AnnotatorSkillRead> {
-  const body = await apiFetch<{ data: AnnotatorSkillRead }>(
-    `/annotator-skills/${annotatorSkillId}`,
-    { method: "PATCH", body: JSON.stringify(payload) },
-  );
-  return body.data;
-}
-
-export async function deleteAnnotatorSkill(annotatorSkillId: string): Promise<void> {
-  await apiFetch<void>(`/annotator-skills/${annotatorSkillId}`, { method: "DELETE" });
-}
-
-export async function listAnnotatorCertifications(
-  annotatorId: string,
-): Promise<EmployeeCertificationRead[]> {
-  const body = await apiFetch<{ data: EmployeeCertificationRead[] }>(
-    `/annotators/${annotatorId}/certifications?limit=100`,
-  );
-  return body.data;
-}
-
-export async function createEmployeeCertification(
-  annotatorId: string,
-  payload: EmployeeCertificationCreatePayload,
-): Promise<EmployeeCertificationRead> {
-  const body = await apiFetch<{ data: EmployeeCertificationRead }>(
-    `/annotators/${annotatorId}/certifications`,
-    { method: "POST", body: JSON.stringify(payload) },
-  );
-  return body.data;
-}
-
-export async function updateEmployeeCertification(
-  employeeCertificationId: string,
-  payload: EmployeeCertificationUpdatePayload,
-): Promise<EmployeeCertificationRead> {
-  const body = await apiFetch<{ data: EmployeeCertificationRead }>(
-    `/employee-certifications/${employeeCertificationId}`,
-    { method: "PATCH", body: JSON.stringify(payload) },
-  );
-  return body.data;
-}
-
-export async function deleteEmployeeCertification(
-  employeeCertificationId: string,
-): Promise<void> {
-  await apiFetch<void>(`/employee-certifications/${employeeCertificationId}`, {
-    method: "DELETE",
-  });
-}
-
-export async function listAnnotatorTrainingRecords(
-  annotatorId: string,
-): Promise<TrainingRecordRead[]> {
-  const body = await apiFetch<{ data: TrainingRecordRead[] }>(
-    `/annotators/${annotatorId}/training-records?limit=100`,
-  );
-  return body.data;
-}
-
-export async function createTrainingRecord(
-  annotatorId: string,
-  payload: TrainingRecordCreatePayload,
-): Promise<TrainingRecordRead> {
-  const body = await apiFetch<{ data: TrainingRecordRead }>(
-    `/annotators/${annotatorId}/training-records`,
-    { method: "POST", body: JSON.stringify(payload) },
-  );
-  return body.data;
-}
-
-export async function updateTrainingRecord(
-  trainingRecordId: string,
-  payload: TrainingRecordUpdatePayload,
-): Promise<TrainingRecordRead> {
-  const body = await apiFetch<{ data: TrainingRecordRead }>(
-    `/training-records/${trainingRecordId}`,
-    { method: "PATCH", body: JSON.stringify(payload) },
-  );
-  return body.data;
-}
-
-export async function deleteTrainingRecord(trainingRecordId: string): Promise<void> {
-  await apiFetch<void>(`/training-records/${trainingRecordId}`, { method: "DELETE" });
-}
-
-export async function listProjectSkillRequirements(
-  projectId: string,
-): Promise<ProjectSkillRequirementRead[]> {
-  const body = await apiFetch<{ data: ProjectSkillRequirementRead[] }>(
-    `/projects/${projectId}/skill-requirements?limit=100`,
-  );
-  return body.data;
-}
-
-export async function getProjectSkillMatrix(projectId: string): Promise<SkillMatrixRead> {
-  const body = await apiFetch<{ data: SkillMatrixRead }>(`/projects/${projectId}/skill-matrix`);
-  return body.data;
-}
-
-export async function getProjectTrainingGaps(projectId: string): Promise<TrainingGapSummaryRead> {
-  const body = await apiFetch<{ data: TrainingGapSummaryRead }>(
-    `/projects/${projectId}/training-gaps`,
-  );
-  return body.data;
-}
-
-export async function listProjectCapabilityGaps(
-  projectId: string,
-): Promise<CapabilityGapRead[]> {
-  const body = await apiFetch<{ data: CapabilityGapRead[] }>(
-    `/projects/${projectId}/capability-gaps?limit=100`,
-  );
-  return body.data;
-}
-
-export async function detectProjectCapabilityGaps(
-  projectId: string,
-): Promise<CapabilityGapDetectionResponse> {
-  const body = await apiFetch<{ data: CapabilityGapDetectionResponse }>(
-    `/projects/${projectId}/capability-gaps/detect`,
-    { method: "POST" },
-  );
-  return body.data;
-}
-
-export async function updateCapabilityGap(
-  gapId: string,
-  payload: CapabilityGapUpdatePayload,
-): Promise<CapabilityGapRead> {
-  const body = await apiFetch<{ data: CapabilityGapRead }>(`/capability-gaps/${gapId}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-  });
-  return body.data;
-}
-
-export async function deleteCapabilityGap(gapId: string): Promise<void> {
-  await apiFetch<void>(`/capability-gaps/${gapId}`, { method: "DELETE" });
-}
-
-export async function generateWorkforceRecommendations(
-  projectId: string,
-): Promise<WorkforceRecommendationGenerateResponse> {
-  const body = await apiFetch<{ data: WorkforceRecommendationGenerateResponse }>(
-    `/projects/${projectId}/workforce-recommendations/generate`,
-    { method: "POST" },
-  );
+  const body = await apiFetch<{ data: MilestoneRead[] }>(`/projects/${projectId}/milestones`);
   return body.data;
 }
 
@@ -953,147 +705,6 @@ export function canAccessPath(role: AppRole, path: string): boolean {
   return !isClientPortalPath(path) && !path.startsWith("/admin");
 }
 
-type LegacyKnowledgeBootstrapApi = Partial<KnowledgeBootstrapApi> & {
-  documents?: KnowledgeDocumentApi[];
-  library_health?: KnowledgeLibraryHealthApi;
-};
-
-const DEFAULT_KNOWLEDGE_PERMISSIONS: KnowledgeBootstrapApi["permissions"] = {
-  can_upload: true,
-  can_manage_eval: true,
-  can_adjust_retrieval_scope: true,
-  can_resolve_gaps: true,
-};
-
-function toDocumentSummary(doc: KnowledgeDocumentApi): KnowledgeDocumentSummaryApi {
-  return {
-    id: doc.id,
-    folder_id: doc.folder_id,
-    folder_name: doc.folder_name,
-    folder_kind: doc.folder_kind,
-    title: doc.title,
-    source_type: doc.source_type,
-    version: doc.version,
-    visibility: doc.visibility,
-    status: doc.status,
-    owner_approver: doc.owner_approver,
-    effective_date: doc.effective_date,
-    file_name: doc.file_name,
-    processing_status: doc.processing_status,
-    processing_error: doc.processing_error,
-    indexing_status: doc.indexing_status,
-    workflow_state: doc.workflow_state,
-    updated_at: doc.updated_at,
-  };
-}
-
-function buildBootstrapFromDocuments(
-  folders: KnowledgeFolderApi[],
-  documents: KnowledgeDocumentApi[],
-  libraryHealth?: KnowledgeLibraryHealthApi,
-): KnowledgeBootstrapApi {
-  const byFolderId = documents.reduce<Record<string, number>>((acc, doc) => {
-    acc[doc.folder_id] = (acc[doc.folder_id] ?? 0) + 1;
-    return acc;
-  }, {});
-  return {
-    folders,
-    folder_tree: folders.map((folder) => ({
-      ...folder,
-      document_count: byFolderId[folder.id] ?? 0,
-    })),
-    recent_documents: documents.slice(0, 30).map(toDocumentSummary),
-    document_counts: {
-      total: documents.length,
-      by_folder_id: byFolderId,
-    },
-    permissions: DEFAULT_KNOWLEDGE_PERMISSIONS,
-    library_health: {
-      ready_count: libraryHealth?.ready_count ?? documents.filter((d) => d.workflow_state === "approved").length,
-      needs_review_count:
-        libraryHealth?.needs_review_count ?? documents.filter((d) => d.workflow_state === "needs_review").length,
-      expired_count: libraryHealth?.expired_count ?? documents.filter((d) => d.workflow_state === "expired").length,
-      needs_reindex_count:
-        libraryHealth?.needs_reindex_count ?? documents.filter((d) => d.workflow_state === "needs_reindex").length,
-      indexing_count: libraryHealth?.indexing_count ?? 0,
-      draft_count: libraryHealth?.draft_count ?? documents.filter((d) => d.status === "draft").length,
-      archived_count: libraryHealth?.archived_count ?? documents.filter((d) => d.status === "archived").length,
-    },
-  };
-}
-
-function normalizeKnowledgeBootstrap(data: LegacyKnowledgeBootstrapApi): KnowledgeBootstrapApi {
-  if (data.recent_documents && data.document_counts) {
-    return {
-      folders: data.folders ?? [],
-      folder_tree: data.folder_tree ?? (data.folders ?? []).map((folder) => ({
-        ...folder,
-        document_count: data.document_counts?.by_folder_id?.[folder.id] ?? 0,
-      })),
-      recent_documents: data.recent_documents,
-      document_counts: data.document_counts,
-      permissions: data.permissions ?? DEFAULT_KNOWLEDGE_PERMISSIONS,
-      library_health: {
-        ready_count: data.library_health?.ready_count ?? 0,
-        needs_review_count: data.library_health?.needs_review_count ?? 0,
-        expired_count: data.library_health?.expired_count ?? 0,
-        needs_reindex_count: data.library_health?.needs_reindex_count ?? 0,
-        indexing_count: data.library_health?.indexing_count ?? 0,
-        draft_count: data.library_health?.draft_count ?? 0,
-        archived_count: data.library_health?.archived_count ?? 0,
-      },
-    };
-  }
-
-  const folders = data.folders ?? [];
-  const documents = data.documents ?? [];
-  return buildBootstrapFromDocuments(folders, documents, data.library_health);
-}
-
-export async function getKnowledgeBootstrap(): Promise<KnowledgeBootstrapApi> {
-  try {
-    const body = await apiFetch<{ data: LegacyKnowledgeBootstrapApi }>("/knowledge/bootstrap");
-    return normalizeKnowledgeBootstrap(body.data);
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 404) {
-      const [folders, documents] = await Promise.all([
-        listKnowledgeFolders(),
-        listKnowledgeDocuments(),
-      ]);
-      return buildBootstrapFromDocuments(folders, documents);
-    }
-    throw error;
-  }
-}
-
-export async function getKnowledgeLibraryHealth(): Promise<KnowledgeLibraryHealthApi> {
-  try {
-    const body = await apiFetch<{ data: KnowledgeLibraryHealthApi }>("/knowledge/library-health");
-    return body.data;
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 404) {
-      const bootstrap = await getKnowledgeBootstrap();
-      return {
-        ...EMPTY_KNOWLEDGE_LIBRARY_HEALTH,
-        ...bootstrap.library_health,
-        open_gaps: [],
-      };
-    }
-    throw error;
-  }
-}
-
-const EMPTY_KNOWLEDGE_LIBRARY_HEALTH: KnowledgeLibraryHealthApi = {
-  ready_count: 0,
-  needs_review_count: 0,
-  expired_count: 0,
-  needs_reindex_count: 0,
-  indexing_count: 0,
-  draft_count: 0,
-  archived_count: 0,
-  open_gaps: [],
-};
-
 export async function listKnowledgeDocuments(
   filters: KnowledgeDocumentFilters = {},
 ): Promise<KnowledgeDocumentApi[]> {
@@ -1108,9 +719,9 @@ export async function listKnowledgeDocuments(
   if (filters.semanticQuery) params.set("semantic_query", filters.semanticQuery);
   if (filters.aiRank) params.set("ai_rank", "true");
   const query = params.toString();
-  const body = await apiFetch<{ data: KnowledgeDocumentApi[] }>(`/knowledge/documents${query ? `?${query}` : ""}`, {
-    headers: filters.aiRank ? { "X-BSG-User-Action": "true" } : undefined,
-  });
+  const body = await apiFetch<{ data: KnowledgeDocumentApi[] }>(
+    `/knowledge/documents${query ? `?${query}` : ""}`,
+  );
   return body.data;
 }
 
@@ -1124,7 +735,9 @@ export async function listKnowledgeFolders(): Promise<KnowledgeFolderApi[]> {
   return body.data;
 }
 
-export async function createKnowledgeFolder(payload: { name: string }): Promise<KnowledgeFolderApi> {
+export async function createKnowledgeFolder(payload: {
+  name: string;
+}): Promise<KnowledgeFolderApi> {
   const body = await apiFetch<{ data: KnowledgeFolderApi }>("/knowledge/folders", {
     method: "POST",
     body: JSON.stringify(payload),
@@ -1136,10 +749,13 @@ export async function updateKnowledgeDocument(
   documentId: string,
   payload: Record<string, string | undefined>,
 ): Promise<KnowledgeDocumentApi> {
-  const body = await apiFetch<{ data: KnowledgeDocumentApi }>(`/knowledge/documents/${documentId}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-  });
+  const body = await apiFetch<{ data: KnowledgeDocumentApi }>(
+    `/knowledge/documents/${documentId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+  );
   return body.data;
 }
 
@@ -1148,14 +764,18 @@ export async function deleteKnowledgeDocument(documentId: string): Promise<void>
 }
 
 export async function reindexKnowledgeDocument(documentId: string): Promise<KnowledgeDocumentApi> {
-  const body = await apiFetch<{ data: KnowledgeDocumentApi }>(`/knowledge/documents/${documentId}/index`, {
-    method: "POST",
-    headers: { "X-BSG-User-Action": "true" },
-  });
+  const body = await apiFetch<{ data: KnowledgeDocumentApi }>(
+    `/knowledge/documents/${documentId}/index`,
+    {
+      method: "POST",
+    },
+  );
   return body.data;
 }
 
-export async function downloadKnowledgeDocumentFile(documentId: string): Promise<{ blob: Blob; fileName: string | null }> {
+export async function downloadKnowledgeDocumentFile(
+  documentId: string,
+): Promise<{ blob: Blob; fileName: string | null }> {
   const response = await fetch(`${API_BASE}/knowledge/documents/${documentId}/download`, {
     method: "GET",
     credentials: "include",
@@ -1167,7 +787,7 @@ export async function downloadKnowledgeDocumentFile(documentId: string): Promise
   const disposition = response.headers.get("Content-Disposition");
   const encodedName = disposition?.match(/filename\*=UTF-8''([^;]+)/)?.[1];
   const quotedName = disposition?.match(/filename="?([^";]+)"?/)?.[1];
-  const fileName = encodedName ? decodeURIComponent(encodedName) : quotedName ?? null;
+  const fileName = encodedName ? decodeURIComponent(encodedName) : (quotedName ?? null);
   return { blob: await response.blob(), fileName };
 }
 
@@ -1177,17 +797,10 @@ export type KnowledgeAskOptions = {
   conversationId?: string | null;
 };
 
-export async function askKnowledgeAgent(queryText: string, options: KnowledgeAskOptions = {}): Promise<KnowledgeAskResponseApi> {
-  const payload: Record<string, unknown> = {
-    query_text: queryText,
-    conversation_history: options.conversationHistory ?? [],
-  };
-  if (options.answerMode !== undefined) {
-    payload.answer_mode = options.answerMode;
-  }
-  if (options.conversationId) {
-    payload.conversation_id = options.conversationId;
-  }
+export async function askKnowledgeAgent(
+  queryText: string,
+  options: KnowledgeAskOptions = {},
+): Promise<KnowledgeAskResponseApi> {
   const body = await apiFetch<{ data: KnowledgeAskResponseApi }>("/knowledge/ask", {
     method: "POST",
     headers: { "X-BSG-User-Action": "true" },
@@ -1424,61 +1037,63 @@ export async function compareKnowledgeDocumentVersions(
 }
 
 export async function getKnowledgeRetrievalSettings(): Promise<KnowledgeRetrievalSettingsApi> {
-  const body = await apiFetch<{ data: KnowledgeRetrievalSettingsApi }>("/knowledge/retrieval-settings");
+  const body = await apiFetch<{ data: KnowledgeRetrievalSettingsApi }>(
+    "/knowledge/retrieval-settings",
+  );
   return body.data;
 }
 
 export async function updateKnowledgeRetrievalSettings(
   payload: Partial<KnowledgeRetrievalSettingsApi>,
 ): Promise<KnowledgeRetrievalSettingsApi> {
-  const body = await apiFetch<{ data: KnowledgeRetrievalSettingsApi }>("/knowledge/retrieval-settings", {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-  });
-  return body.data;
-}
-
-export async function getKnowledgeQueryAnswer(queryId: string): Promise<KnowledgeAskResponseApi> {
-  const body = await apiFetch<{ data: KnowledgeAskResponseApi }>(`/knowledge/queries/${queryId}`);
-  return body.data;
-}
-
-export async function listKnowledgeConversations(limit = 30): Promise<KnowledgeConversationSummaryApi[]> {
-  const body = await apiFetch<{ data: KnowledgeConversationSummaryApi[] }>(
-    `/knowledge/conversations?limit=${limit}`,
+  const body = await apiFetch<{ data: KnowledgeRetrievalSettingsApi }>(
+    "/knowledge/retrieval-settings",
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
   );
   return body.data;
 }
 
-export async function getKnowledgeConversation(conversationId: string): Promise<KnowledgeConversationApi> {
-  const body = await apiFetch<{ data: KnowledgeConversationApi }>(
-    `/knowledge/conversations/${conversationId}`,
-  );
-  return body.data;
-}
-
-export async function listAgentQueries(limit = 20): Promise<AgentQueryApi[]> {
-  const body = await apiFetch<{ data: AgentQueryApi[] }>(`/agent-queries?limit=${limit}`);
-  return body.data;
-}
-
-export async function submitKnowledgeFeedback(
-  payload: KnowledgeFeedbackRequestApi,
-): Promise<KnowledgeFeedbackResponseApi> {
-  const body = await apiFetch<{ data: KnowledgeFeedbackResponseApi }>("/knowledge/feedback", {
-    method: "POST",
-    body: JSON.stringify({
-      query_id: payload.query_id,
-      rating: payload.rating,
-      comment: payload.comment ?? null,
-    }),
-  });
-  return body.data;
-}
-
-export async function resolveKnowledgeGap(gapId: string): Promise<KnowledgeGapTodoApi> {
-  const body = await apiFetch<{ data: KnowledgeGapTodoApi }>(`/knowledge/gaps/${gapId}/resolve`, {
-    method: "POST",
-  });
-  return body.data;
-}
+export {
+  createAnnotatorSkill,
+  createEmployeeCertification,
+  createProjectSkillRequirement,
+  createProjectTeam,
+  createTeamAnnotator,
+  createTrainingRecord,
+  createUtilizationSnapshot,
+  deleteAnnotator,
+  deleteAnnotatorSkill,
+  deleteCapabilityGap,
+  deleteEmployeeCertification,
+  deleteProjectSkillRequirement,
+  deleteTeam,
+  deleteTrainingRecord,
+  deleteUtilizationSnapshot,
+  detectProjectCapabilityGaps,
+  generateWorkforceRecommendations,
+  getProjectSkillMatrix,
+  getProjectTrainingGaps,
+  getProjectWorkforceSummary,
+  listAnnotatorCertifications,
+  listAnnotatorSkills,
+  listAnnotatorTrainingRecords,
+  listProjectCapabilityGaps,
+  listProjectSkillRequirements,
+  listProjectTeams,
+  listProjectUtilization,
+  listTeamAnnotators,
+  listWorkforceCertifications,
+  listWorkforceSkills,
+  listWorkforceTrainingPrograms,
+  updateAnnotator,
+  updateAnnotatorSkill,
+  updateCapabilityGap,
+  updateTeam,
+  updateEmployeeCertification,
+  updateProjectSkillRequirement,
+  updateTrainingRecord,
+  updateUtilizationSnapshot,
+} from "./api/workforce";
