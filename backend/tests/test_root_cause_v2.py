@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.agents.quality_intelligence.root_cause import analyze_root_cause
+from app.agents.quality_intelligence.root_cause import analyze_root_cause_deterministic
 
 
 def _snapshot(**kwargs):
@@ -63,7 +63,7 @@ async def test_onboarding_from_scorecards_when_present() -> None:
         patch("app.agents.quality_intelligence.root_cause._hypothesis_eval_log_reviewers", AsyncMock(return_value=None)),
         patch("app.agents.quality_intelligence.root_cause.count_recent_annotators", AsyncMock(return_value=0)),
     ):
-        result = await analyze_root_cause(AsyncMock(), snap)
+        result = await analyze_root_cause_deterministic(AsyncMock(), snap)
 
     assert result.primary_driver == "onboarding_gap"
     assert result.factors[0]["evidence"] == ["reviewer_scorecards:test"]
@@ -72,6 +72,6 @@ async def test_onboarding_from_scorecards_when_present() -> None:
 @pytest.mark.asyncio
 async def test_blocked_when_sample_too_small() -> None:
     snap = _snapshot(evaluated_item_count=10)
-    result = await analyze_root_cause(AsyncMock(), snap)
+    result = await analyze_root_cause_deterministic(AsyncMock(), snap)
     assert result.blocked is True
     assert result.primary_driver is None

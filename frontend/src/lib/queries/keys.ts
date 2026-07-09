@@ -45,6 +45,7 @@ export const queryKeys = {
     ["governance", "scope-states", params] as const,
   governanceRegister: (params: Record<string, unknown> = {}) =>
     ["governance", "register", params] as const,
+  qualityPage: (projectId: string) => ["quality", "page", projectId] as const,
   knowledgeBootstrap: ["knowledge", "bootstrap"] as const,
   knowledgeDocuments: ["knowledge", "documents"] as const,
   knowledgeLibraryHealth: ["knowledge", "library-health"] as const,

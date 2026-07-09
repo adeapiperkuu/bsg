@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     llm_base_url: str | None = None
     llm_model: str | None = None
     llm_intent_routing: bool = False
+    # Quality Intelligence Agent: LLM reasoning over evidence (see
+    # docs/agents/quality_reasoning_upgrade_plan.md). Dark-launch flag — when
+    # False, root-cause analysis uses the deterministic engine only.
+    quality_llm_reasoning: bool = True
+    # When True, run the LLM reasoning engine alongside the deterministic
+    # engine even while quality_llm_reasoning is False, logging divergence
+    # for evaluation without affecting the response returned to users.
+    quality_llm_reasoning_shadow: bool = False
+    quality_reasoning_model: str | None = None
     oka_base_url: str | None = None
     openai_model: str = "gpt-4o-mini"
     openai_api_key: str | None = None
@@ -41,6 +50,7 @@ class Settings(BaseSettings):
     knowledge_strong_model: str = "gpt-4o"
     email_api_key: str | None = None
     email_from_address: str | None = None
+    log_level: str = "INFO"
     knowledge_storage_bucket: str = "knowledge-documents"
     knowledge_upload_dir: str = str(BACKEND_ROOT / "data" / "knowledge")
     # Delivery chat hardening (see app/agents/delivery/routes/chat.py)

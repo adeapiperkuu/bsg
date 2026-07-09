@@ -78,6 +78,41 @@ class WhatIfEngine:
         )
 
 
+def _historical_recovery_patterns(snapshots: list[QualitySnapshot]) -> list[dict[str, Any]]:
+    """Compute observed drop-then-recovery sequences from this project's own
+    quality snapshot history (oldest to newest), instead of asking the LLM to
+    reason over a bare snapshot count. A drop of >=1.0pp that later recovers
+    to at least its pre-drop level is a real precedent for a what-if
+    projection; one that never recovers within the window is equally
+    informative evidence."""
+    ordered = sorted(
+        (s for s in snapshots if s.gold_set_accuracy_pct is not None),
+        key=lambda s: (s.iso_year, s.iso_week),
+    )
+    patterns: list[dict[str, Any]] = []
+    for i in range(1, len(ordered)):
+        prev, cur = ordered[i - 1], ordered[i]
+        delta = float(cur.gold_set_accuracy_pct) - float(prev.gold_set_accuracy_pct)
+        if delta > -1.0:
+            continue
+        drop_level = float(prev.gold_set_accuracy_pct)
+        recovered_at = next(
+            (s for s in ordered[i + 1 :] if float(s.gold_set_accuracy_pct) >= drop_level),
+            None,
+        )
+        patterns.append(
+            {
+                "drop_from": f"{prev.gold_set_accuracy_pct}% (W{prev.iso_week})",
+                "drop_to": f"{cur.gold_set_accuracy_pct}% (W{cur.iso_week})",
+                "recovered_by": (
+                    f"{recovered_at.gold_set_accuracy_pct}% (W{recovered_at.iso_week})" if recovered_at else None
+                ),
+                "weeks_to_recover": (recovered_at.iso_week - cur.iso_week) if recovered_at else None,
+            }
+        )
+    return patterns
+
+
 async def analyze_what_if(
     session: AsyncSession,
     project: Project,
@@ -95,38 +130,62 @@ async def analyze_what_if(
         ).scalars()
     )
 
-    projected, assumptions, confidence = WhatIfEngine.rule_projection(scenario, snapshots)
+    fallback_projected, fallback_assumptions, fallback_confidence = WhatIfEngine.rule_projection(
+        scenario, snapshots
+    )
+    patterns = _historical_recovery_patterns(snapshots)
 
     oka = OKAClient()
     lessons = await oka.retrieve_lessons(org_id=str(project.org_id), task_type=scenario, error_category="")
     if not lessons:
         lessons = await keyword_search(session, project.org_id, query_text, limit=3)
 
-    no_precedent = len(lessons) == 0
-    if no_precedent:
-        assumptions.append("No comparable OKA lessons found — projection is speculative")
+    no_precedent = len(lessons) == 0 and not patterns
+    projected, assumptions, confidence = fallback_projected, fallback_assumptions, fallback_confidence
 
     settings = get_settings()
     if settings.llm_api_key:
         try:
             llm = LLMClient()
-            narrative = await llm.generate_structured(
+            raw = await llm.generate_structured(
                 system=WHAT_IF_SYSTEM_PROMPT,
-                user=f"What-if query: {query_text}",
+                user=f"What-if query: {query_text}\nScenario: {scenario}",
                 context=json.dumps(
                     {
                         "scenario": scenario,
-                        "rule_projection": projected,
-                        "assumptions": assumptions,
-                        "lessons": lessons,
-                        "snapshots": len(snapshots),
+                        "historical_recovery_patterns": patterns,
+                        "comparable_lessons": lessons,
+                        "recent_snapshot_count": len(snapshots),
+                        "rule_based_projection_fallback": {
+                            "projected_outcome": fallback_projected,
+                            "assumptions": fallback_assumptions,
+                            "confidence": fallback_confidence,
+                        },
                     },
                     default=str,
                 ),
+                json_mode=True,
             )
-            projected = narrative
+            parsed = json.loads(raw)
+            llm_projected = str(parsed.get("projected_outcome", "")).strip()
+            llm_assumptions = parsed.get("assumptions")
+            llm_confidence = str(parsed.get("confidence", "")).strip().lower()
+            if (
+                llm_projected
+                and isinstance(llm_assumptions, list)
+                and llm_assumptions
+                and llm_confidence in {"high", "medium", "low"}
+            ):
+                projected = llm_projected
+                assumptions = [str(a) for a in llm_assumptions]
+                confidence = llm_confidence
         except Exception:
             pass
+
+    if no_precedent and not any(
+        "no comparable" in a.lower() or "no strong precedent" in a.lower() for a in assumptions
+    ):
+        assumptions = [*assumptions, "No comparable OKA lessons or historical recovery pattern found — projection is speculative"]
 
     return WhatIfResult(
         scenario=scenario,

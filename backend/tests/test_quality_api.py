@@ -34,6 +34,12 @@ async def test_leadership_quality_portfolio_requires_auth(api_client: AsyncClien
 
 
 @pytest.mark.asyncio
+async def test_quality_page_requires_auth(api_client: AsyncClient) -> None:
+    response = await api_client.get(f"/api/v1/projects/{PROJECT_ID}/quality-page")
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_calibration_brief_requires_auth(api_client: AsyncClient) -> None:
     project_id = "00000000-0000-0000-0000-000000000001"
     response = await api_client.get(f"/api/v1/projects/{project_id}/calibration-brief")

@@ -16,6 +16,7 @@ MIGRATIONS = [
     REPO_ROOT / "supabase/migrations/20260625120000_knowledge_lessons.sql",
     REPO_ROOT / "supabase/migrations/20260625130000_quality_phase2_schema.sql",
     REPO_ROOT / "supabase/migrations/20260625140000_inter_agent_signals.sql",
+    REPO_ROOT / "supabase/migrations/20260702100000_calibration_briefs.sql",
     REPO_ROOT / "supabase/migrations/20260701100000_knowledge_agent_performance_indexes.sql",
     REPO_ROOT / "supabase/migrations/20260702120000_knowledge_extraction_metadata.sql",
     REPO_ROOT / "supabase/migrations/20260702140000_knowledge_conversations.sql",

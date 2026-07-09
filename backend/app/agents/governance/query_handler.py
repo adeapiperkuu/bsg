@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from time import perf_counter
 from uuid import UUID
@@ -157,7 +157,7 @@ async def _collect_governance_items(
         return []
 
     items: list[EvidenceItem] = []
-    today = datetime.now(UTC).date()
+    today = datetime.now(timezone.utc).date()
 
     dep_stmt = select(ProjectDependency).where(ProjectDependency.deleted_at.is_(None))
     dep_stmt = _org_stmt(dep_stmt, ProjectDependency.org_id, current_user)

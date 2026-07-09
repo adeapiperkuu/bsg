@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from uuid import uuid4
 
 from app.agents.governance.services.audit_service import governance_snapshot
@@ -14,7 +14,7 @@ def test_governance_snapshot_serializes_audit_values() -> None:
         title="Approve charter",
         status=GovernanceActionStatus.OPEN,
         due_date=date(2026, 6, 30),
-        completed_at=datetime(2026, 6, 30, 12, 0, tzinfo=UTC),
+        completed_at=datetime(2026, 6, 30, 12, 0, tzinfo=timezone.utc),
     )
 
     snapshot = governance_snapshot(

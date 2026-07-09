@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Literal
@@ -9,8 +10,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import MetricConfiguration, RiskTier
+from app.db.session import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
+
+_THRESHOLD_CACHE_TTL_S = 60
+_threshold_cache: tuple[dict[str, "ThresholdConfig"], float] | None = None
 
 Direction = Literal["higher_is_better", "lower_is_better"]
 
@@ -69,7 +74,7 @@ class ThresholdConfig:
         return cls(metric_key=metric_key, **{k: v for k, v in data.items() if k != "metric_key"})
 
 
-async def load_thresholds(session: AsyncSession) -> dict[str, ThresholdConfig]:
+async def _load_thresholds_from_db(session: AsyncSession) -> dict[str, ThresholdConfig]:
     rows = (
         await session.execute(
             select(MetricConfiguration).where(
@@ -97,6 +102,23 @@ async def load_thresholds(session: AsyncSession) -> dict[str, ThresholdConfig]:
             configs[key] = ThresholdConfig.from_dict(key, default)
 
     return configs
+
+
+async def load_thresholds(session: AsyncSession) -> dict[str, ThresholdConfig]:
+    global _threshold_cache
+
+    if _threshold_cache is not None and time.monotonic() < _threshold_cache[1]:
+        return _threshold_cache[0]
+
+    configs = await _load_thresholds_from_db(session)
+    _threshold_cache = (configs, time.monotonic() + _THRESHOLD_CACHE_TTL_S)
+    return configs
+
+
+async def warm_thresholds_cache() -> None:
+    """Pre-load thresholds at startup so the first quality-page request avoids a cold DB read."""
+    async with AsyncSessionLocal() as session:
+        await load_thresholds(session)
 
 
 def _to_float(value: Decimal | float | int | None) -> float | None:

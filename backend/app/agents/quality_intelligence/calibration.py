@@ -6,15 +6,18 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.quality_intelligence.comms_prompts import CALIBRATION_SYSTEM_PROMPT
 from app.agents.quality_intelligence.oka_client import OKAClient
 from app.agents.quality_intelligence.signals import emit_inter_agent_signal
 from app.core.config import get_settings
+from app.db.optional_tables import is_undefined_table_error, query_optional_table
 from app.db.models import (
     Annotator,
     AppRole,
+    CalibrationBrief,
     Notification,
     NotificationType,
     Project,
@@ -46,26 +49,32 @@ async def identify_calibration_candidates(
     iso_year: int,
     iso_week: int,
     accuracy_threshold: float | None = None,
+    scorecards: list[ReviewerScorecard] | None = None,
+    thresholds: dict | None = None,
 ) -> list[CalibrationCandidate]:
-    thresholds = await load_thresholds(session)
+    if thresholds is None:
+        thresholds = await load_thresholds(session)
     acc_cfg = thresholds.get("gold_set_accuracy")
     threshold = accuracy_threshold
     if threshold is None and acc_cfg and acc_cfg.amber_min is not None:
         threshold = float(acc_cfg.amber_min)
     threshold = threshold or 85.0
 
-    scorecards = list(
-        (
-            await session.execute(
-                select(ReviewerScorecard).where(
-                    ReviewerScorecard.project_id == project_id,
-                    ReviewerScorecard.iso_year == iso_year,
-                    ReviewerScorecard.iso_week == iso_week,
-                    ReviewerScorecard.items_evaluated >= MIN_REVIEWER_ITEMS,
+    if scorecards is None:
+        scorecards = list(
+            (
+                await session.execute(
+                    select(ReviewerScorecard).where(
+                        ReviewerScorecard.project_id == project_id,
+                        ReviewerScorecard.iso_year == iso_year,
+                        ReviewerScorecard.iso_week == iso_week,
+                        ReviewerScorecard.items_evaluated >= MIN_REVIEWER_ITEMS,
+                    )
                 )
-            )
-        ).scalars()
-    )
+            ).scalars()
+        )
+    else:
+        scorecards = [card for card in scorecards if card.items_evaluated >= MIN_REVIEWER_ITEMS]
 
     candidates: list[CalibrationCandidate] = []
     for card in scorecards:
@@ -142,6 +151,124 @@ async def generate_calibration_brief(
         candidates=candidate_reads,
         brief_text=brief_text,
     )
+
+
+def build_template_calibration_brief(
+    project: Project,
+    candidates: list[CalibrationCandidate],
+    *,
+    iso_year: int,
+    iso_week: int,
+) -> CalibrationBriefRead:
+    """Template-only brief for synchronous read paths (no LLM)."""
+    candidate_reads = [
+        CalibrationCandidateRead(
+            annotator_id=UUID(c.annotator_id),
+            accuracy_pct=c.accuracy_pct,
+            items_evaluated=c.items_evaluated,
+            error_category=c.error_category,
+            priority="immediate" if c.accuracy_pct is not None and c.accuracy_pct < 80 else "this_week",
+            reason=c.reason,
+        )
+        for c in candidates
+    ]
+    brief_text = None
+    if candidates:
+        brief_text = (
+            f"{len(candidates)} reviewer(s) require calibration for W{iso_week}/{iso_year}. "
+            "Schedule targeted sessions on dominant error categories."
+        )
+    return CalibrationBriefRead(
+        project_id=project.id,
+        iso_year=iso_year,
+        iso_week=iso_week,
+        candidates=candidate_reads,
+        brief_text=brief_text,
+    )
+
+
+def calibration_brief_read_from_row(row: CalibrationBrief) -> CalibrationBriefRead:
+    return CalibrationBriefRead(
+        project_id=row.project_id,
+        iso_year=row.iso_year,
+        iso_week=row.iso_week,
+        candidates=[CalibrationCandidateRead.model_validate(c) for c in (row.candidates or [])],
+        brief_text=row.brief_text,
+        signal_sent_at=row.signal_sent_at,
+    )
+
+
+async def get_cached_calibration_brief(
+    session: AsyncSession,
+    project_id: UUID,
+    *,
+    iso_year: int,
+    iso_week: int,
+) -> CalibrationBriefRead | None:
+    async def _load() -> CalibrationBriefRead | None:
+        row = (
+            await session.execute(
+                select(CalibrationBrief).where(
+                    CalibrationBrief.project_id == project_id,
+                    CalibrationBrief.iso_year == iso_year,
+                    CalibrationBrief.iso_week == iso_week,
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        return calibration_brief_read_from_row(row)
+
+    return await query_optional_table(session, _load, None)
+
+
+async def upsert_calibration_brief_cache(
+    session: AsyncSession,
+    project: Project,
+    brief: CalibrationBriefRead,
+) -> CalibrationBrief | None:
+    candidates_payload = [c.model_dump(mode="json") for c in brief.candidates]
+
+    async def _upsert() -> CalibrationBrief:
+        existing = (
+            await session.execute(
+                select(CalibrationBrief).where(
+                    CalibrationBrief.project_id == project.id,
+                    CalibrationBrief.iso_year == brief.iso_year,
+                    CalibrationBrief.iso_week == brief.iso_week,
+                )
+            )
+        ).scalar_one_or_none()
+        now = datetime.now(timezone.utc)
+        if existing:
+            existing.candidates = candidates_payload
+            existing.brief_text = brief.brief_text
+            existing.signal_sent_at = brief.signal_sent_at
+            existing.generated_at = now
+            await session.flush()
+            return existing
+
+        row = CalibrationBrief(
+            project_id=project.id,
+            org_id=project.org_id,
+            iso_year=brief.iso_year,
+            iso_week=brief.iso_week,
+            candidates=candidates_payload,
+            brief_text=brief.brief_text,
+            signal_sent_at=brief.signal_sent_at,
+            generated_at=now,
+        )
+        session.add(row)
+        await session.flush()
+        return row
+
+    try:
+        async with session.begin_nested():
+            return await _upsert()
+    except ProgrammingError as exc:
+        if is_undefined_table_error(exc):
+            return None
+        raise
 
 
 async def emit_skill_gap_signal(
@@ -242,4 +369,5 @@ async def process_calibration_for_snapshot(
         **brief.model_dump(),
         signal_sent_at=datetime.now(timezone.utc),
     )
+    await upsert_calibration_brief_cache(session, project, brief)
     return brief
