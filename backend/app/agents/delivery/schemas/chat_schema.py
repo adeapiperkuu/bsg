@@ -22,6 +22,15 @@ class DeliveryChatCreate(BaseModel):
         return value
 
 
+class DeliveryChatConversationCreate(BaseModel):
+    project_id: UUID | None = None
+    title: str | None = Field(default=None, max_length=120)
+
+
+class DeliveryChatConversationRename(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+
+
 class DeliveryChatSource(BaseModel):
     title: str
     type: str
@@ -43,7 +52,17 @@ class DeliveryChatTurnRead(BaseModel):
     sources: list[DeliveryChatSource] = Field(default_factory=list)
 
 
+class DeliveryChatConversationSummaryRead(BaseModel):
+    id: UUID
+    title: str
+    project_id: UUID | None
+    turn_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
 class DeliveryChatConversationRead(BaseModel):
     conversation_id: UUID
     project_id: UUID | None
+    title: str | None = None
     turns: list[DeliveryChatTurnRead]

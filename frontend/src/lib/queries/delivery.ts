@@ -2,6 +2,7 @@ import { queryOptions, useQuery } from "@tanstack/react-query";
 import {
   fetchDeliveryDashboard,
   fetchDeliveryPortfolio,
+  listDeliveryConversations,
   listOrganisations,
   listProjectDeliveryConfidence,
   listProjects,
@@ -35,6 +36,15 @@ export function deliveryDashboardQueryOptions(projectId: string | null) {
   });
 }
 
+export function deliveryConversationsQueryOptions(projectId: string | null, enabled = true) {
+  return queryOptions({
+    queryKey: queryKeys.deliveryConversations(projectId),
+    queryFn: () => listDeliveryConversations(projectId),
+    enabled,
+    staleTime: STALE_TIME_MS,
+  });
+}
+
 export function projectDeliveryConfidenceQueryOptions(projectId: string | null) {
   return queryOptions({
     queryKey: queryKeys.projectDeliveryConfidence(projectId ?? ""),
@@ -58,6 +68,10 @@ export function useDeliveryPortfolioQuery() {
 
 export function useDeliveryDashboardQuery(projectId: string | null) {
   return useQuery(deliveryDashboardQueryOptions(projectId));
+}
+
+export function useDeliveryConversationsQuery(projectId: string | null, enabled = true) {
+  return useQuery(deliveryConversationsQueryOptions(projectId, enabled));
 }
 
 export function useProjectDeliveryConfidenceQuery(projectId: string | null) {

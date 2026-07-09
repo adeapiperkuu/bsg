@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { ApiError, getDeliveryChatConversation, streamDeliveryChatMessage } from "@/lib/api";
 import { sanitizeDeliveryMarkdown } from "@/components/delivery/delivery-markdown";
+import { queryKeys } from "@/lib/queries/keys";
 import { DELIVERY_CHAT_MAX_MESSAGE_LENGTH, generateDeliverySuggestions } from "@/types/delivery-chat";
 import type { DeliveryChatMessage, DeliveryChatTurn } from "@/types/delivery-chat";
 
@@ -52,7 +54,6 @@ function describeDeliveryChatError(err: unknown): string {
     return err.message;
   }
   if (err instanceof TypeError) {
-    // fetch() throws TypeError for network-level failures (offline, DNS, connection refused).
     return "Could not reach the delivery agent — check your connection and try again.";
   }
   return err instanceof Error ? err.message : "The delivery agent could not complete your request.";
@@ -63,6 +64,7 @@ type UseDeliveryChatOptions = {
 };
 
 export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
+  const queryClient = useQueryClient();
   const [messages, setMessages] = useState<DeliveryChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [asking, setAsking] = useState(false);
@@ -70,15 +72,30 @@ export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const conversationIdRef = useRef<string | null>(null);
 
-  // Clear a stale validation error as soon as the user edits the message.
+  const syncConversationId = useCallback((conversationId: string | null) => {
+    conversationIdRef.current = conversationId;
+    setActiveConversationId(conversationId);
+    if (conversationId) {
+      persistConversationId(projectId, conversationId);
+    }
+  }, [projectId]);
+
+  const invalidateConversationHistory = useCallback(async () => {
+    await queryClient.invalidateQueries({
+      queryKey: queryKeys.deliveryConversations(projectId ?? null),
+    });
+  }, [projectId, queryClient]);
+
   useEffect(() => {
     setError(null);
   }, [input]);
 
   const resetConversation = useCallback(() => {
     conversationIdRef.current = null;
+    setActiveConversationId(null);
     clearPersistedConversationId(projectId);
     setMessages([]);
     setInput("");
@@ -87,11 +104,30 @@ export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
     setSuggestions([]);
   }, [projectId]);
 
-  // On mount / project change: clear the visible thread, then try to restore a
-  // previously persisted conversation for this project so a page refresh doesn't
-  // lose history that the backend already has durably stored.
+  const loadConversation = useCallback(
+    async (conversationId: string) => {
+      setLoadingHistory(true);
+      setError(null);
+      setSuggestions([]);
+      try {
+        const conversation = await getDeliveryChatConversation(conversationId);
+        syncConversationId(conversation.conversation_id);
+        setMessages(turnsToMessages(conversation.turns));
+      } catch (err) {
+        setError(describeDeliveryChatError(err));
+        if (conversationIdRef.current === conversationId) {
+          resetConversation();
+        }
+      } finally {
+        setLoadingHistory(false);
+      }
+    },
+    [resetConversation, syncConversationId],
+  );
+
   useEffect(() => {
     conversationIdRef.current = null;
+    setActiveConversationId(null);
     setMessages([]);
     setInput("");
     setError(null);
@@ -107,11 +143,10 @@ export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
     getDeliveryChatConversation(storedId)
       .then((conversation) => {
         if (cancelled) return;
-        conversationIdRef.current = conversation.conversation_id;
+        syncConversationId(conversation.conversation_id);
         setMessages(turnsToMessages(conversation.turns));
       })
       .catch(() => {
-        // Stale, unauthorized, or deleted conversation — drop it silently and start fresh.
         clearPersistedConversationId(projectId);
       })
       .finally(() => {
@@ -121,7 +156,7 @@ export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId, syncConversationId]);
 
   const sendMessage = useCallback(
     async (text: string) => {
@@ -169,8 +204,8 @@ export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
               );
             }
           } else if (event.type === "done") {
-            conversationIdRef.current = event.conversation_id;
-            persistConversationId(projectId, event.conversation_id);
+            syncConversationId(event.conversation_id);
+            void invalidateConversationHistory();
             const finalText = sanitizeDeliveryMarkdown(event.answer);
             setSuggestions(generateDeliverySuggestions(event.answer));
             setMessages((current) => {
@@ -182,8 +217,6 @@ export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
                     : m,
                 );
               }
-              // No deltas arrived (e.g. agent not configured, or it failed before any
-              // tokens streamed) — the done event carries the only text we have.
               return [
                 ...current,
                 { id: agentMessageId, role: "agent", text: finalText, sources: event.sources },
@@ -202,7 +235,7 @@ export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
         setStreamingMessageId(null);
       }
     },
-    [asking, streamingMessageId, projectId],
+    [asking, invalidateConversationHistory, projectId, streamingMessageId, syncConversationId],
   );
 
   const isInputDisabled = asking || streamingMessageId !== null;
@@ -217,7 +250,9 @@ export function useDeliveryChat({ projectId }: UseDeliveryChatOptions = {}) {
     isInputDisabled,
     error,
     suggestions,
+    activeConversationId,
     sendMessage,
     resetConversation,
+    loadConversation,
   };
 }
