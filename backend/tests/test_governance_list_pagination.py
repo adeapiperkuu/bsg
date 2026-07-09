@@ -6,6 +6,7 @@ import pytest
 from app.agents.governance.services.governance_service import (
     PaginatedGovernanceRows,
     _bounded_list_filters,
+    _dependency_enriched_page_stmt,
     list_governance_actions_page,
     list_governance_dependencies_page,
 )
@@ -94,13 +95,16 @@ def _user(role: AppRole = AppRole.DELIVERY_MANAGER) -> CurrentUser:
 async def test_dependency_list_applies_status_project_and_search_filters(monkeypatch) -> None:
     captured = {}
 
-    async def capture_statement(_session, stmt, *, limit, offset, count_stmt):
-        captured["sql"] = str(stmt.compile(compile_kwargs={"literal_binds": False}))
-        captured["count_sql"] = str(count_stmt.compile(compile_kwargs={"literal_binds": False}))
+    async def capture_statement(_session, user, filters, *, limit, offset):
+        captured["sql"] = str(
+            _dependency_enriched_page_stmt(user, filters, limit=limit, offset=offset).compile(
+                compile_kwargs={"literal_binds": False}
+            )
+        )
         return PaginatedGovernanceRows(items=[], total=0, limit=limit, offset=offset)
 
     monkeypatch.setattr(
-        "app.agents.governance.services.governance_service._execute_paginated_rows",
+        "app.agents.governance.services.governance_service._execute_dependency_paginated_page",
         capture_statement,
     )
 
@@ -114,14 +118,11 @@ async def test_dependency_list_applies_status_project_and_search_filters(monkeyp
     )
 
     sql = captured["sql"]
-    count_sql = captured["count_sql"]
     assert "project_dependencies.project_id" in sql
     assert "project_dependencies.status" in sql
     assert "projects" in sql.lower()
     assert "over()" not in sql.lower()
-    assert "users" not in count_sql.lower()
-    assert "projects" not in count_sql.lower()
-    assert "project_dependencies" in count_sql
+    assert "dep_page_ids" in sql.lower()
 
 
 @pytest.mark.asyncio

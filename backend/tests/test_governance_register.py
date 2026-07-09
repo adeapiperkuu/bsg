@@ -76,7 +76,7 @@ async def test_register_page_maps_rows_from_paginated_query(
     )
     monkeypatch.setattr(
         "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
-        AsyncMock(),
+        AsyncMock(return_value=0),
     )
 
     page = await list_governance_register_page(session, _user())
@@ -84,3 +84,57 @@ async def test_register_page_maps_rows_from_paginated_query(
     assert page.total == 1
     assert page.items[0].project_name == "Alpha"
     assert page.items[0].health == "green"
+
+
+@pytest.mark.asyncio
+async def test_register_client_empty_state_uses_scoped_projects_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    async def _paginate(_session, stmt, *, limit, offset, count_stmt):
+        captured["sql"] = str(stmt.compile(compile_kwargs={"literal_binds": False}))
+        return MagicMock(items=[], total=0, limit=limit, offset=offset, db_executes=1)
+
+    monkeypatch.setattr(
+        "app.agents.governance.services.register_service._execute_paginated_rows",
+        _paginate,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
+        AsyncMock(return_value=0),
+    )
+
+    page = await list_governance_register_page(AsyncMock(), _user(AppRole.CLIENT))
+
+    assert page.total == 0
+    assert page.items == []
+    assert "project_assignments" in captured["sql"].lower()
+
+
+@pytest.mark.asyncio
+async def test_register_super_admin_does_not_call_org_day_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ensure = AsyncMock(return_value=0)
+    monkeypatch.setattr(
+        "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
+        ensure,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.register_service._execute_paginated_rows",
+        AsyncMock(
+            return_value=MagicMock(items=[], total=0, limit=50, offset=0, db_executes=1)
+        ),
+    )
+
+    super_admin = CurrentUser(
+        id=uuid4(),
+        org_id=None,
+        email="admin@example.com",
+        role=AppRole.SUPER_ADMIN,
+        is_active=True,
+    )
+    await list_governance_register_page(AsyncMock(), super_admin)
+
+    ensure.assert_not_awaited()

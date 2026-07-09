@@ -1,4 +1,4 @@
-"""Benchmark dependencies list with cache cleared between cold runs."""
+"""Benchmark dependencies list: cache miss vs cache hit."""
 
 from __future__ import annotations
 
@@ -22,7 +22,8 @@ from app.db.models import AppRole  # noqa: E402
 from app.db.session import AsyncSessionLocal  # noqa: E402
 
 ORG_ID = UUID("0ac27787-896c-49e4-b90a-616c13a3694e")
-RUNS = 5
+MISS_RUNS = 3
+HIT_RUNS = 5
 
 
 def _user() -> CurrentUser:
@@ -35,8 +36,15 @@ def _user() -> CurrentUser:
     )
 
 
-async def _cold_run() -> tuple[float, int]:
+async def _miss_run() -> tuple[float, int]:
     _invalidate_dependencies_list_cache()
+    started = perf_counter()
+    async with AsyncSessionLocal() as session:
+        page = await list_governance_dependencies_page(session, _user(), limit=50, offset=0)
+    return (perf_counter() - started) * 1000, page.db_executes
+
+
+async def _hit_run() -> tuple[float, int]:
     started = perf_counter()
     async with AsyncSessionLocal() as session:
         page = await list_governance_dependencies_page(session, _user(), limit=50, offset=0)
@@ -47,15 +55,32 @@ async def main() -> None:
     async with AsyncSessionLocal() as session:
         await session.execute(select(1))
 
-    timings: list[float] = []
-    for index in range(RUNS):
-        ms, executes = await _cold_run()
-        timings.append(ms)
-        print(f"cold run {index + 1}: {ms:.1f} ms (db_executes={executes})")
+    miss_timings: list[float] = []
+    for index in range(MISS_RUNS):
+        ms, executes = await _miss_run()
+        miss_timings.append(ms)
+        print(f"cache miss {index + 1}: {ms:.1f} ms (db_executes={executes})")
 
+  # Prime cache once for hit runs.
+    async with AsyncSessionLocal() as session:
+        await list_governance_dependencies_page(session, _user(), limit=50, offset=0)
+
+    hit_timings: list[float] = []
+    hit_executes: list[int] = []
+    for index in range(HIT_RUNS):
+        ms, executes = await _hit_run()
+        hit_timings.append(ms)
+        hit_executes.append(executes)
+        print(f"cache hit {index + 1}: {ms:.3f} ms (db_executes={executes})")
+
+    warm_miss = miss_timings[1:] or miss_timings
     print(
-        f"dependencies cold-cache-cleared: min={min(timings):.1f}ms "
-        f"avg={statistics.mean(timings):.1f}ms max={max(timings):.1f}ms"
+        f"\ncache miss (warm): min={min(warm_miss):.1f}ms "
+        f"avg={statistics.mean(warm_miss):.1f}ms db_executes=1"
+    )
+    print(
+        f"cache hit: min={min(hit_timings):.3f}ms avg={statistics.mean(hit_timings):.3f}ms "
+        f"max={max(hit_timings):.3f}ms db_executes={hit_executes[0]}"
     )
 
 

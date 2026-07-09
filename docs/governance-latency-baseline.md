@@ -89,7 +89,7 @@ Captured via service-layer benchmark against the live Supabase dev database (del
 | `GET /governance/escalations` | 441 | 439 | 2.1 | Client-user primary table |
 | `GET /governance/register` | 403 | 403 | 0.1 | Not on first paint; heavy per-project subqueries |
 | `GET /governance/dependencies` | 375 | 374 | 1.6 | Internal first-paint table (pre-optimization baseline) |
-| `GET /governance/bootstrap` | 343 | 342 | 0.1 | KPI strip + tab totals |
+| `GET /governance/bootstrap` | 343 | 342 | 0.1 | KPI strip + tab totals (pre-optimization; see Bootstrap endpoint profiling) |
 
 Client user escalations (representative client org): **~60–120 ms** after connection warm-up.
 
@@ -99,7 +99,7 @@ Internal first-paint critical path (parallel requests): dominated by **analytics
 
 1. **`GET /governance/analytics/summary`** — Re-benchmarked **~377 ms** warm (down from **~800–1100 ms**). Further wins require regional DB proximity or accepting cache hits; see Analytics summary endpoint profiling.
 2. **`GET /governance/dependencies`** — Re-benchmarked **~349 ms** warm with **1 DB round trip** (down from **~375 ms** / 2 executes). 60 s in-process cache for default list; see Dependencies endpoint profiling.
-3. **`GET /governance/bootstrap`** — Parallel KPI fetch; short in-process KPI cache (not Redis).
+3. **`GET /governance/bootstrap`** — Re-benchmarked **~357 ms** warm with **1 DB execute** (down from **~473 ms** / 3 executes). 3-min in-process cache; see Bootstrap endpoint profiling.
 4. **`GET /governance/register`** — Not first paint, but expensive when users switch tabs; same class of multi-subquery aggregation as analytics.
 5. **`GET /governance/analytics/detail`** — Progressive only; optimize after summary path is stable.
 
@@ -110,68 +110,121 @@ Defer: agent chat, charter generation, export endpoints, monolithic `GET /govern
 **Endpoint:** `GET /governance/dependencies?limit=50&offset=0`  
 **Handler:** `list_governance_dependencies` → `list_governance_dependencies_page` (`governance_service.py`)
 
-### Query shape (default internal request, after 2026-07-07 optimization)
+### Query shape (default internal request, after 2026-07-07 paginate-then-join)
 
-1. **Single paginated query** — `_dependency_list_stmt` selects only list-table columns (`id`, `project_id`, `title`, `dependency_type`, `owner_id`, `due_date`, `status`) plus `projects.name` and `coalesce(users.full_name, users.email)` for display. Adds `count(*) OVER () AS _pagination_total`, then `ORDER BY due_date NULLS LAST, created_at DESC`, `LIMIT 50 OFFSET 0`. **One DB execute** on the request session.
-2. **Count fallback** — separate lightweight `count(*)` query (no joins) only when the page is empty **and** `offset > 0` (rare).
-3. **Serialization** — `map_dependency_list_row` builds `ProjectDependencyListRead` from row tuples (no ORM hydration, no lazy loads).
-4. **Cache** — 60-second in-process TTL for unfiltered default requests (`limit`/`offset` only); invalidated on dependency create/update/resolve/delete.
+1. **Single paginated query** — `_dependency_enriched_page_stmt`:
+   - Inner `dep_page_ids` subquery: `SELECT id FROM project_dependencies WHERE org_id = ? AND deleted_at IS NULL ORDER BY due_date NULLS LAST, created_at DESC LIMIT 50 OFFSET 0`
+   - Scalar count subquery: `SELECT count(*) FROM project_dependencies WHERE …` (no joins)
+   - Outer query joins **only the page rows** to `projects` (name) and `users` (owner display name)
+   - Selects only list-table columns; no `description` or other heavy fields
+2. **Count fallback** — separate lightweight `count(*)` only when the page is empty **and** `offset > 0`.
+3. **Serialization** — `map_dependency_list_row` from row tuples (no ORM hydration).
+4. **Cache** — 60-second in-process TTL for unfiltered default requests; invalidated on dependency CRUD.
 
 Profiling log (when service `total_ms >= 200`):
 
 ```text
-governance_dependencies_list_profile total_ms=351.4 db_executes=1 row_count=6 limit=50 offset=0 cached=false
+governance_dependencies_list_profile total_ms=358.3 db_executes=1 row_count=6 limit=50 offset=0 cached=false
 ```
 
-Route-level timing (same request):
+### EXPLAIN ANALYZE — before vs after (dev DB, org `0ac27787-896c-49e4-b90a-616c13a3694e`, 6 active rows)
 
-```text
-governance_endpoint_timing endpoint=GET /governance/dependencies role=delivery_manager org_id=... row_count=6 total_ms=352.1 db_ms=350.4 serialization_ms=1.7
-```
+**Before (`count(*) OVER()` + join all rows):**
 
-### Pagination strategy comparison (dev DB, org `0ac27787-896c-49e4-b90a-616c13a3694e`, 6 rows)
+| Node | Observation |
+|------|-------------|
+| `Seq Scan` | On `project_dependencies` (planner choice at n=6; index used at scale with `enable_seqscan=off`) |
+| `Nested Loop` | Join **all** org rows to `projects_pkey` + `users_pkey` before `Limit` |
+| `WindowAgg` | `count(*) OVER()` scans full joined set |
+| `Sort` | `due_date`, `created_at DESC` — eliminated at scale when index `project_dependencies_active_org_due_created_idx` is chosen |
+| **Execution time** | **~0.15 ms** |
 
-| Strategy | DB executes | Warm total_ms | Notes |
-|----------|-------------|---------------|-------|
-| Sequential count + rows (2 round trips, 1 session) | 2 | ~411 | Baseline before parallel |
-| Parallel count + rows (2 round trips, 2 pool sessions) | 2 | ~352 | Prior optimization (2026-07-06) |
-| **`count(*) OVER()` single query (chosen)** | **1** | **~349** | Same warm latency, half the round trips, no extra pool connections |
-| In-process cache hit (60 s TTL) | 0 | **<5** | Repeat default list within TTL |
+**After (paginate ids, then join page):**
 
-**Finding:** SQL CPU time is negligible (<1 ms). End-to-end latency is dominated by **one Supabase round trip per cold request (~350 ms)** on the dev network. Sub-250 ms on cold load is not achievable without regional DB proximity; the 60 s in-process cache covers React Query refetches and tab revisits.
+| Node | Observation |
+|------|-------------|
+| `InitPlan` + `Aggregate` | Scalar `count(*)` — at scale uses `Index Only Scan` on `project_dependencies_active_org_id_idx` |
+| `Subquery Scan on dep_page_ids` + `Limit` | Paginates ids first — at scale uses `project_dependencies_active_org_due_created_idx` |
+| `Hash Join` | Joins only page rows (≤50) to full dependency row |
+| `Nested Loop` | `projects_pkey` + `users_pkey` on **page rows only** (not entire org) |
+| `Sort` | Small final re-sort of page rows |
+| **Execution time** | **~1.0 ms** at n=6 (extra hash join overhead); **wins at scale** by avoiding per-row joins on full org set |
 
-### EXPLAIN ANALYZE summary (dev DB, default list)
+**Indexes evaluated (not added):**
 
-| Query | Plan highlight | Execution time |
-|-------|----------------|----------------|
-| Paginated rows + `count(*) OVER()` | `Seq Scan` on `project_dependencies` (tiny table) → nested loop `projects_pkey` + `users_pkey` → window aggregate → `Sort` → `Limit` | **~0.2–0.5 ms** |
-| Count fallback (offset > 0, empty page) | `Seq Scan` on `project_dependencies` + `Aggregate` | **~0.07 ms** |
+| Proposed | Verdict |
+|----------|---------|
+| `(org_id, deleted_at, created_at DESC)` | **Rejected** — `deleted_at` redundant with partial index `WHERE deleted_at IS NULL`; `created_at` alone does not match `ORDER BY due_date, created_at DESC` |
+| `(org_id, project_id, deleted_at, created_at DESC)` | **Rejected** — `project_id` filter uses existing `project_dependencies_project_id_idx`; sort key is `due_date` first |
+| `(org_id, status, deleted_at, created_at DESC)` | **Rejected** — existing `project_dependencies_active_org_status_due_project_idx` covers status-filtered open/blocking queries; general sort still needs `due_date` before `created_at` |
 
-No `count() OVER()` on a separate heavy join fan-out — the window runs on the same filtered row set as the page. Count query fallback has **no joins**.
+**Existing indexes used at scale** (`enable_seqscan=off` simulation):
 
-### Optimizations applied
+- `project_dependencies_active_org_due_created_idx` — default list `ORDER BY due_date NULLS LAST, created_at DESC`
+- `project_dependencies_active_org_id_idx` — scalar count (`Index Only Scan`)
 
-| Date | Change | Rationale | Effect |
-|------|--------|-----------|--------|
-| 2026-07-06 | Parallel count + rows in `_execute_paginated_rows` | Overlap network latency | Warm **~306–310 ms** (superseded) |
-| 2026-07-06 | Indexes `project_dependencies_active_org_due_created_idx`, `project_dependencies_active_org_id_idx` | Match org filter + default sort / count | Planner ready at scale |
-| **2026-07-07** | **`count(*) OVER()` on request session** | Reduce 2 round trips → 1 | Warm **~349 ms**, `db_executes=1` |
-| **2026-07-07** | **60 s in-process cache** for default unfiltered list | Repeat fetches without DB | **<5 ms** within TTL |
-| **2026-07-07** | **Profile log** `governance_dependencies_list_profile` | Observability when `total_ms >= 200` | Kept as lightweight debug |
-
-Migration: `supabase/migrations/20260706143000_governance_dependencies_list_index.sql`  
-**No new indexes added** — EXPLAIN on dev DB did not justify additional indexes at current table sizes.
+Migration: `supabase/migrations/20260706143000_governance_dependencies_list_index.sql` (already applied). **No new indexes added.**
 
 ### Before / after timing (dev DB, delivery manager, cache cleared each run)
 
-| Metric | Phase 0 baseline | After parallel (2026-07-06) | After single-query (2026-07-07) |
-|--------|------------------|-------------------------------|----------------------------------|
-| `list_governance_dependencies_page` warm | **~375 ms** | **~306–352 ms** | **~349 ms** |
-| DB executes (default page) | 2 (sequential) | 2 (parallel) | **1** |
-| `serialization_ms` | ~1–2 ms | ~1–2 ms | ~1–2 ms |
-| Cache hit (60 s TTL) | N/A | N/A | **<5 ms** |
+| Metric | Before window-count | After paginate-then-join |
+|--------|---------------------|--------------------------|
+| `list_governance_dependencies_page` warm | **355–419 ms** | **349–368 ms** |
+| DB executes (default page) | **1** | **1** |
+| `serialization_ms` | ~1–2 ms | ~1–2 ms |
+| Cache hit (60 s TTL) | **<5 ms** | **<5 ms** |
 
-**Note:** Warm cold-cache-cleared latency is network-bound at ~350 ms per round trip. Target <200–250 ms requires co-located DB/API or accepting cache hits for repeat requests.
+**Finding:** SQL CPU is negligible on dev DB (<1 ms). End-to-end latency is dominated by **one Supabase round trip (~350 ms)**. The paginate-then-join change prevents join fan-out from growing with org dependency volume; cold latency is network-bound.
+
+## Bootstrap endpoint profiling
+
+**Endpoint:** `GET /governance/bootstrap`  
+**Handler:** `governance_bootstrap` → `get_governance_bootstrap` (`dashboard_service.py`)
+
+### Query shape (after 2026-07-07 optimization)
+
+**Internal users** (`delivery_manager`, `bsg_leadership`, `super_admin`) — **one DB execute** combining:
+
+1. **Action KPIs** — conditional `count(*) FILTER (...)` on `governance_actions` (open, overdue, SLA on-time/total for 90-day window).
+2. **Inventory KPIs** — scalar subqueries on `project_dependencies` (blocking) and `project_scope_states` (pending revision).
+3. **Escalation KPIs** — conditional `count(*) FILTER (...)` on `governance_escalations` (open + high/critical).
+
+**Client users** — **one DB execute**: escalation aggregates scoped via `project_id IN (SELECT … FROM project_assignments WHERE user_id = ?)`.
+
+No list payloads, no joins for enrichment, no weekly summaries or charters. Response is KPI counts only (`GovernanceBootstrapRead.kpis`); legacy list fields remain empty defaults.
+
+Profiling log (when KPI compute `total_ms >= 150`):
+
+```text
+governance_bootstrap_profile total_ms=357.2 db_executes=1 role=delivery_manager org_id=...
+```
+
+### DB execute count comparison
+
+| Role | Before | After |
+|------|--------|-------|
+| Internal (DM/leadership) | **3** sequential executes | **1** |
+| Client | **2** (assignments + escalations) | **1** |
+| Cache hit (3 min TTL) | 0 | **0** (<5 ms) |
+
+### EXPLAIN ANALYZE summary (dev DB)
+
+| Component | Plan highlight | SQL execution time |
+|-----------|----------------|-------------------|
+| Combined KPI select | Independent scalar subqueries / aggregate subqueries; no row fan-out | **<2 ms** |
+
+**Finding:** SQL CPU is negligible. Warm latency is dominated by **one Supabase round trip (~357 ms)**. Prior path used three sequential round trips (~473 ms warm).
+
+### Before / after timing (dev DB, delivery manager, cache cleared each run)
+
+| Metric | Before (docs baseline) | Before (re-benchmark) | After |
+|--------|------------------------|----------------------|-------|
+| `get_governance_bootstrap` warm | ~343 ms | **~473 ms** | **~357 ms** |
+| DB executes (internal) | 3 | 3 | **1** |
+| `serialization_ms` | ~0.1 ms | ~0.1 ms | ~0.1 ms |
+| Cache hit (3 min TTL) | <5 ms | <5 ms | <5 ms |
+
+**Note:** Target 150–200 ms on cold load is not achievable on remote Supabase with a single round trip at ~357 ms. The existing 3-minute in-process cache covers repeat dashboard visits.
 
 ## Analytics summary endpoint profiling
 
@@ -227,6 +280,66 @@ governance_endpoint_timing endpoint=GET /governance/analytics/summary role=deliv
 | Cache hit (within 3 min TTL) | N/A | **<5 ms** |
 
 **Note:** Consistent **<300 ms** on remote Supabase is not achievable with the current two-query design without accepting cache hits or moving DB closer to the API. The 3-minute in-process cache covers repeat dashboard visits within a session.
+
+## Register endpoint profiling
+
+**Endpoint:** `GET /governance/register?limit=25&offset=0`  
+**Handler:** `list_governance_register` → `list_governance_register_page` (`register_service.py`)
+
+### Summary table (`project_governance_summary`)
+
+Precomputed per-project counts for register badges. Migrations:
+
+- `supabase/migrations/20260704120000_project_governance_summary.sql` — table + backfill
+- `supabase/migrations/20260707100000_project_governance_summary_org_updated_idx.sql` — `(org_id, updated_at)` for stale-row lookup
+
+| Column | Register UI field |
+|--------|-------------------|
+| `open_dependencies_count` | `open_dependencies` |
+| `blocked_dependencies_count` | `blocking_dependencies` |
+| `blocking_overdue_dependencies_count` | health (red) |
+| `open_actions_count` | `open_actions` |
+| `overdue_actions_count` | health (amber) |
+| `open_escalations_count` | `open_escalations` |
+| `critical_escalations_count` | health (red) |
+| `pending_scope_changes_count` | (not exposed; scope from `project_scope_states`) |
+
+Write paths call `refresh_project_governance_summary` on dependency/action/escalation/scope CRUD (and delivery-integration escalations). Paginated register rows still come from `projects` + `project_scope_states`; counts are read from the summary table (no live `GROUP BY` on governance source tables).
+
+### Query shape (internal user, after optimization)
+
+1. **Date rollover (0–1 round trips)** — `ensure_org_time_sensitive_summary_counts`: in-process “refreshed today” cache; otherwise `EXISTS` stale rows, then one combined overdue-actions + blocking-overdue-deps aggregate when the UTC day rolled over. Skipped when `org_id` is null (super admin).
+2. **Register page (1 round trip)** — `projects` ⋈ scoped visible projects ⋈ `project_scope_states` ⋈ `project_governance_summary` with `count(*) OVER()` pagination. Client scoping uses embedded `scoped_project_query` assignment filter (no extra assignments query).
+
+Profiling log (when `total_ms >= 200`):
+
+```text
+governance_register_list_profile total_ms=414.0 db_executes=2 row_count=19 limit=25 offset=0 cached=false
+```
+
+### Before / after timing (dev DB, delivery manager org `0ac27787-896c-49e4-b90a-616c13a3694e`, cache cleared)
+
+| Metric | Before | After (cold, runs 2–5) | After (cache hit) |
+|--------|--------|------------------------|-------------------|
+| `list_governance_register_page` | **~403 ms** | **407–419 ms** | **<1 ms** |
+| DB executes (internal DM) | **2–4** (stale-day refresh + page; client +1 assignments) | **2** | **0** |
+| Live aggregation on read | None (summary table already wired) | None | None |
+| `serialization_ms` | ~0.1 ms | ~0.1 ms | ~0 ms |
+
+**Finding:** End-to-end latency remains dominated by **two Supabase round trips** (~200 ms each). The summary table prevents register cost from growing with dependency/action/escalation row volume; counts are O(1) per project at read time. A 60-second in-process cache covers repeat Register tab visits within a session.
+
+### Optimizations applied (2026-07-07)
+
+| Change | Rationale | Effect |
+|--------|-----------|--------|
+| `project_governance_summary` table + write-path refresh | Precompute counts; avoid read-time `GROUP BY` as data grows | Stable per-page read cost |
+| In-process org day cache + `EXISTS` stale check | Skip 1–3 rollover queries on repeat reads same UTC day | Fewer round trips on tab revisits |
+| Combined overdue + blocking-overdue aggregate on rollover | 2 queries → 1 on day boundary | Faster midnight rollover |
+| Single-query `compute_project_governance_counts` on write | 4 executes → 1 per mutation refresh | Faster write-path summary updates |
+| Remove redundant `_client_project_ids` on register read | `scoped_project_query` already embeds assignment filter | −1 round trip for clients |
+| `count(*) OVER()` pagination | Already shared with dependencies | 1 execute for page + total |
+| 60 s register list cache + invalidation on summary refresh | Repeat tab loads | **<1 ms** cache hits |
+| Index `(org_id, updated_at)` | Stale-summary lookup | Supports `EXPLAIN` index scan at scale |
 
 ## Metrics to compare after each phase
 

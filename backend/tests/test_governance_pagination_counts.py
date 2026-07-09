@@ -9,7 +9,9 @@ from app.agents.governance.services.governance_service import (
     _apply_dependency_page_filters,
     _bounded_list_filters,
     _dependency_count_stmt,
+    _dependency_enriched_page_stmt,
     _dependency_list_stmt,
+    _execute_dependency_paginated_page,
     _execute_paginated_rows,
     _invalidate_dependencies_list_cache,
     _is_default_dependencies_cacheable,
@@ -110,12 +112,16 @@ async def test_execute_paginated_rows_returns_zero_total_for_empty_first_page() 
 async def test_dependency_count_query_preserves_filters(monkeypatch) -> None:
     captured: dict[str, str] = {}
 
-    async def capture_statement(_session, stmt, *, limit, offset, count_stmt):
-        captured["count_sql"] = str(count_stmt.compile(compile_kwargs={"literal_binds": False}))
+    async def capture_statement(_session, _user, filters, *, limit, offset):
+        captured["page_sql"] = str(
+            _dependency_enriched_page_stmt(_user, filters, limit=limit, offset=offset).compile(
+                compile_kwargs={"literal_binds": False}
+            )
+        )
         return PaginatedGovernanceRows(items=[], total=3, limit=limit, offset=offset)
 
     monkeypatch.setattr(
-        "app.agents.governance.services.governance_service._execute_paginated_rows",
+        "app.agents.governance.services.governance_service._execute_dependency_paginated_page",
         capture_statement,
     )
 
@@ -130,13 +136,61 @@ async def test_dependency_count_query_preserves_filters(monkeypatch) -> None:
         offset=5,
     )
 
-    count_sql = captured["count_sql"]
-    assert "project_dependencies.project_id" in count_sql
-    assert "project_dependencies.status" in count_sql
-    assert "project_dependencies.title" in count_sql.lower() or "ilike" in count_sql.lower()
+    page_sql = captured["page_sql"]
+    assert "project_dependencies.project_id" in page_sql
+    assert "project_dependencies.status" in page_sql
+    assert "project_dependencies.title" in page_sql.lower() or "ilike" in page_sql.lower()
     assert page.total == 3
     assert page.limit == 10
     assert page.offset == 5
+
+
+@pytest.mark.asyncio
+async def test_execute_dependency_paginated_page_uses_scalar_count_not_window() -> None:
+    row = MagicMock(project_id=uuid4(), title="Alpha")
+    setattr(row, PAGINATION_TOTAL_LABEL, 7)
+    rows_result = MagicMock()
+    rows_result.all.return_value = [row]
+    session = AsyncMock()
+    captured: dict[str, str] = {}
+
+    async def _capture_execute(stmt, *_args, **_kwargs):
+        captured["sql"] = str(stmt.compile(compile_kwargs={"literal_binds": False}))
+        return rows_result
+
+    session.execute.side_effect = _capture_execute
+
+    page = await _execute_dependency_paginated_page(
+        session,
+        _user(),
+        _bounded_list_filters(limit=2, offset=0),
+        limit=2,
+        offset=0,
+    )
+
+    assert page.total == 7
+    assert page.items == [row]
+    assert page.db_executes == 1
+    assert session.execute.await_count == 1
+    sql = captured["sql"].lower()
+    assert "dep_page_ids" in sql
+    assert "over()" not in sql
+
+
+def test_dependency_enriched_page_stmt_limits_before_joins() -> None:
+    sql = str(
+        _dependency_enriched_page_stmt(
+            _user(),
+            _bounded_list_filters(limit=25, offset=0),
+            limit=25,
+            offset=0,
+        ).compile(compile_kwargs={"literal_binds": False})
+    ).lower()
+
+    assert "dep_page_ids" in sql
+    assert "limit" in sql
+    assert "over()" not in sql
+    assert sql.index("dep_page_ids") < sql.index("join projects")
 
 
 def test_dependency_page_filters_apply_to_count_and_list_statements() -> None:
@@ -222,6 +276,9 @@ def test_default_dependencies_request_is_cacheable() -> None:
     filtered = _bounded_list_filters(limit=50, offset=0, search="vendor")
     assert _is_default_dependencies_cacheable(filtered) is False
 
+    assert _is_default_dependencies_cacheable(_bounded_list_filters(limit=25, offset=0)) is False
+    assert _is_default_dependencies_cacheable(_bounded_list_filters(limit=50, offset=50)) is False
+
 
 @pytest.mark.asyncio
 async def test_list_governance_dependencies_page_uses_cache_for_default_request(
@@ -229,16 +286,22 @@ async def test_list_governance_dependencies_page_uses_cache_for_default_request(
 ) -> None:
     _invalidate_dependencies_list_cache()
     user = _user()
-    cached_page = PaginatedGovernanceRows(items=[MagicMock()], total=1, limit=50, offset=0)
+    cached_page = PaginatedGovernanceRows(
+        items=[MagicMock()],
+        total=1,
+        limit=50,
+        offset=0,
+        db_executes=1,
+    )
     calls = 0
 
-    async def _fake_execute(*_args, **_kwargs):
+    async def _fake_execute(_session, _user, _filters, *, limit, offset):
         nonlocal calls
         calls += 1
         return cached_page
 
     monkeypatch.setattr(
-        "app.agents.governance.services.governance_service._execute_paginated_rows",
+        "app.agents.governance.services.governance_service._execute_dependency_paginated_page",
         _fake_execute,
     )
 
@@ -247,5 +310,32 @@ async def test_list_governance_dependencies_page_uses_cache_for_default_request(
     second = await list_governance_dependencies_page(session, user, limit=50, offset=0)
 
     assert calls == 1
-    assert first is second
+    assert first.total == second.total
+    assert first.db_executes == 1
+    assert second.db_executes == 0
+    _invalidate_dependencies_list_cache()
+
+
+@pytest.mark.asyncio
+async def test_list_governance_dependencies_page_skips_cache_for_non_first_paint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _invalidate_dependencies_list_cache()
+    calls = 0
+
+    async def _fake_execute(_session, _user, _filters, *, limit, offset):
+        nonlocal calls
+        calls += 1
+        return PaginatedGovernanceRows(items=[], total=0, limit=limit, offset=offset)
+
+    monkeypatch.setattr(
+        "app.agents.governance.services.governance_service._execute_dependency_paginated_page",
+        _fake_execute,
+    )
+
+    session = AsyncMock()
+    await list_governance_dependencies_page(session, _user(), limit=25, offset=0)
+    await list_governance_dependencies_page(session, _user(), limit=25, offset=0)
+
+    assert calls == 2
     _invalidate_dependencies_list_cache()

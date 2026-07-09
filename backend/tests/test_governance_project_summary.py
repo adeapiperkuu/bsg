@@ -6,6 +6,7 @@ import pytest
 
 from app.agents.governance.services.governance_service import create_dependency
 from app.agents.governance.services.project_governance_summary_service import (
+    _org_summary_day_refreshed,
     compute_project_governance_counts,
     ensure_org_time_sensitive_summary_counts,
     refresh_project_governance_summary,
@@ -45,12 +46,16 @@ async def test_compute_project_governance_counts_aggregates_source_rows() -> Non
     project_id = uuid4()
     session = AsyncMock()
     session.execute = AsyncMock(
-        side_effect=[
-            _count_result(open_dependencies=3, blocked=1, blocking_overdue=1),
-            _count_result(open_actions=4, overdue_actions=2),
-            _count_result(open_escalations=2, critical_escalations=1),
-            MagicMock(scalar_one=MagicMock(return_value=1)),
-        ]
+        return_value=_count_result(
+            open_dependencies=3,
+            blocked=1,
+            blocking_overdue=1,
+            open_actions=4,
+            overdue_actions=2,
+            open_escalations=2,
+            critical_escalations=1,
+            pending_scope=1,
+        )
     )
 
     counts = await compute_project_governance_counts(
@@ -65,6 +70,7 @@ async def test_compute_project_governance_counts_aggregates_source_rows() -> Non
     assert counts.open_escalations_count == 2
     assert counts.critical_escalations_count == 1
     assert counts.pending_scope_changes_count == 1
+    assert session.execute.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -176,7 +182,7 @@ async def test_create_dependency_refreshes_project_summary(
     )
     monkeypatch.setattr(
         "app.agents.governance.services.governance_service.log_governance_event",
-        AsyncMock(),
+        AsyncMock(return_value=0),
     )
 
     session = AsyncMock()
@@ -218,7 +224,7 @@ async def test_register_query_reads_project_governance_summary(
     )
     monkeypatch.setattr(
         "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
-        AsyncMock(),
+        AsyncMock(return_value=0),
     )
 
     await list_governance_register_page(AsyncMock(), _user(), limit=10, offset=0)
@@ -247,7 +253,7 @@ async def test_register_page_still_applies_pagination(
     )
     monkeypatch.setattr(
         "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
-        AsyncMock(),
+        AsyncMock(return_value=0),
     )
 
     page = await list_governance_register_page(AsyncMock(), _user(), limit=5, offset=5)
@@ -274,11 +280,11 @@ async def test_register_org_isolation_joins_summary_to_project_org(
     )
     monkeypatch.setattr(
         "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
-        AsyncMock(),
+        AsyncMock(return_value=0),
     )
 
     await list_governance_register_page(
-        AsyncMock(),
+        AsyncMock(return_value=0),
         _user(org_id=org_a),
         limit=25,
         offset=0,
@@ -302,7 +308,7 @@ async def test_register_count_query_omits_summary_join(monkeypatch: pytest.Monke
     )
     monkeypatch.setattr(
         "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
-        AsyncMock(),
+        AsyncMock(return_value=0),
     )
 
     from app.agents.governance.services.register_service import list_governance_register_page
@@ -319,6 +325,7 @@ async def test_register_count_query_omits_summary_join(monkeypatch: pytest.Monke
 async def test_ensure_org_time_sensitive_summary_counts_updates_stale_rows() -> None:
     org_id = uuid4()
     project_id = uuid4()
+    _org_summary_day_refreshed.clear()
     stale_summary = ProjectGovernanceSummary(
         org_id=org_id,
         project_id=project_id,
@@ -327,25 +334,43 @@ async def test_ensure_org_time_sensitive_summary_counts_updates_stale_rows() -> 
         updated_at=datetime.now(UTC) - timedelta(days=1),
     )
 
+    exists_lookup = MagicMock()
+    exists_lookup.scalar_one_or_none.return_value = 1
+
     stale_lookup = MagicMock()
     stale_lookup.scalars.return_value.all.return_value = [stale_summary]
 
-    overdue_lookup = MagicMock()
-    overdue_lookup.all.return_value = [(project_id, 2)]
-
-    blocking_lookup = MagicMock()
-    blocking_lookup.all.return_value = [(project_id, 1)]
+    combined_lookup = MagicMock()
+    combined_lookup.all.return_value = [
+        MagicMock(project_id=project_id, overdue_actions=2, blocking_overdue=1)
+    ]
 
     session = AsyncMock()
     session.execute = AsyncMock(
-        side_effect=[stale_lookup, overdue_lookup, blocking_lookup]
+        side_effect=[exists_lookup, stale_lookup, combined_lookup]
     )
     session.flush = AsyncMock()
 
-    await ensure_org_time_sensitive_summary_counts(
+    db_executes = await ensure_org_time_sensitive_summary_counts(
         session, org_id, today=date(2026, 7, 6)
     )
 
     assert stale_summary.overdue_actions_count == 2
     assert stale_summary.blocking_overdue_dependencies_count == 1
+    assert db_executes == 3
     session.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ensure_org_time_sensitive_summary_counts_skips_when_fresh_today() -> None:
+    org_id = uuid4()
+    session = AsyncMock()
+    exists_lookup = MagicMock()
+    exists_lookup.scalar_one_or_none.return_value = None
+    session.execute = AsyncMock(return_value=exists_lookup)
+    _org_summary_day_refreshed.clear()
+
+    await ensure_org_time_sensitive_summary_counts(session, org_id, today=date(2026, 7, 6))
+    await ensure_org_time_sensitive_summary_counts(session, org_id, today=date(2026, 7, 6))
+
+    assert session.execute.await_count == 1

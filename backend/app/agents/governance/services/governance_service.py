@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from time import perf_counter
 from uuid import UUID
@@ -58,7 +58,13 @@ from app.services.scoping import get_visible_project
 logger = logging.getLogger(__name__)
 
 PAGINATION_TOTAL_LABEL = "_pagination_total"
+# In-process cache for the governance first-paint dependencies table (limit=50, offset=0, no filters).
+# EXPLAIN ANALYZE on dev DB shows SQL execution <1 ms; warm ~350 ms latency is dominated by the
+# Supabase/network round trip, not the query plan. Additional indexes do not materially improve
+# dev latency at current table sizes — this cache avoids repeat round trips within a session.
 DEPENDENCIES_LIST_CACHE_TTL = timedelta(seconds=60)
+DEPENDENCIES_FIRST_PAINT_LIMIT = 50
+DEPENDENCIES_FIRST_PAINT_OFFSET = 0
 
 GOVERNANCE_READ_ROLES = {
     AppRole.DELIVERY_MANAGER,
@@ -428,8 +434,11 @@ def _dependencies_cache_key(
 
 
 def _is_default_dependencies_cacheable(filters: GovernanceListFilters) -> bool:
+    """Only cache the unfiltered first-paint request (GET /governance/dependencies?limit=50&offset=0)."""
     return (
-        filters.project_id is None
+        filters.limit == DEPENDENCIES_FIRST_PAINT_LIMIT
+        and filters.offset == DEPENDENCIES_FIRST_PAINT_OFFSET
+        and filters.project_id is None
         and filters.status is None
         and filters.dependency_type is None
         and filters.owner_id is None
@@ -462,6 +471,114 @@ def _dependency_list_stmt(current_user: CurrentUser) -> Select:
         .where(ProjectDependency.deleted_at.is_(None))
     )
     return _apply_org_filter(stmt, ProjectDependency.org_id, current_user)
+
+
+def _dependency_ids_page_subquery(
+    current_user: CurrentUser,
+    filters: GovernanceListFilters,
+) -> Select:
+    stmt = select(ProjectDependency.id).where(ProjectDependency.deleted_at.is_(None))
+    stmt = _apply_org_filter(stmt, ProjectDependency.org_id, current_user)
+    stmt = _apply_dependency_page_filters(stmt, filters)
+    return stmt.order_by(
+        ProjectDependency.due_date.asc().nulls_last(),
+        ProjectDependency.created_at.desc(),
+    )
+
+
+def _dependency_enriched_page_stmt(
+    current_user: CurrentUser,
+    filters: GovernanceListFilters,
+    *,
+    limit: int,
+    offset: int,
+) -> Select:
+    """Paginate dependency ids first, then join only the page rows for project/owner names.
+
+    One DB execute (scalar count + limited id subquery + joins on page rows). PostgreSQL CPU is
+    negligible on dev DB; end-to-end latency is dominated by the remote Supabase round trip.
+    """
+    page_ids = (
+        _dependency_ids_page_subquery(current_user, filters)
+        .limit(limit)
+        .offset(offset)
+        .subquery("dep_page_ids")
+    )
+    count_stmt = _apply_dependency_page_filters(
+        _dependency_count_stmt(current_user),
+        filters,
+    )
+    total_scalar = count_stmt.scalar_subquery()
+
+    owner = aliased(User)
+    return (
+        select(
+            ProjectDependency.id,
+            ProjectDependency.project_id,
+            ProjectDependency.title,
+            ProjectDependency.dependency_type,
+            ProjectDependency.owner_id,
+            ProjectDependency.due_date,
+            ProjectDependency.status,
+            Project.name.label("project_name"),
+            func.coalesce(owner.full_name, owner.email).label("owner_name"),
+            total_scalar.label(PAGINATION_TOTAL_LABEL),
+        )
+        .select_from(page_ids)
+        .join(ProjectDependency, ProjectDependency.id == page_ids.c.id)
+        .join(Project, Project.id == ProjectDependency.project_id)
+        .outerjoin(owner, owner.id == ProjectDependency.owner_id)
+        .order_by(
+            ProjectDependency.due_date.asc().nulls_last(),
+            ProjectDependency.created_at.desc(),
+        )
+    )
+
+
+async def _execute_dependency_paginated_page(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    filters: GovernanceListFilters,
+    *,
+    limit: int,
+    offset: int,
+) -> PaginatedGovernanceRows:
+    """One round trip: scalar count + limited id subquery + joins on page rows only."""
+    stmt = _dependency_enriched_page_stmt(
+        current_user,
+        filters,
+        limit=limit,
+        offset=offset,
+    )
+    rows = (await session.execute(stmt)).all()
+    db_executes = 1
+
+    if not rows:
+        if offset > 0:
+            count_stmt = _apply_dependency_page_filters(
+                _dependency_count_stmt(current_user),
+                filters,
+            )
+            total = int((await session.execute(count_stmt)).scalar_one())
+            db_executes = 2
+        else:
+            total = 0
+        return PaginatedGovernanceRows(
+            items=[],
+            total=total,
+            limit=limit,
+            offset=offset,
+            db_executes=db_executes,
+        )
+
+    total = int(getattr(rows[0], PAGINATION_TOTAL_LABEL))
+    return PaginatedGovernanceRows(
+        items=rows,
+        total=total,
+        limit=limit,
+        offset=offset,
+        db_executes=db_executes,
+    )
 
 
 def _action_list_stmt(current_user: CurrentUser) -> Select:
@@ -661,19 +778,16 @@ async def list_governance_dependencies_page(
     if cacheable:
         cached = _dependencies_list_cache.get(cache_key)
         if cached and now - cached[0] < DEPENDENCIES_LIST_CACHE_TTL:
-            return cached[1]
+            # Cache hit: no DB work; db_executes=0 for profiling.
+            return replace(cached[1], db_executes=0)
 
     started = perf_counter()
-    stmt = _dependency_list_stmt(current_user)
-    count_stmt = _dependency_count_stmt(current_user)
-    stmt = _apply_dependency_page_filters(stmt, filters)
-    count_stmt = _apply_dependency_page_filters(count_stmt, filters)
-    stmt = stmt.order_by(
-        ProjectDependency.due_date.asc().nulls_last(),
-        ProjectDependency.created_at.desc(),
-    )
-    page = await _execute_paginated_rows(
-        session, stmt, limit=filters.limit, offset=filters.offset, count_stmt=count_stmt
+    page = await _execute_dependency_paginated_page(
+        session,
+        current_user,
+        filters,
+        limit=filters.limit,
+        offset=filters.offset,
     )
     if cacheable:
         _dependencies_list_cache[cache_key] = (now, page)

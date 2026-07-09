@@ -1531,6 +1531,7 @@ class ProjectGovernanceSummary(Base, UuidPrimaryKey, UpdatedAt):
         ),
         Index("project_governance_summary_org_id_idx", "org_id"),
         Index("project_governance_summary_project_id_idx", "project_id"),
+        Index("project_governance_summary_org_updated_idx", "org_id", "updated_at"),
     )
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
