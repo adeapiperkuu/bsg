@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
@@ -28,7 +28,13 @@ import { Label } from "@/components/ui/label";
 import { createProjectTeam, deleteTeam, updateTeam } from "@/lib/api";
 import { useProjectsQuery } from "@/lib/queries/delivery";
 import { queryKeys } from "@/lib/queries/keys";
-import { useProjectTeamsQuery } from "@/lib/queries/workforce";
+import {
+  projectWorkforceSummaryQueryOptions,
+  useProjectTeamsQuery,
+} from "@/lib/queries/workforce";
+import { canManageWorkforce, canReadInternalWorkforce } from "@/lib/workforcePermissions";
+import { useAuthStore } from "@/stores/useAuthStore";
+import { TeamMembersDrawer } from "@/components/bsg/workforce-management/TeamMembersDrawer";
 import { cn } from "@/lib/utils";
 import type { DeliverySite, TeamCreatePayload, TeamRead } from "@/types/workforce";
 import { Search, X } from "lucide-react";
@@ -67,9 +73,32 @@ function TeamsPage() {
     }
   }, [projects, projectId]);
 
+  const userRole = useAuthStore((state) => state.user?.role);
+  const canManage = canManageWorkforce(userRole);
+  const canReadMembers = canReadInternalWorkforce(userRole);
+
   const teamsQuery = useProjectTeamsQuery(projectId);
   const teams = useMemo(() => teamsQuery.data ?? [], [teamsQuery.data]);
   const loading = projectsQuery.isLoading || (Boolean(projectId) && teamsQuery.isLoading);
+
+  // Workforce summary gives every annotator in the project — used for member
+  // counts and for the "assign existing member" pool inside the drawer.
+  const summaryQuery = useQuery(
+    projectWorkforceSummaryQueryOptions(projectId, canReadMembers),
+  );
+  const annotators = useMemo(
+    () => summaryQuery.data?.annotators ?? [],
+    [summaryQuery.data],
+  );
+  const memberCountByTeam = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const annotator of annotators) {
+      counts.set(annotator.team_id, (counts.get(annotator.team_id) ?? 0) + 1);
+    }
+    return counts;
+  }, [annotators]);
+
+  const [membersTeam, setMembersTeam] = useState<TeamRead | null>(null);
 
   const [query, setQuery] = useState("");
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -310,6 +339,7 @@ function TeamsPage() {
                     <th className="py-2 pr-3 font-medium">Domain</th>
                     <th className="py-2 pr-3 font-medium">Site</th>
                     <th className="py-2 pr-3 font-medium">Project</th>
+                    {canReadMembers && <th className="py-2 pr-3 font-medium">Members</th>}
                     <th className="py-2 pr-3 font-medium">Status</th>
                     <th className="py-2 pr-3 font-medium"></th>
                   </tr>
@@ -321,11 +351,27 @@ function TeamsPage() {
                       <td className="py-2.5 pr-3">{team.domain || "No data"}</td>
                       <td className="py-2.5 pr-3">{siteLabel(team.site)}</td>
                       <td className="py-2.5 pr-3">{selectedProject?.name ?? "No data"}</td>
+                      {canReadMembers && (
+                        <td className="py-2.5 pr-3">
+                          {summaryQuery.isLoading
+                            ? "…"
+                            : (memberCountByTeam.get(team.id) ?? 0)}
+                        </td>
+                      )}
                       <td className="py-2.5 pr-3">
                         <StatusPill status={team.is_active ? "Active" : "Inactive"} />
                       </td>
                       <td className="py-2.5 pr-3">
                         <div className="flex items-center gap-2">
+                          {canReadMembers && (
+                            <button
+                              type="button"
+                              onClick={() => setMembersTeam(team)}
+                              className="rounded-sm border border-border px-3 py-1 text-xs font-medium hover:bg-elevated"
+                            >
+                              Members
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => setEditingTeam({ ...team })}
@@ -562,6 +608,15 @@ function TeamsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <TeamMembersDrawer
+        open={Boolean(membersTeam)}
+        onOpenChange={(open) => !open && setMembersTeam(null)}
+        team={membersTeam}
+        annotators={annotators}
+        projectId={projectId}
+        canManage={canManage}
+      />
     </div>
   );
 }
