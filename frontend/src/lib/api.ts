@@ -3,7 +3,10 @@ import type { AgentQueryCreate, AgentQueryRead } from "@/types/workforce";
 import type {
   KnowledgeBootstrapApi,
   KnowledgeDocumentApi,
+  KnowledgeDocumentAiSummaryApi,
+  KnowledgeDocumentApprovalEventApi,
   KnowledgeDocumentSummaryApi,
+  KnowledgeDocumentLifecycleActionApi,
   KnowledgeAskResponseApi,
   KnowledgeAnswerModeApi,
   AgentQueryApi,
@@ -15,9 +18,10 @@ import type {
   KnowledgeFeedbackRequestApi,
   KnowledgeFeedbackResponseApi,
   KnowledgeFolderApi,
-  KnowledgeGapTodoApi,
   KnowledgeLibraryHealthApi,
+  KnowledgeRelatedKnowledgeApi,
   KnowledgeRetrievalSettingsApi,
+  KnowledgeSuggestionApi,
   KnowledgeVersionCompareApi,
 } from "@/types/knowledge";
 import type {
@@ -726,18 +730,22 @@ const DEFAULT_KNOWLEDGE_PERMISSIONS: KnowledgeBootstrapApi["permissions"] = {
   can_upload: true,
   can_manage_eval: true,
   can_adjust_retrieval_scope: true,
-  can_resolve_gaps: true,
 };
 
 const EMPTY_KNOWLEDGE_LIBRARY_HEALTH: KnowledgeLibraryHealthApi = {
   ready_count: 0,
+  ready_for_retrieval_count: 0,
+  approved_and_indexed_count: 0,
   needs_review_count: 0,
   expired_count: 0,
   needs_reindex_count: 0,
+  failed_processing_count: 0,
+  missing_metadata_count: 0,
   indexing_count: 0,
   draft_count: 0,
   archived_count: 0,
-  open_gaps: [],
+  approaching_expiry_count: 0,
+  outdated_count: 0,
 };
 
 function toDocumentSummary(doc: KnowledgeDocumentApi): KnowledgeDocumentSummaryApi {
@@ -753,11 +761,19 @@ function toDocumentSummary(doc: KnowledgeDocumentApi): KnowledgeDocumentSummaryA
     status: doc.status,
     owner_approver: doc.owner_approver,
     effective_date: doc.effective_date,
+    expiry_date: doc.expiry_date,
+    submitted_at: doc.submitted_at,
+    reviewed_at: doc.reviewed_at,
+    approved_at: doc.approved_at,
+    rejection_reason: doc.rejection_reason,
     file_name: doc.file_name,
     processing_status: doc.processing_status,
     processing_error: doc.processing_error,
     indexing_status: doc.indexing_status,
     workflow_state: doc.workflow_state,
+    retrieval_ready: doc.retrieval_ready,
+    retrieval_readiness_reason: doc.retrieval_readiness_reason,
+    retrieval_action: doc.retrieval_action,
     updated_at: doc.updated_at,
   };
 }
@@ -785,7 +801,16 @@ function buildBootstrapFromDocuments(
     permissions: DEFAULT_KNOWLEDGE_PERMISSIONS,
     library_health: {
       ready_count:
-        libraryHealth?.ready_count ?? documents.filter((d) => d.workflow_state === "approved").length,
+        libraryHealth?.ready_for_retrieval_count ??
+        libraryHealth?.ready_count ??
+        documents.filter((d) => d.retrieval_ready).length,
+      ready_for_retrieval_count:
+        libraryHealth?.ready_for_retrieval_count ??
+        libraryHealth?.ready_count ??
+        documents.filter((d) => d.retrieval_ready).length,
+      approved_and_indexed_count:
+        libraryHealth?.approved_and_indexed_count ??
+        documents.filter((d) => d.status === "approved" && d.indexing_status === "indexed").length,
       needs_review_count:
         libraryHealth?.needs_review_count ??
         documents.filter((d) => d.workflow_state === "needs_review").length,
@@ -794,6 +819,14 @@ function buildBootstrapFromDocuments(
       needs_reindex_count:
         libraryHealth?.needs_reindex_count ??
         documents.filter((d) => d.workflow_state === "needs_reindex").length,
+      failed_processing_count:
+        libraryHealth?.failed_processing_count ??
+        documents.filter(
+          (d) => d.processing_status === "failed" || d.indexing_status === "failed",
+        ).length,
+      missing_metadata_count:
+        libraryHealth?.missing_metadata_count ??
+        documents.filter((d) => !d.owner_approver?.trim() || !d.effective_date).length,
       indexing_count: libraryHealth?.indexing_count ?? 0,
       draft_count: libraryHealth?.draft_count ?? documents.filter((d) => d.status === "draft").length,
       archived_count:
@@ -816,10 +849,15 @@ function normalizeKnowledgeBootstrap(data: LegacyKnowledgeBootstrapApi): Knowled
       document_counts: data.document_counts,
       permissions: data.permissions ?? DEFAULT_KNOWLEDGE_PERMISSIONS,
       library_health: {
-        ready_count: data.library_health?.ready_count ?? 0,
+        ready_count: data.library_health?.ready_for_retrieval_count ?? data.library_health?.ready_count ?? 0,
+        ready_for_retrieval_count:
+          data.library_health?.ready_for_retrieval_count ?? data.library_health?.ready_count ?? 0,
+        approved_and_indexed_count: data.library_health?.approved_and_indexed_count ?? 0,
         needs_review_count: data.library_health?.needs_review_count ?? 0,
         expired_count: data.library_health?.expired_count ?? 0,
         needs_reindex_count: data.library_health?.needs_reindex_count ?? 0,
+        failed_processing_count: data.library_health?.failed_processing_count ?? 0,
+        missing_metadata_count: data.library_health?.missing_metadata_count ?? 0,
         indexing_count: data.library_health?.indexing_count ?? 0,
         draft_count: data.library_health?.draft_count ?? 0,
         archived_count: data.library_health?.archived_count ?? 0,
@@ -858,7 +896,6 @@ export async function getKnowledgeLibraryHealth(): Promise<KnowledgeLibraryHealt
       return {
         ...EMPTY_KNOWLEDGE_LIBRARY_HEALTH,
         ...bootstrap.library_health,
-        open_gaps: [],
       };
     }
     throw error;
@@ -936,6 +973,72 @@ export async function reindexKnowledgeDocument(documentId: string): Promise<Know
   return body.data;
 }
 
+async function postKnowledgeDocumentLifecycleAction(
+  documentId: string,
+  action: "submit" | "approve" | "reject" | "return-to-draft" | "archive" | "restore",
+  payload: KnowledgeDocumentLifecycleActionApi = {},
+): Promise<KnowledgeDocumentApi> {
+  const body = await apiFetch<{ data: KnowledgeDocumentApi }>(
+    `/knowledge/documents/${documentId}/${action}`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+  return body.data;
+}
+
+export function submitKnowledgeDocument(
+  documentId: string,
+  payload?: KnowledgeDocumentLifecycleActionApi,
+): Promise<KnowledgeDocumentApi> {
+  return postKnowledgeDocumentLifecycleAction(documentId, "submit", payload);
+}
+
+export function approveKnowledgeDocument(
+  documentId: string,
+  payload?: KnowledgeDocumentLifecycleActionApi,
+): Promise<KnowledgeDocumentApi> {
+  return postKnowledgeDocumentLifecycleAction(documentId, "approve", payload);
+}
+
+export function rejectKnowledgeDocument(
+  documentId: string,
+  payload: KnowledgeDocumentLifecycleActionApi,
+): Promise<KnowledgeDocumentApi> {
+  return postKnowledgeDocumentLifecycleAction(documentId, "reject", payload);
+}
+
+export function returnKnowledgeDocumentToDraft(
+  documentId: string,
+  payload?: KnowledgeDocumentLifecycleActionApi,
+): Promise<KnowledgeDocumentApi> {
+  return postKnowledgeDocumentLifecycleAction(documentId, "return-to-draft", payload);
+}
+
+export function archiveKnowledgeDocument(
+  documentId: string,
+  payload?: KnowledgeDocumentLifecycleActionApi,
+): Promise<KnowledgeDocumentApi> {
+  return postKnowledgeDocumentLifecycleAction(documentId, "archive", payload);
+}
+
+export function restoreKnowledgeDocument(
+  documentId: string,
+  payload?: KnowledgeDocumentLifecycleActionApi,
+): Promise<KnowledgeDocumentApi> {
+  return postKnowledgeDocumentLifecycleAction(documentId, "restore", payload);
+}
+
+export async function listKnowledgeDocumentApprovalHistory(
+  documentId: string,
+): Promise<KnowledgeDocumentApprovalEventApi[]> {
+  const body = await apiFetch<{ data: KnowledgeDocumentApprovalEventApi[] }>(
+    `/knowledge/documents/${documentId}/approval-history`,
+  );
+  return body.data;
+}
+
 export async function downloadKnowledgeDocumentFile(
   documentId: string,
 ): Promise<{ blob: Blob; fileName: string | null }> {
@@ -1009,11 +1112,18 @@ export async function askKnowledgeAgent(
 
 export type KnowledgeStreamEvent =
   | { type: "meta"; query_id?: string; confidence_estimate: number }
+  | { type: "accepted" }
+  | { type: "searching_sources" }
+  | { type: "sources_found"; source_count: number; eligible_doc_count?: number }
+  | { type: "generating_answer" }
+  | { type: "validating_grounding" }
   | { type: "status"; phase: "searching" | "reading" | "generating" }
   | { type: "delta"; text: string }
+  | { type: "answer_delta"; text: string }
   | { type: "replace"; text: string }
-  | { type: "done"; query_id?: string | null; conversation_id?: string | null; answer_text: string; confidence_score: number; confidence_reasons: string[]; next_step: string; structured_answer: KnowledgeAskResponseApi["structured_answer"]; model_used: string | null; retrieval_debug?: KnowledgeAskResponseApi["retrieval_debug"] }
-  | { type: "error"; message: string };
+  | { type: "final"; query_id?: string | null; conversation_id?: string | null; answer_text: string; confidence_score: number; confidence_band?: string | null; confidence_reasons: string[]; next_step: string; structured_answer: KnowledgeAskResponseApi["structured_answer"]; model_used: string | null; retrieval_debug?: KnowledgeAskResponseApi["retrieval_debug"] }
+  | { type: "done"; query_id?: string | null; conversation_id?: string | null; answer_text: string; confidence_score: number; confidence_band?: string | null; confidence_reasons: string[]; next_step: string; structured_answer: KnowledgeAskResponseApi["structured_answer"]; model_used: string | null; retrieval_debug?: KnowledgeAskResponseApi["retrieval_debug"] }
+  | { type: "error"; message: string; code?: string; retryable?: boolean };
 
 export async function* streamKnowledgeAsk(
   queryText: string,
@@ -1298,15 +1408,58 @@ export async function submitKnowledgeFeedback(
       query_id: payload.query_id,
       rating: payload.rating,
       comment: payload.comment ?? null,
+      feedback_reason: payload.feedback_reason ?? null,
     }),
   });
   return body.data;
 }
 
-export async function resolveKnowledgeGap(gapId: string): Promise<KnowledgeGapTodoApi> {
-  const body = await apiFetch<{ data: KnowledgeGapTodoApi }>(`/knowledge/gaps/${gapId}/resolve`, {
+export async function listKnowledgeSuggestions(status?: string): Promise<KnowledgeSuggestionApi[]> {
+  const params = status ? `?status=${encodeURIComponent(status)}` : "";
+  const body = await apiFetch<{ data: KnowledgeSuggestionApi[] }>(`/knowledge/suggestions${params}`);
+  return body.data;
+}
+
+export async function generateKnowledgeSuggestions(documentId?: string): Promise<KnowledgeSuggestionApi[]> {
+  const params = documentId ? `?document_id=${encodeURIComponent(documentId)}` : "";
+  const body = await apiFetch<{ data: KnowledgeSuggestionApi[] }>(`/knowledge/suggestions/generate${params}`, {
     method: "POST",
   });
+  return body.data;
+}
+
+export async function applyKnowledgeSuggestion(suggestionId: string): Promise<KnowledgeSuggestionApi> {
+  const body = await apiFetch<{ data: KnowledgeSuggestionApi }>(
+    `/knowledge/suggestions/${suggestionId}/apply`,
+    { method: "POST" },
+  );
+  return body.data;
+}
+
+export async function dismissKnowledgeSuggestion(suggestionId: string): Promise<KnowledgeSuggestionApi> {
+  const body = await apiFetch<{ data: KnowledgeSuggestionApi }>(
+    `/knowledge/suggestions/${suggestionId}/dismiss`,
+    { method: "POST" },
+  );
+  return body.data;
+}
+
+export async function getKnowledgeRelatedDocuments(
+  documentId: string,
+): Promise<KnowledgeRelatedKnowledgeApi> {
+  const body = await apiFetch<{ data: KnowledgeRelatedKnowledgeApi }>(
+    `/knowledge/documents/${documentId}/related`,
+  );
+  return body.data;
+}
+
+export async function generateKnowledgeDocumentSummary(
+  documentId: string,
+): Promise<KnowledgeDocumentAiSummaryApi> {
+  const body = await apiFetch<{ data: KnowledgeDocumentAiSummaryApi }>(
+    `/knowledge/documents/${documentId}/summary`,
+    { method: "POST" },
+  );
   return body.data;
 }
 

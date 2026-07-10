@@ -10,6 +10,8 @@ import { useEffect } from "react";
 
 import {
   ApiError,
+  approveKnowledgeDocument,
+  archiveKnowledgeDocument,
   createKnowledgeFolder,
   deleteKnowledgeDocument,
   getKnowledgeBootstrap,
@@ -21,8 +23,11 @@ import {
   listKnowledgeConversations,
   listKnowledgeDocumentVersions,
   listKnowledgeDocuments,
+  rejectKnowledgeDocument,
   reindexKnowledgeDocument,
-  resolveKnowledgeGap,
+  restoreKnowledgeDocument,
+  returnKnowledgeDocumentToDraft,
+  submitKnowledgeDocument,
   updateKnowledgeDocument,
   updateKnowledgeRetrievalSettings,
   uploadKnowledgeDocument,
@@ -36,6 +41,7 @@ import type {
   KnowledgeBootstrapApi,
   KnowledgeConversationApi,
   KnowledgeConversationSummaryApi,
+  KnowledgeDocumentLifecycleActionApi,
   KnowledgeLibraryHealthApi,
   KnowledgeRetrievalSettingsApi,
 } from "@/types/knowledge";
@@ -300,18 +306,40 @@ export function useReindexKnowledgeDocumentMutation() {
   });
 }
 
+export function useKnowledgeDocumentLifecycleMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      action,
+      payload,
+    }: {
+      id: string;
+      action: "submit" | "approve" | "reject" | "return-to-draft" | "archive" | "restore";
+      payload?: KnowledgeDocumentLifecycleActionApi;
+    }) => {
+      if (action === "submit") return submitKnowledgeDocument(id, payload);
+      if (action === "approve") return approveKnowledgeDocument(id, payload);
+      if (action === "reject") return rejectKnowledgeDocument(id, payload ?? {});
+      if (action === "return-to-draft") return returnKnowledgeDocumentToDraft(id, payload);
+      if (action === "archive") return archiveKnowledgeDocument(id, payload);
+      return restoreKnowledgeDocument(id, payload);
+    },
+    onSuccess: (row) => {
+      const mapped = documentFromApi(row);
+      patchKnowledgeDocumentsCache(queryClient, (documents) =>
+        documents.map((item) => (item.id === mapped.id ? mapped : item)),
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeDocument(mapped.id) });
+      void invalidateKnowledgeLibrary(queryClient);
+    },
+  });
+}
+
 export function useCreateKnowledgeFolderMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: createKnowledgeFolder,
-    onSuccess: () => void invalidateKnowledgeLibrary(queryClient),
-  });
-}
-
-export function useResolveKnowledgeGapMutation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (gapId: string) => resolveKnowledgeGap(gapId),
     onSuccess: () => void invalidateKnowledgeLibrary(queryClient),
   });
 }

@@ -1,0 +1,92 @@
+[
+  {
+    "name": "exact_sop_identifier",
+    "query": "What does SOP-014 require?",
+    "expected_source": "sop-014-current",
+    "forbidden_source": "sop-041-unrelated",
+    "expected_query_type": "factual",
+    "min_selected_sources": 1,
+    "max_selected_sources": 3
+  },
+  {
+    "name": "procedural_question",
+    "query": "How do I escalate a missed milestone?",
+    "expected_source": "milestone-escalation-sop",
+    "forbidden_source": "project-retro-notes",
+    "expected_query_type": "procedural",
+    "min_selected_sources": 2,
+    "max_selected_sources": 5
+  },
+  {
+    "name": "broad_summary",
+    "query": "Give me an overview of rework handling across operations",
+    "expected_source": "rework-handling-guide",
+    "forbidden_source": "duplicate-rework-chunk",
+    "expected_query_type": "broad_summary",
+    "min_selected_sources": 3,
+    "max_selected_sources": 8
+  },
+  {
+    "name": "historical_lesson",
+    "query": "What happened during Batch 14?",
+    "expected_source": "batch-14-lesson",
+    "forbidden_source": "batch-planning-template",
+    "expected_query_type": "historical",
+    "min_selected_sources": 1,
+    "max_selected_sources": 5
+  },
+  {
+    "name": "project_specific",
+    "query": "What is the approval rule for Project Atlas?",
+    "expected_source": "project-atlas-approval",
+    "forbidden_source": "project-orion-approval",
+    "expected_query_type": "policy_or_compliance",
+    "min_selected_sources": 1,
+    "max_selected_sources": 4
+  },
+  {
+    "name": "conflicting_versions",
+    "query": "Which approval SOP version is current?",
+    "expected_source": "approval-sop-v2",
+    "forbidden_source": "approval-sop-v1",
+    "expected_query_type": "policy_or_compliance",
+    "min_selected_sources": 1,
+    "max_selected_sources": 3
+  },
+  {
+    "name": "client_safe_retrieval",
+    "query": "What client-safe update can we share?",
+    "expected_source": "client-safe-update-guide",
+    "forbidden_source": "internal-risk-register",
+    "expected_query_type": "factual",
+    "min_selected_sources": 1,
+    "max_selected_sources": 3
+  },
+  {
+    "name": "no_answer_case",
+    "query": "What is the moonlighting policy for contractors?",
+    "expected_source": null,
+    "forbidden_source": "unapproved-hr-draft",
+    "expected_query_type": "policy_or_compliance",
+    "min_selected_sources": 0,
+    "max_selected_sources": 0
+  },
+  {
+    "name": "department_filter",
+    "query": "What is the QA escalation threshold?",
+    "expected_source": "qa-escalation-policy",
+    "forbidden_source": "delivery-escalation-policy",
+    "expected_query_type": "factual",
+    "min_selected_sources": 1,
+    "max_selected_sources": 3
+  },
+  {
+    "name": "exact_batch_or_ticket_identifier",
+    "query": "What was the resolution for INC-3821 in Batch 14?",
+    "expected_source": "inc-3821-resolution",
+    "forbidden_source": "generic-incident-guide",
+    "expected_query_type": "historical",
+    "min_selected_sources": 1,
+    "max_selected_sources": 4
+  }
+]

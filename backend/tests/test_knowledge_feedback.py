@@ -1,11 +1,19 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
 from app.core.exceptions import ApiError
-from app.db.models.entities import KnowledgeFeedbackRating
+from app.db.models.entities import (
+    KnowledgeDocument,
+    KnowledgeDocumentStatus,
+    KnowledgeFeedbackRating,
+    KnowledgeIndexingStatus,
+    KnowledgeProcessingStatus,
+    KnowledgeSourceType,
+    KnowledgeVisibility,
+)
 from app.services.knowledge import _build_retrieval_params, record_knowledge_feedback
 
 
@@ -13,13 +21,33 @@ def _chunk(*, document_id=None, chunk_id=None) -> SimpleNamespace:
     return SimpleNamespace(
         id=chunk_id or uuid4(),
         document_id=document_id or uuid4(),
+        page_number=1,
+        section_path="Escalation",
+        section_title="Escalation",
     )
 
 
 def test_build_retrieval_params_includes_filters_and_sources() -> None:
+    org_id = uuid4()
     doc_id = uuid4()
     chunk = _chunk(document_id=doc_id)
-    doc = SimpleNamespace(id=doc_id, title="Escalation SOP")
+    doc = KnowledgeDocument(
+        id=doc_id,
+        org_id=org_id,
+        folder_id=uuid4(),
+        title="Escalation SOP",
+        source_type=KnowledgeSourceType.SOP,
+        version="v1.0",
+        visibility=KnowledgeVisibility.INTERNAL_ONLY,
+        status=KnowledgeDocumentStatus.APPROVED,
+        owner_approver="Ops Lead",
+        effective_date=date(2026, 1, 1),
+        file_name="escalation.md",
+        file_mime_type="text/markdown",
+        processing_status=KnowledgeProcessingStatus.READY,
+        indexing_status=KnowledgeIndexingStatus.INDEXED,
+        approved_at=datetime.now(timezone.utc),
+    )
 
     params = _build_retrieval_params(
         query_text="How do escalations work?",

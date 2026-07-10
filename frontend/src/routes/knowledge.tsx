@@ -28,14 +28,16 @@ import {
 } from "@/components/ui/popover";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ApiError,
   askKnowledgeAgent,
   compareKnowledgeDocumentVersions,
   downloadKnowledgeDocumentFile,
   getKnowledgeConversation,
+  getKnowledgeRelatedDocuments,
   isUuid,
+  listKnowledgeDocumentApprovalHistory,
   streamKnowledgeAsk,
   submitKnowledgeFeedback,
 } from "@/lib/api";
@@ -46,11 +48,11 @@ import {
   useCreateKnowledgeFolderMutation,
   useDeleteKnowledgeDocumentMutation,
   useKnowledgeBootstrapQuery,
+  useKnowledgeDocumentLifecycleMutation,
   useKnowledgeDocumentsQuery,
   useKnowledgeLibraryHealthQuery,
   useKnowledgeRetrievalSettingsQuery,
   useReindexKnowledgeDocumentMutation,
-  useResolveKnowledgeGapMutation,
   useUpdateKnowledgeDocumentMutation,
   useUpdateKnowledgeRetrievalSettingsMutation,
   useUploadKnowledgeDocumentMutation,
@@ -67,6 +69,8 @@ import {
   documentSummaryFromApi,
   documentToApiPatch,
   isRetrievalReady,
+  readinessBadgeTone,
+  retrievalActionLabel,
   uploadFormToApi,
   type DocumentStatus,
   type KnowledgeDocument,
@@ -78,14 +82,15 @@ import type {
   KnowledgeAskResponseApi,
   KnowledgeConversationSummaryApi,
   KnowledgeConversationTurnApi,
+  KnowledgeDocumentApprovalEventApi,
+  KnowledgeDocumentLifecycleActionApi,
   KnowledgeDocumentVersionApi,
   KnowledgeFolderKind,
-  KnowledgeGapApi,
-  KnowledgeGapTodoApi,
   KnowledgeLibraryHealthApi,
   KnowledgeProcessingStatusApi,
   KnowledgeRetrievalSettingsApi,
   KnowledgeRetrievalDebugApi,
+  KnowledgeFeedbackReasonApi,
   KnowledgeStructuredAnswerApi,
   KnowledgeVersionCompareApi,
 } from "@/types/knowledge";
@@ -132,24 +137,35 @@ function DocumentTabFallback() {
 
 type UploadState = "idle" | "uploading" | "success" | "error";
 type SortMode = "recent" | "title" | "approved" | "indexed";
-type HealthFilter = "all" | "ready" | "needs_approval" | "indexing" | "archived" | "expired" | "needs_reindex";
+type HealthFilter =
+  | "all"
+  | "ready"
+  | "needs_approval"
+  | "indexing"
+  | "archived"
+  | "expired"
+  | "needs_reindex"
+  | "failed_processing"
+  | "missing_metadata";
 type ChatMessage = {
   id: string;
   role: "user" | "agent";
   text: string;
   next_step?: string;
   confidence_score?: number;
+  confidence_band?: string | null;
   confidence_reasons?: string[];
   structured_answer?: KnowledgeStructuredAnswerApi | null;
-  knowledge_gap?: KnowledgeGapApi | null;
   retrieval_debug?: KnowledgeRetrievalDebugApi | null;
   regenerationSummary?: string;
   query_id?: string | null;
   feedback?: "up" | "down";
+  feedbackReason?: KnowledgeFeedbackReasonApi | string;
   feedbackComment?: string;
   isServiceError?: boolean;
   isStreaming?: boolean;
-  streamPhase?: "searching" | "reading" | "generating";
+  streamPhase?: "accepted" | "searching" | "reading" | "generating" | "validating";
+  streamSourceCount?: number;
   wasStreamed?: boolean;
   isHistorical?: boolean;
   retryQuestion?: string;
@@ -159,13 +175,18 @@ type LibraryFolder = { id: string; kind: KnowledgeFolderKind; name: string };
 
 const EMPTY_LIBRARY_HEALTH: KnowledgeLibraryHealthApi = {
   ready_count: 0,
+  ready_for_retrieval_count: 0,
+  approved_and_indexed_count: 0,
   needs_review_count: 0,
   expired_count: 0,
   needs_reindex_count: 0,
+  failed_processing_count: 0,
+  missing_metadata_count: 0,
   indexing_count: 0,
   draft_count: 0,
   archived_count: 0,
-  open_gaps: [],
+  approaching_expiry_count: 0,
+  outdated_count: 0,
 };
 
 const workflowStates: WorkflowState[] = ["Needs review", "Approved", "Expired", "Needs re-index", "Archived"];
@@ -178,8 +199,16 @@ const sourceTypes: SourceType[] = [
   "Escalation Note",
   "Lesson Learned",
 ];
-const visibilities: Visibility[] = ["Internal-only", "Leadership-only", "Client-safe"];
-const statuses: DocumentStatus[] = ["Draft", "Approved", "Archived"];
+const visibilities: Visibility[] = ["Internal-only", "Leadership-only", "Restricted", "Client-safe"];
+const statuses: DocumentStatus[] = [
+  "Draft",
+  "Submitted for review",
+  "Approved",
+  "Rejected",
+  "Needs re-index",
+  "Expired",
+  "Archived",
+];
 const acceptedExtensions = [".pdf", ".docx", ".txt", ".md", ".csv"];
 const folderPreviewLimit = 6;
 const SUGGESTED_QUESTION_LIMIT = 4;
@@ -194,11 +223,6 @@ const FOLDER_SUGGESTIONS: Partial<Record<KnowledgeFolderKind, string>> = {
   histories: "Ask about Histories — what lessons learned are captured?",
 };
 const TYPEWRITER_MAX_CHARS = 4000;
-const STREAM_PHASE_LABELS: Record<NonNullable<ChatMessage["streamPhase"]>, string> = {
-  searching: "Searching sources…",
-  reading: "Reading documents…",
-  generating: "Generating answer…",
-};
 const LOW_CONFIDENCE_THRESHOLD = 0.5;
 const NO_KNOWLEDGE_ANSWER =
   "I could not find this information in the uploaded knowledge base.";
@@ -207,6 +231,19 @@ const KNOWLEDGE_LIBRARY_SNAPSHOT_KEY = "bsg:knowledge-library-snapshot";
 const KNOWLEDGE_LIBRARY_SNAPSHOT_TTL_MS = 30 * 60 * 1000;
 const CHAT_SCROLL_THRESHOLD_PX = 80;
 const LIBRARY_DEBOUNCE_MS = 120;
+const POSITIVE_FEEDBACK_REASONS: Array<{ value: KnowledgeFeedbackReasonApi; label: string }> = [
+  { value: "accurate", label: "Accurate" },
+  { value: "good_sources", label: "Good sources" },
+  { value: "clear", label: "Clear" },
+];
+const NEGATIVE_FEEDBACK_REASONS: Array<{ value: KnowledgeFeedbackReasonApi; label: string }> = [
+  { value: "missing_knowledge", label: "Missing knowledge" },
+  { value: "incorrect", label: "Incorrect" },
+  { value: "weak_sources", label: "Weak sources" },
+  { value: "outdated", label: "Outdated" },
+  { value: "citation_problem", label: "Citation issue" },
+  { value: "unsafe_for_client", label: "Client-safe issue" },
+];
 
 type KnowledgeChatSession = {
   conversationId: string | null;
@@ -272,6 +309,8 @@ function getKnowledgeLibrarySnapshotSignature(
       document.version,
       document.status,
       document.workflowState,
+      document.retrievalReady,
+      document.retrievalReadinessReason,
       document.processingStatus,
       document.indexed,
       document.indexing,
@@ -279,14 +318,16 @@ function getKnowledgeLibrarySnapshotSignature(
     ]),
     folders: folders.map((folder) => [folder.id, folder.kind, folder.name]),
     health: [
-      libraryHealth.ready_count,
+      libraryHealth.ready_for_retrieval_count,
+      libraryHealth.approved_and_indexed_count,
       libraryHealth.needs_review_count,
       libraryHealth.expired_count,
       libraryHealth.needs_reindex_count,
+      libraryHealth.failed_processing_count,
+      libraryHealth.missing_metadata_count,
       libraryHealth.indexing_count,
       libraryHealth.draft_count,
       libraryHealth.archived_count,
-      ...libraryHealth.open_gaps.map((gap) => gap.id),
     ],
   });
 }
@@ -428,15 +469,14 @@ function agentMessageFromResponse(
     text: response.answer_text,
     next_step: response.next_step,
     confidence_score: response.confidence_score,
+    confidence_band: response.confidence_band ?? response.retrieval_debug?.confidence_band ?? null,
     confidence_reasons: response.confidence_reasons,
     structured_answer: response.structured_answer,
-    knowledge_gap: response.knowledge_gap,
     retrieval_debug: response.retrieval_debug ?? null,
     query_id: response.query_id,
     isHistorical: options?.isHistorical ?? false,
     wasStreamed: options?.isHistorical ? false : undefined,
-    detailsExpanded:
-      (response.confidence_score ?? 1) < LOW_CONFIDENCE_THRESHOLD || !!response.knowledge_gap,
+    detailsExpanded: (response.confidence_score ?? 1) < LOW_CONFIDENCE_THRESHOLD,
   };
 }
 
@@ -497,7 +537,7 @@ function isLowConfidenceMessage(message: ChatMessage) {
 }
 
 function isMessageDetailsOpen(message: ChatMessage) {
-  return message.detailsExpanded ?? (isLowConfidenceMessage(message) || !!message.knowledge_gap);
+  return message.detailsExpanded ?? isLowConfidenceMessage(message);
 }
 
 function summarizeRegeneration(
@@ -525,8 +565,7 @@ function hasCollapsibleDetails(message: ChatMessage) {
     message.confidence_reasons?.length ||
     message.regenerationSummary ||
     message.retrieval_debug ||
-    message.next_step ||
-    message.knowledge_gap
+    message.next_step
   );
 }
 
@@ -576,8 +615,8 @@ function KnowledgePage() {
   const updateDocumentMutation = useUpdateKnowledgeDocumentMutation();
   const deleteDocumentMutation = useDeleteKnowledgeDocumentMutation();
   const reindexDocumentMutation = useReindexKnowledgeDocumentMutation();
+  const lifecycleMutation = useKnowledgeDocumentLifecycleMutation();
   const createFolderMutation = useCreateKnowledgeFolderMutation();
-  const resolveGapMutation = useResolveKnowledgeGapMutation();
   const updateRetrievalSettingsMutation = useUpdateKnowledgeRetrievalSettingsMutation();
 
   const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
@@ -630,7 +669,6 @@ function KnowledgePage() {
     sourceType: "SOP" as SourceType,
     version: "v1.0",
     visibility: "Internal-only" as Visibility,
-    status: "Draft" as DocumentStatus,
     owner: "",
     effectiveDate: new Date().toISOString().slice(0, 10),
   });
@@ -676,7 +714,6 @@ function KnowledgePage() {
       return {
         ...EMPTY_LIBRARY_HEALTH,
         ...bootstrapQuery.data.library_health,
-        open_gaps: [],
       };
     }
     return librarySnapshot?.libraryHealth ?? EMPTY_LIBRARY_HEALTH;
@@ -691,8 +728,19 @@ function KnowledgePage() {
     : "";
 
   const selectedDoc = documents.find((item) => item.id === docId) ?? null;
+  const approvalHistoryQuery = useQuery({
+    queryKey: queryKeys.knowledgeDocumentApprovalHistory(selectedDoc?.id ?? "__none__"),
+    queryFn: () => listKnowledgeDocumentApprovalHistory(selectedDoc!.id),
+    enabled: Boolean(isDocumentOpen && selectedDoc?.id),
+  });
+  const relatedKnowledgeQuery = useQuery({
+    queryKey: queryKeys.knowledgeRelatedDocuments(selectedDoc?.id ?? "__none__"),
+    queryFn: () => getKnowledgeRelatedDocuments(selectedDoc!.id),
+    enabled: Boolean(isDocumentOpen && selectedDoc?.id),
+  });
+  const approvalHistory = approvalHistoryQuery.data ?? [];
   const approvedIndexedDocs = documents.filter(isRetrievalReady);
-  const canAsk = (libraryHealth.ready_count ?? 0) > 0 || approvedIndexedDocs.length > 0;
+  const canAsk = (libraryHealth.ready_for_retrieval_count ?? libraryHealth.ready_count ?? 0) > 0 || approvedIndexedDocs.length > 0;
   const suggestedQuestions = useMemo(
     () => buildSuggestedQuestions(documents, libraryFolders),
     [documents, libraryFolders],
@@ -703,6 +751,9 @@ function KnowledgePage() {
   );
   const canAdjustScope =
     knowledgePermissions?.can_adjust_retrieval_scope ??
+    (user?.role === "bsg_leadership" || user?.role === "super_admin");
+  const canReviewApprovals =
+    knowledgePermissions?.can_review_approvals ??
     (user?.role === "bsg_leadership" || user?.role === "super_admin");
 
   const handleDocumentLoaded = useCallback(
@@ -749,20 +800,15 @@ function KnowledgePage() {
   const archivedCount = documents.filter((item) => item.status === "Archived").length;
   const expiredCount = documents.filter((item) => item.workflowState === "Expired").length;
   const needsReindexCount = documents.filter((item) => item.workflowState === "Needs re-index").length;
-  const healthFilters = [
-    { id: "all" as const, label: "All", count: documents.length },
-    { id: "ready" as const, label: "Ready", count: libraryHealth.ready_count || approvedIndexedDocs.length },
-    { id: "needs_approval" as const, label: "Needs approval", count: libraryHealth.draft_count || draftCount },
-    { id: "expired" as const, label: "Expired", count: libraryHealth.expired_count || expiredCount },
-    { id: "needs_reindex" as const, label: "Needs re-index", count: libraryHealth.needs_reindex_count || needsReindexCount },
-    { id: "indexing" as const, label: "Indexing", count: libraryHealth.indexing_count || indexingCount },
-    { id: "archived" as const, label: "Archived", count: libraryHealth.archived_count || archivedCount },
-  ];
-  const libraryTodos = libraryHealth.open_gaps;
+  const failedProcessingCount = documents.filter((item) => item.processingStatus === "failed").length;
+  const missingMetadataCount = documents.filter(
+    (item) => item.retrievalReadinessReason === "Missing owner" || item.retrievalReadinessReason === "Missing effective date",
+  ).length;
   const hasLibraryTodos =
-    libraryTodos.length > 0 ||
     (libraryHealth.expired_count || expiredCount) > 0 ||
     (libraryHealth.needs_reindex_count || needsReindexCount) > 0 ||
+    (libraryHealth.failed_processing_count || failedProcessingCount) > 0 ||
+    (libraryHealth.missing_metadata_count || missingMetadataCount) > 0 ||
     (!canAsk && documents.length > 0);
   const librarySnapshotSignature = useMemo(
     () => getKnowledgeLibrarySnapshotSignature(documents, libraryFolders, libraryHealth),
@@ -852,9 +898,14 @@ function KnowledgePage() {
       const matchesHealth =
         debouncedHealthFilter === "all" ||
         (debouncedHealthFilter === "ready" && isRetrievalReady(item)) ||
-        (debouncedHealthFilter === "needs_approval" && item.status === "Draft") ||
+        (debouncedHealthFilter === "needs_approval" &&
+          ["Draft", "Submitted for review", "Rejected"].includes(item.status)) ||
         (debouncedHealthFilter === "expired" && item.workflowState === "Expired") ||
         (debouncedHealthFilter === "needs_reindex" && item.workflowState === "Needs re-index") ||
+        (debouncedHealthFilter === "failed_processing" && item.processingStatus === "failed") ||
+        (debouncedHealthFilter === "missing_metadata" &&
+          (item.retrievalReadinessReason === "Missing owner" ||
+            item.retrievalReadinessReason === "Missing effective date")) ||
         (debouncedHealthFilter === "indexing" && item.indexing) ||
         (debouncedHealthFilter === "archived" && item.status === "Archived");
       const matchesSearch =
@@ -866,7 +917,15 @@ function KnowledgePage() {
       return matchesFolder && matchesStatus && matchesWorkflow && matchesHealth && matchesSearch;
     });
 
-    const statusRank: Record<DocumentStatus, number> = { Approved: 0, Draft: 1, Archived: 2 };
+    const statusRank: Record<DocumentStatus, number> = {
+      Approved: 0,
+      "Submitted for review": 1,
+      "Needs re-index": 2,
+      Draft: 3,
+      Rejected: 4,
+      Expired: 5,
+      Archived: 6,
+    };
     return [...filtered].sort((left, right) => {
       if (debouncedSortMode === "title") return left.title.localeCompare(right.title);
       if (debouncedSortMode === "approved") {
@@ -1045,7 +1104,6 @@ function KnowledgePage() {
       sourceType: "SOP",
       version: "v1.0",
       visibility: "Internal-only",
-      status: "Draft",
       owner: "",
       effectiveDate: new Date().toISOString().slice(0, 10),
     });
@@ -1056,11 +1114,6 @@ function KnowledgePage() {
     if (error || !form.title.trim() || !form.owner.trim() || !form.folderId) {
       setUploadState("error");
       setUploadError(error || "Document title, folder, and owner/approver are required.");
-      return;
-    }
-    if (form.status === "Approved" && !form.effectiveDate) {
-      setUploadState("error");
-      setUploadError("Approved uploads require an effective date before indexing.");
       return;
     }
 
@@ -1207,6 +1260,30 @@ function KnowledgePage() {
     }
   };
 
+  const runLifecycleAction = async (
+    document: KnowledgeDocument,
+    action: "submit" | "approve" | "reject" | "return-to-draft" | "archive" | "restore",
+  ) => {
+    const payload: KnowledgeDocumentLifecycleActionApi = {};
+    if (action === "reject") {
+      payload.rejection_reason = window.prompt("Rejection reason")?.trim() ?? "";
+      if (!payload.rejection_reason) return;
+    }
+    setPendingDocumentIds((ids) => new Set(ids).add(document.id));
+    try {
+      await lifecycleMutation.mutateAsync({ id: document.id, action, payload });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.knowledgeDocumentApprovalHistory(document.id),
+      });
+    } finally {
+      setPendingDocumentIds((ids) => {
+        const next = new Set(ids);
+        next.delete(document.id);
+        return next;
+      });
+    }
+  };
+
   const downloadDocument = async (document: KnowledgeDocument) => {
     try {
       const { blob, fileName } = await downloadKnowledgeDocumentFile(document.id);
@@ -1281,12 +1358,44 @@ function KnowledgePage() {
                 : msg,
             ),
           );
+        } else if (event.type === "accepted") {
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId ? { ...msg, streamPhase: "accepted" } : msg,
+            ),
+          );
+        } else if (event.type === "searching_sources") {
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId ? { ...msg, streamPhase: "searching" } : msg,
+            ),
+          );
+        } else if (event.type === "sources_found") {
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId ? { ...msg, streamSourceCount: event.source_count, streamPhase: "reading" } : msg,
+            ),
+          );
+        } else if (event.type === "generating_answer") {
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId ? { ...msg, streamPhase: "generating" } : msg,
+            ),
+          );
+        } else if (event.type === "validating_grounding") {
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId ? { ...msg, streamPhase: "validating" } : msg,
+            ),
+          );
         } else if (event.type === "status") {
           setMessages((current) =>
             current.map((msg) =>
               msg.id === agentMsgId ? { ...msg, streamPhase: event.phase } : msg,
             ),
           );
+        } else if (event.type === "answer_delta") {
+          // The backend also sends legacy "delta" events for compatibility; avoid double-appending.
         } else if (event.type === "delta") {
           streamAnswer += event.text;
           scheduleStreamFlush();
@@ -1302,7 +1411,7 @@ function KnowledgePage() {
             ),
           );
           scrollChatToEnd();
-        } else if (event.type === "done") {
+        } else if ((event.type === "final" || event.type === "done") && !gotDone) {
           gotDone = true;
           streamAnswer = event.answer_text?.trim() || streamAnswer;
           const resolvedText = resolveAgentAnswerText(
@@ -1320,6 +1429,7 @@ function KnowledgePage() {
                 wasStreamed: true,
                 query_id: event.query_id,
                 confidence_score: event.confidence_score,
+                confidence_band: event.confidence_band ?? event.retrieval_debug?.confidence_band ?? null,
                 confidence_reasons: event.confidence_reasons,
                 next_step: event.next_step || undefined,
                 structured_answer: sa ?? null,
@@ -1429,12 +1539,44 @@ function KnowledgePage() {
 
     try {
       for await (const event of streamKnowledgeAsk(question, askOptions)) {
-        if (event.type === "status") {
+        if (event.type === "accepted") {
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId ? { ...msg, streamPhase: "accepted" } : msg,
+            ),
+          );
+        } else if (event.type === "searching_sources") {
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId ? { ...msg, streamPhase: "searching" } : msg,
+            ),
+          );
+        } else if (event.type === "sources_found") {
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId ? { ...msg, streamSourceCount: event.source_count, streamPhase: "reading" } : msg,
+            ),
+          );
+        } else if (event.type === "generating_answer") {
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId ? { ...msg, streamPhase: "generating" } : msg,
+            ),
+          );
+        } else if (event.type === "validating_grounding") {
+          setMessages((current) =>
+            current.map((msg) =>
+              msg.id === agentMsgId ? { ...msg, streamPhase: "validating" } : msg,
+            ),
+          );
+        } else if (event.type === "status") {
           setMessages((current) =>
             current.map((msg) =>
               msg.id === agentMsgId ? { ...msg, streamPhase: event.phase } : msg,
             ),
           );
+        } else if (event.type === "answer_delta") {
+          // Legacy "delta" carries the same text for existing clients.
         } else if (event.type === "delta") {
           streamAnswer += event.text;
           const liveText = streamAnswer;
@@ -1444,7 +1586,7 @@ function KnowledgePage() {
             ),
           );
           scrollChatToEnd();
-        } else if (event.type === "done") {
+        } else if ((event.type === "final" || event.type === "done") && !gotDone) {
           gotDone = true;
           const resolvedText = resolveAgentAnswerText(
             { text: streamAnswer, structured_answer: event.structured_answer, next_step: event.next_step },
@@ -1458,6 +1600,7 @@ function KnowledgePage() {
             wasStreamed: true,
             query_id: event.query_id,
             confidence_score: event.confidence_score,
+            confidence_band: event.confidence_band ?? event.retrieval_debug?.confidence_band ?? null,
             confidence_reasons: event.confidence_reasons,
             next_step: event.next_step || undefined,
             structured_answer: event.structured_answer ?? null,
@@ -1511,7 +1654,12 @@ function KnowledgePage() {
     }
   };
 
-  const setMessageFeedback = async (messageId: string, feedback: "up" | "down", comment?: string) => {
+  const setMessageFeedback = async (
+    messageId: string,
+    feedback: "up" | "down",
+    comment?: string,
+    feedbackReason?: KnowledgeFeedbackReasonApi,
+  ) => {
     let queryId: string | null = null;
     let previousFeedback: "up" | "down" | undefined;
     let nextFeedback: "up" | "down" | undefined;
@@ -1530,6 +1678,7 @@ function KnowledgePage() {
         return {
           ...msg,
           feedback: nextFeedback,
+          feedbackReason: feedbackReason ?? msg.feedbackReason,
           feedbackComment: comment !== undefined ? comment : msg.feedbackComment,
         };
       });
@@ -1542,6 +1691,7 @@ function KnowledgePage() {
         query_id: queryId,
         rating: feedback,
         comment: comment ?? null,
+        feedback_reason: feedbackReason ?? null,
       });
     } catch (err) {
       if (err instanceof ApiError && err.status === 422) {
@@ -1667,43 +1817,6 @@ function KnowledgePage() {
     if (openDialog) setIsDocumentOpen(true);
   };
 
-  const prefillUploadFromGap = (gap: KnowledgeGapApi | KnowledgeGapTodoApi) => {
-    const sourceMap: Record<string, SourceType> = {
-      sop: "SOP",
-      guide: "Guide",
-      training_document: "Training Document",
-      project_charter: "Project Charter",
-      escalation_note: "Escalation Note",
-      lesson_learned: "Lesson Learned",
-    };
-    const suggestedFolder =
-      libraryFolders.find((folder) => folder.kind === gap.suggested_folder_kind) ?? libraryFolders[0];
-    setForm((current) => ({
-      ...current,
-      title: gap.suggested_title ?? current.title,
-      folderId: suggestedFolder?.id ?? current.folderId,
-      sourceType: sourceMap[gap.suggested_source_type ?? "sop"] ?? "SOP",
-      status: "Draft",
-    }));
-    setIsUploadOpen(true);
-  };
-
-  const handleResolveGap = async (gapId: string) => {
-    const previousHealth = queryClient.getQueryData<KnowledgeLibraryHealthApi>(queryKeys.knowledgeLibraryHealth);
-    queryClient.setQueryData<KnowledgeLibraryHealthApi>(queryKeys.knowledgeLibraryHealth, (current) => {
-      if (!current) return current;
-      return {
-        ...current,
-        open_gaps: current.open_gaps.filter((gap) => gap.id !== gapId),
-      };
-    });
-    try {
-      await resolveGapMutation.mutateAsync(gapId);
-    } catch {
-      if (previousHealth) queryClient.setQueryData(queryKeys.knowledgeLibraryHealth, previousHealth);
-    }
-  };
-
   const openCreateFolder = () => {
     setCreateFolderName("");
     setCreateFolderError("");
@@ -1807,6 +1920,12 @@ function KnowledgePage() {
               <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
                 <AlertTriangle className="h-3.5 w-3.5 text-[color:var(--brand)]" />
                 Library health
+                {libraryHealth.health_score != null && (
+                  <span className="ml-auto rounded-full border border-border/70 bg-card/80 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                    Score {Math.round(libraryHealth.health_score)}
+                    {libraryHealth.health_band ? ` · ${libraryHealth.health_band}` : ""}
+                  </span>
+                )}
               </div>
               {!canAsk && (
                 <p className="text-[11px] leading-4 text-muted-foreground">
@@ -1838,6 +1957,27 @@ function KnowledgePage() {
                     {libraryHealth.needs_reindex_count || needsReindexCount} need re-index
                   </button>
                 )}
+                {(libraryHealth.failed_processing_count || failedProcessingCount) > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHealthFilter("failed_processing");
+                      setWorkflowFilter("All");
+                    }}
+                    className="rounded-full border border-[color:var(--danger)]/30 bg-[color:var(--danger)]/10 px-2.5 py-1 text-[10px] font-medium text-[color:var(--danger)]"
+                  >
+                    {libraryHealth.failed_processing_count || failedProcessingCount} failed processing
+                  </button>
+                )}
+                {(libraryHealth.missing_metadata_count || missingMetadataCount) > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setHealthFilter("missing_metadata")}
+                    className="rounded-full border border-border/70 bg-card px-2.5 py-1 text-[10px] font-medium text-foreground"
+                  >
+                    {libraryHealth.missing_metadata_count || missingMetadataCount} missing metadata
+                  </button>
+                )}
                 {draftCount > 0 && !canAsk && (
                   <button
                     type="button"
@@ -1848,61 +1988,11 @@ function KnowledgePage() {
                   </button>
                 )}
               </div>
-              {libraryTodos.length > 0 && (
-                <div className="space-y-2 border-t border-border/50 pt-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    Knowledge gaps
-                  </p>
-                  {libraryTodos.slice(0, 5).map((gap) => (
-                    <div key={gap.id} className="rounded-md border border-border/60 bg-card/80 p-2">
-                      <p className="text-[11px] font-medium text-foreground">{gap.query_text}</p>
-                      <p className="mt-0.5 text-[10px] text-muted-foreground">{gap.message}</p>
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          className="h-7 text-[10px]"
-                          onClick={() => prefillUploadFromGap(gap)}
-                        >
-                          Upload related doc
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 text-[10px]"
-                          onClick={() => void handleResolveGap(gap.id)}
-                        >
-                          Mark resolved
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
           )}
 
           {!loadingDocs && (
           <div className="space-y-3">
-            <div className="flex flex-wrap gap-1.5">
-              {healthFilters.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setHealthFilter(item.id)}
-                  className={cn(
-                    "rounded-full border px-2.5 py-1 text-[10px] font-medium transition",
-                    healthFilter === item.id
-                      ? "border-[color:var(--brand)]/40 bg-[color:var(--brand)]/10 text-[color:var(--brand)]"
-                      : "border-border/70 bg-transparent text-muted-foreground hover:bg-secondary/70 hover:text-foreground",
-                  )}
-                >
-                  {item.label} {item.count}
-                </button>
-              ))}
-            </div>
             <div className="flex gap-2">
               <div className="relative min-w-0 flex-1">
                 <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -2065,16 +2155,30 @@ function KnowledgePage() {
                             </span>
                           </div>
                           <div className="mt-2 flex flex-wrap items-center gap-1">
+                            {item.retrievalReady ? (
+                              <DocBadge label="Retrieval ready" tone="success" />
+                            ) : (
+                              <DocBadge
+                                label={item.retrievalReadinessReason}
+                                tone={readinessBadgeTone(item.retrievalReadinessReason)}
+                              />
+                            )}
                             {item.workflowState !== item.status && <DocBadge label={item.workflowState} />}
                             <DocBadge label={item.status} />
                             {item.qualityScore && <QualityScoreBadge score={item.qualityScore} />}
+                            {item.extractionQualityScore != null && item.extractionQualityScore < 70 && (
+                              <DocBadge label={`Extraction ${item.extractionQualityScore}/100`} tone="warning" />
+                            )}
+                            {item.ocrNeeded && <DocBadge label="OCR needed" tone="warning" />}
+                            {item.qualityWarnings.length > 0 && (
+                              <DocBadge label={`${item.qualityWarnings.length} warning${item.qualityWarnings.length === 1 ? "" : "s"}`} tone="warning" />
+                            )}
                             {item.semanticRelevance != null && item.semanticRelevance > 0 && (
                               <span className="rounded bg-[color:var(--brand)]/10 px-1.5 py-0.5 text-[9px] font-medium text-[color:var(--brand)]">
                                 {Math.round(item.semanticRelevance * 100)}% match
                               </span>
                             )}
                             {item.indexing && <DocBadge label={item.processingLabel} tone="info" />}
-                            {item.processingStatus === "ready" && <DocBadge label="Ready" tone="success" />}
                             {item.processingStatus === "failed" && <DocBadge label="Failed" tone="danger" />}
                             {isPending && (
                               <span className="inline-flex items-center gap-1 rounded bg-secondary px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground">
@@ -2083,6 +2187,11 @@ function KnowledgePage() {
                               </span>
                             )}
                           </div>
+                          {!item.retrievalReady && retrievalActionLabel(item.retrievalAction) && (
+                            <p className="mt-1.5 text-[10px] text-muted-foreground">
+                              Action needed: {retrievalActionLabel(item.retrievalAction)}
+                            </p>
+                          )}
                           {item.indexing && (
                             <Progress value={processingProgress(item.processingStatus)} className="mt-2 h-1.5" />
                           )}
@@ -2201,12 +2310,23 @@ function KnowledgePage() {
                                     min={0}
                                     max={1}
                                     step={0.05}
-                                    value={scopeDraft.min_confidence}
-                                    onChange={(event) => setScopeDraft((current) => current ? { ...current, min_confidence: Number(event.target.value) } : current)}
+                                    value={scopeDraft.min_relevance}
+                                    onChange={(event) => setScopeDraft((current) => current ? { ...current, min_relevance: Number(event.target.value) } : current)}
                                     className="mt-1 h-8 text-xs"
                                   />
                                 </label>
                               </div>
+                              <label className="block text-[11px] font-medium text-muted-foreground">
+                                Max candidates
+                                <Input
+                                  type="number"
+                                  min={scopeDraft.max_sources}
+                                  max={80}
+                                  value={scopeDraft.max_candidates}
+                                  onChange={(event) => setScopeDraft((current) => current ? { ...current, max_candidates: Number(event.target.value) } : current)}
+                                  className="mt-1 h-8 text-xs"
+                                />
+                              </label>
                               <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
                                 <input
                                   type="checkbox"
@@ -2358,13 +2478,15 @@ function KnowledgePage() {
                     )}
                   >
                     <div className={cn("mb-1 flex items-center justify-between gap-2 text-[10px] font-semibold uppercase tracking-wider", message.role === "user" ? "text-white/70" : "text-muted-foreground")}>
-                      <span>
-                        {message.role === "user"
-                          ? "You"
-                          : message.isServiceError
-                            ? "Service error"
-                            : "Knowledge Agent"}
-                      </span>
+                      {!(message.role === "agent" && message.isStreaming && !message.text) && (
+                        <span>
+                          {message.role === "user"
+                            ? "You"
+                            : message.isServiceError
+                              ? "Service error"
+                              : "Knowledge Agent"}
+                        </span>
+                      )}
                       <div className="flex items-center gap-1.5 normal-case">
                         {isAnimating && (
                           <button
@@ -2381,7 +2503,12 @@ function KnowledgePage() {
                         )}
                         {isAgentReply && message.confidence_score !== undefined && message.confidence_score > 0 && (
                           <span className="rounded-sm bg-[color:var(--success)]/15 px-1.5 py-0.5 text-[color:var(--success)]">
-                            {Math.round(message.confidence_score * 100)}% confidence
+                            {(message.confidence_band ?? "confidence").replaceAll("_", " ")} · {Math.round(message.confidence_score * 100)}%
+                          </span>
+                        )}
+                        {message.isStreaming && message.streamSourceCount !== undefined && (
+                          <span className="rounded-sm bg-secondary px-1.5 py-0.5 text-muted-foreground">
+                            {message.streamSourceCount} source{message.streamSourceCount === 1 ? "" : "s"}
                           </span>
                         )}
                       </div>
@@ -2406,11 +2533,7 @@ function KnowledgePage() {
                           />
                         </p>
                       ) : (
-                        <p className="text-sm text-muted-foreground">
-                          {message.streamPhase
-                            ? STREAM_PHASE_LABELS[message.streamPhase]
-                            : "Thinking…"}
-                        </p>
+                        <TypingIndicator className="text-muted-foreground" />
                       )
                     ) : (
                       <p className={cn("leading-5", message.isServiceError && "text-foreground")}>
@@ -2485,7 +2608,21 @@ function KnowledgePage() {
                       </div>
                     )}
                     {showPostAnimationActions && message.feedback === "down" && (
-                      <div className="mt-2" onClick={(event) => event.stopPropagation()}>
+                      <div className="mt-2 space-y-2" onClick={(event) => event.stopPropagation()}>
+                        <div className="flex flex-wrap gap-1.5">
+                          {NEGATIVE_FEEDBACK_REASONS.map((reason) => (
+                            <Button
+                              key={reason.value}
+                              type="button"
+                              size="sm"
+                              variant={message.feedbackReason === reason.value ? "default" : "outline"}
+                              className="h-7 text-[10px]"
+                              onClick={() => void setMessageFeedback(message.id, "down", message.feedbackComment, reason.value)}
+                            >
+                              {reason.label}
+                            </Button>
+                          ))}
+                        </div>
                         <Textarea
                           value={message.feedbackComment ?? ""}
                           onChange={(event) => setFeedbackComment(message.id, event.target.value)}
@@ -2499,6 +2636,22 @@ function KnowledgePage() {
                           className="min-h-[52px] resize-none text-xs"
                           rows={2}
                         />
+                      </div>
+                    )}
+                    {showPostAnimationActions && message.feedback === "up" && (
+                      <div className="mt-2 flex flex-wrap gap-1.5" onClick={(event) => event.stopPropagation()}>
+                        {POSITIVE_FEEDBACK_REASONS.map((reason) => (
+                          <Button
+                            key={reason.value}
+                            type="button"
+                            size="sm"
+                            variant={message.feedbackReason === reason.value ? "default" : "outline"}
+                            className="h-7 text-[10px]"
+                            onClick={() => void setMessageFeedback(message.id, "up", message.feedbackComment, reason.value)}
+                          >
+                            {reason.label}
+                          </Button>
+                        ))}
                       </div>
                     )}
                     {message.isServiceError && !isAnimating && message.retryQuestion && (
@@ -2554,6 +2707,9 @@ function KnowledgePage() {
                           <div className="rounded-sm border border-border/60 bg-secondary/30 px-2.5 py-2">
                             <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Retrieval details</div>
                             <div className="space-y-1 text-[11px] leading-4 text-muted-foreground">
+                              {message.retrieval_debug.query_type && (
+                                <p>Query type: {message.retrieval_debug.query_type}</p>
+                              )}
                               {message.retrieval_debug.retrieval_query && (
                                 <p>Search query: {message.retrieval_debug.retrieval_query}</p>
                               )}
@@ -2566,6 +2722,45 @@ function KnowledgePage() {
                                 Candidates: {message.retrieval_debug.eligible_doc_count ?? "n/a"} docs
                                 {message.retrieval_debug.has_embeddings === false ? " / keyword fallback" : " / hybrid search"}
                               </p>
+                              <p>
+                                Pool: {message.retrieval_debug.candidate_count ?? "n/a"} candidates
+                                {message.retrieval_debug.fallback_level ? ` / fallback ${message.retrieval_debug.fallback_level}` : ""}
+                              </p>
+                              {message.retrieval_debug.confidence_band && (
+                                <p>Confidence band: {message.retrieval_debug.confidence_band.replaceAll("_", " ")}</p>
+                              )}
+                              {typeof message.retrieval_debug.grounding?.support === "number" && (
+                                <p>
+                                  Grounding: {message.retrieval_debug.grounding.grounded ? "Grounded" : "Weak"} / {Math.round(message.retrieval_debug.grounding.support * 100)}%
+                                </p>
+                              )}
+                              {message.retrieval_debug.sources && message.retrieval_debug.sources.length > 0 && (
+                                <div className="space-y-0.5">
+                                  {message.retrieval_debug.sources.slice(0, 3).map((source) => (
+                                    <p key={source.chunk_id}>
+                                      {source.title}: {Math.round(source.relevance_score * 100)}%
+                                    </p>
+                                  ))}
+                                </div>
+                              )}
+                              {message.retrieval_debug.citations && message.retrieval_debug.citations.length > 0 && (
+                                <div className="mt-2 grid gap-1.5">
+                                  {message.retrieval_debug.citations.slice(0, 4).map((source) => (
+                                    <div key={source.chunk_id} className="rounded-sm border border-border/60 bg-background/60 px-2 py-1.5">
+                                      <p className="font-medium text-foreground">{source.title}</p>
+                                      <p>
+                                        {source.source_type || "Source"}{source.page ? ` / p. ${source.page}` : ""}
+                                        {source.section_path ? ` / ${source.section_path}` : ""}
+                                      </p>
+                                      <p>
+                                        {Math.round(source.relevance_score * 100)}% relevance
+                                        {source.effective_date ? ` / effective ${source.effective_date}` : ""}
+                                        {source.visibility ? ` / ${source.visibility.replaceAll("_", " ")}` : ""}
+                                      </p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           </div>
                         )}
@@ -2585,26 +2780,6 @@ function KnowledgePage() {
                             <p className="text-[11px] leading-4 text-foreground">{message.next_step}</p>
                           </div>
                         )}
-                        {message.knowledge_gap && !message.isServiceError && (
-                          <div className="rounded-sm border border-[color:var(--warning)]/30 bg-[color:var(--warning)]/8 p-2.5">
-                            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--warning)]">Missing knowledge</div>
-                            <p className="text-[11px] leading-4 text-foreground">{message.knowledge_gap.message}</p>
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              <Button type="button" size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => prefillUploadFromGap(message.knowledge_gap!)}>
-                                Upload related document
-                              </Button>
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="ghost"
-                                className="h-7 text-[10px]"
-                                onClick={() => setWorkflowFilter("Needs review")}
-                              >
-                                Review pending documents
-                              </Button>
-                            </div>
-                          </div>
-                        )}
                       </div>
                     )}
                   </div>
@@ -2618,7 +2793,6 @@ function KnowledgePage() {
                     <Bot className="h-3.5 w-3.5" />
                   </div>
                   <div className="rounded-md bg-card px-3 py-3 text-xs text-muted-foreground">
-                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Knowledge Agent</div>
                     <TypingIndicator />
                   </div>
                 </div>
@@ -2683,6 +2857,14 @@ function KnowledgePage() {
                     </DialogDescription>
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
+                    {selectedDoc.retrievalReady ? (
+                      <DocBadge label="Retrieval ready" tone="success" />
+                    ) : (
+                      <DocBadge
+                        label={selectedDoc.retrievalReadinessReason}
+                        tone={readinessBadgeTone(selectedDoc.retrievalReadinessReason)}
+                      />
+                    )}
                     {selectedDoc.workflowState !== selectedDoc.status && <DocBadge label={selectedDoc.workflowState} />}
                     <DocBadge label={selectedDoc.status} />
                   </div>
@@ -2702,10 +2884,14 @@ function KnowledgePage() {
                       </TabsList>
                       <div className="flex flex-wrap items-center gap-1.5">
                         {selectedDoc.indexing && <DocBadge label={selectedDoc.processingLabel} tone="info" />}
-                        {selectedDoc.processingStatus === "ready" && <DocBadge label="Ready" tone="success" />}
                         {selectedDoc.processingStatus === "failed" && <DocBadge label="Failed" tone="danger" />}
                       </div>
                     </div>
+                    {!selectedDoc.retrievalReady && retrievalActionLabel(selectedDoc.retrievalAction) && (
+                      <p className="text-[11px] text-muted-foreground">
+                        Action needed: {retrievalActionLabel(selectedDoc.retrievalAction)}
+                      </p>
+                    )}
                     {selectedDoc.indexing && (
                       <Progress value={processingProgress(selectedDoc.processingStatus)} className="h-1.5" />
                     )}
@@ -2722,6 +2908,7 @@ function KnowledgePage() {
                           versionCompare={versionCompare}
                           compareLeftId={compareLeftId}
                           compareRightId={compareRightId}
+                          relatedKnowledge={relatedKnowledgeQuery.data ?? null}
                           onCompareLeftChange={setCompareLeftId}
                           onCompareRightChange={setCompareRightId}
                           onRunVersionCompare={() => void runVersionCompare()}
@@ -2735,11 +2922,19 @@ function KnowledgePage() {
                   <div className="rounded-md bg-secondary/50 p-3 text-xs">
                     <h4 className="font-semibold text-foreground">Document details</h4>
                     <dl className="mt-3 space-y-2 text-muted-foreground">
+                      <MetaRow label="Status" value={selectedDoc.status} />
                       <MetaRow label="Version" value={selectedDoc.version} />
                       <MetaRow label="Owner" value={selectedDoc.owner} />
                       <MetaRow label="Effective" value={selectedDoc.effectiveDate || "Not set"} />
+                      <MetaRow label="Submitted" value={selectedDoc.submittedAt ? new Date(selectedDoc.submittedAt).toLocaleString() : "—"} />
+                      <MetaRow label="Reviewed" value={selectedDoc.reviewedAt ? new Date(selectedDoc.reviewedAt).toLocaleString() : "—"} />
                       <MetaRow label="File" value={`${selectedDoc.fileType}`} />
                     </dl>
+                    {selectedDoc.rejectionReason ? (
+                      <p className="mt-3 rounded-md border border-[color:var(--danger)]/20 bg-[color:var(--danger)]/5 px-2 py-1.5 text-[11px] text-[color:var(--danger)]">
+                        Rejection: {selectedDoc.rejectionReason}
+                      </p>
+                    ) : null}
                   </div>
                   <div className="space-y-1.5 border-t border-border/60 pt-2">
                     <div className="grid grid-cols-2 gap-2">
@@ -2761,6 +2956,79 @@ function KnowledgePage() {
                         Re-index
                       </Button>
                     </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {selectedDoc.status === "Draft" || selectedDoc.status === "Rejected" || selectedDoc.status === "Expired" ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 justify-start rounded-md border border-border/70 bg-card/60 px-2 text-xs text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+                          disabled={pendingDocumentIds.has(selectedDoc.id)}
+                          onClick={() => void runLifecycleAction(selectedDoc, "submit")}
+                        >
+                          Submit
+                        </Button>
+                      ) : null}
+                      {selectedDoc.status === "Submitted for review" && canReviewApprovals ? (
+                        <>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 justify-start rounded-md border border-border/70 bg-card/60 px-2 text-xs text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+                            disabled={pendingDocumentIds.has(selectedDoc.id)}
+                            onClick={() => void runLifecycleAction(selectedDoc, "approve")}
+                          >
+                            Approve
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 justify-start rounded-md border border-border/70 bg-card/60 px-2 text-xs text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+                            disabled={pendingDocumentIds.has(selectedDoc.id)}
+                            onClick={() => void runLifecycleAction(selectedDoc, "reject")}
+                          >
+                            Reject
+                          </Button>
+                        </>
+                      ) : null}
+                      {selectedDoc.status === "Submitted for review" && !canReviewApprovals ? (
+                        <p className="col-span-2 text-[11px] text-muted-foreground">
+                          Waiting for leadership approval.
+                        </p>
+                      ) : null}
+                      {["Submitted for review", "Rejected", "Expired", "Needs re-index"].includes(selectedDoc.status) ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 justify-start rounded-md border border-border/70 bg-card/60 px-2 text-xs text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+                          disabled={pendingDocumentIds.has(selectedDoc.id)}
+                          onClick={() => void runLifecycleAction(selectedDoc, "return-to-draft")}
+                        >
+                          Draft
+                        </Button>
+                      ) : null}
+                      {["Approved", "Rejected", "Expired", "Needs re-index"].includes(selectedDoc.status) ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 justify-start rounded-md border border-border/70 bg-card/60 px-2 text-xs text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+                          disabled={pendingDocumentIds.has(selectedDoc.id)}
+                          onClick={() => void runLifecycleAction(selectedDoc, "archive")}
+                        >
+                          Archive
+                        </Button>
+                      ) : null}
+                      {selectedDoc.status === "Archived" ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 justify-start rounded-md border border-border/70 bg-card/60 px-2 text-xs text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+                          disabled={pendingDocumentIds.has(selectedDoc.id)}
+                          onClick={() => void runLifecycleAction(selectedDoc, "restore")}
+                        >
+                          Restore
+                        </Button>
+                      ) : null}
+                    </div>
                     <div className="grid grid-cols-[4.5rem_1fr] items-center gap-2 rounded-md border border-border/70 bg-card/60 px-2 py-1 text-xs">
                       <span className="text-muted-foreground">Folder</span>
                       <Select value={selectedDoc.folderId} onValueChange={(value) => void updateDocument(selectedDoc.id, { folderId: value })}>
@@ -2770,19 +3038,6 @@ function KnowledgePage() {
                         <SelectContent>
                           {libraryFolders.map((folder) => (
                             <SelectItem key={folder.id} value={folder.id}>{folder.name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="grid grid-cols-[4.5rem_1fr] items-center gap-2 rounded-md border border-border/70 bg-card/60 px-2 py-1 text-xs">
-                      <span className="text-muted-foreground">Status</span>
-                      <Select value={selectedDoc.status} onValueChange={(value) => void updateDocument(selectedDoc.id, { status: value as DocumentStatus })}>
-                        <SelectTrigger className="h-8 border-transparent bg-transparent px-2 text-xs shadow-none hover:bg-secondary/70">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {statuses.map((status) => (
-                            <SelectItem key={status} value={status}>{status}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
@@ -2805,6 +3060,34 @@ function KnowledgePage() {
                       <Trash2 className="h-3.5 w-3.5" />
                       Delete document
                     </Button>
+                  </div>
+                  <div className="rounded-md bg-secondary/50 p-3 text-xs">
+                    <h4 className="font-semibold text-foreground">Approval history</h4>
+                    {approvalHistoryQuery.isLoading ? (
+                      <p className="mt-2 text-muted-foreground">Loading history…</p>
+                    ) : approvalHistory.length === 0 ? (
+                      <p className="mt-2 text-muted-foreground">No approval events yet.</p>
+                    ) : (
+                      <ul className="mt-2 space-y-2">
+                        {approvalHistory.map((event: KnowledgeDocumentApprovalEventApi) => (
+                          <li key={event.id} className="rounded-md border border-border/60 bg-card/50 px-2 py-1.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-medium text-foreground">{event.action}</span>
+                              <span className="text-[10px] text-muted-foreground">
+                                {new Date(event.created_at).toLocaleString()}
+                              </span>
+                            </div>
+                            <p className="mt-0.5 text-[11px] text-muted-foreground">
+                              {(event.from_status ?? "—")} → {event.to_status}
+                              {event.actor_name ? ` · ${event.actor_name}` : ""}
+                            </p>
+                            {event.note ? (
+                              <p className="mt-1 text-[11px] text-foreground/80">{event.note}</p>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 </aside>
               </div>
@@ -2923,12 +3206,6 @@ function KnowledgePage() {
                 <Select value={form.visibility} onValueChange={(value) => setField("visibility", value as Visibility)}>
                   <SelectTrigger className="h-9 text-xs shadow-none"><SelectValue /></SelectTrigger>
                   <SelectContent>{visibilities.map((visibility) => <SelectItem key={visibility} value={visibility}>{visibility}</SelectItem>)}</SelectContent>
-                </Select>
-              </Field>
-              <Field label="Status">
-                <Select value={form.status} onValueChange={(value) => setField("status", value as DocumentStatus)}>
-                  <SelectTrigger className="h-9 text-xs shadow-none"><SelectValue /></SelectTrigger>
-                  <SelectContent>{statuses.map((status) => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent>
                 </Select>
               </Field>
               <Field label="Effective date">

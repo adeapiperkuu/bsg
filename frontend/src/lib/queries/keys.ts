@@ -48,13 +48,18 @@ export const queryKeys = {
   qualityPage: (projectId: string) => ["quality", "page", projectId] as const,
   knowledgeBootstrap: ["knowledge", "bootstrap"] as const,
   knowledgeDocuments: ["knowledge", "documents"] as const,
+  knowledgeConversations: ["knowledge", "conversations"] as const,
+  knowledgeDocumentApprovalHistory: (documentId: string) =>
+    ["knowledge", "documents", documentId, "approval-history"] as const,
   knowledgeLibraryHealth: ["knowledge", "library-health"] as const,
+  knowledgeSuggestions: (status = "open") => ["knowledge", "suggestions", status] as const,
+  knowledgeRelatedDocuments: (documentId: string) =>
+    ["knowledge", "documents", documentId, "related"] as const,
   knowledgeRetrievalSettings: ["knowledge", "retrieval-settings"] as const,
   knowledgeDocument: (documentId: string) => ["knowledge", "document", documentId] as const,
   knowledgeDocumentVersions: (documentId: string) =>
     ["knowledge", "document", documentId, "versions"] as const,
   knowledgeAgentQueries: ["knowledge", "agent-queries"] as const,
-  knowledgeConversations: ["knowledge", "conversations"] as const,
 };
 
 export const STALE_TIME_MS = 5 * 60 * 1000;

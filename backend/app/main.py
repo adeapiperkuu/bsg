@@ -33,6 +33,7 @@ from app.db.models import ScanTrigger
 from app.db.session import dispose_engine, session_scope
 from app.services.quality import scan_all_projects
 from app.services.quality_thresholds import warm_thresholds_cache
+from app.services.knowledge_ingestion_jobs import process_ingestion_job_queue
 from app.services.signal_dispatcher import dispatch_pending_signals
 
 logger = logging.getLogger(__name__)
@@ -61,10 +62,20 @@ async def _scheduled_quality_scan() -> None:
             logger.exception("Scheduled quality scan failed")
 
 
+async def _scheduled_ingestion_queue_poll() -> None:
+    try:
+        dispatched = await process_ingestion_job_queue()
+        if dispatched:
+            logger.info("Dispatched %s knowledge ingestion job(s) from queue poll.", dispatched)
+    except Exception:
+        logger.exception("Knowledge ingestion queue poll failed")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     scheduler = AsyncIOScheduler()
     scheduler.add_job(_scheduled_quality_scan, "cron", day_of_week="mon", hour=2)
+    scheduler.add_job(_scheduled_ingestion_queue_poll, "interval", seconds=30)
     scheduler.start()
     try:
         await warm_thresholds_cache()

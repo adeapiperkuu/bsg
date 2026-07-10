@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     knowledge_storage_bucket: str = "knowledge-documents"
     knowledge_upload_dir: str = str(BACKEND_ROOT / "data" / "knowledge")
+    # When true, the user who submitted a document cannot also approve it.
+    knowledge_separation_of_duties: bool = False
     # Delivery chat hardening (see app/agents/delivery/routes/chat.py)
     delivery_chat_user_rate_limit_per_minute: int = 10
     delivery_chat_org_rate_limit_per_minute: int = 60
