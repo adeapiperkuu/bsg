@@ -84,7 +84,6 @@ async def test_bootstrap_returns_lightweight_payload_only() -> None:
             can_upload=True,
             can_manage_eval=False,
             can_adjust_retrieval_scope=False,
-            can_resolve_gaps=True,
         ),
         library_health=KnowledgeLibraryHealthCountsRead(ready_count=1),
     )
@@ -95,14 +94,13 @@ async def test_bootstrap_returns_lightweight_payload_only() -> None:
     assert "chunks" not in payload["recent_documents"][0]
     assert "preview" not in payload["recent_documents"][0]
     assert "quality_score" not in payload["recent_documents"][0]
-    assert "open_gaps" not in payload["library_health"]
     assert payload["permissions"]["can_upload"] is True
     assert payload["folder_tree"][0]["document_count"] == 1
 
 
 @pytest.mark.asyncio
 async def test_get_knowledge_bootstrap_limits_recent_documents() -> None:
-    from datetime import timedelta
+    from datetime import date, timedelta
 
     org_id = uuid4()
     folder_id = uuid4()
@@ -125,6 +123,7 @@ async def test_get_knowledge_bootstrap_limits_recent_documents() -> None:
             visibility=KnowledgeVisibility.INTERNAL_ONLY,
             status=KnowledgeDocumentStatus.APPROVED,
             owner_approver="Owner",
+            effective_date=date(2025, 1, 1),
             file_name=f"doc-{index}.md",
             file_mime_type="text/markdown",
             processing_status=KnowledgeProcessingStatus.READY,

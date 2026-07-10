@@ -21,13 +21,15 @@ export function MetaRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function DocBadge({ label, tone }: { label: string; tone?: "success" | "info" | "danger" }) {
+export function DocBadge({ label, tone }: { label: string; tone?: "success" | "info" | "danger" | "warning" }) {
   if (label === "Approved" || label === "Draft" || label === "Archived") return <StatusPill status={label} />;
   const classes =
     tone === "success"
       ? "border-[color:var(--success)]/30 bg-[color:var(--success)]/15 text-[color:var(--success)]"
       : tone === "danger"
         ? "border-[color:var(--danger)]/30 bg-[color:var(--danger)]/10 text-[color:var(--danger)]"
+        : tone === "warning"
+          ? "border-[color:var(--warning)]/30 bg-[color:var(--warning)]/10 text-[color:var(--warning)]"
         : "border-border/70 bg-secondary/70 text-muted-foreground";
   return <span className={cn("rounded border px-1.5 py-0.5 text-[9px] font-medium", classes)}>{label}</span>;
 }

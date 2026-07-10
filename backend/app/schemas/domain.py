@@ -1028,38 +1028,6 @@ class KnowledgeChunkRead(BaseModel):
     token_count: int | None = None
 
 
-class KnowledgeDocumentRead(ORMModel):
-    id: UUID
-    folder_id: UUID
-    active_version_id: UUID | None = None
-    folder_name: str
-    folder_kind: str
-    title: str
-    source_type: str
-    version: str
-    visibility: str
-    status: str
-    owner_approver: str
-    effective_date: date | None
-    file_name: str
-    file_mime_type: str
-    file_url: str | None = None
-    processing_status: str
-    processing_error: str | None = None
-    indexing_status: str
-    preview: list[str]
-    workflow_state: str = "needs_review"
-    quality_score: KnowledgeQualityScore | None = None
-    chunk_count: int = 0
-    citation_count: int = 0
-    approved_by_name: str | None = None
-    approved_at: datetime | None = None
-    chunks: list[KnowledgeChunkRead] = []
-    semantic_relevance: float | None = None
-    created_at: datetime
-    updated_at: datetime
-
-
 class GoldSetEvaluationLogCreate(BaseModel):
     annotator_id: UUID
     item_id: str
@@ -1388,13 +1356,59 @@ class KnowledgeQualityScore(BaseModel):
     criteria: list[KnowledgeQualityCriterion]
 
 
+class KnowledgeExtractionScoreBreakdown(BaseModel):
+    heading_coverage: float = 0.0
+    ocr_confidence: float = 0.0
+    metadata_completeness: float = 0.0
+    table_quality: float = 0.0
+    section_balance: float = 0.0
+    duplicate_penalty: float = 0.0
+    empty_page_ratio: float = 0.0
+    image_ratio: float = 0.0
+    operational_keyword_density: float = 0.0
+    overall: int = 0
+
+
+class KnowledgeLibraryAnalyticsRead(BaseModel):
+    average_chunk_tokens: float = 0.0
+    largest_chunk_tokens: int = 0
+    smallest_chunk_tokens: int = 0
+    heading_count: int = 0
+    table_count: int = 0
+    warning_count: int = 0
+    entity_count: int = 0
+    estimated_retrieval_quality: int = 0
+
+
 class KnowledgeChunkRead(BaseModel):
     id: UUID
+    document_id: UUID
     chunk_index: int
+    total_chunks: int | None = None
+    previous_chunk_id: UUID | None = None
+    next_chunk_id: UUID | None = None
     section_title: str | None = None
+    section_path: str | None = None
+    heading_level: int | None = None
     page_number: int | None = None
     chunk_text: str
     token_count: int | None = None
+    chunk_summary: str | None = None
+    chunk_type: str = "text"
+    is_table: bool = False
+    contains_procedure: bool = False
+    contains_warning: bool = False
+    contains_decision: bool = False
+    contains_checklist: bool = False
+    contains_table: bool = False
+    contains_roles: bool = False
+    contains_dates: bool = False
+    source_type: str | None = None
+    folder_name: str | None = None
+    project: str | None = None
+    department: str | None = None
+    effective_date: date | None = None
+    owner_approver: str | None = None
 
 
 class KnowledgeDocumentRead(ORMModel):
@@ -1410,6 +1424,14 @@ class KnowledgeDocumentRead(ORMModel):
     status: str
     owner_approver: str
     effective_date: date | None
+    expiry_date: date | None = None
+    created_by: UUID | None = None
+    submitted_by: UUID | None = None
+    submitted_at: datetime | None = None
+    reviewed_by: UUID | None = None
+    reviewed_at: datetime | None = None
+    approved_by: UUID | None = None
+    rejection_reason: str | None = None
     file_name: str
     file_mime_type: str
     file_url: str | None = None
@@ -1418,11 +1440,26 @@ class KnowledgeDocumentRead(ORMModel):
     indexing_status: str
     preview: list[str]
     workflow_state: str = "needs_review"
+    retrieval_ready: bool = False
+    retrieval_readiness_reason: str = "Needs approval"
+    retrieval_action: str | None = None
     quality_score: KnowledgeQualityScore | None = None
+    quality_warnings: list[str] = Field(default_factory=list)
+    extraction_quality_score: int | None = None
+    extraction_score_breakdown: KnowledgeExtractionScoreBreakdown | None = None
+    library_analytics: KnowledgeLibraryAnalyticsRead | None = None
+    ocr_needed: bool = False
+    reindex_recommended: bool = False
     chunk_count: int = 0
     citation_count: int = 0
     approved_by_name: str | None = None
     approved_at: datetime | None = None
+    executive_summary: str | None = None
+    key_procedures: list[str] = Field(default_factory=list)
+    important_warnings: list[str] = Field(default_factory=list)
+    affected_departments: list[str] = Field(default_factory=list)
+    related_document_ids: list[UUID] = Field(default_factory=list)
+    summary_generated_at: datetime | None = None
     chunks: list[KnowledgeChunkRead] = []
     semantic_relevance: float | None = None
     created_at: datetime
@@ -1436,9 +1473,28 @@ class KnowledgeDocumentUpdate(BaseModel):
     source_type: str | None = None
     version: str | None = None
     visibility: str | None = None
-    status: str | None = None
     owner_approver: str | None = None
     effective_date: date | None = None
+    expiry_date: date | None = None
+
+
+class KnowledgeDocumentLifecycleAction(BaseModel):
+    note: str | None = Field(default=None, max_length=2000)
+    rejection_reason: str | None = Field(default=None, max_length=2000)
+    effective_date: date | None = None
+    expiry_date: date | None = None
+
+
+class KnowledgeDocumentApprovalEventRead(BaseModel):
+    id: UUID
+    document_id: UUID
+    actor_id: UUID | None = None
+    actor_name: str | None = None
+    from_status: str | None = None
+    to_status: str
+    action: str
+    note: str | None = None
+    created_at: datetime
 
 
 class KnowledgeConversationTurn(BaseModel):
@@ -1470,43 +1526,157 @@ class KnowledgeStructuredAnswer(BaseModel):
     next_action: str = ""
 
 
-class KnowledgeGapRead(BaseModel):
-    message: str
-    suggested_title: str | None = None
-    suggested_source_type: str | None = None
-    suggested_folder_kind: str | None = None
-
-
-class KnowledgeGapTodoRead(BaseModel):
-    id: UUID
-    query_text: str
-    message: str
-    suggested_title: str | None = None
-    suggested_source_type: str | None = None
-    suggested_folder_kind: str | None = None
-    agent_query_id: UUID | None = None
-    created_at: datetime
-
-
 class KnowledgeLibraryHealthRead(BaseModel):
     ready_count: int = 0
+    ready_for_retrieval_count: int = 0
+    approved_and_indexed_count: int = 0
     needs_review_count: int = 0
     expired_count: int = 0
     needs_reindex_count: int = 0
+    failed_processing_count: int = 0
+    missing_metadata_count: int = 0
     indexing_count: int = 0
     draft_count: int = 0
     archived_count: int = 0
-    open_gaps: list[KnowledgeGapTodoRead] = Field(default_factory=list)
+    approaching_expiry_count: int = 0
+    outdated_count: int = 0
+    health_score: float | None = None
+    health_band: str | None = None
+    health_recommendations: list[str] = Field(default_factory=list)
 
 
 class KnowledgeLibraryHealthCountsRead(BaseModel):
     ready_count: int = 0
+    ready_for_retrieval_count: int = 0
+    approved_and_indexed_count: int = 0
     needs_review_count: int = 0
     expired_count: int = 0
     needs_reindex_count: int = 0
+    failed_processing_count: int = 0
+    missing_metadata_count: int = 0
     indexing_count: int = 0
     draft_count: int = 0
     archived_count: int = 0
+    approaching_expiry_count: int = 0
+    outdated_count: int = 0
+
+
+class KnowledgeHealthScoreRead(BaseModel):
+    score: float
+    band: str
+    recommendations: list[str] = Field(default_factory=list)
+    ready_ratio: float = 0.0
+
+
+class KnowledgeSuggestionRead(BaseModel):
+    id: UUID
+    org_id: UUID
+    document_id: UUID | None = None
+    suggestion_type: str
+    title: str
+    detail: str
+    proposed_changes: dict[str, object] = Field(default_factory=dict)
+    evidence: dict[str, object] = Field(default_factory=dict)
+    status: str
+    reviewed_by: UUID | None = None
+    reviewed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeSuggestionAction(BaseModel):
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class KnowledgeDocumentAiSummaryRead(BaseModel):
+    document_id: UUID
+    executive_summary: str | None = None
+    key_procedures: list[str] = Field(default_factory=list)
+    important_warnings: list[str] = Field(default_factory=list)
+    affected_departments: list[str] = Field(default_factory=list)
+    related_document_ids: list[UUID] = Field(default_factory=list)
+    summary_generated_at: datetime | None = None
+
+
+class KnowledgeRelatedItemRead(BaseModel):
+    document_id: UUID
+    title: str
+    source_type: str
+    score: float = 0.0
+    reason: str = ""
+
+
+class KnowledgeRelatedKnowledgeRead(BaseModel):
+    related_sops: list[KnowledgeRelatedItemRead] = Field(default_factory=list)
+    related_guides: list[KnowledgeRelatedItemRead] = Field(default_factory=list)
+    related_lessons: list[KnowledgeRelatedItemRead] = Field(default_factory=list)
+    related_projects: list[str] = Field(default_factory=list)
+    similar_questions: list[str] = Field(default_factory=list)
+
+
+class KnowledgeGapSuggestionRead(BaseModel):
+    gap_query: str
+    occurrence_count: int
+    existing_documents_that_may_resolve: list[KnowledgeRelatedItemRead] = Field(default_factory=list)
+    documents_that_should_be_updated: list[KnowledgeRelatedItemRead] = Field(default_factory=list)
+    documents_that_should_be_created: list[str] = Field(default_factory=list)
+    related_lessons_learned: list[KnowledgeRelatedItemRead] = Field(default_factory=list)
+    similar_historical_questions: list[str] = Field(default_factory=list)
+    auto_resolved: bool = False
+
+
+class KnowledgeRetrievalQualityRead(BaseModel):
+    frequently_selected_documents: list[str] = Field(default_factory=list)
+    frequently_ignored_documents: list[str] = Field(default_factory=list)
+    weak_citations: list[str] = Field(default_factory=list)
+    conflicting_answers: list[str] = Field(default_factory=list)
+    repeated_retrieval_failures: int = 0
+    low_confidence_trend_count: int = 0
+    average_confidence: float | None = None
+    recommendations: list[str] = Field(default_factory=list)
+
+
+class KnowledgeDuplicateMatchRead(BaseModel):
+    document_id: UUID
+    title: str
+    similarity: float
+    kind: str
+    message: str
+
+
+class KnowledgeDuplicateCompareRead(BaseModel):
+    left_document_id: UUID
+    right_document_id: UUID
+    left_title: str
+    right_title: str
+    similarity: float
+    kind: str
+    left_preview: str
+    right_preview: str
+    can_merge: bool = False
+    message: str
+    warnings: list[dict[str, object]] = Field(default_factory=list)
+
+
+class KnowledgeEvaluationReportRead(BaseModel):
+    total: int
+    passed: int
+    failed: int
+    pass_rate: float
+    retrieval_accuracy: float
+    source_accuracy: float
+    citation_accuracy: float
+    answer_quality: float
+    answer_concept_coverage: float
+    confidence_accuracy: float
+    confidence_pass_rate: float
+    client_safe_compliance: float
+    client_safe_violations: int
+    average_retrieval_rank: float | None = None
+    results: list[dict[str, object]] = Field(default_factory=list)
+    generated_at: str
+    regressions: list[str] = Field(default_factory=list)
+    report_text: str
 
 
 class KnowledgeDocumentSummaryRead(BaseModel):
@@ -1521,11 +1691,19 @@ class KnowledgeDocumentSummaryRead(BaseModel):
     status: str
     owner_approver: str
     effective_date: date | None
+    expiry_date: date | None = None
+    submitted_at: datetime | None = None
+    reviewed_at: datetime | None = None
+    approved_at: datetime | None = None
+    rejection_reason: str | None = None
     file_name: str
     processing_status: str
     processing_error: str | None = None
     indexing_status: str
     workflow_state: str = "needs_review"
+    retrieval_ready: bool = False
+    retrieval_readiness_reason: str = "Needs approval"
+    retrieval_action: str | None = None
     updated_at: datetime
 
 
@@ -1546,7 +1724,7 @@ class KnowledgePermissionsRead(BaseModel):
     can_upload: bool = False
     can_manage_eval: bool = False
     can_adjust_retrieval_scope: bool = False
-    can_resolve_gaps: bool = False
+    can_review_approvals: bool = False
 
 
 class KnowledgeBootstrapRead(BaseModel):
@@ -1562,9 +1740,9 @@ class KnowledgeAskRead(BaseModel):
     answer_text: str
     next_step: str = ""
     confidence_score: float = 0.0
+    confidence_band: str | None = None
     confidence_reasons: list[str] = []
     structured_answer: KnowledgeStructuredAnswer | None = None
-    knowledge_gap: KnowledgeGapRead | None = None
     query_id: UUID | None = None
     conversation_id: UUID | None = None
     model_used: str | None = None
@@ -1589,10 +1767,32 @@ class KnowledgeConversationRead(BaseModel):
     turns: list[KnowledgeConversationTurnRead]
 
 
+class KnowledgeIngestionProgressRead(BaseModel):
+    job_id: UUID
+    document_id: UUID
+    version_id: UUID | None = None
+    status: str
+    progress_percentage: int
+    retry_count: int
+    failure_reason: str | None = None
+    extraction_warnings: list[str] = []
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeDocumentIngestionAcceptedRead(BaseModel):
+    job_id: UUID
+    document: KnowledgeDocumentRead
+
+
 class KnowledgeDocumentVersionRead(BaseModel):
     id: UUID
     version: str
     is_active: bool
+    supersedes_version_id: UUID | None = None
+    superseded_by_version_id: UUID | None = None
     uploaded_at: datetime
     uploaded_by_name: str | None = None
     approved_by_name: str | None = None
@@ -1614,25 +1814,76 @@ class KnowledgeVersionCompareRead(BaseModel):
 class KnowledgeRetrievalSettingsRead(BaseModel):
     only_approved: bool = True
     include_histories: bool = True
+    min_relevance: float = 0.25
     min_confidence: float = 0.25
     max_sources: int = 3
+    max_candidates: int = 20
     project: str | None = None
     department: str | None = None
+    source_types: list[str] = Field(default_factory=list)
+    folder_ids: list[UUID] = Field(default_factory=list)
+    recency_preference: float = Field(default=0.5, ge=0.0, le=1.0)
+    exact_term_preference: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_retrieval_settings(self) -> "KnowledgeRetrievalSettingsRead":
+        self.only_approved = True
+        self.max_sources = max(1, min(int(self.max_sources), 10))
+        self.max_candidates = max(int(self.max_candidates), self.max_sources)
+        self.min_relevance = max(0.0, min(float(self.min_relevance), 1.0))
+        self.min_confidence = max(0.0, min(float(self.min_confidence), 1.0))
+        allowed_sources = {
+            "sop",
+            "guide",
+            "training_document",
+            "project_charter",
+            "escalation_note",
+            "lesson_learned",
+        }
+        self.source_types = [
+            item.strip().lower()
+            for item in self.source_types
+            if item and item.strip().lower() in allowed_sources
+        ]
+        return self
 
 
 class KnowledgeRetrievalSettingsUpdate(BaseModel):
     only_approved: bool | None = None
     include_histories: bool | None = None
+    min_relevance: float | None = Field(default=None, ge=0.0, le=1.0)
     min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     max_sources: int | None = Field(default=None, ge=1, le=10)
+    max_candidates: int | None = Field(default=None, ge=1, le=80)
     project: str | None = None
     department: str | None = None
+    source_types: list[str] | None = None
+    folder_ids: list[UUID] | None = None
+    recency_preference: float | None = Field(default=None, ge=0.0, le=1.0)
+    exact_term_preference: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class KnowledgeFeedbackCreate(BaseModel):
     query_id: UUID
     rating: Literal["up", "down"]
     comment: str | None = Field(default=None, max_length=2000)
+    feedback_reason: Literal[
+        "accurate",
+        "helpful",
+        "clear",
+        "good_sources",
+        "complete",
+        "missing_knowledge",
+        "incorrect",
+        "weak_sources",
+        "outdated",
+        "unclear",
+        "incomplete",
+        "unsafe_for_client",
+        "citation_problem",
+        "too_slow",
+        "other",
+    ] | None = None
 
 
 class KnowledgeFeedbackRead(BaseModel):
@@ -1640,6 +1891,7 @@ class KnowledgeFeedbackRead(BaseModel):
     query_id: UUID
     rating: str
     comment: str | None = None
+    feedback_reason: str | None = None
     created_at: datetime
 
 

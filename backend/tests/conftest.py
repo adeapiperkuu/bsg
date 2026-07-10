@@ -13,6 +13,8 @@ from app.db.models import AppRole
 from app.db.session import get_db_session
 from app.main import app
 
+pytest_plugins = ("tests.knowledge_fixtures",)
+
 ORG_A = uuid4()
 ORG_B = uuid4()
 USER_CLIENT_A = uuid4()

@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import BigInteger, Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, Numeric, Text, UniqueConstraint, func, text
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import UserDefinedType
 
@@ -149,12 +149,17 @@ class KnowledgeSourceType(StrEnum):
 class KnowledgeVisibility(StrEnum):
     INTERNAL_ONLY = "internal_only"
     LEADERSHIP_ONLY = "leadership_only"
+    RESTRICTED = "restricted"
     CLIENT_SAFE = "client_safe"
 
 
 class KnowledgeDocumentStatus(StrEnum):
     DRAFT = "draft"
+    SUBMITTED_FOR_REVIEW = "submitted_for_review"
     APPROVED = "approved"
+    REJECTED = "rejected"
+    NEEDS_REINDEX = "needs_reindex"
+    EXPIRED = "expired"
     ARCHIVED = "archived"
 
 
@@ -174,6 +179,34 @@ class KnowledgeProcessingStatus(StrEnum):
     EMBEDDING = "embedding"
     READY = "ready"
     FAILED = "failed"
+
+
+class KnowledgeIngestionJobStatus(StrEnum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class KnowledgeSuggestionStatus(StrEnum):
+    OPEN = "open"
+    ACCEPTED = "accepted"
+    DISMISSED = "dismissed"
+    APPLIED = "applied"
+
+
+class KnowledgeSuggestionType(StrEnum):
+    MISSING_METADATA = "missing_metadata"
+    BETTER_TITLE = "better_title"
+    IMPROVED_SUMMARY = "improved_summary"
+    MISSING_TAGS = "missing_tags"
+    FOLDER_PLACEMENT = "folder_placement"
+    SUGGESTED_DEPARTMENT = "suggested_department"
+    SUGGESTED_PROJECT = "suggested_project"
+    SUGGESTED_SOURCE_TYPE = "suggested_source_type"
+    GAP_RESOLUTION = "gap_resolution"
+    DUPLICATE = "duplicate"
+    RETRIEVAL_QUALITY = "retrieval_quality"
 
 
 class ProficiencyLevel(StrEnum):
@@ -251,11 +284,6 @@ class KnowledgeExtractionStatus(StrEnum):
 class KnowledgeFeedbackRating(StrEnum):
     UP = "up"
     DOWN = "down"
-
-
-class KnowledgeGapStatus(StrEnum):
-    OPEN = "open"
-    RESOLVED = "resolved"
 
 
 class GovernanceScopeStatus(StrEnum):
@@ -385,6 +413,12 @@ knowledge_processing_status = Enum(
     name="knowledge_processing_status",
     values_callable=lambda x: [e.value for e in x],
 )
+knowledge_ingestion_job_status = Enum(
+    KnowledgeIngestionJobStatus,
+    name="knowledge_ingestion_job_status",
+    values_callable=lambda x: [e.value for e in x],
+    native_enum=False,
+)
 knowledge_extraction_status = Enum(
     KnowledgeExtractionStatus,
     name="knowledge_extraction_status",
@@ -393,11 +427,6 @@ knowledge_extraction_status = Enum(
 knowledge_feedback_rating = Enum(
     KnowledgeFeedbackRating,
     name="knowledge_feedback_rating",
-    values_callable=lambda x: [e.value for e in x],
-)
-knowledge_gap_status = Enum(
-    KnowledgeGapStatus,
-    name="knowledge_gap_status",
     values_callable=lambda x: [e.value for e in x],
 )
 governance_scope_status = Enum(
@@ -1323,8 +1352,21 @@ class KnowledgeDocument(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     active_version_id: Mapped[UUID | None] = mapped_column(ForeignKey("knowledge_document_versions.id", ondelete="SET NULL"))
     uploaded_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     upload_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    submitted_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reviewed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     approved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejection_reason: Mapped[str | None] = mapped_column(Text)
+    expiry_date: Mapped[date | None] = mapped_column(Date)
+    executive_summary: Mapped[str | None] = mapped_column(Text)
+    key_procedures: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, server_default="{}")
+    important_warnings: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, server_default="{}")
+    affected_departments: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, server_default="{}")
+    related_document_ids: Mapped[list[UUID]] = mapped_column(ARRAY(PG_UUID(as_uuid=True)), default=list, server_default="{}")
+    summary_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class KnowledgeDocumentVersion(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
@@ -1346,8 +1388,54 @@ class KnowledgeDocumentVersion(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     storage_path: Mapped[str | None] = mapped_column(Text)
     checksum_sha256: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    supersedes_version_id: Mapped[UUID | None] = mapped_column(ForeignKey("knowledge_document_versions.id", ondelete="SET NULL"))
+    superseded_by_version_id: Mapped[UUID | None] = mapped_column(ForeignKey("knowledge_document_versions.id", ondelete="SET NULL"))
+    approved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     uploaded_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class KnowledgeDocumentApprovalEvent(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "knowledge_document_approval_events"
+    __table_args__ = (
+        Index("knowledge_document_approval_events_document_idx", "document_id", "created_at"),
+        Index("knowledge_document_approval_events_org_idx", "org_id", "created_at"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    document_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_documents.id", ondelete="CASCADE"))
+    actor_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    from_status: Mapped[str | None] = mapped_column(Text)
+    to_status: Mapped[str] = mapped_column(Text)
+    action: Mapped[str] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)
+
+
+class KnowledgeIngestionJob(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "knowledge_ingestion_jobs"
+    __table_args__ = (
+        Index("knowledge_ingestion_jobs_status_idx", "status"),
+        Index("knowledge_ingestion_jobs_document_id_idx", "document_id"),
+        Index("knowledge_ingestion_jobs_next_retry_at_idx", "next_retry_at"),
+        Index("knowledge_ingestion_jobs_document_created_idx", "document_id", "created_at"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    document_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_documents.id", ondelete="CASCADE"))
+    version_id: Mapped[UUID | None] = mapped_column(ForeignKey("knowledge_document_versions.id", ondelete="SET NULL"))
+    status: Mapped[KnowledgeIngestionJobStatus] = mapped_column(
+        knowledge_ingestion_job_status,
+        default=KnowledgeIngestionJobStatus.PENDING,
+    )
+    progress_percentage: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    max_retries: Mapped[int] = mapped_column(Integer, default=3, server_default="3")
+    failure_reason: Mapped[str | None] = mapped_column(Text)
+    extraction_warnings: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, server_default="{}")
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class KnowledgeDocumentExtraction(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
@@ -1447,26 +1535,29 @@ class KnowledgeQueryFeedback(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     rating: Mapped[KnowledgeFeedbackRating] = mapped_column(knowledge_feedback_rating)
     comment: Mapped[str | None] = mapped_column(Text)
+    feedback_reason: Mapped[str | None] = mapped_column(Text)
+    answer_confidence: Mapped[float | None] = mapped_column()
+    query_type: Mapped[str | None] = mapped_column(Text)
+    selected_source_ids: Mapped[list[str] | None] = mapped_column(JSONB)
 
 
-class KnowledgeGap(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
-    __tablename__ = "knowledge_gaps"
+class KnowledgeSuggestion(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "knowledge_suggestions"
     __table_args__ = (
-        Index("knowledge_gaps_org_status_idx", "org_id", "status"),
-        Index("knowledge_gaps_org_status_created_idx", "org_id", "status", "created_at"),
-        Index("knowledge_gaps_query_idx", "agent_query_id"),
+        Index("knowledge_suggestions_org_status_idx", "org_id", "status", "created_at"),
+        Index("knowledge_suggestions_document_idx", "document_id", "created_at"),
     )
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
-    agent_query_id: Mapped[UUID | None] = mapped_column(ForeignKey("agent_queries.id", ondelete="SET NULL"))
-    query_text: Mapped[str] = mapped_column(Text)
-    message: Mapped[str] = mapped_column(Text)
-    suggested_title: Mapped[str | None] = mapped_column(Text)
-    suggested_source_type: Mapped[str | None] = mapped_column(Text)
-    suggested_folder_kind: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[KnowledgeGapStatus] = mapped_column(knowledge_gap_status, default=KnowledgeGapStatus.OPEN)
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    resolved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    document_id: Mapped[UUID | None] = mapped_column(ForeignKey("knowledge_documents.id", ondelete="CASCADE"))
+    suggestion_type: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text)
+    detail: Mapped[str] = mapped_column(Text)
+    proposed_changes: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    status: Mapped[str] = mapped_column(Text, default=KnowledgeSuggestionStatus.OPEN.value, server_default="open")
+    reviewed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ProjectScopeState(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
