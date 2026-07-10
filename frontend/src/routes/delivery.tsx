@@ -172,7 +172,6 @@ function DeliveryPage() {
     navigate({ search: { projectId: resolvedProjectId }, replace: true });
   }, [resolvedProjectId, urlProjectId, navigate]);
 
-  const selectedDashboardQuery = useDeliveryDashboardQuery(resolvedProjectId);
   const confidenceQuery = useProjectDeliveryConfidenceQuery(resolvedProjectId);
 
   const orgById = useMemo(
@@ -187,10 +186,21 @@ function DeliveryPage() {
     );
   }, [portfolioQuery.data]);
 
-  const selectedProject = projects.find((project) => project.id === resolvedProjectId);
-  const selectedDashboard = resolvedProjectId
-    ? selectedDashboardQuery.data ?? portfolioDashboards[resolvedProjectId]
+  const selectedDashboardFromPortfolio = resolvedProjectId
+    ? portfolioDashboards[resolvedProjectId]
     : undefined;
+  const needsDashboardFallback =
+    Boolean(resolvedProjectId) &&
+    portfolioQuery.isSuccess &&
+    selectedDashboardFromPortfolio === undefined;
+  const selectedDashboardFallbackQuery = useDeliveryDashboardQuery(
+    resolvedProjectId,
+    needsDashboardFallback,
+  );
+
+  const selectedProject = projects.find((project) => project.id === resolvedProjectId);
+  const selectedDashboard =
+    selectedDashboardFromPortfolio ?? selectedDashboardFallbackQuery.data;
   const portfolioMilestones = useMemo(
     () => portfolioQuery.data?.milestones ?? [],
     [portfolioQuery.data?.milestones],

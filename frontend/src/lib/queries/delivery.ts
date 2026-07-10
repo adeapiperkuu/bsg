@@ -66,8 +66,11 @@ export function useDeliveryPortfolioQuery() {
   return useQuery(deliveryPortfolioQueryOptions);
 }
 
-export function useDeliveryDashboardQuery(projectId: string | null) {
-  return useQuery(deliveryDashboardQueryOptions(projectId));
+export function useDeliveryDashboardQuery(projectId: string | null, enabled = true) {
+  return useQuery({
+    ...deliveryDashboardQueryOptions(projectId),
+    enabled: Boolean(projectId) && enabled,
+  });
 }
 
 export function useDeliveryConversationsQuery(projectId: string | null, enabled = true) {

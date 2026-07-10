@@ -44,6 +44,7 @@ import {
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { PageTransition } from "@/components/PageTransition";
 import { prefetchGovernanceNav } from "@/features/governance/governance-prefetch";
+import { prefetchDeliveryNav } from "@/lib/queries/delivery-prefetch";
 
 type NavItem = { to: string; label: string; icon: React.ComponentType<{ className?: string }> };
 
@@ -153,6 +154,15 @@ export function Shell({ children }: { children: ReactNode }) {
     prefetchGovernanceNav(queryClient);
   }
 
+  function prefetchDelivery() {
+    prefetchDeliveryNav(queryClient);
+  }
+
+  function prefetchForNav(to: string) {
+    if (to === "/governance") prefetchGovernance();
+    if (to === "/delivery") prefetchDelivery();
+  }
+
   const currentTitle =
     [...internalNav, ...clientNav, ...leadershipNav, ...adminNav]
       .flatMap((s) => s.items)
@@ -203,9 +213,11 @@ export function Shell({ children }: { children: ReactNode }) {
                     <Link
                       to={item.to}
                       title={!mobile && collapsed ? item.label : undefined}
-                      onMouseEnter={item.to === "/governance" ? prefetchGovernance : undefined}
-                      onFocus={item.to === "/governance" ? prefetchGovernance : undefined}
+                      preload="intent"
+                      onMouseEnter={() => prefetchForNav(item.to)}
+                      onFocus={() => prefetchForNav(item.to)}
                       onClick={() => {
+                        prefetchForNav(item.to);
                         if (mobile) setMobileNavOpen(false);
                       }}
                       className={cn(

@@ -1,12 +1,12 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import select
 
 from app.api.deps import SessionDep, UserDep
 from app.core.exceptions import ApiError
 from app.core.permissions import permissions_for_role
-from app.core.security import require_role
+from app.core.security import get_request_auth_user, require_role
 from app.db.models import AppRole, Notification, Organisation, User
 from app.schemas.common import DataResponse, ListResponse, Pagination
 from app.schemas.domain import MeRead, NotificationRead, NotificationUpdate, OrganisationSummary
@@ -17,14 +17,18 @@ router = APIRouter(tags=["me"])
 
 
 @router.get("/me", response_model=DataResponse[MeRead])
-async def get_me(session: SessionDep, current_user: UserDep) -> DataResponse[MeRead]:
-    user = (await session.execute(select(User).where(User.id == current_user.id))).scalar_one_or_none()
-    if user is None:
+async def get_me(
+    request: Request,
+    session: SessionDep,
+    current_user: UserDep,
+) -> DataResponse[MeRead]:
+    user = get_request_auth_user(request)
+    if user is None or user.id != current_user.id:
+        user = await session.get(User, current_user.id)
+    if user is None or user.deleted_at is not None:
         raise ApiError(404, "NOT_FOUND", "User was not found.")
 
-    org = (
-        await session.execute(select(Organisation).where(Organisation.id == user.org_id))
-    ).scalar_one_or_none()
+    org = await session.get(Organisation, user.org_id)
 
     data = MeRead.model_validate(user)
     if org is not None:

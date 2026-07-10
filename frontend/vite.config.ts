@@ -56,6 +56,18 @@ export default defineConfig(({ command, mode }) => {
         },
       },
     },
+    // Same API proxy for `vite preview` so production builds can hit the local backend.
+    preview: {
+      host: "127.0.0.1",
+      port: 4173,
+      strictPort: true,
+      proxy: {
+        "/api": {
+          target: "http://127.0.0.1:8000",
+          changeOrigin: true,
+        },
+      },
+    },
     plugins: [
       tailwindcss(),
       tanstackStart({
