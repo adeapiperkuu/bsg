@@ -65,14 +65,15 @@ const internalNav: { section: string; items: NavItem[] }[] = [
     items: [
       { to: "/knowledge", label: "Knowledge Agent", icon: BookOpen },
       { to: "/projects", label: "Projects", icon: FolderKanban },
-      { to: "/pm-console", label: "PM Console", icon: ListChecks },
+      { to: "/teams", label: "Teams", icon: Users },
+      // { to: "/pm-console", label: "PM Console", icon: ListChecks },
     ],
   },
   {
     section: "Reporting",
     items: [
       { to: "/reports", label: "Reports", icon: FileText },
-      { to: "/documents", label: "Documents", icon: Folder },
+      // { to: "/documents", label: "Documents", icon: Folder },
       { to: "/analytics", label: "Analytics", icon: BarChart3 },
     ],
   },
