@@ -18,6 +18,10 @@ from app.db.session import get_db_session
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
+# Request-scoped ORM User attached by get_current_user for handlers that need
+# fields beyond CurrentUser (e.g. GET /me full_name) without a second SELECT.
+AUTH_USER_STATE_KEY = "auth_user"
+
 
 @dataclass(frozen=True)
 class CurrentUser:
@@ -35,7 +39,19 @@ def extract_access_token(request: Request, credentials: HTTPAuthorizationCredent
     return request.cookies.get(ACCESS_COOKIE)
 
 
-async def _load_user(session: AsyncSession, subject: UUID, access_token: str | None) -> CurrentUser:
+def get_request_auth_user(request: Request) -> User | None:
+    """Return the ORM User loaded during auth for this request, if present."""
+    user = getattr(request.state, AUTH_USER_STATE_KEY, None)
+    return user if isinstance(user, User) else None
+
+
+async def _load_user(
+    session: AsyncSession,
+    subject: UUID,
+    access_token: str | None,
+    *,
+    request: Request | None = None,
+) -> CurrentUser:
     result = await session.execute(select(User).where(User.id == subject))
     user = result.scalar_one_or_none()
     if user is None or user.deleted_at is not None:
@@ -44,6 +60,8 @@ async def _load_user(session: AsyncSession, subject: UUID, access_token: str | N
         raise ApiError(403, "USER_INACTIVE", "This user account is not active.")
     if access_token:
         await set_rls_context(session, json.dumps({"sub": str(subject)}))
+    if request is not None:
+        setattr(request.state, AUTH_USER_STATE_KEY, user)
     return CurrentUser(
         id=user.id,
         org_id=user.org_id,
@@ -70,7 +88,7 @@ async def get_current_user(
     except Exception as exc:
         raise ApiError(401, "INVALID_TOKEN", "Token cannot be verified.") from exc
 
-    return await _load_user(session, subject, token)
+    return await _load_user(session, subject, token, request=request)
 
 
 async def get_optional_current_user(
@@ -88,7 +106,7 @@ async def get_optional_current_user(
     except Exception:
         return None
     try:
-        return await _load_user(session, subject, token)
+        return await _load_user(session, subject, token, request=request)
     except ApiError:
         return None
 
