@@ -55,7 +55,7 @@ from app.db.models import (
     ProjectScopeState,
 )
 from app.services.scoping import scoped_project_query
-from app.db.session import AsyncSessionLocal
+from app.db.session import session_scope
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,7 @@ async def _with_analytics_session(
 ) -> T:
     """Run a read-only analytics query on an independent session (safe for asyncio.gather)."""
     async with semaphore:
-        async with AsyncSessionLocal() as session:
+        async with session_scope() as session:
             return await fn(session)
 
 

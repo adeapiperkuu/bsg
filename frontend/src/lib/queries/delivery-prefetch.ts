@@ -10,31 +10,48 @@ import {
 import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
 import type { ProjectRead } from "@/lib/api";
 
-/**
- * Warm the Delivery page React Query cache before navigation.
- * Called on nav hover/focus so KPIs/table can paint from cache on click.
- */
-export function prefetchDeliveryRouteData(queryClient: QueryClient): void {
-  void queryClient.prefetchQuery(projectsQueryOptions);
-  void queryClient.prefetchQuery(organisationsQueryOptions);
-  void queryClient.prefetchQuery(deliveryPortfolioQueryOptions);
-
-  void (async () => {
-    const projects = await queryClient.ensureQueryData(projectsQueryOptions);
-    const firstProjectId = resolvePrefetchProjectId(projects);
-    if (!firstProjectId) return;
-
-    void queryClient.prefetchQuery(projectDeliveryConfidenceQueryOptions(firstProjectId));
-    void queryClient.prefetchQuery({
-      queryKey: queryKeys.projectRecommendations(firstProjectId),
-      queryFn: () => fetchProjectRecommendations(firstProjectId),
-      staleTime: STALE_TIME_MS,
-    });
-  })();
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw new DOMException("The operation was aborted.", "AbortError");
+  }
 }
 
-export function prefetchDeliveryNav(queryClient: QueryClient): void {
-  prefetchDeliveryRouteData(queryClient);
+/**
+ * Warm Delivery cache sequentially so we do not open many DB sessions at once.
+ */
+export async function prefetchDeliveryRouteData(
+  queryClient: QueryClient,
+  signal: AbortSignal = new AbortController().signal,
+): Promise<void> {
+  throwIfAborted(signal);
+  await queryClient.prefetchQuery(projectsQueryOptions);
+  throwIfAborted(signal);
+  await queryClient.prefetchQuery(organisationsQueryOptions);
+  throwIfAborted(signal);
+  await queryClient.prefetchQuery(deliveryPortfolioQueryOptions);
+  throwIfAborted(signal);
+
+  const projects =
+    queryClient.getQueryData<ProjectRead[]>(projectsQueryOptions.queryKey) ??
+    (await queryClient.ensureQueryData(projectsQueryOptions));
+  const firstProjectId = resolvePrefetchProjectId(projects);
+  if (!firstProjectId) return;
+
+  throwIfAborted(signal);
+  await queryClient.prefetchQuery(projectDeliveryConfidenceQueryOptions(firstProjectId));
+  throwIfAborted(signal);
+  await queryClient.prefetchQuery({
+    queryKey: queryKeys.projectRecommendations(firstProjectId),
+    queryFn: () => fetchProjectRecommendations(firstProjectId),
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function prefetchDeliveryNav(
+  queryClient: QueryClient,
+  signal?: AbortSignal,
+): Promise<void> {
+  return prefetchDeliveryRouteData(queryClient, signal ?? new AbortController().signal);
 }
 
 function resolvePrefetchProjectId(projects: ProjectRead[]): string | null {

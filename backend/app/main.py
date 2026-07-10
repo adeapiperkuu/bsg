@@ -30,7 +30,7 @@ from app.core.csrf import CsrfMiddleware
 from app.core.exceptions import register_exception_handlers
 from app.core.security_headers import SecurityHeadersMiddleware
 from app.db.models import ScanTrigger
-from app.db.session import AsyncSessionLocal, dispose_engine
+from app.db.session import dispose_engine, session_scope
 from app.services.quality import scan_all_projects
 from app.services.quality_thresholds import warm_thresholds_cache
 from app.services.signal_dispatcher import dispatch_pending_signals
@@ -51,7 +51,7 @@ def configure_logging(level: str = "INFO") -> None:
 
 async def _scheduled_quality_scan() -> None:
     """Scheduler wrapper: opens its own DB session (no FastAPI DI)."""
-    async with AsyncSessionLocal() as session:
+    async with session_scope() as session:
         try:
             run = await scan_all_projects(session, trigger=ScanTrigger.SCHEDULER)
             logger.info("Scheduled quality scan complete run_id=%s status=%s", run.id, run.status)

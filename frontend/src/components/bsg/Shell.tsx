@@ -43,8 +43,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { PageTransition } from "@/components/PageTransition";
-import { prefetchGovernanceNav } from "@/features/governance/governance-prefetch";
-import { prefetchDeliveryNav } from "@/lib/queries/delivery-prefetch";
+import { flushNavPrefetch, scheduleNavPrefetch } from "@/lib/queries/nav-prefetch";
 
 type NavItem = { to: string; label: string; icon: React.ComponentType<{ className?: string }> };
 
@@ -150,17 +149,12 @@ export function Shell({ children }: { children: ReactNode }) {
 
   const nav = navForUser(user);
 
-  function prefetchGovernance() {
-    prefetchGovernanceNav(queryClient);
-  }
-
-  function prefetchDelivery() {
-    prefetchDeliveryNav(queryClient);
-  }
-
-  function prefetchForNav(to: string) {
-    if (to === "/governance") prefetchGovernance();
-    if (to === "/delivery") prefetchDelivery();
+  function prefetchForNav(to: string, immediate = false) {
+    if (immediate) {
+      flushNavPrefetch(queryClient, to);
+      return;
+    }
+    scheduleNavPrefetch(queryClient, to);
   }
 
   const currentTitle =
@@ -213,11 +207,11 @@ export function Shell({ children }: { children: ReactNode }) {
                     <Link
                       to={item.to}
                       title={!mobile && collapsed ? item.label : undefined}
-                      preload="intent"
+                      preload="viewport"
                       onMouseEnter={() => prefetchForNav(item.to)}
                       onFocus={() => prefetchForNav(item.to)}
                       onClick={() => {
-                        prefetchForNav(item.to);
+                        prefetchForNav(item.to, true);
                         if (mobile) setMobileNavOpen(false);
                       }}
                       className={cn(
