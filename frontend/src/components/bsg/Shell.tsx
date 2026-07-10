@@ -64,6 +64,7 @@ const internalNav: { section: string; items: NavItem[] }[] = [
     items: [
       { to: "/knowledge", label: "Knowledge Agent", icon: BookOpen },
       { to: "/projects", label: "Projects", icon: FolderKanban },
+      { to: "/teams", label: "Teams", icon: Users },
       { to: "/pm-console", label: "PM Console", icon: ListChecks },
     ],
   },
