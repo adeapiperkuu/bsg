@@ -365,9 +365,6 @@ async def process_calibration_for_snapshot(
     brief = await generate_calibration_brief(session, project, candidates, iso_year=iso_year, iso_week=iso_week)
     await emit_skill_gap_signal(session, project, candidates)
     await notify_qa_lead_calibration(session, project.org_id, project, brief, source_row_id=project.id)
-    brief = CalibrationBriefRead(
-        **brief.model_dump(),
-        signal_sent_at=datetime.now(timezone.utc),
-    )
+    brief = brief.model_copy(update={"signal_sent_at": datetime.now(timezone.utc)})
     await upsert_calibration_brief_cache(session, project, brief)
     return brief
