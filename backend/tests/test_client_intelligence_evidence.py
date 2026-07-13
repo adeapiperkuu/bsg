@@ -103,6 +103,82 @@ class FakeSession:
             assert "LIMIT" in compiled.upper() or "limit" in compiled
             assert "ORDER BY" in compiled.upper() or "order by" in compiled
             return FakeResult(None, self.bottlenecks)
+        if "FROM teams" in compiled:
+            assert "LIMIT" in compiled.upper() or "limit" in compiled
+            return FakeResult(None, [])
+        if "FROM annotators" in compiled:
+            assert "LIMIT" in compiled.upper() or "limit" in compiled
+            assert "full_name" not in compiled.lower()
+            return FakeResult(None, [])
+        if "FROM utilization_snapshots" in compiled:
+            assert "LIMIT" in compiled.upper() or "limit" in compiled
+            assert "notes" not in compiled.lower()
+            return FakeResult(None, [])
+        if "FROM project_skill_requirements" in compiled:
+            assert "LIMIT" in compiled.upper() or "limit" in compiled
+            return FakeResult(None, [])
+        if "FROM skills" in compiled:
+            assert "LIMIT" in compiled.upper() or "limit" in compiled
+            return FakeResult(None, [])
+        if "FROM annotator_skills" in compiled:
+            assert "LIMIT" in compiled.upper() or "limit" in compiled
+            return FakeResult(None, [])
+        if "FROM training_programs" in compiled:
+            assert "LIMIT" in compiled.upper() or "limit" in compiled
+            return FakeResult(None, [])
+        if "FROM training_records" in compiled:
+            assert "LIMIT" in compiled.upper() or "limit" in compiled
+            assert "score_pct" not in compiled.lower()
+            return FakeResult(None, [])
+        if "FROM capability_gaps" in compiled:
+            assert "LIMIT" in compiled.upper() or "limit" in compiled
+            assert "title" not in compiled.lower()
+            assert "detail" not in compiled.lower()
+            assert "evidence" not in compiled.lower()
+            return FakeResult(None, [])
+        if "FROM knowledge_documents" in compiled:
+            assert "LIMIT" in compiled.upper() or "limit" in compiled
+            assert "extracted_text" not in compiled.lower()
+            assert "executive_summary" not in compiled.lower()
+            assert "key_procedures" not in compiled.lower()
+            assert "file_url" not in compiled.lower()
+            assert "storage_path" not in compiled.lower()
+            return FakeResult(None, [])
+        if "FROM knowledge_document_versions" in compiled:
+            assert "LIMIT" in compiled.upper() or "limit" in compiled
+            assert "file_name" not in compiled.lower()
+            return FakeResult(None, [])
+        if "FROM knowledge_document_chunks" in compiled:
+            assert "LIMIT" in compiled.upper() or "limit" in compiled
+            assert "embedding" not in compiled.lower()
+            assert "token_count" not in compiled.lower()
+            return FakeResult(None, [])
+        if "FROM knowledge_document_embeddings" in compiled:
+            raise AssertionError("Knowledge embeddings must not be queried")
+        if "FROM client_communications" in compiled:
+            raise AssertionError("ClientCommunication must not be queried by Knowledge adapter")
+        if "FROM project_scope_states" in compiled:
+            assert "LIMIT" in compiled.upper() or "limit" in compiled
+            assert "notes" not in compiled.lower()
+            return FakeResult(None, [])
+        if "FROM project_charters" in compiled:
+            assert "LIMIT" in compiled.upper() or "limit" in compiled
+            assert "generated_text" not in compiled.lower()
+            return FakeResult(None, [])
+        if "FROM project_dependencies" in compiled:
+            assert "title" not in compiled.lower()
+            assert "description" not in compiled.lower()
+            return FakeResult(None, [])
+        if "FROM governance_actions" in compiled:
+            assert "title" not in compiled.lower()
+            assert "description" not in compiled.lower()
+            return FakeResult(None, [])
+        if "FROM governance_escalations" in compiled:
+            assert "title" not in compiled.lower()
+            assert "description" not in compiled.lower()
+            return FakeResult(None, [])
+        if "FROM governance_weekly_summaries" in compiled:
+            raise AssertionError("Weekly summary must not be queried")
         return FakeResult(None, [])
 
 

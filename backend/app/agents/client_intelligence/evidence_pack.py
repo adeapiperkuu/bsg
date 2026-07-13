@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, date, datetime, time
 from uuid import UUID
 
@@ -18,13 +19,18 @@ from app.agents.client_intelligence.contracts import (
     DeliveryConfidenceFacts,
     DeliveryEvidenceFacts,
     EvidenceVisibility,
+    GovernanceEvidenceFacts,
+    KnowledgeEvidenceFacts,
     MilestoneFacts,
     ProjectIdentityFacts,
     RiskAlertFacts,
     SourceAgent,
     ThroughputSnapshotFacts,
     VisibilityLimitation,
+    WorkforceEvidenceFacts,
 )
+from app.agents.client_intelligence.governance_adapter import load_governance_evidence
+from app.agents.client_intelligence.knowledge_adapter import load_knowledge_evidence
 from app.agents.client_intelligence.quality_adapter import load_quality_evidence
 from app.agents.client_intelligence.reporting_period import resolve_reporting_period
 from app.agents.client_intelligence.visibility import (
@@ -32,6 +38,7 @@ from app.agents.client_intelligence.visibility import (
     ClientVisibleMetric,
     load_client_visibility_policy,
 )
+from app.agents.client_intelligence.workforce_adapter import load_workforce_evidence
 from app.core.security import CurrentUser
 from app.db.models import (
     AlertStatus,
@@ -99,6 +106,26 @@ def _select_next_milestone_id(
     return max(active, key=lambda milestone: (milestone.planned_date, str(milestone.id))).id
 
 
+def _workforce_fingerprint_projection(workforce: WorkforceEvidenceFacts) -> dict:
+    """Canonical Workforce projection for fingerprinting (no generated_at)."""
+    return workforce.model_dump(mode="json")
+
+
+def _governance_fingerprint_projection(governance: GovernanceEvidenceFacts) -> dict:
+    """Canonical Governance projection for fingerprinting (no generated_at)."""
+    return governance.model_dump(mode="json")
+
+
+def _knowledge_fingerprint_projection(knowledge: KnowledgeEvidenceFacts) -> dict:
+    """Canonical Knowledge projection for fingerprinting (hashes, not raw chunk text)."""
+    payload = knowledge.model_dump(mode="json")
+    for chunk in payload.get("chunks", []):
+        chunk.pop("untrusted_text", None)
+    for document in payload.get("documents", []):
+        document.pop("document_title", None)
+    return payload
+
+
 def _fingerprint(
     *,
     project_id: UUID,
@@ -106,17 +133,31 @@ def _fingerprint(
     reporting_period_end: date,
     visibility_mode: EvidenceVisibility,
     evidence: list[ClientEvidenceReference],
+    workforce_projection: dict | None = None,
+    governance_projection: dict | None = None,
+    knowledge_projection: dict | None = None,
 ) -> str:
     pairs = sorted(f"{item.source_table}:{item.source_row_id}" for item in evidence)
-    payload = "|".join(
-        [
-            str(project_id),
-            reporting_period_start.isoformat(),
-            reporting_period_end.isoformat(),
-            visibility_mode.value,
-            *pairs,
-        ]
-    )
+    payload_parts = [
+        str(project_id),
+        reporting_period_start.isoformat(),
+        reporting_period_end.isoformat(),
+        visibility_mode.value,
+        *pairs,
+    ]
+    if workforce_projection is not None:
+        payload_parts.append(
+            json.dumps(workforce_projection, sort_keys=True, separators=(",", ":"))
+        )
+    if governance_projection is not None:
+        payload_parts.append(
+            json.dumps(governance_projection, sort_keys=True, separators=(",", ":"))
+        )
+    if knowledge_projection is not None:
+        payload_parts.append(
+            json.dumps(knowledge_projection, sort_keys=True, separators=(",", ":"))
+        )
+    payload = "|".join(payload_parts)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -192,6 +233,62 @@ async def build_client_evidence_pack(
     visibility_limitations.extend(quality_visibility_limitations)
     limitations.extend(quality_limitations)
 
+    (
+        workforce,
+        workforce_evidence,
+        workforce_data_issues,
+        workforce_visibility_limitations,
+        workforce_limitations,
+    ) = await load_workforce_evidence(
+        session,
+        project.id,
+        project.org_id,
+        reporting_period,
+        visibility_mode=mode,
+    )
+    evidence.extend(workforce_evidence)
+    quality_issues.extend(workforce_data_issues)
+    visibility_limitations.extend(workforce_visibility_limitations)
+    limitations.extend(workforce_limitations)
+
+    (
+        governance,
+        governance_evidence,
+        governance_data_issues,
+        governance_visibility_limitations,
+        governance_limitations,
+    ) = await load_governance_evidence(
+        session,
+        project.id,
+        project.org_id,
+        reporting_period,
+        visibility_mode=mode,
+    )
+    evidence.extend(governance_evidence)
+    quality_issues.extend(governance_data_issues)
+    visibility_limitations.extend(governance_visibility_limitations)
+    limitations.extend(governance_limitations)
+
+    (
+        knowledge,
+        knowledge_evidence,
+        knowledge_data_issues,
+        knowledge_visibility_limitations,
+        knowledge_limitations,
+    ) = await load_knowledge_evidence(
+        session,
+        project.id,
+        project.org_id,
+        project.name,
+        reporting_period,
+        visibility_mode=mode,
+        role=current_user.role,
+    )
+    evidence.extend(knowledge_evidence)
+    quality_issues.extend(knowledge_data_issues)
+    visibility_limitations.extend(knowledge_visibility_limitations)
+    limitations.extend(knowledge_limitations)
+
     overall = _worst_state([issue.state for issue in quality_issues])
     if not quality_issues:
         quality_issues.append(
@@ -211,6 +308,9 @@ async def build_client_evidence_pack(
         reporting_period_end=reporting_period.end_date,
         visibility_mode=mode,
         evidence=evidence,
+        workforce_projection=_workforce_fingerprint_projection(workforce),
+        governance_projection=_governance_fingerprint_projection(governance),
+        knowledge_projection=_knowledge_fingerprint_projection(knowledge),
     )
 
     return ClientEvidencePack(
@@ -224,6 +324,9 @@ async def build_client_evidence_pack(
         visibility_mode=mode,
         delivery=delivery,
         quality=quality,
+        workforce=workforce,
+        governance=governance,
+        knowledge=knowledge,
         evidence=evidence,
         data_quality=quality_issues,
         overall_data_quality=overall,
