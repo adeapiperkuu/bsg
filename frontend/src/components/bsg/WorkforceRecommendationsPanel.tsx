@@ -7,8 +7,11 @@ import {
   useRejectRecommendationMutation,
 } from "@/features/mitigation-recommendations/hooks/useProjectRecommendations";
 import type {
-  MitigationRecommendation,
+  GroupedMitigationRecommendation,
+  GroupedRecommendationRisk,
+  ProjectRecommendationsResponse,
   RecommendationSeverity,
+  RecommendationStatus,
 } from "@/features/mitigation-recommendations/types";
 import { SEVERITY_LABELS, SEVERITY_ORDER } from "@/features/mitigation-recommendations/types";
 import { cn } from "@/lib/utils";
@@ -20,9 +23,17 @@ function confidencePercent(score: number | string): number {
   return Number.isFinite(value) ? Math.round(value * 100) : 0;
 }
 
+function workforceRisks(
+  recommendation: GroupedMitigationRecommendation,
+): GroupedRecommendationRisk[] {
+  return recommendation.risks.filter(
+    (risk) => risk.source_risk_type === WORKFORCE_SOURCE_RISK_TYPE,
+  );
+}
+
 function sortRecommendations(
-  recommendations: MitigationRecommendation[],
-): MitigationRecommendation[] {
+  recommendations: GroupedMitigationRecommendation[],
+): GroupedMitigationRecommendation[] {
   return [...recommendations].sort((left, right) => {
     const severityDelta =
       SEVERITY_ORDER[left.severity as RecommendationSeverity] -
@@ -32,21 +43,45 @@ function sortRecommendations(
   });
 }
 
+function recommendationStatus(risks: GroupedRecommendationRisk[]): RecommendationStatus {
+  if (risks.some((risk) => risk.status === "pending")) return "pending";
+  if (risks.some((risk) => risk.status === "accepted")) return "accepted";
+  return "rejected";
+}
+
+function actionableRisk(risks: GroupedRecommendationRisk[]): GroupedRecommendationRisk | null {
+  return risks.find((risk) => risk.status === "pending") ?? risks[0] ?? null;
+}
+
 export function WorkforceRecommendationsPanel({
   projectId,
   canManage,
+  bundledRecommendations,
+  bundledLoading = false,
+  bundledError = false,
 }: {
   projectId: string | null;
   canManage: boolean;
+  /** When provided (including null while loading), skip the separate recommendations fetch. */
+  bundledRecommendations?: ProjectRecommendationsResponse | null;
+  bundledLoading?: boolean;
+  bundledError?: boolean;
 }) {
-  const { data, isLoading, isError } = useProjectRecommendationsQuery(projectId);
+  const useBundled = bundledRecommendations !== undefined;
+  const query = useProjectRecommendationsQuery(projectId, !useBundled);
   const acceptMutation = useAcceptRecommendationMutation(projectId);
   const rejectMutation = useRejectRecommendationMutation(projectId);
+
+  const data = useBundled ? bundledRecommendations : query.data;
+  const isLoading = useBundled ? bundledLoading : query.isLoading;
+  const isError = useBundled ? bundledError : query.isError;
 
   const recommendations = useMemo(
     () =>
       sortRecommendations(
-        (data?.data ?? []).filter((item) => item.source_risk_type === WORKFORCE_SOURCE_RISK_TYPE),
+        (data?.data ?? [])
+          .map((item) => ({ ...item, risks: workforceRisks(item) }))
+          .filter((item) => item.risks.length > 0),
       ),
     [data?.data],
   );
@@ -79,21 +114,28 @@ export function WorkforceRecommendationsPanel({
         </div>
       ) : (
         <div className="space-y-2">
-          {recommendations.map((recommendation) => (
-            <WorkforceRecommendationCard
-              key={recommendation.id}
-              recommendation={recommendation}
-              canManage={canManage}
-              onAccept={() => acceptMutation.mutate(recommendation.id)}
-              onReject={() => rejectMutation.mutate(recommendation.id)}
-              isAccepting={
-                acceptMutation.isPending && acceptMutation.variables === recommendation.id
-              }
-              isRejecting={
-                rejectMutation.isPending && rejectMutation.variables === recommendation.id
-              }
-            />
-          ))}
+          {recommendations.map((recommendation) => {
+            const risk = actionableRisk(recommendation.risks);
+            return (
+              <WorkforceRecommendationCard
+                key={recommendation.title}
+                recommendation={recommendation}
+                canManage={canManage}
+                onAccept={() => risk && acceptMutation.mutate(risk.recommendation_id)}
+                onReject={() => risk && rejectMutation.mutate(risk.recommendation_id)}
+                isAccepting={
+                  Boolean(risk) &&
+                  acceptMutation.isPending &&
+                  acceptMutation.variables === risk?.recommendation_id
+                }
+                isRejecting={
+                  Boolean(risk) &&
+                  rejectMutation.isPending &&
+                  rejectMutation.variables === risk?.recommendation_id
+                }
+              />
+            );
+          })}
         </div>
       )}
     </Card>
@@ -108,17 +150,24 @@ function WorkforceRecommendationCard({
   isAccepting,
   isRejecting,
 }: {
-  recommendation: MitigationRecommendation;
+  recommendation: GroupedMitigationRecommendation;
   canManage: boolean;
   onAccept: () => void;
   onReject: () => void;
   isAccepting: boolean;
   isRejecting: boolean;
 }) {
-  const isPending = recommendation.status === "pending";
-  const isAccepted = recommendation.status === "accepted";
-  const isRejected = recommendation.status === "rejected";
+  const status = recommendationStatus(recommendation.risks);
+  const risk = actionableRisk(recommendation.risks);
+  const isPending = status === "pending";
+  const isAccepted = status === "accepted";
+  const isRejected = status === "rejected";
   const busy = isAccepting || isRejecting;
+  const description = recommendation.descriptions[0] ?? risk?.description;
+  const linkedGapLabel =
+    recommendation.risks.length === 1
+      ? risk?.source_risk_title
+      : `${recommendation.risks.length} linked workforce gaps`;
 
   return (
     <div
@@ -152,14 +201,10 @@ function WorkforceRecommendationCard({
       <div className={cn("mt-1.5 text-sm font-medium", isRejected && "text-muted-foreground")}>
         {recommendation.title}
       </div>
-      {recommendation.description && (
-        <p className="mt-1 text-xs text-muted-foreground">{recommendation.description}</p>
-      )}
-      {recommendation.source_risk_title && (
-        <p className="mt-1.5 text-[10px] text-muted-foreground">
-          Linked gap: {recommendation.source_risk_title}
-        </p>
-      )}
+      {description ? <p className="mt-1 text-xs text-muted-foreground">{description}</p> : null}
+      {linkedGapLabel ? (
+        <p className="mt-1.5 text-[10px] text-muted-foreground">Linked gap: {linkedGapLabel}</p>
+      ) : null}
 
       {canManage && isPending ? (
         <div className="mt-2 flex gap-1.5">

@@ -12,7 +12,7 @@ from datetime import date, datetime, timezone
 from time import perf_counter
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -242,14 +242,36 @@ async def gather_workforce_evidence(
             )
 
     # Latest team-level utilization snapshot per team (annotator_id is None).
+    ranked_snapshot_ids = (
+        select(
+            UtilizationSnapshot.id.label("snapshot_id"),
+            func.row_number()
+            .over(
+                partition_by=UtilizationSnapshot.team_id,
+                order_by=(
+                    UtilizationSnapshot.snapshot_date.desc(),
+                    UtilizationSnapshot.created_at.desc(),
+                ),
+            )
+            .label("snapshot_rank"),
+        )
+        .where(
+            UtilizationSnapshot.project_id == project.id,
+            UtilizationSnapshot.deleted_at.is_(None),
+            UtilizationSnapshot.team_id.is_not(None),
+            UtilizationSnapshot.annotator_id.is_(None),
+        )
+        .subquery()
+    )
     snapshots = (
         await session.execute(
             select(UtilizationSnapshot)
             .where(
-                UtilizationSnapshot.project_id == project.id,
-                UtilizationSnapshot.deleted_at.is_(None),
-                UtilizationSnapshot.team_id.is_not(None),
-                UtilizationSnapshot.annotator_id.is_(None),
+                UtilizationSnapshot.id.in_(
+                    select(ranked_snapshot_ids.c.snapshot_id).where(
+                        ranked_snapshot_ids.c.snapshot_rank == 1,
+                    ),
+                ),
             )
             .order_by(
                 UtilizationSnapshot.team_id,
@@ -260,7 +282,17 @@ async def gather_workforce_evidence(
     ).scalars().all()
     latest_by_team: dict[UUID, UtilizationSnapshot] = {}
     for snapshot in snapshots:
-        if snapshot.team_id is not None and snapshot.team_id not in latest_by_team:
+        if snapshot.team_id is None:
+            continue
+        existing = latest_by_team.get(snapshot.team_id)
+        if existing is None:
+            latest_by_team[snapshot.team_id] = snapshot
+            continue
+        if snapshot.snapshot_date > existing.snapshot_date or (
+            snapshot.snapshot_date == existing.snapshot_date
+            and (snapshot.created_at or datetime.min.replace(tzinfo=timezone.utc))
+            > (existing.created_at or datetime.min.replace(tzinfo=timezone.utc))
+        ):
             latest_by_team[snapshot.team_id] = snapshot
     for team_id, snapshot in latest_by_team.items():
         pct = _utilization_value(snapshot)
@@ -281,6 +313,7 @@ async def gather_workforce_evidence(
             )
         )
 
+    # Prefer matrix row count for coverage metrics; keep requirements for evidence ids.
     requirements = (
         await session.execute(
             select(ProjectSkillRequirement).where(
@@ -367,10 +400,11 @@ async def gather_workforce_evidence(
             select(CapabilityGap).where(
                 CapabilityGap.project_id == project.id,
                 CapabilityGap.deleted_at.is_(None),
+                CapabilityGap.status.in_(OPEN_GAP_STATUSES),
             ),
         )
     ).scalars().all()
-    open_gaps = [gap for gap in gaps if gap.status in OPEN_GAP_STATUSES]
+    open_gaps = list(gaps)
     metrics.open_capability_gaps = len(open_gaps)
     metrics.high_critical_gaps = sum(
         1 for gap in open_gaps if gap.severity in {"high", "critical"}

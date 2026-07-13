@@ -1,5 +1,7 @@
 import { useMemo } from "react";
+import { AlertTriangle, CheckCircle2, Lightbulb } from "lucide-react";
 import type { AgentQueryEvidenceLinkRead } from "@/types/workforce";
+import { cn } from "@/lib/utils";
 import { confidenceLabel } from "./evidence-utils";
 import { formatWorkforceAnswer } from "./format-workforce-answer";
 
@@ -11,6 +13,20 @@ type WorkforceAgentAnswerProps = {
   modelUsed?: string | null;
   latencyMs?: number | null;
 };
+
+function answerTone(
+  headline: string,
+  insufficientEvidence?: boolean,
+): "warning" | "success" | "info" {
+  if (
+    insufficientEvidence ||
+    /below|gap|overloaded|underutilized|attention|shortage|limited/i.test(headline)
+  ) {
+    return "warning";
+  }
+  if (/on track|enough|no .*found|healthy/i.test(headline)) return "success";
+  return "info";
+}
 
 export function WorkforceAgentAnswer({
   answerText,
@@ -28,20 +44,46 @@ export function WorkforceAgentAnswer({
 
   const confidence =
     confidenceLabel(confidenceLevel) ?? confidenceLabel(formatted.parsedConfidence);
+  const tone = answerTone(formatted.headline, insufficientEvidence);
+  const StatusIcon = tone === "success" ? CheckCircle2 : AlertTriangle;
 
   return (
-    <div className="space-y-3">
-      <div>
-        <h4 className="text-[13px] font-semibold leading-5 text-foreground">
+    <div className="space-y-3 text-[11px] leading-5">
+      <div className="space-y-2">
+        <div className="flex items-center gap-1.5">
+          <span
+            className={cn(
+              "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full",
+              tone === "warning" && "bg-[color:var(--warning)]/12 text-[color:var(--warning)]",
+              tone === "success" && "bg-[color:var(--success)]/12 text-[color:var(--success)]",
+              tone === "info" && "bg-[color:var(--brand)]/10 text-[color:var(--brand)]",
+            )}
+            aria-hidden="true"
+          >
+            <StatusIcon className="h-3.5 w-3.5" />
+          </span>
+          <span
+            className={cn(
+              "text-[10px] font-semibold uppercase tracking-wide",
+              tone === "warning" && "text-[color:var(--warning)]",
+              tone === "success" && "text-[color:var(--success)]",
+              tone === "info" && "text-[color:var(--brand)]",
+            )}
+          >
+            {tone === "warning" ? "Needs attention" : tone === "success" ? "On track" : "Insight"}
+          </span>
+        </div>
+
+        <h4 className="text-[14px] font-semibold leading-5 text-foreground">
           {formatted.headline}
         </h4>
         {formatted.summary && formatted.summary !== formatted.headline ? (
-          <p className="mt-1 text-[11px] leading-5 text-muted-foreground">{formatted.summary}</p>
+          <p className="text-[12px] leading-5 text-foreground">{formatted.summary}</p>
         ) : null}
       </div>
 
-      {formatted.keyFindings.length > 0 && (
-        <ul className="space-y-1.5 text-[11px] leading-5 text-foreground">
+      {formatted.keyFindings.length > 0 ? (
+        <ul className="space-y-1.5 text-foreground">
           {formatted.keyFindings.map((finding) => (
             <li key={finding} className="flex gap-2">
               <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-[color:var(--brand)]" />
@@ -49,10 +91,10 @@ export function WorkforceAgentAnswer({
             </li>
           ))}
         </ul>
-      )}
+      ) : null}
 
       {formatted.dataFreshness ? (
-        <div className="rounded-md border border-border/70 bg-secondary/30 px-2.5 py-2 text-[11px] leading-5 text-foreground">
+        <div className="border-l-2 border-border bg-secondary/25 px-2.5 py-2 text-foreground">
           <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
             Data freshness
           </div>
@@ -61,7 +103,7 @@ export function WorkforceAgentAnswer({
       ) : null}
 
       {formatted.caution ? (
-        <div className="rounded-md border border-[color:var(--warning)]/30 bg-[color:var(--warning)]/10 px-2.5 py-2 text-[11px] leading-5 text-foreground">
+        <div className="border-l-2 border-[color:var(--warning)] bg-[color:var(--warning)]/8 px-2.5 py-2 text-foreground">
           <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--warning)]">
             Caution
           </div>
@@ -70,9 +112,10 @@ export function WorkforceAgentAnswer({
       ) : null}
 
       {formatted.nextStep ? (
-        <div className="rounded-md border border-[color:var(--brand)]/20 bg-[color:var(--brand)]/5 px-2.5 py-2 text-[11px] leading-5 text-foreground">
-          <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--brand)]">
-            Suggested next step
+        <div className="border-l-2 border-[color:var(--brand)] bg-[color:var(--brand)]/7 px-2.5 py-2 text-foreground">
+          <div className="mb-0.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--brand)]">
+            <Lightbulb className="h-3 w-3" />
+            Recommended action
           </div>
           {formatted.nextStep}
         </div>

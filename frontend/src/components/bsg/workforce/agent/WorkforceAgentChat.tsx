@@ -11,10 +11,11 @@ import { useWorkforceAgentChat } from "./useWorkforceAgentChat";
 
 type Props = {
   projectId: string | null;
+  onAskingChange?: (asking: boolean) => void;
 };
 
-export function WorkforceAgentChat({ projectId }: Props) {
-  const chatEndRef = useRef<HTMLDivElement | null>(null);
+export function WorkforceAgentChat({ projectId, onAskingChange }: Props) {
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const {
     messages,
     input,
@@ -27,15 +28,14 @@ export function WorkforceAgentChat({ projectId }: Props) {
     sendMessage,
     resetConversation,
     loadSession,
-  } = useWorkforceAgentChat({ projectId });
+  } = useWorkforceAgentChat({ projectId, onAskingChange });
 
   const hasUserMessage = messages.some((message) => message.role === "user");
 
   const scrollToEnd = () => {
-    const node = chatEndRef.current;
-    if (!node) return;
-    if (typeof node.scrollIntoView === "function") {
-      node.scrollIntoView({ behavior: "smooth", block: "end" });
+    const container = chatScrollRef.current;
+    if (container) {
+      container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
     }
   };
 
@@ -44,9 +44,8 @@ export function WorkforceAgentChat({ projectId }: Props) {
   }, [asking, messages.length]);
 
   const handleSubmit = () => {
-    if (input.trim()) {
-      void sendMessage(input.trim());
-    }
+    if (asking || isInputDisabled || !input.trim()) return;
+    void sendMessage(input.trim());
   };
 
   return (
@@ -96,7 +95,10 @@ export function WorkforceAgentChat({ projectId }: Props) {
         </div>
       )}
 
-      <div className="mx-4 mb-3 mt-3 min-h-[220px] max-h-[420px] flex-1 space-y-4 overflow-y-auto rounded-md bg-secondary/35 p-3 text-xs">
+      <div
+        ref={chatScrollRef}
+        className="mx-4 mb-3 mt-3 min-h-[220px] max-h-[420px] flex-1 space-y-4 overflow-y-auto rounded-md bg-secondary/35 p-3 text-xs"
+      >
         {messages.length === 0 && !asking && (
           <div className="flex flex-col items-center justify-center gap-2 py-8 text-center text-muted-foreground">
             <p className="max-w-[240px] text-[11px] leading-5">
@@ -122,8 +124,6 @@ export function WorkforceAgentChat({ projectId }: Props) {
             </div>
           </div>
         )}
-
-        <div ref={chatEndRef} aria-hidden="true" />
       </div>
 
       <div className="border-t border-border/70 px-4 py-3">

@@ -2,13 +2,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createAgentQuery } from "@/lib/api";
+import { ApiError, createAgentQuery } from "@/lib/api";
 import type { AgentQueryRead } from "@/types/workforce";
 import { useWorkforceAgentChat } from "./useWorkforceAgentChat";
 
-vi.mock("@/lib/api", () => ({
-  createAgentQuery: vi.fn(),
-}));
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return {
+    ...actual,
+    createAgentQuery: vi.fn(),
+  };
+});
 
 const mockedCreateAgentQuery = vi.mocked(createAgentQuery);
 
@@ -79,6 +83,80 @@ describe("useWorkforceAgentChat", () => {
       text: expect.stringContaining("Overloaded teams for"),
     });
     expect(messages[1]?.answer?.evidence_links).toHaveLength(1);
+  });
+
+  it("shows the user message immediately before the agent responds", async () => {
+    let resolveAnswer: ((value: AgentQueryRead) => void) | undefined;
+    mockedCreateAgentQuery.mockImplementation(
+      () =>
+        new Promise<AgentQueryRead>((resolve) => {
+          resolveAnswer = resolve;
+        }),
+    );
+
+    const { result } = renderHook(() => useWorkforceAgentChat({ projectId: "project-1" }), {
+      wrapper: createWrapper(),
+    });
+
+    act(() => {
+      void result.current.sendMessage("Which teams are overloaded?");
+    });
+
+    await waitFor(() => {
+      expect(result.current.messages).toHaveLength(1);
+      expect(result.current.messages[0]).toMatchObject({
+        role: "user",
+        text: "Which teams are overloaded?",
+      });
+      expect(result.current.asking).toBe(true);
+    });
+
+    await act(async () => {
+      resolveAnswer?.(buildAnswer("Which teams are overloaded?"));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(result.current.asking).toBe(false);
+      expect(result.current.messages).toHaveLength(2);
+    });
+  });
+
+  it("recovers when activeSessionId is stale and still renders user + agent messages", async () => {
+    mockedCreateAgentQuery.mockResolvedValue(
+      buildAnswer("Which teams are overloaded?", "Recovered answer"),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ projectId }) => useWorkforceAgentChat({ projectId }),
+      {
+        wrapper: createWrapper(),
+        initialProps: { projectId: null as string | null },
+      },
+    );
+
+    const staleSessionId = result.current.activeSessionId;
+
+    rerender({ projectId: "project-1" });
+
+    await act(async () => {
+      await result.current.sendMessage("Which teams are overloaded?");
+    });
+
+    await waitFor(() => {
+      expect(result.current.asking).toBe(false);
+    });
+
+    expect(result.current.activeSessionId).not.toBe(staleSessionId);
+    expect(result.current.messages).toHaveLength(2);
+    expect(result.current.messages[0]).toMatchObject({
+      role: "user",
+      text: "Which teams are overloaded?",
+    });
+    expect(result.current.messages[1]).toMatchObject({
+      role: "agent",
+      text: "Recovered answer",
+    });
   });
 
   it("starts a new chat and clears the active conversation", async () => {
@@ -187,5 +265,111 @@ describe("useWorkforceAgentChat", () => {
       text: "Agent unavailable",
       error: true,
     });
+  });
+
+  it("explains expired sessions instead of leaving the chat in a loading state", async () => {
+    mockedCreateAgentQuery.mockRejectedValueOnce(
+      new ApiError(401, "AUTH_REQUIRED", "Authentication required."),
+    );
+
+    const { result } = renderHook(() => useWorkforceAgentChat({ projectId: "project-1" }), {
+      wrapper: createWrapper(),
+    });
+
+    await act(async () => {
+      await result.current.sendMessage("Which teams are overloaded?");
+    });
+
+    await waitFor(() => {
+      expect(result.current.asking).toBe(false);
+    });
+
+    expect(result.current.error).toMatch(/session expired/i);
+    expect(result.current.messages[1]).toMatchObject({
+      role: "agent",
+      text: expect.stringMatching(/session expired/i),
+      error: true,
+    });
+  });
+
+  it("keeps the answer on the original session when project scope changes mid-flight", async () => {
+    let resolveAnswer: ((value: AgentQueryRead) => void) | undefined;
+    mockedCreateAgentQuery.mockImplementation(
+      () =>
+        new Promise<AgentQueryRead>((resolve) => {
+          resolveAnswer = resolve;
+        }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ projectId }) => useWorkforceAgentChat({ projectId }),
+      {
+        wrapper: createWrapper(),
+        initialProps: { projectId: "project-1" },
+      },
+    );
+
+    act(() => {
+      void result.current.sendMessage("Which teams are overloaded?");
+    });
+
+    await waitFor(() => {
+      expect(result.current.asking).toBe(true);
+      expect(result.current.messages).toHaveLength(1);
+    });
+
+    const originalSessionId = result.current.activeSessionId;
+
+    rerender({ projectId: "project-2" });
+
+    await act(async () => {
+      resolveAnswer?.(buildAnswer("Which teams are overloaded?", "Answer after project switch"));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(result.current.asking).toBe(false);
+    });
+
+    act(() => {
+      result.current.loadSession(originalSessionId);
+    });
+
+    expect(result.current.messages).toHaveLength(2);
+    expect(result.current.messages[1]?.text).toContain("Answer after project switch");
+  });
+
+  it("ignores duplicate sends while a request is in flight", async () => {
+    let resolveAnswer: ((value: AgentQueryRead) => void) | undefined;
+    mockedCreateAgentQuery.mockImplementation(
+      () =>
+        new Promise<AgentQueryRead>((resolve) => {
+          resolveAnswer = resolve;
+        }),
+    );
+
+    const { result } = renderHook(() => useWorkforceAgentChat({ projectId: "project-1" }), {
+      wrapper: createWrapper(),
+    });
+
+    act(() => {
+      void result.current.sendMessage("Which teams are overloaded?");
+      void result.current.sendMessage("Which teams are overloaded?");
+    });
+
+    await waitFor(() => {
+      expect(result.current.messages.filter((message) => message.role === "user")).toHaveLength(1);
+    });
+
+    await act(async () => {
+      resolveAnswer?.(buildAnswer("Which teams are overloaded?"));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(result.current.asking).toBe(false);
+    });
+
+    expect(mockedCreateAgentQuery).toHaveBeenCalledTimes(1);
   });
 });

@@ -13,6 +13,8 @@ export const queryKeys = {
   projectTeams: (projectId: string) => ["projects", projectId, "teams"] as const,
   projectWorkforceSummary: (projectId: string) =>
     ["projects", projectId, "workforce-summary"] as const,
+  projectWorkforceDashboard: (projectId: string) =>
+    ["projects", projectId, "workforce-dashboard"] as const,
   teamAnnotators: (teamId: string) => ["teams", teamId, "annotators"] as const,
   projectUtilization: (
     projectId: string,
@@ -59,3 +61,7 @@ export const queryKeys = {
 
 export const STALE_TIME_MS = 5 * 60 * 1000;
 export const KNOWLEDGE_BOOTSTRAP_STALE_TIME_MS = 10 * 60 * 1000;
+/** Catalog taxonomies change rarely; prefer longer cache on Workforce. */
+export const WORKFORCE_CATALOG_STALE_TIME_MS = 15 * 60 * 1000;
+/** Project workforce aggregates; safe to keep briefly without instant refresh. */
+export const WORKFORCE_PROJECT_STALE_TIME_MS = 10 * 60 * 1000;

@@ -229,6 +229,45 @@ export type CapabilityGapRead = {
   updated_at: string;
 };
 
+export type ProjectWorkforceDashboardRead = {
+  project_id: string;
+  summary: ProjectWorkforceSummaryRead;
+  utilization: UtilizationSnapshotRead[];
+  skill_matrix: SkillMatrixRead;
+  training_gaps: TrainingGapSummaryRead;
+  capability_gaps: CapabilityGapRead[];
+  recommendations: {
+    data: Array<{
+      title: string;
+      severity: string;
+      confidence_score: number | string;
+      is_estimated?: boolean;
+      project_id: string;
+      risks: Array<{
+        recommendation_id: string;
+        source_risk_id: string | null;
+        source_risk_title: string | null;
+        source_risk_type: string | null;
+        description: string | null;
+        status: string;
+        confidence_score: number | string;
+        is_estimated?: boolean;
+        owner_type: string | null;
+        owner_id: string | null;
+        owner_label: string | null;
+      }>;
+      statuses: string[];
+      descriptions: string[];
+    }>;
+    assignable_owners: Array<{
+      owner_type: string;
+      owner_id: string;
+      label: string;
+    }>;
+    pagination: { limit: number; next_cursor?: string | null };
+  };
+};
+
 export type CapabilityGapUpdatePayload = {
   status?: CapabilityGapStatus;
   severity?: CapabilityGapSeverity;

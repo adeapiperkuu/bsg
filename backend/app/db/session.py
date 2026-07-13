@@ -52,21 +52,10 @@ def _engine_kwargs(database_url: str) -> dict:
         kwargs["pool_pre_ping"] = True
         return kwargs
 
-    if _is_transaction_pooler(database_url):
-        # Let Supabase PgBouncer own pooling; avoid stale prepared statements on checkout.
-        kwargs["poolclass"] = NullPool
-        return kwargs
-
-    # Session pooler (port 5432): app-side pool; prepared statements are supported.
-    kwargs.update(
-        {
-            "pool_pre_ping": True,
-            "pool_size": 5,
-            "max_overflow": 5,
-            "pool_recycle": 300,
-            "pool_timeout": 30,
-        }
-    )
+    # Supabase PgBouncer already pools connections. A second client-side pool on top of the
+    # session pooler (port 5432) exhausts the remote pool quickly when the workforce page
+    # fires many parallel requests (EMAXCONNSESSION / pool_size: 15).
+    kwargs["poolclass"] = NullPool
     return kwargs
 
 

@@ -17,11 +17,13 @@ function PlaceholderPanel({ title, reason }: PlaceholderPanelProps) {
 type WorkforceAgentSectionProps = {
   projectId: string | null;
   canReadInternalWorkforce: boolean;
+  onAskingChange?: (asking: boolean) => void;
 };
 
 export function WorkforceAgentSection({
   projectId,
   canReadInternalWorkforce,
+  onAskingChange,
 }: WorkforceAgentSectionProps) {
   if (!canReadInternalWorkforce) {
     return (
@@ -34,5 +36,5 @@ export function WorkforceAgentSection({
     );
   }
 
-  return <WorkforceAgentChat projectId={projectId} />;
+  return <WorkforceAgentChat projectId={projectId} onAskingChange={onAskingChange} />;
 }

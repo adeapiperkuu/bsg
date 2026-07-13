@@ -18,6 +18,7 @@ import type {
   ProjectSkillRequirementRead,
   ProjectSkillRequirementUpdatePayload,
   ProjectWorkforceSummaryRead,
+  ProjectWorkforceDashboardRead,
   SkillMatrixRead,
   SkillRead,
   TeamCreatePayload,
@@ -44,6 +45,15 @@ export async function getProjectWorkforceSummary(
 ): Promise<ProjectWorkforceSummaryRead> {
   const body = await apiFetch<{ data: ProjectWorkforceSummaryRead }>(
     `/projects/${projectId}/workforce-summary`,
+  );
+  return body.data;
+}
+
+export async function getProjectWorkforceDashboard(
+  projectId: string,
+): Promise<ProjectWorkforceDashboardRead> {
+  const body = await apiFetch<{ data: ProjectWorkforceDashboardRead }>(
+    `/projects/${projectId}/workforce-dashboard`,
   );
   return body.data;
 }

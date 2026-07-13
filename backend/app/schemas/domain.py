@@ -710,6 +710,7 @@ class GroupedRecommendationRiskRead(BaseModel):
     recommendation_id: UUID
     source_risk_id: UUID | None
     source_risk_title: str | None = None
+    source_risk_type: str | None = None
     description: str | None
     status: str
     confidence_score: Decimal
@@ -743,6 +744,18 @@ class ProjectRecommendationsResponse(BaseModel):
     data: list[GroupedMitigationRecommendationRead]
     assignable_owners: list[OwnerOptionRead]
     pagination: Pagination
+
+
+class ProjectWorkforceDashboardRead(BaseModel):
+    """Bundled Workforce page payload (one round-trip for initial load)."""
+
+    project_id: UUID
+    summary: ProjectWorkforceSummaryRead
+    utilization: list[UtilizationSnapshotRead]
+    skill_matrix: SkillMatrixRead
+    training_gaps: TrainingGapSummaryRead
+    capability_gaps: list[CapabilityGapRead]
+    recommendations: ProjectRecommendationsResponse
 
 
 class AgentQueryCreate(BaseModel):
@@ -1308,58 +1321,6 @@ class InterAgentSignalRead(ORMModel):
 
 class RiskAlertResolve(BaseModel):
     resolution_summary: str | None = None
-
-
-# --- Workforce dashboard schemas ---
-
-
-class SkillGapSignal(BaseModel):
-    id: UUID
-    title: str
-    body: str
-    source_row_id: UUID | None = None
-    created_at: datetime
-    is_read: bool
-
-
-class TeamUtilizationRead(BaseModel):
-    team_id: UUID
-    team_name: str
-    iso_year: int
-    iso_week: int
-    target_hours: Decimal
-    logged_hours: Decimal
-    utilization_pct: Decimal | None = None
-    status: str
-
-
-class SkillMatrixEntry(BaseModel):
-    skill_code: str
-    proficiency_counts: dict[str, int]
-
-
-class WorkforceDashboardKpis(BaseModel):
-    teams_tracked: int
-    avg_utilization_pct: str | None = None
-    sme_certified_count: int
-    skill_records: int
-    open_skill_gaps: int
-
-
-class WorkforceDashboardRead(BaseModel):
-    kpis: WorkforceDashboardKpis
-    team_utilization: list[TeamUtilizationRead] = []
-    skill_matrix: list[SkillMatrixEntry] = []
-    skill_gap_signals: list[SkillGapSignal] = []
-
-
-class SmeAllocationRead(BaseModel):
-    annotator_id: UUID
-    team_id: UUID
-    team_name: str
-    site: str
-    skills: list[str]
-    utilization_pct: Decimal | None = None
 
 
 # --- Knowledge library schemas ---

@@ -4,7 +4,6 @@ import type { AgentQueryEvidenceLinkRead } from "@/types/workforce";
 import { friendlySourceLabel, normalizeEvidenceLinks } from "./evidence-utils";
 import { formatWorkforceAnswer } from "./format-workforce-answer";
 import { WorkforceAgentAnswer } from "./WorkforceAgentAnswer";
-import { WorkforceAgentEvidence } from "./WorkforceAgentEvidence";
 
 const UTILIZATION_ANSWER = `Overloaded teams for Northwind Content Shield 4: 1 team(s) at or above 85%.
 Overloaded: Northwind Content Shield 4 Team 1 is at 108%.
@@ -60,25 +59,6 @@ describe("evidence-utils", () => {
   });
 });
 
-describe("WorkforceAgentEvidence", () => {
-  it("renders evidence when mounted directly", () => {
-    render(
-      <WorkforceAgentEvidence
-        evidenceLinks={[
-          buildLink({
-            source_table: "utilization_snapshots",
-            description: "Latest team utilization 72% on 2026-06-22.",
-            source_row_id: "5ee6c6c2-aaaa-bbbb-cccc-dddddddddddd",
-          }),
-        ]}
-      />,
-    );
-
-    expect(screen.getByText("Why this answer?")).toBeInTheDocument();
-    expect(screen.getByText("Latest team utilization 72% on 2026-06-22.")).toBeInTheDocument();
-  });
-});
-
 describe("formatWorkforceAnswer integration", () => {
   it("parses utilization overload answers", () => {
     const formatted = formatWorkforceAnswer(UTILIZATION_ANSWER);
@@ -89,7 +69,7 @@ describe("formatWorkforceAnswer integration", () => {
 });
 
 describe("WorkforceAgentAnswer", () => {
-  it("renders simplified utilization headline and data freshness callout", () => {
+  it("renders a reader-friendly utilization answer without technical evidence", () => {
     render(
       <WorkforceAgentAnswer
         answerText={UTILIZATION_ANSWER}
@@ -109,16 +89,15 @@ describe("WorkforceAgentAnswer", () => {
     expect(screen.getByText("1 team is overloaded")).toBeInTheDocument();
     expect(screen.getByText(/Northwind Content Shield 4 Team 1 is at 108%/)).toBeInTheDocument();
     expect(screen.getByText("Data freshness")).toBeInTheDocument();
-    expect(screen.getByText(/15 days old/)).toBeInTheDocument();
-    expect(screen.getByText(/2026-06-22/)).toBeInTheDocument();
     expect(screen.getByText(/confirm the current workload before acting/i)).toBeInTheDocument();
-    expect(screen.queryByText("Caution")).not.toBeInTheDocument();
-    expect(screen.queryByText(/utilization snapshot/i)).not.toBeInTheDocument();
-    expect(screen.queryByText("Suggested next step")).not.toBeInTheDocument();
+    expect(screen.queryByText("Evidence (1)")).not.toBeInTheDocument();
+    expect(screen.queryByText("Utilization snapshot")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Ref/)).not.toBeInTheDocument();
     expect(screen.getByText("Confidence: Medium")).toBeInTheDocument();
+    expect(screen.queryByText("2607 ms")).not.toBeInTheDocument();
   });
 
-  it("renders stale underloaded answers as data freshness, not caution", () => {
+  it("renders stale underloaded answers as data freshness, not raw warning text", () => {
     render(
       <WorkforceAgentAnswer
         answerText={`Underloaded teams for Northwind Content Shield 4: 1 team(s) below 60%.
@@ -130,13 +109,13 @@ Confidence: High.`}
       />,
     );
 
+    expect(screen.getByText("1 team is underutilized")).toBeInTheDocument();
     expect(screen.getByText("Data freshness")).toBeInTheDocument();
     expect(screen.getByText(/15 days old/)).toBeInTheDocument();
-    expect(screen.queryByText("Caution")).not.toBeInTheDocument();
-    expect(screen.queryByText(/utilization snapshot/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Confidence: High")).toBeInTheDocument();
   });
 
-  it("does not render caution or next step when the answer omits them", () => {
+  it("does not invent sections when the answer omits them", () => {
     render(
       <WorkforceAgentAnswer
         answerText={`Underloaded teams for Northwind Content Shield 4: 1 team(s) below 60%.
@@ -147,12 +126,12 @@ Confidence: High.`}
       />,
     );
 
-    expect(screen.queryByText("Caution")).not.toBeInTheDocument();
     expect(screen.queryByText("Data freshness")).not.toBeInTheDocument();
-    expect(screen.queryByText("Suggested next step")).not.toBeInTheDocument();
+    expect(screen.queryByText("Recommended action")).not.toBeInTheDocument();
+    expect(screen.getByText("1 team is underutilized")).toBeInTheDocument();
   });
 
-  it("renders an explicit next step from the answer text", () => {
+  it("shows an explicit next step as a simple callout", () => {
     render(
       <WorkforceAgentAnswer
         answerText={`Overloaded teams for Project: 1 team(s) at or above 85%.
@@ -163,11 +142,11 @@ Suggested next step: Shift backlog items from Pod A to Pod B.`}
       />,
     );
 
-    expect(screen.getByText("Suggested next step")).toBeInTheDocument();
-    expect(screen.getByText(/Shift backlog items from Pod A to Pod B/)).toBeInTheDocument();
+    expect(screen.getByText("Recommended action")).toBeInTheDocument();
+    expect(screen.getByText("Shift backlog items from Pod A to Pod B.")).toBeInTheDocument();
   });
 
-  it("renders underloaded utilization headline without overloaded content", () => {
+  it("renders underloaded utilization as a clear headline", () => {
     render(
       <WorkforceAgentAnswer
         answerText={`Underloaded teams for Northwind Content Shield 4: 1 team(s) below 60%.
@@ -180,10 +159,9 @@ Confidence: High.`}
 
     expect(screen.getByText("1 team is underutilized")).toBeInTheDocument();
     expect(screen.getByText(/Team 2 \(48%\)/)).toBeInTheDocument();
-    expect(screen.queryByText(/overloaded/i)).not.toBeInTheDocument();
   });
 
-  it("hides evidence and technical sections from the normal answer view", () => {
+  it("hides evidence and grounded technical text from the main answer", () => {
     render(
       <WorkforceAgentAnswer
         answerText={UTILIZATION_ANSWER}
@@ -200,20 +178,13 @@ Confidence: High.`}
       />,
     );
 
-    expect(screen.queryByText("Why this answer?")).not.toBeInTheDocument();
-    expect(screen.queryByText("Top signals")).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("Latest team utilization 72% on 2026-06-22."),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText(/Show all evidence/)).not.toBeInTheDocument();
-    expect(screen.queryByText("Technical details")).not.toBeInTheDocument();
-    expect(screen.queryByText("Full agent response")).not.toBeInTheDocument();
-    expect(screen.queryByText("Response details")).not.toBeInTheDocument();
+    expect(screen.queryByText("Evidence (1)")).not.toBeInTheDocument();
+    expect(screen.queryByText("Utilization snapshot")).not.toBeInTheDocument();
     expect(screen.queryByText(/Grounded in 23/)).not.toBeInTheDocument();
-    expect(screen.queryByText(UTILIZATION_ANSWER)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Latest team utilization 72% on 2026-06-22/)).not.toBeInTheDocument();
   });
 
-  it("renders a concise answer for simple responses", () => {
+  it("renders a concise answer as the main message without evidence", () => {
     render(
       <WorkforceAgentAnswer
         answerText="Two teams are above the capacity threshold."
@@ -233,7 +204,54 @@ Confidence: High.`}
     expect(
       screen.getByRole("heading", { name: "Two teams are above the capacity threshold." }),
     ).toBeInTheDocument();
-    expect(screen.queryByText("Delivery team at 94% utilization")).not.toBeInTheDocument();
-    expect(screen.queryByText("Why this answer?")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Delivery team at 94% utilization/)).not.toBeInTheDocument();
+  });
+
+  it("turns training gaps into a non-technical business summary", () => {
+    render(
+      <WorkforceAgentAnswer
+        answerText={`Training gaps for Northwind Content Shield 4: 48 open (45 mandatory incomplete, 0 expired/failed).
+Grounded in 23 workforce evidence record(s). Figures are aggregated at the team level; individual annotator details are not exposed.
+Confidence: High.`}
+        evidenceLinks={[
+          buildLink({
+            source_table: "training_programs",
+            description: "gap (mandatory_training_incomplete) affecting 9 (aggregated).",
+            source_row_id: "bcce8242-aaaa-bbbb-cccc-dddddddddddd",
+          }),
+        ]}
+        confidenceLevel="high"
+      />,
+    );
+
+    expect(screen.getByText("48 training gaps need attention")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "45 mandatory trainings are incomplete, no expired or failed trainings were found.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Confidence: High")).toBeInTheDocument();
+    expect(screen.queryByText(/Evidence/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Grounded in/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Ref/)).not.toBeInTheDocument();
+  });
+
+  it("turns SME coverage into a scannable status and action", () => {
+    render(
+      <WorkforceAgentAnswer
+        answerText={`SME coverage for Northwind Content Shield 4: 7 SME(s) (30% of 23 active annotators).
+SME coverage is below 50%; consider certifying more annotators.
+Confidence: High.`}
+        evidenceLinks={[]}
+        confidenceLevel="high"
+      />,
+    );
+
+    expect(screen.getByText("Needs attention")).toBeInTheDocument();
+    expect(screen.getByText("SME coverage is below target")).toBeInTheDocument();
+    expect(screen.getByText("7 SMEs cover 30% of 23 active annotators.")).toBeInTheDocument();
+    expect(screen.getByText("SME coverage is below 50%.")).toBeInTheDocument();
+    expect(screen.getByText("Recommended action")).toBeInTheDocument();
+    expect(screen.getByText("Certify more annotators.")).toBeInTheDocument();
   });
 });

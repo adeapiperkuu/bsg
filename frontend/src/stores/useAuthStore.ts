@@ -14,6 +14,7 @@ type AuthState = {
 };
 
 let sessionRequestId = 0;
+let bootstrapPromise: Promise<void> | null = null;
 
 function hasSessionHint() {
   if (typeof document === "undefined") return false;
@@ -26,22 +27,28 @@ export const useAuthStore = create<AuthState>((set) => ({
   isAuthenticated: false,
 
   bootstrap: async () => {
+    if (bootstrapPromise) return bootstrapPromise;
     if (typeof window === "undefined") return;
-    const requestId = ++sessionRequestId;
-    if (!hasSessionHint()) {
-      set({ user: null, isAuthenticated: false, isLoading: false });
-      return;
-    }
-    set({ isLoading: true });
-    try {
-      const user = await fetchMe();
-      if (requestId !== sessionRequestId) return;
-      set({ user, isAuthenticated: true, isLoading: false });
-    } catch {
-      if (requestId !== sessionRequestId) return;
-      resetAuthSession();
-      set({ user: null, isAuthenticated: false, isLoading: false });
-    }
+    bootstrapPromise = (async () => {
+      const requestId = ++sessionRequestId;
+      if (!hasSessionHint()) {
+        set({ user: null, isAuthenticated: false, isLoading: false });
+        return;
+      }
+      set({ isLoading: true });
+      try {
+        const user = await fetchMe();
+        if (requestId !== sessionRequestId) return;
+        set({ user, isAuthenticated: true, isLoading: false });
+      } catch {
+        if (requestId !== sessionRequestId) return;
+        resetAuthSession();
+        set({ user: null, isAuthenticated: false, isLoading: false });
+      }
+    })().finally(() => {
+      bootstrapPromise = null;
+    });
+    return bootstrapPromise;
   },
 
   login: async (email, password) => {
