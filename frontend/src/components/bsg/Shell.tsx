@@ -211,7 +211,7 @@ export function Shell({ children }: { children: ReactNode }) {
                     <Link
                       to={item.to}
                       title={!mobile && collapsed ? item.label : undefined}
-                      preload="viewport"
+                      preload={false}
                       onMouseEnter={() => prefetchForNav(item.to)}
                       onFocus={() => prefetchForNav(item.to)}
                       onClick={() => {

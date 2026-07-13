@@ -27,6 +27,10 @@ import {
   shouldEnableGovernanceProjects,
 } from "@/features/governance/governance-load-strategy";
 import {
+  GOVERNANCE_DEFAULT_ANALYTICS_DAYS,
+  GOVERNANCE_DEFAULT_TABLE_PARAMS,
+} from "@/features/governance/governance-prefetch";
+import {
   ExecutiveDashboardFallback,
   GovernanceToolsPanelFallback,
   LazyAskGovernanceAgentPanel,
@@ -98,7 +102,7 @@ import type {
   ProjectScopeState,
 } from "@/types/governance";
 
-const TABLE_PAGE_SIZE = 6;
+const TABLE_PAGE_SIZE = GOVERNANCE_DEFAULT_TABLE_PARAMS.limit;
 const GOVERNANCE_TABLE_VIEWPORT_CLASS = "governance-table-shell h-[258px]";
 
 type GovernanceTableTab = "dependencies" | "actions" | "register" | "escalations";
@@ -432,7 +436,7 @@ export function GovernanceDashboard() {
     placeholderData: keepPreviousData,
   });
 
-  const [analyticsRangeDays, setAnalyticsRangeDays] = useState(30);
+  const [analyticsRangeDays, setAnalyticsRangeDays] = useState(GOVERNANCE_DEFAULT_ANALYTICS_DAYS);
   const analyticsSummaryQuery = useQuery({
     ...governanceAnalyticsSummaryQueryOptions(analyticsRangeDays),
     enabled: shouldEnableGovernanceAnalyticsSummary(

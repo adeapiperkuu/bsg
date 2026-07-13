@@ -1,379 +1,731 @@
 # Governance Page Latency Baseline
 
-Measurement-only baseline captured **2026-07-06** before any governance performance refactors. Use this document to compare each optimization phase against the same endpoints and log fields.
+**Phase 0 re-baseline — measurement only (2026-07-10).**  
+No production behavior, SQL, cache eligibility, API contracts, or frontend load-order changes in this phase.
 
-## What loads on first paint
+Use this document to compare later optimization phases against the **same request shapes the production frontend actually sends**.
 
-Route: `/governance` → `GovernanceDashboard` (`frontend/src/features/governance/GovernanceDashboard.tsx`).
+## Environment
 
-Load orchestration lives in `GovernanceDashboard.tsx` with defer/idle gates in `governance-load-strategy.ts`.
+| Field | Value |
+|-------|-------|
+| Date | 2026-07-10 |
+| Environment | Local API + remote Supabase **dev** database |
+| API region | Developer workstation (not co-located with DB) |
+| Database | Supabase Postgres via `DATABASE_URL` pooler (`*.supabase.co` / `pooler.supabase.com`) |
+| API ↔ DB co-located? | **No** — remote RTT dominates warm single-query latency (~150–350 ms per round trip) |
+| Connection pool | Supabase pooler: **NullPool** (transaction mode port 6543 preferred; session mode 5432 capped at 4 concurrent sessions). See `backend/app/db/session.py` |
+| Org under test | `0ac27787-896c-49e4-b90a-616c13a3694e` |
+| Benchmark script | `backend/scripts/benchmark_governance_latency_baseline.py` |
+
+Re-run:
+
+```bash
+cd backend
+python scripts/benchmark_governance_latency_baseline.py
+```
+
+## Frontend request shapes (production)
+
+Constants:
+
+| Constant | Value | Source |
+|----------|-------|--------|
+| `TABLE_PAGE_SIZE` | `6` | `GovernanceDashboard.tsx` |
+| `GOVERNANCE_DEFAULT_TABLE_PARAMS` | `{ limit: 6, offset: 0 }` | `governance-prefetch.ts` |
+| `GOVERNANCE_DEFAULT_ANALYTICS_DAYS` | `30` | `governance-prefetch.ts` |
+| `GOVERNANCE_ANALYTICS_DEFER_MS` | `200` | `governance-load-strategy.ts` |
+| `GOVERNANCE_ANALYTICS_DETAIL_IDLE_MS` | `400` | `governance-load-strategy.ts` |
+
+Exact first-page / progressive parameters:
+
+| Request | Method / path | Parameters |
+|---------|---------------|------------|
+| Bootstrap | `GET /governance/bootstrap` | (none) |
+| Dependencies first page | `GET /governance/dependencies` | `limit=6&offset=0` (+ optional filters when set) |
+| Escalations first page | `GET /governance/escalations` | `limit=6&offset=0` |
+| Register first page | `GET /governance/register` | `limit=6&offset=0` (Register tab only) |
+| Actions first page | `GET /governance/actions` | `limit=6&offset=0` (Actions tab only) |
+| Analytics summary | `GET /governance/analytics/summary` | `days=30` |
+| Analytics detail | `GET /governance/analytics/detail` | `days=30` |
+
+**Important:** Older docs and some backend caches assumed `limit=50`. The live dashboard first page is **`limit=6`**.
+
+## Current loading sequence
+
+Route: `/governance` → lazy `GovernanceDashboard`.
 
 ### Internal users (`delivery_manager`, `bsg_leadership`, `super_admin`)
 
-| Order | React Query | HTTP endpoint | Blocks first paint? |
-|------|-------------|---------------|---------------------|
-| 1 | `governanceDependenciesQueryOptions` | `GET /api/v1/governance/dependencies?limit=50&offset=0` | Yes — primary table tab (default) |
-| 2 | `governanceBootstrapQueryOptions` | `GET /api/v1/governance/bootstrap` | Partial — KPI strip + tab badge fallbacks |
-| 3 | `governanceAnalyticsSummaryQueryOptions(30)` | `GET /api/v1/governance/analytics/summary?days=30` | Partial — executive analytics header (deferred 200 ms after mount) |
-| 4 | `projectsQueryOptions` | `GET /api/v1/projects` | No on cold load — only when filters/dialogs/charters/agent need project names |
+| Order | React Query | HTTP | Blocks first paint? |
+|------|-------------|------|---------------------|
+| 1 | `governanceBootstrapQueryOptions` | `GET /governance/bootstrap` | Partial — KPI strip |
+| 1 | `governanceDependenciesQueryOptions({limit:6,offset:0})` | `GET /governance/dependencies?limit=6&offset=0` | Yes — default Dependencies tab |
+| 2 (after 200 ms) | `governanceAnalyticsSummaryQueryOptions(30)` | `GET /governance/analytics/summary?days=30` | Partial — executive header |
+| 3 (idle / in-view) | `governanceAnalyticsDetailQueryOptions(30)` | `GET /governance/analytics/detail?days=30` | No — progressive |
 
-**Progressive after summary:** `governanceAnalyticsDetailQueryOptions(30)` → `GET /api/v1/governance/analytics/detail?days=30` loads when summary succeeds and the detail section is idle or in view (`requestIdleCallback` / `IntersectionObserver`).
+Nav prefetch (`prefetchGovernanceRouteData`) warms bootstrap, dependencies `limit=6`, and analytics summary `days=30` **concurrently** (no detail). See Phase 2.
 
 **Not on first load:** register, actions, scope states, delivery portfolio, users, charters, agent chat, monolithic `GET /governance/analytics`.
 
 ### Client users (`client`)
 
-| Order | React Query | HTTP endpoint | Blocks first paint? |
-|------|-------------|---------------|---------------------|
-| 1 | `governanceEscalationsQueryOptions` | `GET /api/v1/governance/escalations?limit=50&offset=0` | Yes — primary table tab (default) |
-| 2 | `governanceBootstrapQueryOptions` | `GET /api/v1/governance/bootstrap` | Partial — KPI strip + tab badge fallbacks |
-| 3 | `projectsQueryOptions` | `GET /api/v1/projects` | No on cold load — only when filters/dialogs need project names |
+| Order | React Query | HTTP | Blocks first paint? |
+|------|-------------|------|---------------------|
+| 1 | `governanceBootstrapQueryOptions` | `GET /governance/bootstrap` | Partial — KPI strip |
+| 1 | `governanceEscalationsQueryOptions({limit:6,offset:0})` | `GET /governance/escalations?limit=6&offset=0` | Yes — default Escalations tab |
 
-**Not on first load:** dependencies, actions, analytics (internal-only), register, agent/charters tools.
+**Skipped for clients:** dependencies, actions, analytics summary/detail, register (unless they switch tabs where allowed).
 
 ### Lazy-loaded on tab or interaction
 
 | Trigger | Endpoint |
 |---------|----------|
-| Register tab | `GET /governance/register` |
-| Actions tab | `GET /governance/actions` |
-| Register tab + delivery context | `GET /delivery/portfolio` (delivery agent) |
-| Project sheet open | Re-fetch lists with `project_id`; internal users also fetch `GET /governance/scope-states` |
+| Register tab | `GET /governance/register?limit=6&offset=0` |
+| Actions tab | `GET /governance/actions?limit=6&offset=0` |
+| Register + delivery context | `GET /delivery/portfolio` |
+| Project sheet | Re-fetch lists with `project_id`; internal also `GET /governance/scope-states?limit=1` |
 | Charters sub-tab | `GET /governance/project-charters` |
 | Create/edit dialog | `GET /users` |
 
 ## Backend timing instrumentation
 
-All governance routes are wrapped by `instrument_governance_routes()` in `backend/app/agents/governance/routes/governance.py`.
+All governance routes are wrapped by `instrument_governance_routes()` (`backend/app/agents/governance/timing.py`).
 
-Each request emits a log line:
+Log line (fields present when recorded):
 
 ```text
-governance_endpoint_timing endpoint=GET /governance/analytics/summary role=delivery_manager org_id=<uuid> row_count=1 total_ms=1426.6 db_ms=1426.6 serialization_ms=0.1
+governance_endpoint_timing endpoint=GET /governance/dependencies role=delivery_manager org_id=<uuid> row_count=6 total_ms=358.3 db_ms=356.0 serialization_ms=2.3 execute_count=1 cache_hit=false limit=6 offset=0
 ```
 
-Structured fields (also in `logging` `extra`):
+| Field | Always? | Notes |
+|-------|---------|-------|
+| `total_ms` | Yes | Full handler time |
+| `db_ms` | Yes | Time inside `governance_db_section` / `@governance_db_timed` |
+| `serialization_ms` | Yes | `total_ms - db_ms` |
+| `row_count` | Yes | List length or `1`/`0` for data payloads |
+| `limit` / `offset` | When query params present | Captured from handler kwargs |
+| `execute_count` | When service records it | Bootstrap, dependencies, escalations, register, analytics summary |
+| `cache_hit` | When service records it | Same endpoints; analytics detail now records hit/miss and execute count |
 
-- `endpoint` — HTTP method + path
-- `role` — caller role (`delivery_manager`, `client`, …)
-- `org_id` — organisation UUID (or `null` for cross-org super admin)
-- `row_count` — rows returned (list endpoints) or `1`/`0` for data payloads
-- `total_ms` — full handler time
-- `db_ms` — time inside `governance_db_section` / `@governance_db_timed` service calls
-- `serialization_ms` — `total_ms - db_ms` (Pydantic mapping, response build, cache hits)
+**Do not log:** access tokens, PII, raw user IDs beyond role/org already present, sensitive filter values, full cache keys.
 
-DB-timed service entry points include list pages, register, analytics summary/detail, bootstrap KPI computation, and shared pagination helpers.
+### Instrumentation gaps (Phase 0)
 
-### How to capture logs locally
+| Gap | Status |
+|-----|--------|
+| Analytics **detail** exact `execute_count` | Not recorded — path fans out across many helpers; only `cache_hit` is reliable |
+| Dependencies / register **production** `limit=6` cache | **Not eligible** under current rules (deps require `limit=50`; register requires `limit ∈ {25,50}`) — documented, not changed |
+| Escalations list cache | None today |
+| Route-level fields without service `record_meta` | `execute_count` / `cache_hit` omitted (limit/offset still logged) |
+
+## Cache eligibility vs frontend shapes (unchanged in Phase 0)
+
+| Endpoint | Frontend first-page shape | Currently cacheable? | TTL |
+|----------|---------------------------|----------------------|-----|
+| Bootstrap | no params | Yes (per org/role/user) | 3 min |
+| Dependencies | `limit=6` | **No** (eligibility still `limit=50`) | 60 s (legacy shape only) |
+| Escalations | `limit=6` | **No** | — |
+| Register | `limit=6` | **No** (eligibility `{25,50}`) | 60 s (legacy shapes only) |
+| Analytics summary | `days=30` | Yes | 3 min |
+| Analytics detail | `days=30` | Yes | 3 min |
+
+> **Phase 1 update:** dependencies and register `limit=6` are now cache-eligible. See [Phase 1](#phase-1--first-page-cache-eligibility-limit6). Phase 0 numbers above are preserved for comparison.
+
+## Measured baseline (dev DB)
+
+Captured **2026-07-10** via `benchmark_governance_latency_baseline.py` against the live Supabase dev database (session pooler port 5432, NullPool, concurrency cap 4).  
+API on developer workstation — **not** co-located with DB. First cold sample dropped from warm-pool averages where noted. Remote RTT on this run was higher than the earlier ~350 ms historical samples (~800–1100 ms per round trip).
+
+### Internal path
+
+| Endpoint | Shape | Cold cache / warm pool | Immediate repeat | Cache hit | DB executes (miss) | Rows |
+|----------|-------|------------------------|------------------|-----------|--------------------|------|
+| `GET /governance/bootstrap` | — | avg **860** ms (p95 **904**, n=4) | **~0.1** ms (cache) | **~0.1** ms | **1** | 1 |
+| `GET /governance/dependencies` | **`limit=6`** | avg **846** ms (p95 **877**, n=4) | avg **843** ms (still miss) | **N/A** (ineligible) | **1** | 6 |
+| `GET /governance/analytics/summary` | `days=30` | avg **1112** ms (p95 **1145**, n=4) | **~0.1** ms (cache) | **~0.1** ms | **2** | 8 ranking |
+| `GET /governance/analytics/detail` | `days=30` | avg **3818** ms (p95 **3997**, n=4) | **~0.1** ms (cache) | **~0.1** ms | many (exact count not instrumented) | — |
+| `GET /governance/register` | **`limit=6`** | avg **1451** ms (p95 **1542**, n=4; **4** executes incl. day rollover) | avg **846** ms (**1** execute; still miss) | **N/A** (ineligible) | **4** cold / **1** warm day | 6 |
+
+### Client path
+
+Synthetic client user in the same org (no project assignments in this run → escalations empty page after assignments lookup).
+
+| Endpoint | Shape | Cold cache / warm pool | Immediate repeat | Cache hit | DB executes (miss) | Rows |
+|----------|-------|------------------------|------------------|-----------|--------------------|------|
+| `GET /governance/bootstrap` | — | avg **841** ms (p95 **863**, n=4; first cold **1879** ms) | **~0.1** ms (cache) | **~0.1** ms | **1** | 1 |
+| `GET /governance/escalations` | **`limit=6`** | avg **633** ms (p95 **655**, n=4) | avg **662** ms (no list cache) | **N/A** | **1** (no assigned projects) | 0 |
+
+Re-run with a real assigned client identity before treating client escalations as production-representative.
+
+Do **not** assume client and internal paths share SQL or cache behavior.
+
+### Cold vs warm vs cache
+
+| Mode | Meaning |
+|------|---------|
+| A / B | In-process caches cleared; first request(s) after warm `SELECT 1` |
+| C | Immediate repeated request without clearing caches (cache hit if eligible; still a miss if shape ineligible) |
+| D | Warm DB / pool — all scripted runs after an initial `SELECT 1` |
+| E | In-process cache hit where eligibility applies |
+
+### Main latency contributors (current system)
+
+1. **Remote Supabase RTT** — SQL CPU is typically <10 ms; this run saw ~800–1100 ms per round trip from a non-colocated API (historical samples were ~150–350 ms under better network conditions).
+2. **Analytics summary** — 2 round trips (~1112 ms cold) on the deferred internal path.
+3. **Bootstrap + dependencies** — 1 round trip each on internal first paint; dependencies `limit=6` never hits the 60 s cache today (~846 ms every request).
+4. **Analytics detail** — ~3.8 s cold progressive fan-out; cacheable after first load.
+5. **Register** — cold day-rollover can cost **4** executes (~1450 ms); warm-day page is **1** execute but still uncached at `limit=6`.
+6. **Client escalations** — no list cache; assignment-scoped SQL differs from internal.
+## Current success targets (unchanged goals for later phases)
+
+Track the same fields from `governance_endpoint_timing` / the baseline script:
+
+| Metric | Target direction |
+|--------|------------------|
+| `total_ms` (p50 / p95) per endpoint | Down |
+| `db_ms` / `total_ms` | Down if DB-bound |
+| `serialization_ms` | Stable or down |
+| Internal first-paint wall time | Down (bootstrap + dependencies `limit=6` + deferred summary) |
+| Client first-paint wall time | Down (bootstrap + escalations `limit=6`) |
+| `row_count` at fixed filters | Stable |
+| `execute_count` | Down or stable; never silently increase |
+
+Suggested acceptance checks (later phases):
+
+- Internal cold: `analytics/summary` p95 < 450 ms (warm pool), `dependencies?limit=6` p95 < 400 ms (cold) / <10 ms once cache eligibility matches frontend, `bootstrap` p95 < 400 ms
+- Client cold: `escalations?limit=6` p95 < 150 ms (when data/org allow)
+- No increase in error rate on baseline endpoints
+
+## How to capture logs locally
 
 1. Start the API: `backend/run_dev_server.ps1`
 2. Open `/governance` as an internal user and as a client user (hard refresh).
-3. Grep backend stdout:
-
-```bash
-# PowerShell
-Select-String -Pattern "governance_endpoint_timing" <backend-log-file>
-```
-
-Compare `total_ms` and `db_ms` per `endpoint` and `role`.
-
-## Measured baseline (dev DB, 3-run average)
-
-Captured via service-layer benchmark against the live Supabase dev database (delivery manager, org `0ac27787-896c-49e4-b90a-616c13a3694e`, cold cache):
-
-| Endpoint | total_ms | db_ms | serialization_ms | Notes |
-|----------|----------|-------|------------------|-------|
-| `GET /governance/analytics` | **1427** | 1427 | 0.1 | Monolithic payload; **not used by current UI** (kept for backward compatibility) |
-| `GET /governance/analytics/summary` | ~900–1100 | ~900–1100 | <1 | Internal first-paint analytics header (pre-optimization baseline) |
-| `GET /governance/analytics/detail` | ~300–500 | ~300–500 | <1 | Progressive load after summary |
-| `GET /governance/escalations` | 441 | 439 | 2.1 | Client-user primary table |
-| `GET /governance/register` | 403 | 403 | 0.1 | Not on first paint; heavy per-project subqueries |
-| `GET /governance/dependencies` | 375 | 374 | 1.6 | Internal first-paint table (pre-optimization baseline) |
-| `GET /governance/bootstrap` | 343 | 342 | 0.1 | KPI strip + tab totals (pre-optimization; see Bootstrap endpoint profiling) |
-
-Client user escalations (representative client org): **~60–120 ms** after connection warm-up.
-
-Internal first-paint critical path (parallel requests): dominated by **analytics summary** + **dependencies** + **bootstrap**. Analytics detail loads progressively and does not block the initial shell.
-
-## What to optimize first
-
-1. **`GET /governance/analytics/summary`** — Re-benchmarked **~377 ms** warm (down from **~800–1100 ms**). Further wins require regional DB proximity or accepting cache hits; see Analytics summary endpoint profiling.
-2. **`GET /governance/dependencies`** — Re-benchmarked **~349 ms** warm with **1 DB round trip** (down from **~375 ms** / 2 executes). 60 s in-process cache for default list; see Dependencies endpoint profiling.
-3. **`GET /governance/bootstrap`** — Re-benchmarked **~357 ms** warm with **1 DB execute** (down from **~473 ms** / 3 executes). 3-min in-process cache; see Bootstrap endpoint profiling.
-4. **`GET /governance/register`** — Not first paint, but expensive when users switch tabs; same class of multi-subquery aggregation as analytics.
-5. **`GET /governance/analytics/detail`** — Progressive only; optimize after summary path is stable.
-
-Defer: agent chat, charter generation, export endpoints, monolithic `GET /governance/analytics` — not on dashboard first paint.
-
-## Dependencies endpoint profiling
-
-**Endpoint:** `GET /governance/dependencies?limit=50&offset=0`  
-**Handler:** `list_governance_dependencies` → `list_governance_dependencies_page` (`governance_service.py`)
-
-### Query shape (default internal request, after 2026-07-07 paginate-then-join)
-
-1. **Single paginated query** — `_dependency_enriched_page_stmt`:
-   - Inner `dep_page_ids` subquery: `SELECT id FROM project_dependencies WHERE org_id = ? AND deleted_at IS NULL ORDER BY due_date NULLS LAST, created_at DESC LIMIT 50 OFFSET 0`
-   - Scalar count subquery: `SELECT count(*) FROM project_dependencies WHERE …` (no joins)
-   - Outer query joins **only the page rows** to `projects` (name) and `users` (owner display name)
-   - Selects only list-table columns; no `description` or other heavy fields
-2. **Count fallback** — separate lightweight `count(*)` only when the page is empty **and** `offset > 0`.
-3. **Serialization** — `map_dependency_list_row` from row tuples (no ORM hydration).
-4. **Cache** — 60-second in-process TTL for unfiltered default requests; invalidated on dependency CRUD.
-
-Profiling log (when service `total_ms >= 200`):
-
-```text
-governance_dependencies_list_profile total_ms=358.3 db_executes=1 row_count=6 limit=50 offset=0 cached=false
-```
-
-### EXPLAIN ANALYZE — before vs after (dev DB, org `0ac27787-896c-49e4-b90a-616c13a3694e`, 6 active rows)
-
-**Before (`count(*) OVER()` + join all rows):**
-
-| Node | Observation |
-|------|-------------|
-| `Seq Scan` | On `project_dependencies` (planner choice at n=6; index used at scale with `enable_seqscan=off`) |
-| `Nested Loop` | Join **all** org rows to `projects_pkey` + `users_pkey` before `Limit` |
-| `WindowAgg` | `count(*) OVER()` scans full joined set |
-| `Sort` | `due_date`, `created_at DESC` — eliminated at scale when index `project_dependencies_active_org_due_created_idx` is chosen |
-| **Execution time** | **~0.15 ms** |
-
-**After (paginate ids, then join page):**
-
-| Node | Observation |
-|------|-------------|
-| `InitPlan` + `Aggregate` | Scalar `count(*)` — at scale uses `Index Only Scan` on `project_dependencies_active_org_id_idx` |
-| `Subquery Scan on dep_page_ids` + `Limit` | Paginates ids first — at scale uses `project_dependencies_active_org_due_created_idx` |
-| `Hash Join` | Joins only page rows (≤50) to full dependency row |
-| `Nested Loop` | `projects_pkey` + `users_pkey` on **page rows only** (not entire org) |
-| `Sort` | Small final re-sort of page rows |
-| **Execution time** | **~1.0 ms** at n=6 (extra hash join overhead); **wins at scale** by avoiding per-row joins on full org set |
-
-**Indexes evaluated (not added):**
-
-| Proposed | Verdict |
-|----------|---------|
-| `(org_id, deleted_at, created_at DESC)` | **Rejected** — `deleted_at` redundant with partial index `WHERE deleted_at IS NULL`; `created_at` alone does not match `ORDER BY due_date, created_at DESC` |
-| `(org_id, project_id, deleted_at, created_at DESC)` | **Rejected** — `project_id` filter uses existing `project_dependencies_project_id_idx`; sort key is `due_date` first |
-| `(org_id, status, deleted_at, created_at DESC)` | **Rejected** — existing `project_dependencies_active_org_status_due_project_idx` covers status-filtered open/blocking queries; general sort still needs `due_date` before `created_at` |
-
-**Existing indexes used at scale** (`enable_seqscan=off` simulation):
-
-- `project_dependencies_active_org_due_created_idx` — default list `ORDER BY due_date NULLS LAST, created_at DESC`
-- `project_dependencies_active_org_id_idx` — scalar count (`Index Only Scan`)
-
-Migration: `supabase/migrations/20260706143000_governance_dependencies_list_index.sql` (already applied). **No new indexes added.**
-
-### Before / after timing (dev DB, delivery manager, cache cleared each run)
-
-| Metric | Before window-count | After paginate-then-join |
-|--------|---------------------|--------------------------|
-| `list_governance_dependencies_page` warm | **355–419 ms** | **349–368 ms** |
-| DB executes (default page) | **1** | **1** |
-| `serialization_ms` | ~1–2 ms | ~1–2 ms |
-| Cache hit (60 s TTL) | **<5 ms** | **<5 ms** |
-
-**Finding:** SQL CPU is negligible on dev DB (<1 ms). End-to-end latency is dominated by **one Supabase round trip (~350 ms)**. The paginate-then-join change prevents join fan-out from growing with org dependency volume; cold latency is network-bound.
-
-## Bootstrap endpoint profiling
-
-**Endpoint:** `GET /governance/bootstrap`  
-**Handler:** `governance_bootstrap` → `get_governance_bootstrap` (`dashboard_service.py`)
-
-### Query shape (after 2026-07-07 optimization)
-
-**Internal users** (`delivery_manager`, `bsg_leadership`, `super_admin`) — **one DB execute** combining:
-
-1. **Action KPIs** — conditional `count(*) FILTER (...)` on `governance_actions` (open, overdue, SLA on-time/total for 90-day window).
-2. **Inventory KPIs** — scalar subqueries on `project_dependencies` (blocking) and `project_scope_states` (pending revision).
-3. **Escalation KPIs** — conditional `count(*) FILTER (...)` on `governance_escalations` (open + high/critical).
-
-**Client users** — **one DB execute**: escalation aggregates scoped via `project_id IN (SELECT … FROM project_assignments WHERE user_id = ?)`.
-
-No list payloads, no joins for enrichment, no weekly summaries or charters. Response is KPI counts only (`GovernanceBootstrapRead.kpis`); legacy list fields remain empty defaults.
-
-Profiling log (when KPI compute `total_ms >= 150`):
-
-```text
-governance_bootstrap_profile total_ms=357.2 db_executes=1 role=delivery_manager org_id=...
-```
-
-### DB execute count comparison
-
-| Role | Before | After |
-|------|--------|-------|
-| Internal (DM/leadership) | **3** sequential executes | **1** |
-| Client | **2** (assignments + escalations) | **1** |
-| Cache hit (3 min TTL) | 0 | **0** (<5 ms) |
-
-### EXPLAIN ANALYZE summary (dev DB)
-
-| Component | Plan highlight | SQL execution time |
-|-----------|----------------|-------------------|
-| Combined KPI select | Independent scalar subqueries / aggregate subqueries; no row fan-out | **<2 ms** |
-
-**Finding:** SQL CPU is negligible. Warm latency is dominated by **one Supabase round trip (~357 ms)**. Prior path used three sequential round trips (~473 ms warm).
-
-### Before / after timing (dev DB, delivery manager, cache cleared each run)
-
-| Metric | Before (docs baseline) | Before (re-benchmark) | After |
-|--------|------------------------|----------------------|-------|
-| `get_governance_bootstrap` warm | ~343 ms | **~473 ms** | **~357 ms** |
-| DB executes (internal) | 3 | 3 | **1** |
-| `serialization_ms` | ~0.1 ms | ~0.1 ms | ~0.1 ms |
-| Cache hit (3 min TTL) | <5 ms | <5 ms | <5 ms |
-
-**Note:** Target 150–200 ms on cold load is not achievable on remote Supabase with a single round trip at ~357 ms. The existing 3-minute in-process cache covers repeat dashboard visits.
-
-## Analytics summary endpoint profiling
-
-**Endpoint:** `GET /governance/analytics/summary?days=30`  
-**Handler:** `governance_analytics_summary` → `get_governance_analytics_summary` (`analytics_service.py`)
-
-### Query shape (internal user, after optimization)
-
-1. **Project metrics (single round trip)** — `_summary_project_metrics_stmt` joins visible `projects` with four org-scoped aggregate subqueries (dependencies, escalations, overdue actions, pending scope revisions). Replaces separate project list + four `count(*)` queries.
-2. **Delivery signals (single round trip)** — `GOVERNANCE_SIGNAL_BUNDLE_SQL` in `delivery_signals.py` unions throughput, quality, milestones, risks, and bottleneck aggregates in one SQL statement. Replaces five sequential delivery queries. Skips redundant org re-check when caller passes scoped `projects_by_id`.
-3. **Serialization** — in-process scoring + `GovernanceAnalyticsSummaryRead` mapping (summary-only fields; no trend/chart payloads).
-4. **Cache** — 3-minute in-process TTL per `(org, role, user, days)`; cache hits are sub-millisecond.
-
-Profiling log (when `total_ms >= 300`):
-
-```text
-governance_analytics_summary_profile total_ms=387.5 project_count=19 ranking_count=8 query_timings={'project_metrics': 198.2, 'delivery_signals': 176.4}
-```
-
-Route-level timing (same request):
-
-```text
-governance_endpoint_timing endpoint=GET /governance/analytics/summary role=delivery_manager org_id=... row_count=1 total_ms=387.5 db_ms=386.1 serialization_ms=1.4
-```
-
-### EXPLAIN ANALYZE summary (dev DB, org `0ac27787-896c-49e4-b90a-616c13a3694e`, 19 projects)
-
-| Query | Plan highlight | SQL execution time |
-|-------|----------------|-------------------|
-| Project metrics combined | Seq scan / hash aggregate on small governance tables; nested loop to `projects_pkey` | **<5 ms** |
-| Delivery signal bundle | Window functions on `throughput_snapshots` / `quality_snapshots`; index scans on `milestones`, `risk_alerts`, `bottlenecks` | **<10 ms** |
-
-**Finding:** SQL CPU is negligible. End-to-end latency is dominated by **two Supabase round trips** (project metrics + delivery bundle) at ~150–270 ms each on a warm pool. Parallel multi-session approaches were tried and **regressed** (connection-pool contention; 1.2–2.5 s).
-
-### Optimizations applied (2026-07-06)
-
-| Change | Rationale | Effect |
-|--------|-----------|--------|
-| `_summary_project_metrics_stmt` — one joined aggregate query | Cut 5 round trips → 1 for governance counts + project list | Major reduction from ~800 ms baseline |
-| `GOVERNANCE_SIGNAL_BUNDLE_SQL` — single delivery input query | Cut 5 delivery round trips → 1 | Warm path **~377 ms** (down from **~640–870 ms**) |
-| Skip `_filter_accessible_project_ids` when scoped `projects_by_id` provided | Avoid redundant round trip on summary/detail paths | ~50–100 ms saved when applicable |
-| Profile log `governance_analytics_summary_profile` when `total_ms >= 300` | Temporary observability without hot-path overhead on fast/cache hits | Kept as lightweight debug |
-
-**No new indexes added** — existing indexes on `throughput_snapshots (project_id, snapshot_date)`, `milestones (project_id)`, and governance partial indexes from `20260703120000_governance_active_partial_indexes.sql` are used; EXPLAIN did not justify additional indexes at current table sizes.
-
-### Before / after timing (dev DB, delivery manager, cold cache cleared)
-
-| Metric | Before | After (warm, runs 2–5) |
-|--------|--------|-------------------------|
-| `get_governance_analytics_summary` service | **787–870 ms** | **376–388 ms** |
-| Per-query fan-out | 1 projects + 4 counts + 5 delivery = **10 round trips** | **2 round trips** |
-| `serialization_ms` | <1 ms | ~1–2 ms (unchanged) |
-| Cache hit (within 3 min TTL) | N/A | **<5 ms** |
-
-**Note:** Consistent **<300 ms** on remote Supabase is not achievable with the current two-query design without accepting cache hits or moving DB closer to the API. The 3-minute in-process cache covers repeat dashboard visits within a session.
-
-## Register endpoint profiling
-
-**Endpoint:** `GET /governance/register?limit=25&offset=0`  
-**Handler:** `list_governance_register` → `list_governance_register_page` (`register_service.py`)
-
-### Summary table (`project_governance_summary`)
-
-Precomputed per-project counts for register badges. Migrations:
-
-- `supabase/migrations/20260704120000_project_governance_summary.sql` — table + backfill
-- `supabase/migrations/20260707100000_project_governance_summary_org_updated_idx.sql` — `(org_id, updated_at)` for stale-row lookup
-
-| Column | Register UI field |
-|--------|-------------------|
-| `open_dependencies_count` | `open_dependencies` |
-| `blocked_dependencies_count` | `blocking_dependencies` |
-| `blocking_overdue_dependencies_count` | health (red) |
-| `open_actions_count` | `open_actions` |
-| `overdue_actions_count` | health (amber) |
-| `open_escalations_count` | `open_escalations` |
-| `critical_escalations_count` | health (red) |
-| `pending_scope_changes_count` | (not exposed; scope from `project_scope_states`) |
-
-Write paths call `refresh_project_governance_summary` on dependency/action/escalation/scope CRUD (and delivery-integration escalations). Paginated register rows still come from `projects` + `project_scope_states`; counts are read from the summary table (no live `GROUP BY` on governance source tables).
-
-### Query shape (internal user, after optimization)
-
-1. **Date rollover (0–1 round trips)** — `ensure_org_time_sensitive_summary_counts`: in-process “refreshed today” cache; otherwise `EXISTS` stale rows, then one combined overdue-actions + blocking-overdue-deps aggregate when the UTC day rolled over. Skipped when `org_id` is null (super admin).
-2. **Register page (1 round trip)** — `projects` ⋈ scoped visible projects ⋈ `project_scope_states` ⋈ `project_governance_summary` with `count(*) OVER()` pagination. Client scoping uses embedded `scoped_project_query` assignment filter (no extra assignments query).
-
-Profiling log (when `total_ms >= 200`):
-
-```text
-governance_register_list_profile total_ms=414.0 db_executes=2 row_count=19 limit=25 offset=0 cached=false
-```
-
-### Before / after timing (dev DB, delivery manager org `0ac27787-896c-49e4-b90a-616c13a3694e`, cache cleared)
-
-| Metric | Before | After (cold, runs 2–5) | After (cache hit) |
-|--------|--------|------------------------|-------------------|
-| `list_governance_register_page` | **~403 ms** | **407–419 ms** | **<1 ms** |
-| DB executes (internal DM) | **2–4** (stale-day refresh + page; client +1 assignments) | **2** | **0** |
-| Live aggregation on read | None (summary table already wired) | None | None |
-| `serialization_ms` | ~0.1 ms | ~0.1 ms | ~0 ms |
-
-**Finding:** End-to-end latency remains dominated by **two Supabase round trips** (~200 ms each). The summary table prevents register cost from growing with dependency/action/escalation row volume; counts are O(1) per project at read time. A 60-second in-process cache covers repeat Register tab visits within a session.
-
-### Optimizations applied (2026-07-07)
-
-| Change | Rationale | Effect |
-|--------|-----------|--------|
-| `project_governance_summary` table + write-path refresh | Precompute counts; avoid read-time `GROUP BY` as data grows | Stable per-page read cost |
-| In-process org day cache + `EXISTS` stale check | Skip 1–3 rollover queries on repeat reads same UTC day | Fewer round trips on tab revisits |
-| Combined overdue + blocking-overdue aggregate on rollover | 2 queries → 1 on day boundary | Faster midnight rollover |
-| Single-query `compute_project_governance_counts` on write | 4 executes → 1 per mutation refresh | Faster write-path summary updates |
-| Remove redundant `_client_project_ids` on register read | `scoped_project_query` already embeds assignment filter | −1 round trip for clients |
-| `count(*) OVER()` pagination | Already shared with dependencies | 1 execute for page + total |
-| 60 s register list cache + invalidation on summary refresh | Repeat tab loads | **<1 ms** cache hits |
-| Index `(org_id, updated_at)` | Stale-summary lookup | Supports `EXPLAIN` index scan at scale |
-
-## Metrics to compare after each phase
-
-Track the same fields from `governance_endpoint_timing` logs:
-
-| Metric | Target direction | Phase comparison |
-|--------|------------------|------------------|
-| `total_ms` (p50 / p95) per endpoint | Down | Primary success metric |
-| `db_ms` / `total_ms` ratio | Down if DB-bound | Confirms DB vs serialization work |
-| `serialization_ms` | Stable or down | Catches mapping/payload regressions |
-| Internal first-paint wall time | Down | Browser DevTools → Network: dependencies + bootstrap + analytics summary |
-| Client first-paint wall time | Down | Network: escalations + bootstrap |
-| `row_count` at fixed filters | Stable | Ensures optimizations did not truncate data |
-
-Suggested acceptance checks per phase:
-
-- Internal cold load: `analytics/summary` p95 < 450 ms (warm pool), `dependencies` p95 < 400 ms (cold) / <10 ms (cache hit), `bootstrap` p95 < 400 ms
-- Client cold load: `escalations` p95 < 150 ms
-- No increase in error rate on baseline endpoints (dependencies, escalations, bootstrap, analytics/summary)
+3. Grep backend stdout for `governance_endpoint_timing`.
 
 ## Related files
 
 - Frontend load orchestration: `frontend/src/features/governance/GovernanceDashboard.tsx`
+- Prefetch: `frontend/src/features/governance/governance-prefetch.ts`
 - Defer/idle gates: `frontend/src/features/governance/governance-load-strategy.ts`
 - Query definitions: `frontend/src/lib/queries/governance.ts`
 - Timing helper: `backend/app/agents/governance/timing.py`
+- Baseline script: `backend/scripts/benchmark_governance_latency_baseline.py`
 - Timing tests: `backend/tests/test_governance_timing.py`
 
-## Cleanup notes
+## Phase 0 confirmation
 
-**Cleanup Batch 1 (2026-07-06):** Removed the unmounted legacy governance API layer (`app/api/routes/governance.py`, `app/services/governance.py`, `app/agents/governance/dependencies.py`). These were not registered in `main.py` and formed an isolated import chain. The live router is `app.agents.governance.routes.governance`, mounted via `app.include_router(governance_routes.router, prefix=api_prefix)` in `main.py`.
+- Baseline parameters match production frontend traffic (`limit=6`, analytics `days=30`).
+- Cold / warm / cache-hit measurements are separated in the benchmark script and this doc.
+- DB execute counts are visible for bootstrap, dependencies, escalations, register, and analytics summary.
+- Internal and client paths are documented separately.
+- **No optimization** was introduced: no Redis, no SQL changes, no cache-eligibility changes, no API contract changes, no frontend load-order changes.
 
-**Cleanup Batch 2 (2026-07-06):** Removed unused frontend governance code: `WeeklySummaryPanel.tsx`, monolithic `getGovernanceAnalytics` / `governanceAnalyticsQueryOptions`, `useGovernanceBootstrapQuery`, deprecated list aliases in `governance.ts`, and weekly-summary query helpers/types with zero importers. Live `/governance` uses `governanceAnalyticsSummaryQueryOptions` + `governanceAnalyticsDetailQueryOptions` + `mergeGovernanceAnalytics`.
+## Phase 1 — First-page cache eligibility (`limit=6`)
 
-**Cleanup Batch 3 (2026-07-06):** Confirmed `GovernanceDashboardRead` / `GovernanceDashboardKpis` schema orphans were already absent from `app/schemas/domain.py` (removed with Batch 1 consumers). Deduplicated repeated model exports in `app/db/models/__init__.py`. Updated this doc to match the split analytics + bootstrap load strategy. Added deprecation TODO on monolithic `GET /governance/analytics` (route retained for backward compatibility).
+**Date:** 2026-07-10 (same environment as Phase 0).  
+**Goal:** Make repeated unfiltered first-page requests hit the existing in-process cache instead of paying another remote RTT.
 
-**Cleanup validation (2026-07-06):** All three batches complete. Removed symbols/files have no live code references (only historical mentions in this doc). Live `/governance` flow confirmed on `governanceBootstrapQueryOptions`, `governanceAnalyticsSummaryQueryOptions`, `governanceAnalyticsDetailQueryOptions`, and `mergeGovernanceAnalytics`. Orphaned backend API layer and unused frontend weekly-summary/legacy analytics helpers are gone. Monolithic `GET /governance/analytics` kept temporarily for backward compatibility. Validation: `pytest tests/ -k governance` (73 passed), `npm test -- src/features/governance` (14 passed), `npm run build` (success).
+### Eligibility before → after
+
+| Endpoint | Before | After |
+|----------|--------|-------|
+| Dependencies | `limit=50` only | **`limit ∈ {6, 50}`**, offset=0, unfiltered |
+| Register | `limit ∈ {25, 50}` | **`limit ∈ {6, 25, 50}`**, offset=0, unfiltered |
+| Actions | none | **Deferred to Phase 5** (no existing list cache) |
+| Escalations | none | **Deferred to Phase 5** (client assignment-scoped; needs permission-aware cache) |
+
+Constant: `GOVERNANCE_FIRST_PAINT_LIMIT = 6` in `backend/app/agents/governance/constants.py` (must stay aligned with frontend `TABLE_PAGE_SIZE`).
+
+### Cache key dimensions
+
+| Cache | Key | Isolation |
+|-------|-----|-----------|
+| Dependencies | `(org_id\|None, role, user_id, limit, offset)` | Per-user; clients never populate (empty early return). Internal rows are org-scoped. |
+| Register | `(org_id\|None, role, user_id, limit, offset)` | Per-user; clients use assignment-scoped `scoped_project_query`. |
+
+Safe log fields: `cache_scope=user_access`, `cache_shape=first_paint_unfiltered|legacy_first_page|uncached_*`, `cache_eligible`, `cache_hit`, `filtered`, `execute_count`, `limit`, `offset`.
+
+### Invalidation (after successful commit)
+
+`invalidate_governance_read_caches_after_commit()` clears **both** dependencies and register list caches after:
+
+- dependency create / update / resolve / soft-delete
+- escalation create / update / soft-delete
+- action create / update / soft-delete
+- scope-state update
+- delivery risk → escalation promote
+
+Day-rollover summary refresh (`ensure_org_time_sensitive_summary_counts`) is unchanged; register list cache is no longer cleared inside `refresh_project_governance_summary` (moved to post-commit to avoid stale re-population races).
+
+### Before / after measurements (2026-07-10)
+
+Remote RTT remains ~800–1100 ms on miss.
+
+| Endpoint | Metric | Phase 0 | Phase 1 |
+|----------|--------|---------|---------|
+| Dependencies `limit=6` | miss avg | ~846 ms / **1** exec | ~833 ms / **1** exec |
+| Dependencies `limit=6` | cache hit | **N/A** (ineligible) | **~0.6 ms / 0 exec** |
+| Register `limit=6` | cold (day rollover) | ~1451 ms / **4** exec | ~1436 ms / **4** exec |
+| Register `limit=6` | cache hit | **N/A** (ineligible) | **~0.1 ms / 0 exec** |
+
+### Deferred from Phase 1
+
+- Actions first-page cache (no prior infrastructure)
+- Escalations first-page cache (assignment-scoped; synthetic Phase 0 client had 0 rows)
+- Analytics SQL / execute-count instrumentation for detail
+- Day-rollover 4-execute register path
+- Frontend prefetch order
+
+### Phase 1 confirmation
+
+- No Redis, no API contract changes, no analytics SQL changes, no frontend load-order changes.
+- Legacy `limit=50` (deps) and `limit ∈ {25,50}` (register) remain cacheable.
+- Governance tests: **113 passed**.
+
+## Phase 2 — Concurrent Governance route prefetch
+
+**Date:** 2026-07-10.  
+**Goal:** On Governance sidebar hover, start eligible first-paint queries together inside the Governance bundle, while keeping cross-agent single-flight in `nav-prefetch.ts`.
+
+### Previous call chain
+
+```
+Shell onMouseEnter
+  → scheduleNavPrefetch(/governance) [450 ms linger]
+  → runPrefetch (abort other agent; one flight)
+  → prefetchGovernanceNav
+  → await bootstrap
+  → await dependencies limit=6
+  → await analytics summary days=30
+```
+
+Internal hover was a **sequential waterfall** of up to ~3 remote RTTs (~2.4–3.3 s in the Phase 0/1 environment).
+
+### New call chain
+
+```
+Shell onMouseEnter
+  → scheduleNavPrefetch(/governance) [450 ms linger; unchanged]
+  → runPrefetch (cross-agent single-flight unchanged)
+  → prefetchGovernanceNav
+  → Promise.allSettled([
+        bootstrap,
+        dependencies limit=6   // internal
+        OR escalations limit=6 // client
+        analytics summary days=30 // internal only
+     ])
+```
+
+Module chunk prefetch (`import("./GovernanceDashboard")`) still starts immediately alongside the data bundle.
+
+### Internal-user prefetch tasks
+
+1. `governanceBootstrapQueryOptions`
+2. `governanceDependenciesQueryOptions({ limit: 6, offset: 0 })`
+3. `governanceAnalyticsSummaryQueryOptions(30)`
+
+Not prefetched: analytics detail, register, actions, portfolio, projects, users, charters, chat.
+
+### Client-user prefetch tasks
+
+1. `governanceBootstrapQueryOptions`
+2. `governanceEscalationsQueryOptions({ limit: 6, offset: 0 })`
+
+Not prefetched: dependencies, analytics summary/detail.
+
+Role is resolved from the optional argument or `useAuthStore.getState().user?.role`.
+
+### Cross-agent single-flight preserved
+
+`nav-prefetch.ts` still enforces:
+
+- 450 ms hover linger
+- one active agent path at a time (switching aborts the previous controller)
+- same-route in-flight reuse (`path === activePath`)
+- 2.5 s same-route cooldown after successful completion
+
+Only queries **inside** the Governance bundle are parallelized.
+
+### Query-key reuse
+
+Prefetch calls the same factories as `GovernanceDashboard`:
+
+- `GOVERNANCE_DEFAULT_TABLE_PARAMS` / `GOVERNANCE_DEFAULT_ANALYTICS_DAYS`
+- Dashboard `TABLE_PAGE_SIZE` and default analytics days now import those constants
+
+Mounted 200 ms summary defer remains for click-without-hover. Hover bypasses that defer by warming the summary query early; mount reuses cache/in-flight data.
+
+### Failure behavior
+
+- Tasks run under `Promise.allSettled`
+- Abort still throws `AbortError` for nav-prefetch
+- Partial failures do not fail the bundle
+- All-task failure rethrows so nav-prefetch can log and skip cooldown
+- Navigation is never blocked (prefetch is fire-and-forget from Shell)
+
+### Expected timing (remote RTT ~800–1100 ms)
+
+| Scenario | Before Phase 2 | After Phase 2 |
+|----------|----------------|---------------|
+| Internal hover cold | ~sum of 3 RTTs (waterfall) | ~max(bootstrap, deps, summary) overlapping envelope |
+| Client hover cold | ~sum of 2 RTTs | ~max(bootstrap, escalations) |
+| Hover then click (fresh) | may refetch if keys differed | reuses React Query cache / in-flight |
+| Click without hover | summary after 200 ms defer | **unchanged** |
+
+Duplicate request count on hover→click with matching keys: **0** while queries remain fresh/in-flight (React Query dedupe).
+
+### Tests
+
+- Concurrency: deferred bootstrap does not block deps/summary (or escalations) from starting
+- Client branch excludes deps/summary
+- Failure / abort paths
+- Nav single-flight, cooldown, in-flight reuse
+
+### Browser Network validation
+
+Automated unit tests prove concurrent `prefetchQuery` starts (deferred-promise pattern). Live DevTools Network overlap should be confirmed manually:
+
+| Scenario | Expected |
+|----------|----------|
+| Internal hover 500–1000 ms | bootstrap, deps `limit=6`, summary `days=30` overlap; no detail |
+| Hover then click in-flight | no duplicate bootstrap/deps/summary |
+| Hover until complete then click | shell from React Query cache; no immediate refetch while fresh |
+| Click without hover | summary still waits ~200 ms defer |
+| Client hover | bootstrap + escalations only |
+| Repeated hover | single-flight / cooldown suppress uncontrolled duplicates |
+
+### Phase 2 confirmation
+
+- No Redis, no backend cache/SQL changes, no API contract changes
+- Analytics detail not prefetched
+- Cross-agent single-flight intact
+
+## Phase 3 — Analytics summary single-execute
+
+**Date:** 2026-07-10.  
+**Goal:** Reduce `GET /governance/analytics/summary` from **2 sequential DB executes** to **1** on cache miss, without changing the public response or business rules.
+
+### Previous summary query flow
+
+```
+get_governance_analytics_summary
+  → cache lookup (org_id|None, role, user_id, days)
+  → execute #1: _summary_project_metrics_stmt
+       (visible projects + dep/esc/overdue/scope aggs)
+  → execute #2: GOVERNANCE_SIGNAL_BUNDLE_SQL
+       (throughput/quality/milestone/risk/bottleneck UNION)
+  → Python score → top 8 ranking → cache store
+```
+
+Phase 0 cold miss: ~1112 ms, **execute_count=2**.
+
+### New unified query flow
+
+```
+get_governance_analytics_summary
+  → cache lookup (unchanged key)
+  → execute #1: _summary_unified_sql
+       WITH visible_projects
+            summary_dep_agg / summary_esc_agg / summary_overdue_agg / summary_scope_agg
+            signal_bundle + signals_agg (internal only; jsonb_agg per project)
+       SELECT one row per visible project + scalar metrics + delivery_signals JSON
+  → Python parse signals → same scoring / ranking / charts
+  → cache store
+```
+
+Clients / non-internal: same single statement **without** signal CTEs (signals were already skipped before the second execute).
+
+### Execute counts
+
+| Path | Before | After |
+|------|--------|-------|
+| Cache miss | 2 | **1** |
+| Cache hit | 0 | **0** |
+
+No multi-session fan-out; no `asyncio.gather` for summary DB work.
+
+### EXPLAIN ANALYZE (representative org, days irrelevant to SQL)
+
+Against remote Supabase for the unified statement (`include_signals=true`):
+
+- Planning Time: ~1.9 ms
+- Execution Time: ~5.2 ms
+- Plan: CTE `visible_projects` (Seq Scan on small `projects` set) + independent aggregate Hash Left Joins + signal UNION/`row_number` Append + `jsonb_agg`
+- SQL time remains << remote RTT; no new index added
+
+### Benchmark (2026-07-10, same remote environment)
+
+| Metric | Phase 0 (2 executes) | Phase 3 (1 execute) |
+|--------|----------------------|---------------------|
+| Cache miss avg | ~1112 ms | ~1300–1490 ms (session variance; first cold ~2.0 s) |
+| Cache miss execute_count | 2 | **1** |
+| Cache hit | ~0.1 ms / 0 executes | ~0.2 ms / 0 executes |
+
+Interpretation: removing one remote round trip is the structural win. Absolute miss latency remains dominated by a single remote RTT (~800–1100 ms+). This session’s miss samples were not faster than Phase 0’s recorded average (network variance); the acceptance criterion is **one execute** and a one-RTT envelope rather than a hard sub-450 ms p95 on this non-colocated setup.
+
+### Response contract
+
+`GovernanceAnalyticsSummaryRead` fields unchanged. Contract tests assert full serialized field sets for summary and health rows.
+
+### Visible-project scoping
+
+Unified SQL mirrors `scoped_project_query`:
+
+- soft-deleted projects excluded
+- super_admin: all non-deleted
+- DM / leadership: org-scoped
+- client: org + active assignment
+
+Org filters on aggregate CTEs match `_apply_org_filter`.
+
+### Delivery-signal selection
+
+Same UNION semantics as `GOVERNANCE_SIGNAL_BUNDLE_SQL` (shared via `governance_signal_bundle_select_sql`):
+
+- throughput: `row_number()` by `snapshot_date DESC`, keep ≤7
+- quality: latest by `created_at DESC`
+- milestones / open risks: matching rows
+- bottlenecks: `count(*)` per project, expanded in Python
+
+Signals are JSON-aggregated **after** independent CTEs so one-to-many signal rows cannot inflate governance counts.
+
+### Cache
+
+- Key still `(org_id|None, role, user_id, days)`; TTL 3 minutes
+- **Write invalidation:** still TTL-only (not cleared by `invalidate_governance_read_caches_after_commit`, which covers deps + register only)
+- Follow-up: optional analytics cache invalidation on governance writes
+
+### 200 ms frontend defer recommendation
+
+**Keep 200 ms** for now.
+
+Even with one execute, remote RTT remains ~800–1100 ms, so summary is still expensive relative to first-paint table data. Prefetch already warms summary on hover; the mount defer still protects cold click-without-hover. Revisit only after measured miss latency is consistently well below one full RTT envelope in production-like conditions.
+
+### Remaining work
+
+- Analytics **detail** still multi-query / progressive (out of scope)
+- Register day-rollover (deferred)
+- Analytics write invalidation (follow-up)
+
+### Phase 3 confirmation
+
+- No Redis, no API schema change, no frontend defer/prefetch change
+- No analytics-detail refactor
+- Legacy two-query helper retained as `_fetch_summary_metric_bundle_two_query` for equivalence tests only
+
+## Phase 4 - Analytics detail two-execute miss path
+
+**Date:** 2026-07-13.  
+**Goal:** Reduce `GET /governance/analytics/detail?days=30` from many sequential
+service-level database executes to no more than two executes on cache miss, while keeping the
+detail payload progressive and off first paint.
+
+### Previous detail query flow
+
+Before Phase 4, a representative internal cache miss used **19 service-level executes** inside
+`get_governance_analytics_detail`:
+
+```
+1  _fetch_visible_projects
+2  _fetch_dependency_counts_by_project
+3  _fetch_escalation_counts_by_project
+4  _fetch_overdue_action_counts_by_project
+5  _fetch_pending_scope_counts_by_project
+6  fetch_governance_delivery_signals / GOVERNANCE_SIGNAL_BUNDLE_SQL
+7  _fetch_blocking_dependencies
+8  _fetch_critical_escalations
+9  _fetch_trend_dependencies
+10 _fetch_trend_escalations
+11 _fetch_trend_actions
+12 _fetch_trend_scopes
+13 _fetch_enum_counter(project_dependencies.dependency_type)
+14 _fetch_enum_counter(governance_escalations.severity)
+15 _fetch_action_status_counter
+16 _fetch_overdue_actions
+17 _fetch_recent_activity dependencies branch
+18 _fetch_recent_activity actions branch
+19 _fetch_recent_activity escalations branch
+```
+
+The `_fetch_project_evidence` helper did not add two extra executes in the live detail path because
+blocking dependencies and critical escalations were already passed in. It would still execute twice
+if called independently without those rows.
+
+### New detail architecture
+
+`get_governance_analytics_detail` now uses exactly two bundled statements on cache miss:
+
+1. `_fetch_detail_project_bundle` reuses the Phase 3 visible-project aggregate SQL without delivery
+   signal CTEs. It returns visible projects plus per-project dependency, escalation, overdue-action,
+   and pending-scope counts.
+2. `_fetch_detail_second_bundle` returns all rows needed for detail-only sections:
+   trend source rows, chart counters, blocking-dependency evidence rows, critical-escalation evidence
+   rows, overdue actions, recent activity, and delivery-signal input rows.
+
+Python response construction still uses the existing scoring, insight, recommendation, trend, chart,
+and evidence builders. No production dual path was kept.
+
+### Visible-project scoping
+
+Both statements use a shared `visible_projects` CTE equivalent to `scoped_project_query`:
+
+- soft-deleted projects excluded
+- super_admin: all non-deleted projects
+- delivery manager / leadership: org-scoped projects
+- client: org-scoped projects with active, non-deleted assignment
+
+All bundled governance source CTEs join through `visible_projects`, preventing hidden broad org scans
+and preserving user/access isolation.
+
+### Trend and activity design
+
+Trend sources are bundled as CTEs and returned as typed JSON payloads:
+
+- dependencies: open rows plus rows created or resolved within the selected window
+- escalations: open/in-progress rows plus rows raised or resolved within the selected window
+- actions: non-completed rows plus rows created or completed within the selected window
+- scope states: pending-revision rows plus rows updated within the selected window
+
+The existing `_build_trends` function still zero-fills `days=7/30/90/365` buckets and preserves the
+current date-bucket rules.
+
+Recent activity is now a `UNION ALL` over dependency, action, and escalation branches. Each branch
+keeps its previous top-8 local limit. Python then applies the same global top-8 ordering by timestamp,
+with a deterministic source-order tie-breaker matching the old append order: dependency, action,
+escalation.
+
+### Row-multiplication and N+1 prevention
+
+The bundled SQL never joins raw dependencies, actions, escalations, scope states, and signals together
+in one unaggregated row set. It uses independent CTEs and `UNION ALL` payload sections, so one-to-many
+tables cannot inflate counts. Project names and display labels are returned in the same bundled rows;
+there are no per-row project/owner enrichment queries.
+
+### Execute counts
+
+| Path | Before | After |
+|------|--------|-------|
+| Cache miss | 19 service executes in the representative internal path | **2** |
+| Cache hit | 0 | **0** |
+
+Timing metadata now records `execute_count`, `cache_hit`, `activity_row_count`,
+`trend_bucket_count`, and `project_row_count` for detail requests.
+
+### Cache
+
+- Cache key remains `(org_id|None, role, user_id, days)`
+- TTL remains 3 minutes
+- Cache hit performs zero service-level executes and records `execute_count=0`
+- Write invalidation remains TTL-only; analytics invalidation is still a follow-up phase
+
+### Response contract and tests
+
+Response schema remains `GovernanceAnalyticsDetailRead` with unchanged fields:
+`generated_at`, `date_range_days`, `insights`, `recommendations`, `trends`, `charts`,
+`recent_activity`, and `export_sections`.
+
+Added/updated tests cover:
+
+- detail endpoint contract
+- complete empty detail serialized shape
+- miss/hit execute-boundary regression through the two bundle helpers
+- summary/detail split behavior
+- governance cache, RBAC, tenant isolation, and timing regressions
+
+Validation run:
+
+```
+python -m pytest tests -k governance
+# 130 passed, 511 deselected
+```
+
+### EXPLAIN ANALYZE
+
+Captured against remote Supabase on 2026-07-13.
+
+`detail_project_bundle`:
+
+- Planning Time: **0.901 ms**
+- Execution Time: **0.340 ms**
+- Plan shape: visible projects Seq Scan on the small project set, independent HashAggregate CTEs for
+  dependency/escalation/action/scope counts, Hash Left Joins back to visible projects, final Sort by
+  project name
+
+`detail_source_bundle`:
+
+- Planning Time: **2.165 ms**
+- Execution Time: **5.190 ms**
+- Plan shape: Append over JSON payload branches, visible-project CTE, independent source CTE scans,
+  recent-activity Sorts over small CTE sets, signal UNION branches for throughput/quality/milestones/
+  risks/bottlenecks
+- Largest row source in this sample was delivery signal history (`throughput_snapshots`, 2235 rows);
+  SQL execution time is still far smaller than remote RTT
+
+No new indexes were added. The observed SQL cost does not justify index work for Phase 4.
+
+### Benchmark
+
+The benchmark script now reports analytics-detail cache misses as **2 executes** and cache hits as
+**0 executes**. Run from `backend/`:
+
+```
+python scripts/benchmark_governance_latency_baseline.py
+```
+
+Phase 4 remote run, internal user, `days=30`, warm pool, cleared cache:
+
+| Metric | Value |
+|--------|-------|
+| min | **1045.1 ms** |
+| avg | **1071.6 ms** |
+| median | **1067.8 ms** |
+| p90 | **1095.0 ms** |
+| p95 | **1100.4 ms** |
+| max | **1105.7 ms** |
+| execute count | **2** |
+| cache hits | 0/4 |
+| row count | 5 insight/recommendation rows |
+
+Immediate repeat/cache-hit:
+
+| Metric | Value |
+|--------|-------|
+| immediate repeat avg | **0.1 ms** |
+| explicit cache-hit avg | **0.2 ms** |
+| execute count | **0** |
+| cache hits | 5/5 |
+
+Baseline remains Phase 0: detail cache miss approximately **3818 ms**, cache hit approximately
+**0.1 ms**, and execute count recorded only as "many" at the time. The current code-level inventory
+identifies the representative internal miss path as 19 executes before Phase 4.
+
+### Date-window and business-rule notes
+
+Current behavior is preserved rather than corrected:
+
+- detail trends use the selected `days` window for source inclusion and bucket count
+- chart distributions and current project-health totals remain current/all-time over visible rows,
+  not date-window filtered
+- recent activity uses a fixed top-8 global result assembled from top-8 per source type, not the
+  selected `days` window
+- `_build_trends` still anchors bucket dates with `date.today()` internally
+
+Follow-up: decide whether totals, charts, and recent activity should use the same date-window
+semantics as trends.
+
+### Progressive-load confirmation
+
+No frontend files changed in Phase 4. Governance detail remains loaded by the existing idle/in-view
+detail strategy, is not part of first paint, and is not included in hover prefetch.
+
+### Remaining work
+
+- Run live EXPLAIN/benchmark against remote Supabase and paste measured planning/execution/RTT numbers
+- Add optional analytics cache invalidation after governance writes
+- Revisit register day-rollover optimization separately
+- Consider business-rule cleanup for inconsistent `days` semantics
+
+## Historical profiling notes
+
+Earlier sections (dependencies paginate-then-join, bootstrap KPI merge, analytics summary bundling, register summary table) remain useful engineering history. Those measurements often used `limit=50` / register `limit=25`. Prefer the Phase 0 tables above for dashboard first-page comparisons going forward; use the Phase 1 table for cache-hit comparisons.

@@ -16,7 +16,7 @@ from app.agents.governance.services.governance_service import (
     _apply_org_filter,
     assert_can_read_governance,
 )
-from app.agents.governance.timing import governance_db_timed
+from app.agents.governance.timing import get_governance_timer, governance_db_timed
 from app.core.security import CurrentUser
 from app.db.models import (
     AppRole,
@@ -292,12 +292,17 @@ async def get_governance_bootstrap(
     cache_key = _bootstrap_cache_key(current_user)
     cached = _bootstrap_kpi_cache.get(cache_key)
     now = datetime.now(UTC)
+    timer = get_governance_timer()
     if cached and now - cached[0] < BOOTSTRAP_CACHE_TTL:
+        if timer is not None:
+            timer.record_meta(execute_count=0, cache_hit=True)
         return GovernanceBootstrapRead(kpis=cached[1])
 
     started = perf_counter()
     kpis = await compute_governance_kpis(session, current_user)
     elapsed_ms = round((perf_counter() - started) * 1000, 1)
+    if timer is not None:
+        timer.record_meta(execute_count=1, cache_hit=False)
     if elapsed_ms >= 150:
         logger.info(
             "governance_bootstrap_profile total_ms=%s db_executes=1 role=%s org_id=%s",

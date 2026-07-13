@@ -34,11 +34,49 @@ class GovernanceEndpointTimer:
         self.role = current_user.role.value if current_user else "unknown"
         self.row_count = 0
         self.db_ms = 0.0
+        self.execute_count: int | None = None
+        self.cache_hit: bool | None = None
+        self.limit: int | None = None
+        self.offset: int | None = None
+        self.cache_eligible: bool | None = None
+        self.cache_shape: str | None = None
+        self.filtered: bool | None = None
+        self.cache_scope: str | None = None
         self._started = perf_counter()
         self._db_depth = 0
 
     def add_db_ms(self, elapsed_ms: float) -> None:
         self.db_ms += elapsed_ms
+
+    def record_meta(
+        self,
+        *,
+        execute_count: int | None = None,
+        cache_hit: bool | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        cache_eligible: bool | None = None,
+        cache_shape: str | None = None,
+        filtered: bool | None = None,
+        cache_scope: str | None = None,
+    ) -> None:
+        """Attach optional profiling fields without changing response payloads."""
+        if execute_count is not None:
+            self.execute_count = execute_count
+        if cache_hit is not None:
+            self.cache_hit = cache_hit
+        if limit is not None:
+            self.limit = limit
+        if offset is not None:
+            self.offset = offset
+        if cache_eligible is not None:
+            self.cache_eligible = cache_eligible
+        if cache_shape is not None:
+            self.cache_shape = cache_shape
+        if filtered is not None:
+            self.filtered = filtered
+        if cache_scope is not None:
+            self.cache_scope = cache_scope
 
     @property
     def serialization_ms(self) -> float:
@@ -55,7 +93,7 @@ class GovernanceEndpointTimer:
         db_ms = round(self.db_ms, 1)
         serialization_ms = self.serialization_ms
         total_ms = self.total_ms
-        extra = {
+        extra: dict[str, object] = {
             "endpoint": self.endpoint,
             "org_id": self.org_id,
             "role": self.role,
@@ -64,9 +102,11 @@ class GovernanceEndpointTimer:
             "serialization_ms": serialization_ms,
             "total_ms": total_ms,
         }
-        logger.info(
+        parts = [
             "governance_endpoint_timing endpoint=%s role=%s org_id=%s row_count=%s "
-            "total_ms=%s db_ms=%s serialization_ms=%s",
+            "total_ms=%s db_ms=%s serialization_ms=%s"
+        ]
+        args: list[object] = [
             self.endpoint,
             self.role,
             self.org_id,
@@ -74,8 +114,40 @@ class GovernanceEndpointTimer:
             total_ms,
             db_ms,
             serialization_ms,
-            extra=extra,
-        )
+        ]
+        if self.execute_count is not None:
+            extra["execute_count"] = self.execute_count
+            parts.append("execute_count=%s")
+            args.append(self.execute_count)
+        if self.cache_hit is not None:
+            extra["cache_hit"] = self.cache_hit
+            parts.append("cache_hit=%s")
+            args.append(self.cache_hit)
+        if self.limit is not None:
+            extra["limit"] = self.limit
+            parts.append("limit=%s")
+            args.append(self.limit)
+        if self.offset is not None:
+            extra["offset"] = self.offset
+            parts.append("offset=%s")
+            args.append(self.offset)
+        if self.cache_eligible is not None:
+            extra["cache_eligible"] = self.cache_eligible
+            parts.append("cache_eligible=%s")
+            args.append(self.cache_eligible)
+        if self.cache_shape is not None:
+            extra["cache_shape"] = self.cache_shape
+            parts.append("cache_shape=%s")
+            args.append(self.cache_shape)
+        if self.filtered is not None:
+            extra["filtered"] = self.filtered
+            parts.append("filtered=%s")
+            args.append(self.filtered)
+        if self.cache_scope is not None:
+            extra["cache_scope"] = self.cache_scope
+            parts.append("cache_scope=%s")
+            args.append(self.cache_scope)
+        logger.info(" ".join(parts), *args, extra=extra)
 
 
 def get_governance_timer() -> GovernanceEndpointTimer | None:
@@ -160,6 +232,13 @@ def instrument_governance_endpoint(endpoint: str) -> Callable[[Callable[P, R]], 
         @wraps(func)
         async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
             timer = GovernanceEndpointTimer(endpoint, _find_current_user(args, kwargs))
+            limit = kwargs.get("limit")
+            offset = kwargs.get("offset")
+            if isinstance(limit, int) or isinstance(offset, int):
+                timer.record_meta(
+                    limit=limit if isinstance(limit, int) else None,
+                    offset=offset if isinstance(offset, int) else None,
+                )
             token = _set_governance_timer(timer)
             try:
                 result = await func(*args, **kwargs)

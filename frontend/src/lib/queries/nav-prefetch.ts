@@ -101,3 +101,12 @@ export function flushNavPrefetch(queryClient: QueryClient, to: string): void {
   pendingPath = null;
   void runPrefetch(queryClient, to);
 }
+
+/** Test-only: clear linger/single-flight/cooldown state between cases. */
+export function resetNavPrefetchStateForTests(): void {
+  clearLinger();
+  abortActive();
+  pendingPath = null;
+  lastCompletedPath = null;
+  lastCompletedAt = 0;
+}

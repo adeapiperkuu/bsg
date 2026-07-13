@@ -176,6 +176,18 @@ describe("GovernanceDashboard load behavior", () => {
     expect(detailResolve).not.toBeNull();
   });
 
+  it("requests dependencies with the dashboard first-page limit of 6", async () => {
+    renderDashboard();
+
+    await waitFor(() => {
+      expect(fetchCalls.some((path) => path.includes("/governance/dependencies?limit=6"))).toBe(
+        true,
+      );
+    });
+
+    expect(fetchCalls.some((path) => path.includes("limit=50"))).toBe(false);
+  });
+
   it("does not request projects immediately on mount", async () => {
     renderDashboard();
 

@@ -1,4 +1,8 @@
-"""Benchmark governance register against dev DB."""
+"""Benchmark governance register against dev DB.
+
+Uses the dashboard Register-tab page size (limit=6). Phase 1 made limit=6
+cache-eligible alongside legacy limits 25 and 50.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +29,7 @@ from app.db.models import AppRole  # noqa: E402
 from app.db.session import AsyncSessionLocal  # noqa: E402
 
 ORG_ID = UUID("0ac27787-896c-49e4-b90a-616c13a3694e")
+DASHBOARD_LIMIT = 6
 RUNS = 5
 
 
@@ -47,14 +52,18 @@ async def _cold_run() -> tuple[float, int, int]:
     _clear_caches()
     started = perf_counter()
     async with AsyncSessionLocal() as session:
-        page = await list_governance_register_page(session, _user(), limit=25, offset=0)
+        page = await list_governance_register_page(
+            session, _user(), limit=DASHBOARD_LIMIT, offset=0
+        )
     return (perf_counter() - started) * 1000, page.total, page.db_executes
 
 
-async def _warm_run() -> tuple[float, int, int]:
+async def _hit_run() -> tuple[float, int, int]:
     started = perf_counter()
     async with AsyncSessionLocal() as session:
-        page = await list_governance_register_page(session, _user(), limit=25, offset=0)
+        page = await list_governance_register_page(
+            session, _user(), limit=DASHBOARD_LIMIT, offset=0
+        )
     return (perf_counter() - started) * 1000, page.total, page.db_executes
 
 
@@ -63,27 +72,37 @@ async def main() -> None:
         await session.execute(select(1))
 
     cold_timings: list[float] = []
-    warm_timings: list[float] = []
     db_executes: list[int] = []
 
     for index in range(RUNS):
         ms, total, executes = await _cold_run()
         cold_timings.append(ms)
         db_executes.append(executes)
-        print(f"cold run {index + 1}: {ms:.1f} ms (total={total}, db_executes={executes})")
+        print(
+            f"cold run {index + 1}: {ms:.1f} ms "
+            f"(total={total}, db_executes={executes}, limit={DASHBOARD_LIMIT})"
+        )
 
+    # Prime then measure cache hits (do not clear day cache so rollover stays warm).
+    _register_list_cache.clear()
+    await _hit_run()
+    hit_timings: list[float] = []
     for index in range(3):
-        ms, total, executes = await _warm_run()
-        warm_timings.append(ms)
-        print(f"warm run {index + 1}: {ms:.1f} ms (total={total}, db_executes={executes})")
+        ms, total, executes = await _hit_run()
+        hit_timings.append(ms)
+        print(
+            f"cache hit {index + 1}: {ms:.3f} ms "
+            f"(total={total}, db_executes={executes}, limit={DASHBOARD_LIMIT})"
+        )
 
     print(
-        f"register cold: min={min(cold_timings):.1f}ms avg={statistics.mean(cold_timings):.1f}ms "
+        f"register cold limit=6: min={min(cold_timings):.1f}ms "
+        f"avg={statistics.mean(cold_timings):.1f}ms "
         f"max={max(cold_timings):.1f}ms db_executes={db_executes[0]}"
     )
     print(
-        f"register warm/cache: min={min(warm_timings):.1f}ms "
-        f"avg={statistics.mean(warm_timings):.1f}ms max={max(warm_timings):.1f}ms"
+        f"register cache-hit limit=6: min={min(hit_timings):.3f}ms "
+        f"avg={statistics.mean(hit_timings):.3f}ms max={max(hit_timings):.3f}ms"
     )
 
 

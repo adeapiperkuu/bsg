@@ -1,3 +1,5 @@
+from collections import Counter
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
@@ -12,17 +14,14 @@ from app.agents.governance.schemas.governance import (
 )
 from app.agents.governance.services.analytics_service import (
     SUMMARY_RANKING_LIMIT,
-    _analytics_cache,
-    _analytics_detail_cache,
-    _analytics_summary_cache,
+    _DetailBundle,
     _summary_project_metrics_stmt,
-    get_governance_analytics,
     get_governance_analytics_detail,
     get_governance_analytics_summary,
 )
 from app.core.security import CurrentUser
 from app.db.models import AppRole, Project
-from tests.conftest import delivery_manager, override_user
+from tests.conftest import override_user
 
 
 def _user(role: AppRole = AppRole.DELIVERY_MANAGER) -> CurrentUser:
@@ -67,6 +66,18 @@ def test_summary_project_metrics_stmt_joins_aggregates() -> None:
     assert "summary_overdue_agg" in sql
     assert "summary_scope_agg" in sql
     assert "outer join" in sql
+
+
+def test_summary_unified_sql_keeps_aggregate_aliases() -> None:
+    from app.agents.governance.services.analytics_service import _summary_unified_sql
+
+    sql = str(_summary_unified_sql(include_signals=True)).lower()
+    assert "summary_dep_agg" in sql
+    assert "summary_esc_agg" in sql
+    assert "summary_overdue_agg" in sql
+    assert "summary_scope_agg" in sql
+    assert "signal_bundle" in sql
+    assert "visible_projects" in sql
 
 
 @pytest.mark.asyncio
@@ -132,71 +143,28 @@ async def test_detail_does_not_call_get_portfolio_data(
         AsyncMock(return_value={}),
     )
 
-    async def _empty_list(*_args, **_kwargs):
-        return []
-
-    async def _empty_mapping(_session, _user):
-        return {}
-
-    async def _empty_mapping_today(_session, _user, *, today):
-        return {}
-
-    async def _empty_counter(*_args, **_kwargs):
-        from collections import Counter
-
-        return Counter()
-
     monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_visible_projects",
-        AsyncMock(return_value=[]),
+        "app.agents.governance.services.analytics_service._fetch_detail_project_bundle",
+        AsyncMock(return_value=([], {}, {}, {}, {})),
     )
     monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_dependency_counts_by_project",
-        _empty_mapping,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_escalation_counts_by_project",
-        _empty_mapping,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_overdue_action_counts_by_project",
-        _empty_mapping_today,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_pending_scope_counts_by_project",
-        _empty_mapping,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_blocking_dependencies",
-        _empty_list,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_critical_escalations",
-        _empty_list,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_project_evidence",
-        AsyncMock(return_value={}),
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_trend_series_bundle",
-        AsyncMock(return_value=([], [], [], [])),
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_enum_counter",
-        _empty_counter,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_action_status_counter",
-        _empty_counter,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_overdue_actions",
-        _empty_list,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_recent_activity",
-        _empty_list,
+        "app.agents.governance.services.analytics_service._fetch_detail_second_bundle",
+        AsyncMock(
+            return_value=_DetailBundle(
+                trend_dependencies=[],
+                trend_escalations=[],
+                trend_actions=[],
+                trend_scopes=[],
+                blocking_dependencies=[],
+                critical_escalations=[],
+                overdue_actions=[],
+                dep_type_counter=Counter(),
+                esc_severity_counter=Counter(),
+                action_status_counter=Counter(),
+                recent_activity=[],
+                delivery_signal_tuples=[],
+            )
+        ),
     )
     monkeypatch.setattr(
         "app.agents.governance.services.analytics_service._analytics_detail_cache",
@@ -210,6 +178,103 @@ async def test_detail_does_not_call_get_portfolio_data(
     assert len(detail.trends) == 7
     assert detail.recommendations == []
     assert detail.export_sections == ["Charts", "Executive Insights", "Evidence Appendix"]
+
+
+@pytest.mark.asyncio
+async def test_detail_cache_miss_uses_two_bundles_then_cache_hit_uses_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dm = _user()
+    session = AsyncMock()
+    project = Project(id=uuid4(), org_id=dm.org_id, name="Alpha")
+    project_bundle_calls = 0
+    source_bundle_calls = 0
+
+    async def _project_bundle(_session, _user, *, today):
+        nonlocal project_bundle_calls
+        project_bundle_calls += 1
+        return (
+            [project],
+            {project.id: (1, 1)},
+            {project.id: (0, 0)},
+            {project.id: 0},
+            {project.id: 0},
+        )
+
+    async def _source_bundle(_session, _user, *, today, days, include_signals):
+        nonlocal source_bundle_calls
+        source_bundle_calls += 1
+        return _DetailBundle(
+            trend_dependencies=[],
+            trend_escalations=[],
+            trend_actions=[],
+            trend_scopes=[],
+            blocking_dependencies=[],
+            critical_escalations=[],
+            overdue_actions=[],
+            dep_type_counter=Counter({"internal": 1}),
+            esc_severity_counter=Counter(),
+            action_status_counter=Counter(),
+            recent_activity=[],
+            delivery_signal_tuples=[],
+        )
+
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_detail_project_bundle",
+        _project_bundle,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_detail_second_bundle",
+        _source_bundle,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._analytics_detail_cache",
+        {},
+    )
+
+    first = await get_governance_analytics_detail(session, dm, days=30)
+    second = await get_governance_analytics_detail(session, dm, days=30)
+
+    assert first is second
+    assert project_bundle_calls == 1
+    assert source_bundle_calls == 1
+    assert session.execute.await_count == 0
+
+
+def test_detail_endpoint_complete_empty_contract_shape() -> None:
+    detail = GovernanceAnalyticsDetailRead(
+        generated_at=datetime(2026, 7, 13, tzinfo=UTC),
+        date_range_days=30,
+        insights=[],
+        recommendations=[],
+        trends=[],
+        charts={
+            "dependencies_by_type": [],
+            "escalations_by_severity": [],
+            "actions_by_status": [],
+            "health_distribution": [],
+            "most_active_projects": [],
+        },
+        recent_activity=[],
+        export_sections=["Charts", "Executive Insights", "Evidence Appendix"],
+    )
+
+    assert detail.model_dump(mode="json") == {
+        "generated_at": "2026-07-13T00:00:00Z",
+        "date_range_days": 30,
+        "insights": [],
+        "recommendations": [],
+        "trends": [],
+        "charts": {
+            "dependencies_by_type": [],
+            "escalations_by_severity": [],
+            "actions_by_status": [],
+            "health_distribution": [],
+            "most_active_projects": [],
+        },
+        "recent_activity": [],
+        "export_sections": ["Charts", "Executive Insights", "Evidence Appendix"],
+    }
 
 
 @pytest.mark.asyncio

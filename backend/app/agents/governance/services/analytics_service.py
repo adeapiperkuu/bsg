@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections import Counter, defaultdict
 from collections.abc import Awaitable, Callable
@@ -8,13 +9,14 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from statistics import mean
 from time import perf_counter
-from typing import TypeVar
+from types import SimpleNamespace
+from typing import Any, TypeVar
 from uuid import UUID
 
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import Select, and_, bindparam, func, or_, select, text
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.governance.services.delivery_signals import fetch_governance_delivery_signals
 from app.agents.governance.analytics.sla import (
     calculate_sla_adherence_pct,
     dependency_overdue_days,
@@ -34,12 +36,19 @@ from app.agents.governance.schemas.governance import (
 from app.agents.governance.services.dashboard_service import (
     _overdue_action_filter,
 )
+from app.agents.governance.services.delivery_signals import (
+    GOVERNANCE_THROUGHPUT_LIMIT,
+    _parse_governance_signal_bundle_rows,
+    build_governance_delivery_signals_from_inputs,
+    fetch_governance_delivery_signals,
+    governance_signal_bundle_select_sql,
+)
 from app.agents.governance.services.governance_service import (
     _apply_org_filter,
     assert_can_read_governance,
     can_read_internal_governance,
 )
-from app.agents.governance.timing import governance_db_timed
+from app.agents.governance.timing import get_governance_timer, governance_db_timed
 from app.core.security import CurrentUser
 from app.db.models import (
     AppRole,
@@ -53,9 +62,10 @@ from app.db.models import (
     Project,
     ProjectDependency,
     ProjectScopeState,
+    ProjectStatus,
 )
-from app.services.scoping import scoped_project_query
 from app.db.session import session_scope
+from app.services.scoping import scoped_project_query
 
 logger = logging.getLogger(__name__)
 
@@ -1442,6 +1452,855 @@ def _summary_project_metrics_stmt(current_user: CurrentUser, *, today: date) -> 
     )
 
 
+def _summary_include_delivery_signals(current_user: CurrentUser) -> bool:
+    return can_read_internal_governance(current_user) and current_user.role != AppRole.CLIENT
+
+
+def _summary_org_filter_sql(column: str) -> str:
+    return f"(CAST(:is_super_admin AS boolean) OR {column} = :org_id)"
+
+
+def _summary_unified_sql(*, include_signals: bool):
+    """One-statement summary: visible projects + governance aggs (+ delivery signals)."""
+    signal_cte = ""
+    signal_select = "NULL::jsonb AS delivery_signals"
+    signal_join = ""
+    if include_signals:
+        bundle_sql = governance_signal_bundle_select_sql(
+            "{alias}.project_id IN (SELECT id FROM visible_projects)"
+        )
+        signal_cte = f"""
+        , signal_bundle AS (
+          {bundle_sql}
+        )
+        , signals_agg AS (
+          SELECT
+            project_id,
+            coalesce(
+              jsonb_agg(jsonb_build_object('kind', kind, 'payload', payload)),
+              '[]'::jsonb
+            ) AS signals
+          FROM signal_bundle
+          GROUP BY project_id
+        )
+        """
+        signal_select = "coalesce(sa.signals, '[]'::jsonb) AS delivery_signals"
+        signal_join = "LEFT JOIN signals_agg sa ON sa.project_id = vp.id"
+
+    org_filter = _summary_org_filter_sql("org_id")
+    sql = f"""
+    WITH visible_projects AS (
+      SELECT
+        p.id,
+        p.org_id,
+        p.name,
+        p.description,
+        p.vertical,
+        p.status,
+        p.start_date,
+        p.target_end_date,
+        p.actual_end_date,
+        p.daily_target_units
+      FROM projects p
+      WHERE p.deleted_at IS NULL
+        AND (
+          CAST(:is_super_admin AS boolean)
+          OR (
+            p.org_id = :org_id
+            AND (
+              NOT CAST(:is_client AS boolean)
+              OR EXISTS (
+                SELECT 1
+                FROM project_assignments pa
+                WHERE pa.project_id = p.id
+                  AND pa.user_id = :user_id
+                  AND pa.is_active IS TRUE
+                  AND pa.deleted_at IS NULL
+              )
+            )
+          )
+        )
+    ),
+    summary_dep_agg AS (
+      SELECT
+        project_id,
+        count(*) FILTER (WHERE status != 'resolved')::int AS open,
+        count(*) FILTER (WHERE status = 'blocking')::int AS blocking
+      FROM project_dependencies
+      WHERE deleted_at IS NULL
+        AND {org_filter}
+      GROUP BY project_id
+    ),
+    summary_esc_agg AS (
+      SELECT
+        project_id,
+        count(*)::int AS open,
+        count(*) FILTER (WHERE severity = 'critical')::int AS critical
+      FROM governance_escalations
+      WHERE deleted_at IS NULL
+        AND status IN ('open', 'in_progress')
+        AND {org_filter}
+      GROUP BY project_id
+    ),
+    summary_overdue_agg AS (
+      SELECT
+        project_id,
+        count(*)::int AS overdue
+      FROM governance_actions
+      WHERE deleted_at IS NULL
+        AND {org_filter}
+        AND (
+          status = 'overdue'
+          OR (
+            status != 'completed'
+            AND due_date IS NOT NULL
+            AND due_date < :today
+          )
+        )
+      GROUP BY project_id
+    ),
+    summary_scope_agg AS (
+      SELECT
+        project_id,
+        count(*)::int AS pending
+      FROM project_scope_states
+      WHERE deleted_at IS NULL
+        AND scope_status = 'pending_revision'
+        AND {org_filter}
+      GROUP BY project_id
+    )
+    {signal_cte}
+    SELECT
+      vp.id,
+      vp.org_id,
+      vp.name,
+      vp.description,
+      vp.vertical,
+      vp.status,
+      vp.start_date,
+      vp.target_end_date,
+      vp.actual_end_date,
+      vp.daily_target_units,
+      coalesce(dep.open, 0)::int AS dep_open,
+      coalesce(dep.blocking, 0)::int AS dep_blocking,
+      coalesce(esc.open, 0)::int AS esc_open,
+      coalesce(esc.critical, 0)::int AS esc_critical,
+      coalesce(ov.overdue, 0)::int AS overdue_actions,
+      coalesce(sc.pending, 0)::int AS pending_scopes,
+      {signal_select}
+    FROM visible_projects vp
+    LEFT JOIN summary_dep_agg dep ON dep.project_id = vp.id
+    LEFT JOIN summary_esc_agg esc ON esc.project_id = vp.id
+    LEFT JOIN summary_overdue_agg ov ON ov.project_id = vp.id
+    LEFT JOIN summary_scope_agg sc ON sc.project_id = vp.id
+    {signal_join}
+    ORDER BY vp.name ASC
+    """
+    stmt = text(sql).bindparams(
+        bindparam("org_id", type_=PG_UUID()),
+        bindparam("user_id", type_=PG_UUID()),
+        bindparam("is_super_admin"),
+        bindparam("is_client"),
+        bindparam("today"),
+    )
+    if include_signals:
+        stmt = stmt.bindparams(bindparam("throughput_limit"))
+    return stmt
+
+
+def _summary_unified_params(
+    current_user: CurrentUser,
+    *,
+    today: date,
+    include_signals: bool,
+) -> dict:
+    params: dict = {
+        "org_id": current_user.org_id,
+        "user_id": current_user.id,
+        "is_super_admin": current_user.role == AppRole.SUPER_ADMIN,
+        "is_client": current_user.role == AppRole.CLIENT,
+        "today": today,
+    }
+    if include_signals:
+        params["throughput_limit"] = GOVERNANCE_THROUGHPUT_LIMIT
+    return params
+
+
+def _project_from_summary_row(row: dict) -> Project:
+    status = row["status"]
+    if not isinstance(status, ProjectStatus):
+        status = ProjectStatus(str(status))
+    return Project(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row["name"],
+        description=row["description"],
+        vertical=row["vertical"],
+        status=status,
+        start_date=row["start_date"],
+        target_end_date=row["target_end_date"],
+        actual_end_date=row["actual_end_date"],
+        daily_target_units=row["daily_target_units"],
+    )
+
+
+def _signal_tuples_from_json(
+    project_id: UUID,
+    signals_json: object,
+) -> list[tuple[str, UUID, dict]]:
+    if not signals_json:
+        return []
+    items = signals_json
+    if isinstance(items, str):
+        items = json.loads(items)
+    rows: list[tuple[str, UUID, dict]] = []
+    for item in items:  # type: ignore[union-attr]
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("kind")
+        payload = item.get("payload")
+        if not isinstance(kind, str) or not isinstance(payload, dict):
+            continue
+        rows.append((kind, project_id, payload))
+    return rows
+
+
+def _detail_bundle_sql(*, include_internal: bool, include_signals: bool):
+    """Second analytics-detail execute: trends, counters, evidence, and activity."""
+    internal_predicate = "true" if include_internal else "false"
+    signal_cte = ""
+    signal_select = ""
+    if include_signals:
+        signal_project_predicate = "{alias}.project_id IN (SELECT id FROM visible_projects)"
+        signal_cte = f""",
+    signal_bundle AS (
+      {governance_signal_bundle_select_sql(signal_project_predicate)}
+    )"""
+        signal_select = """
+    UNION ALL
+    SELECT 'delivery_signal'::text AS section,
+           jsonb_build_object('kind', kind, 'project_id', project_id, 'payload', payload) AS payload
+    FROM signal_bundle"""
+
+    sql = f"""
+    WITH visible_projects AS (
+      SELECT p.id, p.org_id, p.name
+      FROM projects p
+      WHERE p.deleted_at IS NULL
+        AND (
+          :is_super_admin
+          OR (
+            p.org_id = :org_id
+            AND (
+              NOT :is_client
+              OR EXISTS (
+                SELECT 1
+                FROM project_assignments pa
+                WHERE pa.project_id = p.id
+                  AND pa.user_id = :user_id
+                  AND pa.is_active IS TRUE
+                  AND pa.deleted_at IS NULL
+              )
+            )
+          )
+        )
+    ){signal_cte},
+    dep_base AS (
+      SELECT d.*, vp.name AS project_name
+      FROM project_dependencies d
+      JOIN visible_projects vp ON vp.id = d.project_id
+      WHERE {internal_predicate}
+        AND d.deleted_at IS NULL
+    ),
+    esc_base AS (
+      SELECT e.*, vp.name AS project_name
+      FROM governance_escalations e
+      JOIN visible_projects vp ON vp.id = e.project_id
+      WHERE e.deleted_at IS NULL
+    ),
+    action_base AS (
+      SELECT a.*, vp.name AS project_name
+      FROM governance_actions a
+      JOIN visible_projects vp ON vp.id = a.project_id
+      WHERE {internal_predicate}
+        AND a.deleted_at IS NULL
+    ),
+    scope_base AS (
+      SELECT s.*
+      FROM project_scope_states s
+      JOIN visible_projects vp ON vp.id = s.project_id
+      WHERE {internal_predicate}
+        AND s.deleted_at IS NULL
+    ),
+    trend_dep AS (
+      SELECT *
+      FROM dep_base
+      WHERE status != 'resolved'
+         OR resolved_at >= :window_start
+         OR created_at >= :window_start
+    ),
+    trend_esc AS (
+      SELECT *
+      FROM esc_base
+      WHERE status IN ('open', 'in_progress')
+         OR resolved_at >= :window_start
+         OR raised_at >= :window_start
+    ),
+    trend_action AS (
+      SELECT *
+      FROM action_base
+      WHERE status != 'completed'
+         OR completed_at >= :window_start
+         OR created_at >= :window_start
+    ),
+    trend_scope AS (
+      SELECT *
+      FROM scope_base
+      WHERE scope_status = 'pending_revision'
+         OR updated_at >= :window_start
+    ),
+    recent_activity AS (
+      SELECT created_at AS occurred_at,
+             1 AS source_order,
+             jsonb_build_object(
+               'source_type', 'dependency',
+               'occurred_at', created_at,
+               'source_order', 1,
+               'source_id', id,
+               'label', title,
+               'detail', concat('status=', status),
+               'project_id', project_id,
+               'project_name', project_name
+             ) AS payload
+      FROM (
+        SELECT *
+        FROM dep_base
+        WHERE created_at IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT 8
+      ) recent_deps
+
+      UNION ALL
+
+      SELECT created_at AS occurred_at,
+             2 AS source_order,
+             jsonb_build_object(
+               'source_type', 'action',
+               'occurred_at', created_at,
+               'source_order', 2,
+               'source_id', id,
+               'label', title,
+               'detail', concat(
+                 'status=',
+                 CASE
+                   WHEN status = 'completed' THEN 'completed'
+                   WHEN status = 'overdue' THEN 'overdue'
+                   WHEN due_date IS NOT NULL AND due_date < :today THEN 'overdue'
+                   ELSE status::text
+                 END
+               ),
+               'project_id', project_id,
+               'project_name', project_name
+             ) AS payload
+      FROM (
+        SELECT *
+        FROM action_base
+        WHERE created_at IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT 8
+      ) recent_actions
+
+      UNION ALL
+
+      SELECT raised_at AS occurred_at,
+             3 AS source_order,
+             jsonb_build_object(
+               'source_type', 'escalation',
+               'occurred_at', raised_at,
+               'source_order', 3,
+               'source_id', id,
+               'label', title,
+               'detail', concat('severity=', severity),
+               'project_id', project_id,
+               'project_name', project_name
+             ) AS payload
+      FROM (
+        SELECT *
+        FROM esc_base
+        WHERE raised_at IS NOT NULL
+        ORDER BY raised_at DESC
+        LIMIT 8
+      ) recent_escalations
+    )
+    SELECT 'trend_dependency'::text AS section,
+           jsonb_build_object(
+             'id', id,
+             'project_id', project_id,
+             'title', title,
+             'dependency_type', dependency_type,
+             'due_date', due_date,
+             'status', status,
+             'created_at', created_at,
+             'resolved_at', resolved_at,
+             'project_name', project_name
+           ) AS payload
+    FROM trend_dep
+
+    UNION ALL
+    SELECT 'trend_escalation',
+           jsonb_build_object(
+             'id', id,
+             'project_id', project_id,
+             'title', title,
+             'severity', severity,
+             'status', status,
+             'raised_at', raised_at,
+             'resolved_at', resolved_at,
+             'project_name', project_name
+           )
+    FROM trend_esc
+
+    UNION ALL
+    SELECT 'trend_action',
+           jsonb_build_object(
+             'id', id,
+             'project_id', project_id,
+             'title', title,
+             'due_date', due_date,
+             'status', status,
+             'created_at', created_at,
+             'completed_at', completed_at,
+             'project_name', project_name
+           )
+    FROM trend_action
+
+    UNION ALL
+    SELECT 'trend_scope',
+           jsonb_build_object(
+             'id', id,
+             'project_id', project_id,
+             'scope_status', scope_status,
+             'updated_at', updated_at
+           )
+    FROM trend_scope
+
+    UNION ALL
+    SELECT 'blocking_dependency',
+           jsonb_build_object(
+             'id', id,
+             'project_id', project_id,
+             'title', title,
+             'dependency_type', dependency_type,
+             'due_date', due_date,
+             'status', status,
+             'created_at', created_at,
+             'resolved_at', resolved_at,
+             'project_name', project_name
+           )
+    FROM dep_base
+    WHERE status = 'blocking'
+
+    UNION ALL
+    SELECT 'critical_escalation',
+           jsonb_build_object(
+             'id', id,
+             'project_id', project_id,
+             'title', title,
+             'severity', severity,
+             'status', status,
+             'raised_at', raised_at,
+             'resolved_at', resolved_at,
+             'project_name', project_name
+           )
+    FROM esc_base
+    WHERE status IN ('open', 'in_progress')
+      AND severity = 'critical'
+
+    UNION ALL
+    SELECT 'overdue_action',
+           jsonb_build_object(
+             'id', id,
+             'project_id', project_id,
+             'title', title,
+             'due_date', due_date,
+             'status', status,
+             'created_at', created_at,
+             'completed_at', completed_at,
+             'project_name', project_name
+           )
+    FROM action_base
+    WHERE status = 'overdue'
+       OR (status != 'completed' AND due_date IS NOT NULL AND due_date < :today)
+
+    UNION ALL
+    SELECT 'counter_dependency_type',
+           jsonb_build_object('label', dependency_type, 'value', count(*)::int)
+    FROM dep_base
+    GROUP BY dependency_type
+
+    UNION ALL
+    SELECT 'counter_escalation_severity',
+           jsonb_build_object('label', severity, 'value', count(*)::int)
+    FROM esc_base
+    GROUP BY severity
+
+    UNION ALL
+    SELECT 'counter_action_status',
+           jsonb_build_object(
+             'label',
+             'completed',
+             'value',
+             count(*) FILTER (WHERE status = 'completed')::int
+           )
+    FROM action_base
+
+    UNION ALL
+    SELECT 'counter_action_status',
+           jsonb_build_object(
+             'label',
+             'in_progress',
+             'value',
+             count(*) FILTER (
+               WHERE status = 'in_progress'
+                 AND NOT (
+                   status = 'overdue'
+                   OR (
+                     status != 'completed'
+                     AND due_date IS NOT NULL
+                     AND due_date < :today
+                   )
+                 )
+             )::int
+           )
+    FROM action_base
+
+    UNION ALL
+    SELECT 'counter_action_status',
+           jsonb_build_object(
+             'label',
+             'open',
+             'value',
+             count(*) FILTER (
+               WHERE status = 'open'
+                 AND NOT (
+                   status = 'overdue'
+                   OR (
+                     status != 'completed'
+                     AND due_date IS NOT NULL
+                     AND due_date < :today
+                   )
+                 )
+             )::int
+           )
+    FROM action_base
+
+    UNION ALL
+    SELECT 'counter_action_status',
+           jsonb_build_object(
+             'label',
+             'overdue',
+             'value',
+             count(*) FILTER (
+               WHERE status = 'overdue'
+                  OR (status != 'completed' AND due_date IS NOT NULL AND due_date < :today)
+             )::int
+           )
+    FROM action_base
+
+    UNION ALL
+    SELECT 'recent_activity',
+           payload
+    FROM recent_activity
+
+    {signal_select}
+    """
+    stmt = text(sql).bindparams(
+        bindparam("org_id", type_=PG_UUID()),
+        bindparam("user_id", type_=PG_UUID()),
+        bindparam("is_super_admin"),
+        bindparam("is_client"),
+        bindparam("today"),
+        bindparam("window_start"),
+    )
+    if include_signals:
+        stmt = stmt.bindparams(bindparam("throughput_limit"))
+    return stmt
+
+
+def _detail_bundle_params(
+    current_user: CurrentUser,
+    *,
+    today: date,
+    window_start: datetime,
+    include_signals: bool,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "org_id": current_user.org_id,
+        "user_id": current_user.id,
+        "is_super_admin": current_user.role == AppRole.SUPER_ADMIN,
+        "is_client": current_user.role == AppRole.CLIENT,
+        "today": today,
+        "window_start": window_start,
+    }
+    if include_signals:
+        params["throughput_limit"] = GOVERNANCE_THROUGHPUT_LIMIT
+    return params
+
+
+def _json_payload(value: object) -> dict[str, Any]:
+    if isinstance(value, str):
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else {}
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _parse_uuid(value: object) -> UUID | None:
+    if value is None or isinstance(value, UUID):
+        return value
+    return UUID(str(value))
+
+
+def _parse_date_value(value: object) -> date | None:
+    if value is None or isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    return date.fromisoformat(str(value)[:10])
+
+
+def _parse_datetime_value(value: object) -> datetime | None:
+    if value is None or isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time(), tzinfo=UTC)
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def _dependency_from_payload(payload: dict[str, Any]) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=_parse_uuid(payload.get("id")),
+        project_id=_parse_uuid(payload.get("project_id")),
+        title=str(payload.get("title") or ""),
+        dependency_type=GovernanceDependencyStatus.OPEN.__class__(
+            str(payload.get("dependency_type"))
+        )
+        if False
+        else str(payload.get("dependency_type")),
+        due_date=_parse_date_value(payload.get("due_date")),
+        status=GovernanceDependencyStatus(str(payload.get("status"))),
+        created_at=_parse_datetime_value(payload.get("created_at")),
+        resolved_at=_parse_datetime_value(payload.get("resolved_at")),
+    )
+
+
+def _escalation_from_payload(payload: dict[str, Any]) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=_parse_uuid(payload.get("id")),
+        project_id=_parse_uuid(payload.get("project_id")),
+        title=str(payload.get("title") or ""),
+        severity=GovernanceEscalationSeverity(str(payload.get("severity"))),
+        status=GovernanceEscalationStatus(str(payload.get("status"))),
+        raised_at=_parse_datetime_value(payload.get("raised_at")),
+        resolved_at=_parse_datetime_value(payload.get("resolved_at")),
+    )
+
+
+def _action_from_payload(payload: dict[str, Any]) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=_parse_uuid(payload.get("id")),
+        project_id=_parse_uuid(payload.get("project_id")),
+        title=str(payload.get("title") or ""),
+        due_date=_parse_date_value(payload.get("due_date")),
+        status=GovernanceActionStatus(str(payload.get("status"))),
+        created_at=_parse_datetime_value(payload.get("created_at")),
+        completed_at=_parse_datetime_value(payload.get("completed_at")),
+    )
+
+
+def _scope_from_payload(payload: dict[str, Any]) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=_parse_uuid(payload.get("id")),
+        project_id=_parse_uuid(payload.get("project_id")),
+        scope_status=GovernanceScopeStatus(str(payload.get("scope_status"))),
+        updated_at=_parse_datetime_value(payload.get("updated_at")),
+    )
+
+
+@dataclass
+class _DetailBundle:
+    trend_dependencies: list[Any]
+    trend_escalations: list[Any]
+    trend_actions: list[Any]
+    trend_scopes: list[Any]
+    blocking_dependencies: list[Any]
+    critical_escalations: list[Any]
+    overdue_actions: list[Any]
+    dep_type_counter: Counter[str]
+    esc_severity_counter: Counter[str]
+    action_status_counter: Counter[str]
+    recent_activity: list[GovernanceEvidenceRead]
+    delivery_signal_tuples: list[tuple[str, UUID, dict]]
+
+
+async def _fetch_detail_second_bundle(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    *,
+    today: date,
+    days: int,
+    include_signals: bool,
+) -> _DetailBundle:
+    result = await session.execute(
+        _detail_bundle_sql(
+            include_internal=can_read_internal_governance(current_user),
+            include_signals=include_signals,
+        ),
+        _detail_bundle_params(
+            current_user,
+            today=today,
+            window_start=_trend_window_start(today=today, days=days),
+            include_signals=include_signals,
+        ),
+    )
+    rows = result.mappings().all()
+    trend_dependencies: list[Any] = []
+    trend_escalations: list[Any] = []
+    trend_actions: list[Any] = []
+    trend_scopes: list[Any] = []
+    blocking_dependencies: list[Any] = []
+    critical_escalations: list[Any] = []
+    overdue_actions: list[Any] = []
+    dep_type_counter: Counter[str] = Counter()
+    esc_severity_counter: Counter[str] = Counter()
+    action_status_counter: Counter[str] = Counter()
+    recent_activity_rows: list[tuple[datetime, int, GovernanceEvidenceRead]] = []
+    delivery_signal_tuples: list[tuple[str, UUID, dict]] = []
+
+    for row in rows:
+        section = str(row["section"])
+        payload = _json_payload(row["payload"])
+        if section == "trend_dependency":
+            trend_dependencies.append(_dependency_from_payload(payload))
+        elif section == "trend_escalation":
+            trend_escalations.append(_escalation_from_payload(payload))
+        elif section == "trend_action":
+            trend_actions.append(_action_from_payload(payload))
+        elif section == "trend_scope":
+            trend_scopes.append(_scope_from_payload(payload))
+        elif section == "blocking_dependency":
+            blocking_dependencies.append(_dependency_from_payload(payload))
+        elif section == "critical_escalation":
+            critical_escalations.append(_escalation_from_payload(payload))
+        elif section == "overdue_action":
+            overdue_actions.append(_action_from_payload(payload))
+        elif section == "counter_dependency_type":
+            dep_type_counter[str(payload.get("label"))] = int(payload.get("value") or 0)
+        elif section == "counter_escalation_severity":
+            esc_severity_counter[str(payload.get("label"))] = int(payload.get("value") or 0)
+        elif section == "counter_action_status":
+            action_status_counter[str(payload.get("label"))] = int(payload.get("value") or 0)
+        elif section == "recent_activity":
+            project_id = _parse_uuid(payload.get("project_id"))
+            occurred_at = _parse_datetime_value(payload.get("occurred_at")) or datetime.min
+            source_order = int(payload.get("source_order") or 99)
+            recent_activity_rows.append(
+                (
+                    occurred_at,
+                    source_order,
+                    _evidence(
+                        str(payload.get("source_type")),
+                        str(payload.get("label") or ""),
+                        source_id=_parse_uuid(payload.get("source_id")),
+                        detail=(
+                            str(payload.get("detail"))
+                            if payload.get("detail") is not None
+                            else None
+                        ),
+                        project_id=project_id,
+                        project_name=(
+                            str(payload.get("project_name"))
+                            if payload.get("project_name") is not None
+                            else None
+                        ),
+                    ),
+                )
+            )
+        elif section == "delivery_signal":
+            project_id = _parse_uuid(payload.get("project_id"))
+            signal_payload = payload.get("payload")
+            if project_id is not None and isinstance(signal_payload, dict):
+                delivery_signal_tuples.append(
+                    (str(payload.get("kind")), project_id, signal_payload)
+                )
+
+    blocking_dependencies.sort(key=lambda dep: dep.created_at or datetime.min, reverse=True)
+    critical_escalations.sort(key=lambda esc: esc.raised_at or datetime.min, reverse=True)
+    overdue_actions.sort(key=lambda action: action.due_date or date.max)
+    recent_activity = [
+        item
+        for _, _, item in sorted(
+            recent_activity_rows,
+            key=lambda row: (row[0], -row[1]),
+            reverse=True,
+        )[:8]
+    ]
+    return _DetailBundle(
+        trend_dependencies=trend_dependencies,
+        trend_escalations=trend_escalations,
+        trend_actions=trend_actions,
+        trend_scopes=trend_scopes,
+        blocking_dependencies=blocking_dependencies,
+        critical_escalations=critical_escalations,
+        overdue_actions=overdue_actions,
+        dep_type_counter=dep_type_counter,
+        esc_severity_counter=esc_severity_counter,
+        action_status_counter=action_status_counter,
+        recent_activity=recent_activity,
+        delivery_signal_tuples=delivery_signal_tuples,
+    )
+
+
+async def _fetch_detail_project_bundle(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    *,
+    today: date,
+) -> tuple[
+    list[Project],
+    dict[UUID, tuple[int, int]],
+    dict[UUID, tuple[int, int]],
+    dict[UUID, int],
+    dict[UUID, int],
+]:
+    result = await session.execute(
+        _summary_unified_sql(include_signals=False),
+        _summary_unified_params(current_user, today=today, include_signals=False),
+    )
+    rows = result.mappings().all()
+    projects: list[Project] = []
+    dependency_counts: dict[UUID, tuple[int, int]] = {}
+    escalation_counts: dict[UUID, tuple[int, int]] = {}
+    overdue_by_project: dict[UUID, int] = {}
+    pending_by_project: dict[UUID, int] = {}
+    internal = can_read_internal_governance(current_user)
+
+    for row in rows:
+        project = _project_from_summary_row(dict(row))
+        projects.append(project)
+        if internal:
+            dependency_counts[project.id] = (
+                int(row["dep_open"] or 0),
+                int(row["dep_blocking"] or 0),
+            )
+            overdue_by_project[project.id] = int(row["overdue_actions"] or 0)
+            pending_by_project[project.id] = int(row["pending_scopes"] or 0)
+        escalation_counts[project.id] = (int(row["esc_open"] or 0), int(row["esc_critical"] or 0))
+
+    return projects, dependency_counts, escalation_counts, overdue_by_project, pending_by_project
+
+
 async def _fetch_summary_project_metrics(
     session: AsyncSession,
     current_user: CurrentUser,
@@ -1462,7 +2321,15 @@ async def _fetch_summary_project_metrics(
     pending_by_project: dict[UUID, int] = {}
     internal = can_read_internal_governance(current_user)
 
-    for project, dep_open, dep_blocking, esc_open, esc_critical, overdue_actions, pending_scopes in rows:
+    for (
+        project,
+        dep_open,
+        dep_blocking,
+        esc_open,
+        esc_critical,
+        overdue_actions,
+        pending_scopes,
+    ) in rows:
         projects.append(project)
         if internal:
             dependency_counts[project.id] = (int(dep_open or 0), int(dep_blocking or 0))
@@ -1473,7 +2340,7 @@ async def _fetch_summary_project_metrics(
     return projects, dependency_counts, escalation_counts, overdue_by_project, pending_by_project
 
 
-async def _fetch_summary_metric_bundle(
+async def _fetch_summary_metric_bundle_two_query(
     session: AsyncSession,
     current_user: CurrentUser,
     *,
@@ -1487,7 +2354,7 @@ async def _fetch_summary_metric_bundle(
     dict[UUID, dict],
     dict[str, float],
 ]:
-    """Load visible projects + governance aggregates in one query, then delivery signals."""
+    """Legacy two-execute path retained for equivalence tests only."""
     timings: dict[str, float] = {}
 
     metrics_started = perf_counter()
@@ -1519,6 +2386,83 @@ async def _fetch_summary_metric_bundle(
     )
 
 
+async def _fetch_summary_metric_bundle(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    *,
+    today: date,
+) -> tuple[
+    list[Project],
+    dict[UUID, tuple[int, int]],
+    dict[UUID, tuple[int, int]],
+    dict[UUID, int],
+    dict[UUID, int],
+    dict[UUID, dict],
+    dict[str, float],
+]:
+    """Load visible projects, governance aggregates, and delivery signals in one execute."""
+    timings: dict[str, float] = {}
+    include_signals = _summary_include_delivery_signals(current_user)
+    started = perf_counter()
+    result = await session.execute(
+        _summary_unified_sql(include_signals=include_signals),
+        _summary_unified_params(current_user, today=today, include_signals=include_signals),
+    )
+    rows = result.mappings().all()
+    timings["summary_unified"] = round((perf_counter() - started) * 1000, 1)
+
+    projects: list[Project] = []
+    dependency_counts: dict[UUID, tuple[int, int]] = {}
+    escalation_counts: dict[UUID, tuple[int, int]] = {}
+    overdue_by_project: dict[UUID, int] = {}
+    pending_by_project: dict[UUID, int] = {}
+    signal_tuples: list[tuple[str, UUID, dict]] = []
+    internal = can_read_internal_governance(current_user)
+
+    for row in rows:
+        project = _project_from_summary_row(dict(row))
+        projects.append(project)
+        if internal:
+            dependency_counts[project.id] = (
+                int(row["dep_open"] or 0),
+                int(row["dep_blocking"] or 0),
+            )
+            overdue_by_project[project.id] = int(row["overdue_actions"] or 0)
+            pending_by_project[project.id] = int(row["pending_scopes"] or 0)
+        escalation_counts[project.id] = (int(row["esc_open"] or 0), int(row["esc_critical"] or 0))
+        if include_signals:
+            signal_tuples.extend(_signal_tuples_from_json(project.id, row["delivery_signals"]))
+
+    delivery_by_project: dict[UUID, dict] = {}
+    if include_signals and projects:
+        project_ids = [project.id for project in projects]
+        throughput, quality, milestones, risks, bottlenecks = _parse_governance_signal_bundle_rows(
+            signal_tuples,
+            project_ids,
+        )
+        delivery_by_project = build_governance_delivery_signals_from_inputs(
+            current_user,
+            project_ids,
+            {project.id: project for project in projects},
+            throughput=throughput,
+            quality=quality,
+            milestones=milestones,
+            risks=risks,
+            bottlenecks=bottlenecks,
+            as_of_date=today,
+        )
+
+    return (
+        projects,
+        dependency_counts,
+        escalation_counts,
+        overdue_by_project,
+        pending_by_project,
+        delivery_by_project,
+        timings,
+    )
+
+
 async def get_governance_analytics_summary(
     session: AsyncSession,
     current_user: CurrentUser,
@@ -1530,8 +2474,11 @@ async def get_governance_analytics_summary(
     effective_days = _clamp_range(days)
     cache_key = _analytics_cache_key(current_user, effective_days)
     now = datetime.now(UTC)
+    timer = get_governance_timer()
     cached = _analytics_summary_cache.get(cache_key)
     if cached and now - cached[0] < ANALYTICS_CACHE_TTL:
+        if timer is not None:
+            timer.record_meta(execute_count=0, cache_hit=True)
         return cached[1]
 
     started = perf_counter()
@@ -1582,11 +2529,15 @@ async def get_governance_analytics_summary(
     )
     _analytics_summary_cache[cache_key] = (now, summary)
 
+    # Summary path: one unified SQL execute (projects + aggs + delivery signals).
+    if timer is not None:
+        timer.record_meta(execute_count=1, cache_hit=False)
+
     total_ms = round((perf_counter() - started) * 1000, 1)
     if total_ms >= 300:
         logger.info(
             "governance_analytics_summary_profile total_ms=%s project_count=%s "
-            "ranking_count=%s query_timings=%s",
+            "ranking_count=%s query_timings=%s db_executes=1 cached=false",
             total_ms,
             len(projects),
             len(top_ranking),
@@ -1607,23 +2558,63 @@ async def get_governance_analytics_detail(
     effective_days = _clamp_range(days)
     cache_key = _analytics_cache_key(current_user, effective_days)
     now = datetime.now(UTC)
+    timer = get_governance_timer()
     cached = _analytics_detail_cache.get(cache_key)
     if cached and now - cached[0] < ANALYTICS_CACHE_TTL:
+        if timer is not None:
+            timer.record_meta(
+                cache_hit=True,
+                execute_count=0,
+                activity_row_count=len(cached[1].recent_activity),
+                trend_bucket_count=len(cached[1].trends),
+            )
         return cached[1]
 
+    started = perf_counter()
     today = now.date()
-    projects = await _fetch_visible_projects(session, current_user)
+    query_timings: dict[str, float] = {}
+    include_signals = _summary_include_delivery_signals(current_user)
+
+    project_started = perf_counter()
+    (
+        projects,
+        dependency_counts,
+        escalation_counts,
+        overdue_by_project,
+        pending_by_project,
+    ) = await _fetch_detail_project_bundle(session, current_user, today=today)
+    query_timings["detail_project_metrics"] = round((perf_counter() - project_started) * 1000, 1)
+
     project_names = {project.id: project.name for project in projects}
 
-    dependency_counts = await _fetch_dependency_counts_by_project(session, current_user)
-    escalation_counts = await _fetch_escalation_counts_by_project(session, current_user)
-    overdue_by_project = await _fetch_overdue_action_counts_by_project(
-        session, current_user, today=today
+    bundle_started = perf_counter()
+    detail_bundle = await _fetch_detail_second_bundle(
+        session,
+        current_user,
+        today=today,
+        days=effective_days,
+        include_signals=include_signals,
     )
-    pending_by_project = await _fetch_pending_scope_counts_by_project(session, current_user)
-    delivery_by_project = await _fetch_delivery_by_project(
-        session, current_user, projects=projects
-    )
+    query_timings["detail_source_bundle"] = round((perf_counter() - bundle_started) * 1000, 1)
+
+    delivery_by_project: dict[UUID, dict] = {}
+    if include_signals and projects:
+        project_ids = [project.id for project in projects]
+        throughput, quality, milestones, risks, bottlenecks = _parse_governance_signal_bundle_rows(
+            detail_bundle.delivery_signal_tuples,
+            project_ids,
+        )
+        delivery_by_project = build_governance_delivery_signals_from_inputs(
+            current_user,
+            project_ids,
+            {project.id: project for project in projects},
+            throughput=throughput,
+            quality=quality,
+            milestones=milestones,
+            risks=risks,
+            bottlenecks=bottlenecks,
+            as_of_date=today,
+        )
 
     project_health: list[GovernanceHealthProjectRead] = []
     for project in projects:
@@ -1645,15 +2636,11 @@ async def get_governance_analytics_detail(
     ranking = sorted(project_health, key=lambda row: (row.score, -row.priority, row.project_name))
     top_project_ids = [row.project_id for row in ranking[:10]]
 
-    blocking_dependencies = await _fetch_blocking_dependencies(session, current_user)
-    critical_escalations = await _fetch_critical_escalations(session, current_user)
-    evidence_by_project = await _fetch_project_evidence(
-        session,
-        current_user,
+    evidence_by_project = _derive_project_evidence(
+        detail_bundle.blocking_dependencies,
+        detail_bundle.critical_escalations,
         project_ids=top_project_ids,
         project_names=project_names,
-        blocking_dependencies=blocking_dependencies,
-        critical_escalations=critical_escalations,
     )
     if evidence_by_project:
         enriched: list[GovernanceHealthProjectRead] = []
@@ -1671,67 +2658,18 @@ async def get_governance_analytics_detail(
             project_health, key=lambda row: (row.score, -row.priority, row.project_name)
         )
 
-    (
-        trend_dependencies,
-        trend_escalations,
-        trend_actions,
-        trend_scopes,
-    ) = await _fetch_trend_series_bundle(session, current_user, today=today, days=effective_days)
-
-    async def _fetch_chart_and_activity() -> tuple[
-        Counter[str],
-        Counter[str],
-        Counter[str],
-        list[GovernanceAction],
-        list[GovernanceEvidenceRead],
-    ]:
-        dep_type_counter = await _fetch_enum_counter(
-            session,
-            current_user,
-            model=ProjectDependency,
-            enum_column=ProjectDependency.dependency_type,
-            org_column=ProjectDependency.org_id,
-        )
-        esc_severity_counter = await _fetch_enum_counter(
-            session,
-            current_user,
-            model=GovernanceEscalation,
-            enum_column=GovernanceEscalation.severity,
-            org_column=GovernanceEscalation.org_id,
-        )
-        action_status_counter = await _fetch_action_status_counter(session, current_user, today=today)
-        overdue_actions = await _fetch_overdue_actions(session, current_user, today=today)
-        recent_activity = await _fetch_recent_activity(session, current_user, project_names)
-        return (
-            dep_type_counter,
-            esc_severity_counter,
-            action_status_counter,
-            overdue_actions,
-            recent_activity,
-        )
-
-    trends, (
-        dep_type_counter,
-        esc_severity_counter,
-        action_status_counter,
-        overdue_actions,
-        recent_activity,
-    ) = await asyncio.gather(
-        asyncio.to_thread(
-            _build_trends,
-            days=effective_days,
-            project_health=project_health,
-            dependencies=trend_dependencies,
-            escalations=trend_escalations,
-            actions=trend_actions,
-            scopes=trend_scopes,
-        ),
-        _fetch_chart_and_activity(),
+    trends = _build_trends(
+        days=effective_days,
+        project_health=project_health,
+        dependencies=detail_bundle.trend_dependencies,
+        escalations=detail_bundle.trend_escalations,
+        actions=detail_bundle.trend_actions,
+        scopes=detail_bundle.trend_scopes,
     )
 
     charts = {
         "dependencies_by_type": _chart_points(
-            dep_type_counter,
+            detail_bundle.dep_type_counter,
             [
                 ("client_action", "Client"),
                 ("internal", "Internal"),
@@ -1739,7 +2677,7 @@ async def get_governance_analytics_detail(
             ],
         ),
         "escalations_by_severity": _chart_points(
-            esc_severity_counter,
+            detail_bundle.esc_severity_counter,
             [
                 ("low", "Low"),
                 ("medium", "Medium"),
@@ -1748,7 +2686,7 @@ async def get_governance_analytics_detail(
             ],
         ),
         "actions_by_status": _chart_points(
-            action_status_counter,
+            detail_bundle.action_status_counter,
             [
                 ("open", "Open"),
                 ("in_progress", "In Progress"),
@@ -1785,9 +2723,9 @@ async def get_governance_analytics_detail(
 
     insights = _build_insights(
         project_health,
-        blocking_dependencies,
-        critical_escalations,
-        overdue_actions,
+        detail_bundle.blocking_dependencies,
+        detail_bundle.critical_escalations,
+        detail_bundle.overdue_actions,
     )
     recommendations = _build_recommendations(ranking)
 
@@ -1798,10 +2736,29 @@ async def get_governance_analytics_detail(
         recommendations=recommendations,
         trends=trends,
         charts=charts,
-        recent_activity=recent_activity,
+        recent_activity=detail_bundle.recent_activity,
         export_sections=["Charts", "Executive Insights", "Evidence Appendix"],
     )
     _analytics_detail_cache[cache_key] = (now, detail)
+    if timer is not None:
+        timer.record_meta(
+            cache_hit=False,
+            execute_count=2,
+            activity_row_count=len(detail.recent_activity),
+            trend_bucket_count=len(detail.trends),
+            project_row_count=len(projects),
+        )
+    total_ms = round((perf_counter() - started) * 1000, 1)
+    if total_ms >= 300:
+        logger.info(
+            "governance_analytics_detail_profile total_ms=%s project_count=%s "
+            "activity_rows=%s trend_buckets=%s query_timings=%s db_executes=2 cached=false",
+            total_ms,
+            len(projects),
+            len(detail.recent_activity),
+            len(detail.trends),
+            query_timings,
+        )
     return detail
 
 

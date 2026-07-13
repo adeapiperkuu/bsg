@@ -16,6 +16,17 @@ from app.agents.governance.analytics.sla import (
     effective_action_status,
     effective_action_status_for,
 )
+from app.agents.governance.constants import (
+    CACHE_SHAPE_FIRST_PAINT_UNFILTERED,
+    CACHE_SHAPE_LEGACY_FIRST_PAGE,
+    CACHE_SHAPE_UNCACHED_FILTERED,
+    CACHE_SHAPE_UNCACHED_LIMIT,
+    CACHE_SHAPE_UNCACHED_OFFSET,
+    DEPENDENCIES_CACHEABLE_LIMITS,
+    GOVERNANCE_FIRST_PAINT_LIMIT,
+    GOVERNANCE_FIRST_PAINT_OFFSET,
+    LEGACY_DEPENDENCIES_CACHE_LIMIT,
+)
 from app.agents.governance.schemas.governance import (
     GovernanceActionListRead,
     GovernanceActionRead,
@@ -32,7 +43,7 @@ from app.agents.governance.services.notification_service import create_governanc
 from app.agents.governance.services.project_governance_summary_service import (
     refresh_project_governance_summary,
 )
-from app.agents.governance.timing import governance_db_timed
+from app.agents.governance.timing import get_governance_timer, governance_db_timed
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
 from app.db.models import (
@@ -58,13 +69,12 @@ from app.services.scoping import get_visible_project
 logger = logging.getLogger(__name__)
 
 PAGINATION_TOTAL_LABEL = "_pagination_total"
-# In-process cache for the governance first-paint dependencies table (limit=50, offset=0, no filters).
-# EXPLAIN ANALYZE on dev DB shows SQL execution <1 ms; warm ~350 ms latency is dominated by the
-# Supabase/network round trip, not the query plan. Additional indexes do not materially improve
-# dev latency at current table sizes — this cache avoids repeat round trips within a session.
+# In-process cache for unfiltered first-page dependencies (limits in DEPENDENCIES_CACHEABLE_LIMITS).
+# Warm latency is dominated by the remote Supabase round trip; the cache avoids repeat trips.
 DEPENDENCIES_LIST_CACHE_TTL = timedelta(seconds=60)
-DEPENDENCIES_FIRST_PAINT_LIMIT = 50
-DEPENDENCIES_FIRST_PAINT_OFFSET = 0
+# Back-compat aliases — prefer GOVERNANCE_FIRST_PAINT_* / DEPENDENCIES_CACHEABLE_LIMITS.
+DEPENDENCIES_FIRST_PAINT_LIMIT = LEGACY_DEPENDENCIES_CACHE_LIMIT
+DEPENDENCIES_FIRST_PAINT_OFFSET = GOVERNANCE_FIRST_PAINT_OFFSET
 
 GOVERNANCE_READ_ROLES = {
     AppRole.DELIVERY_MANAGER,
@@ -429,27 +439,63 @@ def _dependencies_cache_key(
     current_user: CurrentUser,
     filters: GovernanceListFilters,
 ) -> tuple[UUID | None, str, UUID, int, int]:
+    """Key includes org, role, and user for isolation.
+
+    Internal DM/leadership rows are org-scoped (not assignment-scoped), but user_id is
+    retained so entries never cross users. Clients never populate this cache (empty early
+    return). Super admin uses org_id=None.
+    """
     org_id = None if current_user.role == AppRole.SUPER_ADMIN else current_user.org_id
     return (org_id, current_user.role.value, current_user.id, filters.limit, filters.offset)
 
 
+def _dependencies_has_filters(filters: GovernanceListFilters) -> bool:
+    return any(
+        (
+            filters.project_id is not None,
+            filters.status is not None,
+            filters.dependency_type is not None,
+            filters.owner_id is not None,
+            filters.search is not None,
+            filters.date_from is not None,
+            filters.date_to is not None,
+            filters.severity is not None,
+            filters.assigned_to is not None,
+        )
+    )
+
+
+def _dependencies_cache_shape(filters: GovernanceListFilters) -> str:
+    if filters.offset != GOVERNANCE_FIRST_PAINT_OFFSET:
+        return CACHE_SHAPE_UNCACHED_OFFSET
+    if _dependencies_has_filters(filters):
+        return CACHE_SHAPE_UNCACHED_FILTERED
+    if filters.limit == GOVERNANCE_FIRST_PAINT_LIMIT:
+        return CACHE_SHAPE_FIRST_PAINT_UNFILTERED
+    if filters.limit == LEGACY_DEPENDENCIES_CACHE_LIMIT:
+        return CACHE_SHAPE_LEGACY_FIRST_PAGE
+    return CACHE_SHAPE_UNCACHED_LIMIT
+
+
 def _is_default_dependencies_cacheable(filters: GovernanceListFilters) -> bool:
-    """Only cache the unfiltered first-paint request (GET /governance/dependencies?limit=50&offset=0)."""
+    """Cache unfiltered first-page requests for supported limits (6 and legacy 50)."""
     return (
-        filters.limit == DEPENDENCIES_FIRST_PAINT_LIMIT
-        and filters.offset == DEPENDENCIES_FIRST_PAINT_OFFSET
-        and filters.project_id is None
-        and filters.status is None
-        and filters.dependency_type is None
-        and filters.owner_id is None
-        and filters.search is None
-        and filters.date_from is None
-        and filters.date_to is None
+        filters.limit in DEPENDENCIES_CACHEABLE_LIMITS
+        and filters.offset == GOVERNANCE_FIRST_PAINT_OFFSET
+        and not _dependencies_has_filters(filters)
     )
 
 
 def _invalidate_dependencies_list_cache() -> None:
     _dependencies_list_cache.clear()
+
+
+def invalidate_governance_read_caches_after_commit() -> None:
+    """Clear list caches only after a successful write commit (deps + register)."""
+    _invalidate_dependencies_list_cache()
+    from app.agents.governance.services.register_service import invalidate_register_list_cache
+
+    invalidate_register_list_cache()
 
 
 def _dependency_list_stmt(current_user: CurrentUser) -> Select:
@@ -774,11 +820,27 @@ async def list_governance_dependencies_page(
     filters = _bounded_list_filters(**raw_filters)
     cacheable = _is_default_dependencies_cacheable(filters)
     cache_key = _dependencies_cache_key(current_user, filters)
+    cache_shape = _dependencies_cache_shape(filters)
     now = datetime.now(UTC)
+    timer = get_governance_timer()
+    if timer is not None:
+        timer.record_meta(
+            limit=filters.limit,
+            offset=filters.offset,
+            cache_eligible=cacheable,
+            cache_shape=cache_shape,
+            filtered=_dependencies_has_filters(filters),
+        )
     if cacheable:
         cached = _dependencies_list_cache.get(cache_key)
         if cached and now - cached[0] < DEPENDENCIES_LIST_CACHE_TTL:
             # Cache hit: no DB work; db_executes=0 for profiling.
+            if timer is not None:
+                timer.record_meta(
+                    execute_count=0,
+                    cache_hit=True,
+                    cache_scope="user_access",
+                )
             return replace(cached[1], db_executes=0)
 
     started = perf_counter()
@@ -792,17 +854,25 @@ async def list_governance_dependencies_page(
     if cacheable:
         _dependencies_list_cache[cache_key] = (now, page)
 
+    if timer is not None:
+        timer.record_meta(
+            execute_count=page.db_executes,
+            cache_hit=False,
+            cache_scope="user_access",
+        )
+
     elapsed_ms = round((perf_counter() - started) * 1000, 1)
     if elapsed_ms >= 200:
         logger.info(
             "governance_dependencies_list_profile total_ms=%s db_executes=%s row_count=%s "
-            "limit=%s offset=%s cached=%s",
+            "limit=%s offset=%s cached=%s cache_shape=%s",
             elapsed_ms,
             page.db_executes,
             len(page.items),
             filters.limit,
             filters.offset,
             False,
+            cache_shape,
         )
 
     return page
@@ -833,20 +903,38 @@ async def list_governance_escalations_page(
     **raw_filters,
 ) -> PaginatedGovernanceRows:
     filters = _bounded_list_filters(**raw_filters)
+    timer = get_governance_timer()
+    if timer is not None:
+        timer.record_meta(limit=filters.limit, offset=filters.offset, cache_hit=False)
     stmt = _escalation_list_stmt(current_user)
     count_stmt = _escalation_count_stmt(current_user)
     if current_user.role == AppRole.CLIENT:
         project_ids = await _client_project_ids(session, current_user)
         if not project_ids:
-            return PaginatedGovernanceRows(items=[], total=0, limit=filters.limit, offset=filters.offset)
+            if timer is not None:
+                timer.record_meta(execute_count=1)
+            return PaginatedGovernanceRows(
+                items=[],
+                total=0,
+                limit=filters.limit,
+                offset=filters.offset,
+            )
         stmt = stmt.where(GovernanceEscalation.project_id.in_(project_ids))
         count_stmt = count_stmt.where(GovernanceEscalation.project_id.in_(project_ids))
     stmt = _apply_escalation_page_filters(stmt, filters)
     count_stmt = _apply_escalation_page_filters(count_stmt, filters)
-    stmt = stmt.order_by(GovernanceEscalation.raised_at.desc(), GovernanceEscalation.created_at.desc())
-    return await _execute_paginated_rows(
+    stmt = stmt.order_by(
+        GovernanceEscalation.raised_at.desc(),
+        GovernanceEscalation.created_at.desc(),
+    )
+    page = await _execute_paginated_rows(
         session, stmt, limit=filters.limit, offset=filters.offset, count_stmt=count_stmt
     )
+    # Client path issues an assignments lookup before the page query.
+    executes = page.db_executes + (1 if current_user.role == AppRole.CLIENT else 0)
+    if timer is not None:
+        timer.record_meta(execute_count=executes)
+    return replace(page, db_executes=executes)
 
 
 async def list_governance_scope_states_page(
@@ -1047,7 +1135,7 @@ async def create_dependency(
     await refresh_project_governance_summary(session, dep.org_id, dep.project_id)
     await session.commit()
     await session.refresh(dep)
-    _invalidate_dependencies_list_cache()
+    invalidate_governance_read_caches_after_commit()
     return dep
 
 
@@ -1077,7 +1165,7 @@ async def update_dependency(
     await refresh_project_governance_summary(session, dep.org_id, dep.project_id)
     await session.commit()
     await session.refresh(dep)
-    _invalidate_dependencies_list_cache()
+    invalidate_governance_read_caches_after_commit()
     return dep
 
 
@@ -1106,7 +1194,7 @@ async def resolve_dependency(
     await refresh_project_governance_summary(session, dep.org_id, dep.project_id)
     await session.commit()
     await session.refresh(dep)
-    _invalidate_dependencies_list_cache()
+    invalidate_governance_read_caches_after_commit()
     return dep
 
 
@@ -1132,7 +1220,7 @@ async def soft_delete_dependency(
     )
     await refresh_project_governance_summary(session, dep.org_id, dep.project_id)
     await session.commit()
-    _invalidate_dependencies_list_cache()
+    invalidate_governance_read_caches_after_commit()
 
 
 async def create_escalation(
@@ -1190,6 +1278,7 @@ async def create_escalation(
     )
     await session.commit()
     await session.refresh(escalation)
+    invalidate_governance_read_caches_after_commit()
     return escalation
 
 
@@ -1232,6 +1321,7 @@ async def update_escalation(
     )
     await session.commit()
     await session.refresh(escalation)
+    invalidate_governance_read_caches_after_commit()
     return escalation
 
 
@@ -1260,6 +1350,7 @@ async def soft_delete_escalation(
         session, escalation.org_id, escalation.project_id
     )
     await session.commit()
+    invalidate_governance_read_caches_after_commit()
 
 
 async def create_action(
@@ -1303,6 +1394,7 @@ async def create_action(
     await refresh_project_governance_summary(session, action.org_id, action.project_id)
     await session.commit()
     await session.refresh(action)
+    invalidate_governance_read_caches_after_commit()
     return action
 
 
@@ -1339,6 +1431,7 @@ async def update_action(
     await refresh_project_governance_summary(session, action.org_id, action.project_id)
     await session.commit()
     await session.refresh(action)
+    invalidate_governance_read_caches_after_commit()
     return action
 
 
@@ -1364,6 +1457,7 @@ async def soft_delete_action(
     )
     await refresh_project_governance_summary(session, action.org_id, action.project_id)
     await session.commit()
+    invalidate_governance_read_caches_after_commit()
 
 
 async def update_scope_state(
@@ -1436,6 +1530,7 @@ async def update_scope_state(
     await refresh_project_governance_summary(session, scope.org_id, scope.project_id)
     await session.commit()
     await session.refresh(scope)
+    invalidate_governance_read_caches_after_commit()
     return scope
 
 

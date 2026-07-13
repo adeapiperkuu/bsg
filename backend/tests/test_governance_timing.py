@@ -1,9 +1,8 @@
 from uuid import uuid4
 
-import pytest
-
 import inspect
 
+import pytest
 from httpx import AsyncClient
 
 from app.agents.governance.schemas.governance import (
@@ -27,7 +26,7 @@ from app.agents.governance.timing import (
 from app.core.security import CurrentUser
 from app.db.models import AppRole
 from app.schemas.common import DataResponse, ListResponse, Pagination
-from tests.conftest import delivery_manager, override_user
+from tests.conftest import override_user
 
 
 def _user(role: AppRole = AppRole.DELIVERY_MANAGER) -> CurrentUser:
@@ -101,6 +100,40 @@ async def test_instrument_governance_endpoint_logs_structured_fields(
     assert "db_ms" in entry
     assert "serialization_ms" in entry
     assert "total_ms" in entry
+
+
+@pytest.mark.asyncio
+async def test_instrument_governance_endpoint_records_optional_meta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logged: list[dict[str, object]] = []
+
+    def _capture(msg: str, *args: object, extra: dict[str, object]) -> None:
+        logged.append(extra)
+
+    monkeypatch.setattr("app.agents.governance.timing.logger.info", _capture)
+
+    @instrument_governance_endpoint("GET /governance/dependencies")
+    async def handler(
+        current_user: CurrentUser,
+        limit: int = 6,
+        offset: int = 0,
+    ) -> ListResponse[int]:
+        from app.agents.governance.timing import get_governance_timer
+
+        timer = get_governance_timer()
+        assert timer is not None
+        timer.record_meta(execute_count=1, cache_hit=False)
+        return ListResponse(data=[1], pagination=Pagination(limit=limit, offset=offset))
+
+    result = await handler(current_user=_user(), limit=6, offset=0)
+
+    assert len(result.data) == 1
+    entry = logged[0]
+    assert entry["limit"] == 6
+    assert entry["offset"] == 0
+    assert entry["execute_count"] == 1
+    assert entry["cache_hit"] is False
 
 
 @pytest.mark.asyncio

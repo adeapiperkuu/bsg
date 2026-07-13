@@ -226,9 +226,6 @@ async def refresh_project_governance_summary(
         summary.pending_scope_changes_count = counts.pending_scope_changes_count
 
     invalidate_org_summary_day_cache(org_id)
-    from app.agents.governance.services.register_service import invalidate_register_list_cache
-
-    invalidate_register_list_cache()
     await session.flush()
     return summary
 
