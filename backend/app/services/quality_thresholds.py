@@ -10,7 +10,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import MetricConfiguration, RiskTier
-from app.db.session import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +116,9 @@ async def load_thresholds(session: AsyncSession) -> dict[str, ThresholdConfig]:
 
 async def warm_thresholds_cache() -> None:
     """Pre-load thresholds at startup so the first quality-page request avoids a cold DB read."""
-    async with AsyncSessionLocal() as session:
+    from app.db.session import session_scope
+
+    async with session_scope() as session:
         await load_thresholds(session)
 
 

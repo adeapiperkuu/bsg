@@ -58,6 +58,3 @@ CREATE INDEX IF NOT EXISTS knowledge_evidence_links_query_document_idx
 
 CREATE INDEX IF NOT EXISTS knowledge_evidence_links_org_document_created_idx
   ON knowledge_evidence_links (org_id, document_id, created_at DESC);
-
-CREATE INDEX IF NOT EXISTS knowledge_gaps_org_status_created_idx
-  ON knowledge_gaps (org_id, status, created_at DESC);

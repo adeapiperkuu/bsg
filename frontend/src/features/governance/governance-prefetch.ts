@@ -13,12 +13,24 @@ export const GOVERNANCE_DEFAULT_TABLE_PARAMS = {
 
 export const GOVERNANCE_DEFAULT_ANALYTICS_DAYS = 30;
 
-export function prefetchGovernanceRouteData(queryClient: QueryClient): void {
-  void queryClient.prefetchQuery(governanceBootstrapQueryOptions);
-  void queryClient.prefetchQuery(
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw new DOMException("The operation was aborted.", "AbortError");
+  }
+}
+
+export async function prefetchGovernanceRouteData(
+  queryClient: QueryClient,
+  signal: AbortSignal = new AbortController().signal,
+): Promise<void> {
+  throwIfAborted(signal);
+  await queryClient.prefetchQuery(governanceBootstrapQueryOptions);
+  throwIfAborted(signal);
+  await queryClient.prefetchQuery(
     governanceDependenciesQueryOptions(GOVERNANCE_DEFAULT_TABLE_PARAMS),
   );
-  void queryClient.prefetchQuery(
+  throwIfAborted(signal);
+  await queryClient.prefetchQuery(
     governanceAnalyticsSummaryQueryOptions(GOVERNANCE_DEFAULT_ANALYTICS_DAYS),
   );
 }
@@ -27,7 +39,10 @@ export function prefetchGovernanceRouteModule(): void {
   void import("@/features/governance/GovernanceDashboard");
 }
 
-export function prefetchGovernanceNav(queryClient: QueryClient): void {
-  prefetchGovernanceRouteData(queryClient);
+export async function prefetchGovernanceNav(
+  queryClient: QueryClient,
+  signal: AbortSignal = new AbortController().signal,
+): Promise<void> {
   prefetchGovernanceRouteModule();
+  await prefetchGovernanceRouteData(queryClient, signal);
 }

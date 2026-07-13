@@ -19,6 +19,14 @@ def _charter_visibility_filter(current_user: CurrentUser) -> list[KnowledgeVisib
         return [
             KnowledgeVisibility.INTERNAL_ONLY,
             KnowledgeVisibility.LEADERSHIP_ONLY,
+            KnowledgeVisibility.RESTRICTED,
+            KnowledgeVisibility.CLIENT_SAFE,
+        ]
+    if current_user.role == AppRole.SUPER_ADMIN:
+        return [
+            KnowledgeVisibility.INTERNAL_ONLY,
+            KnowledgeVisibility.LEADERSHIP_ONLY,
+            KnowledgeVisibility.RESTRICTED,
             KnowledgeVisibility.CLIENT_SAFE,
         ]
     return [

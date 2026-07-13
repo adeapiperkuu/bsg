@@ -11,11 +11,11 @@ import {
 import { queryKeys } from "@/lib/queries/keys";
 
 describe("governance prefetch", () => {
-  it("prefetches bootstrap, dependencies, and analytics summary only", () => {
+  it("prefetches bootstrap, dependencies, and analytics summary only", async () => {
     const queryClient = new QueryClient();
     const prefetchQuery = vi.spyOn(queryClient, "prefetchQuery").mockResolvedValue(undefined);
 
-    prefetchGovernanceRouteData(queryClient);
+    await prefetchGovernanceRouteData(queryClient);
 
     expect(prefetchQuery).toHaveBeenCalledTimes(3);
     expect(prefetchQuery.mock.calls[0]?.[0]?.queryKey).toEqual(queryKeys.governanceBootstrap);
@@ -26,9 +26,7 @@ describe("governance prefetch", () => {
       queryKeys.governanceAnalyticsSummary(GOVERNANCE_DEFAULT_ANALYTICS_DAYS),
     );
     expect(
-      prefetchQuery.mock.calls.some((call) =>
-        String(call[0]?.queryKey).includes("detail"),
-      ),
+      prefetchQuery.mock.calls.some((call) => String(call[0]?.queryKey).includes("detail")),
     ).toBe(false);
   });
 
@@ -36,7 +34,7 @@ describe("governance prefetch", () => {
     const queryClient = new QueryClient();
     vi.spyOn(queryClient, "prefetchQuery").mockResolvedValue(undefined);
 
-    prefetchGovernanceNav(queryClient);
+    await prefetchGovernanceNav(queryClient);
 
     await expect(import("@/features/governance/GovernanceDashboard")).resolves.toBeDefined();
   });

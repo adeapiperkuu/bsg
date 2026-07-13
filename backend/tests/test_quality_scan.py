@@ -79,6 +79,37 @@ async def test_alert_dedup_by_source_row_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_alert_dedup_tolerates_duplicate_rows() -> None:
+    """When duplicate drift alerts exist, return the most recent instead of raising."""
+    from app.agents.quality_intelligence.alerts import create_drift_risk_alert
+
+    snap = _make_snapshot()
+    drift = DriftResult(has_drift=True, severity=RiskTier.HIGH, detail="WoW drop exceeded threshold")
+
+    newest_alert_id = uuid4()
+
+    class _MockAlert:
+        id = newest_alert_id
+
+    async def _fake_execute(stmt):
+        class _Result:
+            def scalar_one_or_none(self):
+                return _MockAlert()
+        return _Result()
+
+    class _FakeSession:
+        execute = AsyncMock(side_effect=_fake_execute)
+        add = lambda self, *a: None
+        flush = AsyncMock()
+
+    session = _FakeSession()
+    result = await create_drift_risk_alert(session, snap, drift)
+    assert result is not None
+    assert result.id == newest_alert_id
+    session.flush.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_new_alert_sets_source_fields() -> None:
     """create_drift_risk_alert sets source_table and source_row_id on a new alert."""
     from app.agents.quality_intelligence.alerts import create_drift_risk_alert

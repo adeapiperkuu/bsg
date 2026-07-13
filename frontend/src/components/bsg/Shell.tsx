@@ -24,6 +24,7 @@ import {
   LogOut,
   ChevronDown,
   Menu,
+  Bot,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useRole } from "@/lib/bsg/use-role";
@@ -43,7 +44,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { PageTransition } from "@/components/PageTransition";
-import { prefetchGovernanceNav } from "@/features/governance/governance-prefetch";
+import { flushNavPrefetch, scheduleNavPrefetch } from "@/lib/queries/nav-prefetch";
 
 type NavItem = { to: string; label: string; icon: React.ComponentType<{ className?: string }> };
 
@@ -64,14 +65,15 @@ const internalNav: { section: string; items: NavItem[] }[] = [
     items: [
       { to: "/knowledge", label: "Knowledge Agent", icon: BookOpen },
       { to: "/projects", label: "Projects", icon: FolderKanban },
-      { to: "/pm-console", label: "PM Console", icon: ListChecks },
+      { to: "/teams", label: "Teams", icon: Users },
+      // { to: "/pm-console", label: "PM Console", icon: ListChecks },
     ],
   },
   {
     section: "Reporting",
     items: [
       { to: "/reports", label: "Reports", icon: FileText },
-      { to: "/documents", label: "Documents", icon: Folder },
+      // { to: "/documents", label: "Documents", icon: Folder },
       { to: "/analytics", label: "Analytics", icon: BarChart3 },
     ],
   },
@@ -103,6 +105,8 @@ const adminNav: { section: string; items: NavItem[] }[] = [
     items: [
       { to: "/admin", label: "Admin Console", icon: Settings2 },
       { to: "/admin/users", label: "Users", icon: Users },
+      { to: "/admin/projects", label: "Projects", icon: FolderKanban },
+      { to: "/admin/agent-runs", label: "Agent Runs", icon: Bot },
     ],
   },
 ];
@@ -149,8 +153,12 @@ export function Shell({ children }: { children: ReactNode }) {
 
   const nav = navForUser(user);
 
-  function prefetchGovernance() {
-    prefetchGovernanceNav(queryClient);
+  function prefetchForNav(to: string, immediate = false) {
+    if (immediate) {
+      flushNavPrefetch(queryClient, to);
+      return;
+    }
+    scheduleNavPrefetch(queryClient, to);
   }
 
   const currentTitle =
@@ -203,9 +211,11 @@ export function Shell({ children }: { children: ReactNode }) {
                     <Link
                       to={item.to}
                       title={!mobile && collapsed ? item.label : undefined}
-                      onMouseEnter={item.to === "/governance" ? prefetchGovernance : undefined}
-                      onFocus={item.to === "/governance" ? prefetchGovernance : undefined}
+                      preload="viewport"
+                      onMouseEnter={() => prefetchForNav(item.to)}
+                      onFocus={() => prefetchForNav(item.to)}
                       onClick={() => {
+                        prefetchForNav(item.to, true);
                         if (mobile) setMobileNavOpen(false);
                       }}
                       className={cn(
@@ -275,9 +285,11 @@ export function Shell({ children }: { children: ReactNode }) {
           </button>
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold text-foreground">{currentTitle}</div>
-            <div className="hidden text-[11px] text-muted-foreground sm:block">
-              Insights Hub <span className="px-1">/</span> {currentTitle}
-            </div>
+            {pathname !== "/knowledge" && (
+              <div className="hidden text-[11px] text-muted-foreground sm:block">
+                Insights Hub <span className="px-1">/</span> {currentTitle}
+              </div>
+            )}
           </div>
 
           <div className="hidden items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs text-muted-foreground md:flex">

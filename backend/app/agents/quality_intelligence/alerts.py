@@ -33,9 +33,11 @@ async def create_drift_risk_alert(
         return None
 
     # Idempotency: dedup by source_table + source_row_id (the snapshot that triggered this alert).
+    # Use limit(1) — duplicate rows can exist from partial failed scans that still committed.
     existing = (
         await session.execute(
-            select(RiskAlert).where(
+            select(RiskAlert)
+            .where(
                 RiskAlert.project_id == snapshot.project_id,
                 RiskAlert.alert_type == AlertType.QUALITY_DRIFT,
                 RiskAlert.deleted_at.is_(None),
@@ -43,6 +45,8 @@ async def create_drift_risk_alert(
                 RiskAlert.source_table == "quality_snapshots",
                 RiskAlert.source_row_id == snapshot.id,
             )
+            .order_by(RiskAlert.created_at.desc())
+            .limit(1)
         )
     ).scalar_one_or_none()
     if existing:

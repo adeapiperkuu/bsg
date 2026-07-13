@@ -29,6 +29,9 @@
 18. [Gaps, Risks & Technical Debt](#18-gaps-risks--technical-debt)
 19. [Recommendations](#19-recommendations)
 20. [Appendix: Key Constants & Thresholds](#20-appendix-key-constants--thresholds)
+21. [Phase 4 Retrieval Tuning Update](#21-phase-4-retrieval-tuning-update)
+22. [Phase 5 Q&A Behavior Update](#22-phase-5-qa-behavior-update)
+23. [Phase 8 — Modular Backend Architecture](#23-phase-8--modular-backend-architecture)
 
 ---
 
@@ -39,7 +42,7 @@ The **Operational Knowledge Agent** is a substantially implemented Phase 2+ agen
 | Dimension | Assessment |
 |-----------|------------|
 | **Implementation status** | Production-grade core: upload, ingest, index, retrieve, answer, cite, audit |
-| **Primary backend** | `backend/app/services/knowledge.py` (~4,300 lines) |
+| **Primary backend** | `backend/app/services/knowledge/` package (Phase 8 modular split) |
 | **Primary frontend** | `frontend/src/routes/knowledge.tsx` (~2,900 lines) at `/knowledge` |
 | **Agent name in DB** | `operational_knowledge_agent` |
 | **Vector store** | PostgreSQL + pgvector (HNSW index on chunk embeddings) |
@@ -112,8 +115,9 @@ flowchart TB
 
     subgraph API["Backend API"]
         ROUTES["api/routes/knowledge.py"]
-        SVC["services/knowledge.py"]
+        SVC["services/knowledge/ package"]
         LLM["services/llm/client.py"]
+        JOBS["services/knowledge_ingestion_jobs.py"]
     end
 
     subgraph AGENTS_PKG["agents/knowledge/ (thin utilities)"]
@@ -134,6 +138,8 @@ flowchart TB
     end
 
     PAGE --> API_CLIENT --> ROUTES --> SVC
+    ROUTES --> JOBS
+    JOBS --> SVC
     SVC --> LLM --> OPENAI
     SVC --> PG
     SVC --> STORAGE
@@ -146,13 +152,13 @@ flowchart TB
 
 ### 3.2 Architectural decisions
 
-1. **Monolithic service layer** — Nearly all business logic lives in `services/knowledge.py`. The `agents/knowledge/` package is a thin utility layer for cross-agent imports (`keyword_search`, `write_lesson_on_alert_resolve`).
+1. **Modular service package (Phase 8)** — Business logic lives in `services/knowledge/` with focused modules. `services/knowledge/__init__.py` re-exports the public surface so routes and tests keep `from app.services.knowledge import …`. The `agents/knowledge/` package remains a thin utility layer for cross-agent imports.
 
 2. **Dedicated API surface** — OKA does not register in the generic agent query router. Q&A, document management, and settings all live under `/knowledge/*`.
 
 3. **Hybrid RAG** — Vector search (pgvector cosine distance) combined with keyword/term scoring, hybrid reranking with recency and metadata boosts, neighbor chunk expansion, and post-generation grounding validation.
 
-4. **Background ingestion** — Upload triggers `process_knowledge_document_job` via FastAPI `BackgroundTasks` (extract → chunk → embed → mark ready).
+4. **DB-backed ingestion jobs (Phase 7)** — Upload/index enqueue `knowledge_ingestion_jobs`; an APScheduler poller claims work with `FOR UPDATE SKIP LOCKED`, retries with backoff, and reports progress milestones.
 
 5. **Audit trail** — Every answer creates an `agent_queries` row with `agent_name='operational_knowledge_agent'` plus `knowledge_evidence_links` for cited chunks.
 
@@ -166,16 +172,17 @@ flowchart TB
 
 ### 4.1 Backend — core
 
-| File | Lines (approx) | Purpose |
-|------|----------------|---------|
-| `backend/app/services/knowledge.py` | ~4,300 | **Primary implementation**: library CRUD, ingestion, hybrid RAG, Q&A (sync + stream), gaps, feedback, conversations, bootstrap, retrieval settings |
-| `backend/app/api/routes/knowledge.py` | ~500 | FastAPI router for all `/knowledge/*` endpoints |
-| `backend/app/services/llm/client.py` | — | RAG system prompts, `generate_rag_answer`, `stream_rag_answer`, prompt-injection hardening |
-| `backend/app/schemas/domain.py` | — | Pydantic schemas: `KnowledgeAskCreate`, `KnowledgeDocumentRead`, bootstrap, gaps, retrieval settings |
-| `backend/app/db/models/entities.py` | — | SQLAlchemy models for all knowledge tables and enums |
-| `backend/app/core/config.py` | — | `oka_base_url`, embedding model, storage bucket, upload dir |
-| `backend/app/core/constants.py` | — | `SUPPORTED_KNOWLEDGE_EXTENSIONS`: `.pdf`, `.docx`, `.txt`, `.md`, `.csv` |
-| `backend/app/main.py` | — | Registers `knowledge.router` at API prefix |
+| File | Purpose |
+|------|---------|
+| `backend/app/services/knowledge/` | **Primary implementation package** (Phase 8): see [§23](#23-phase-8--modular-backend-architecture) |
+| `backend/app/services/knowledge_ingestion_jobs.py` | DB-backed ingestion queue (Phase 7): enqueue, claim, retry, progress |
+| `backend/app/api/routes/knowledge.py` | FastAPI router for all `/knowledge/*` endpoints |
+| `backend/app/services/llm/client.py` | RAG system prompts, `generate_rag_answer`, `stream_rag_answer`, prompt-injection hardening |
+| `backend/app/schemas/domain.py` | Pydantic schemas: `KnowledgeAskCreate`, `KnowledgeDocumentRead`, bootstrap, gaps, retrieval settings |
+| `backend/app/db/models/entities.py` | SQLAlchemy models for all knowledge tables and enums |
+| `backend/app/core/config.py` | `oka_base_url`, embedding model, storage bucket, upload dir |
+| `backend/app/core/constants.py` | `SUPPORTED_KNOWLEDGE_EXTENSIONS`: `.pdf`, `.docx`, `.txt`, `.md`, `.csv` |
+| `backend/app/main.py` | Registers `knowledge.router` + ingestion job poller |
 
 ### 4.2 Backend — cross-agent utilities
 
@@ -241,7 +248,6 @@ erDiagram
     knowledge_documents ||--o{ knowledge_evidence_links : cited_by
     knowledge_document_chunks ||--o{ knowledge_evidence_links : cited_chunk
     agent_queries ||--o{ knowledge_query_feedback : feedback
-    organisations ||--o{ knowledge_gaps : gaps
     organisations ||--o{ knowledge_lessons : lessons
     risk_alerts ||--o| knowledge_lessons : linked_alert
     risk_alerts ||--o{ quality_lesson_links : lesson_link
@@ -259,7 +265,6 @@ erDiagram
 | `knowledge_document_embeddings` | `KnowledgeDocumentEmbedding` | Legacy/alternate embedding storage (JSONB) |
 | `knowledge_evidence_links` | `KnowledgeEvidenceLink` | Citation links: query → document/chunk + relevance score |
 | `knowledge_lessons` | `KnowledgeLesson` | Structured lesson log (quality write-back) |
-| `knowledge_gaps` | `KnowledgeGap` | Unanswered queries surfaced as library todos |
 | `knowledge_query_feedback` | `KnowledgeQueryFeedback` | User thumbs up/down per `agent_query_id` |
 | `knowledge_retrieval_settings` | *(raw SQL)* | Org-level retrieval defaults |
 
@@ -318,7 +323,7 @@ A document is eligible for RAG retrieval when **all** of the following hold:
 sequenceDiagram
     participant UI as Frontend
     participant API as /knowledge/documents
-    participant SVC as knowledge.py
+    participant SVC as knowledge/ package
     participant BG as Background Task
     participant STORE as Storage
     participant PG as PostgreSQL
@@ -511,8 +516,8 @@ Uses a separate `AsyncSessionLocal()` for preparation to avoid holding the reque
 When no approved answer can be generated:
 
 - Returns canonical message: `"I could not find this information in the uploaded knowledge base."`
-- May create a `knowledge_gaps` row for library health tracking
-- Still persists an `agent_queries` row for audit
+- Persists an `agent_queries` row for audit
+- Does not create a follow-up library todo record
 
 ### 8.4 Confidence scoring
 
@@ -561,9 +566,9 @@ Fast path (top chunk score ≥ 0.85) skips structured fields for lower latency.
 
 `POST /knowledge/feedback` records thumbs up/down per query. Upserts on `(agent_query_id, user_id)`. Stored in `knowledge_query_feedback` with optional comment.
 
-### 8.8 Knowledge gaps
+### 8.8 Removed library todos
 
-When retrieval fails or confidence is low, the system can record `knowledge_gaps` entries surfaced in library health as todos. `POST /knowledge/gaps/{gap_id}/resolve` marks them resolved.
+The former library todo lifecycle was removed. Low-confidence and no-answer outcomes are represented through answer confidence, retrieval diagnostics, and feedback records.
 
 ---
 
@@ -698,12 +703,11 @@ Base path: `/api/v1` (app prefix) + routes below.
 | `GET` | `/knowledge/conversations` | No | List conversation summaries |
 | `GET` | `/knowledge/conversations/{id}` | No | Full conversation with turns |
 
-### 11.5 Feedback, gaps, settings
+### 11.5 Feedback and settings
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | `POST` | `/knowledge/feedback` | DM+ | Submit query feedback |
-| `POST` | `/knowledge/gaps/{gap_id}/resolve` | DM+ | Resolve knowledge gap |
 | `GET` | `/knowledge/retrieval-settings` | DM+ | Org retrieval defaults |
 | `PATCH` | `/knowledge/retrieval-settings` | Leadership, Admin | Update defaults |
 
@@ -833,11 +837,11 @@ Requires valid `OPENAI_API_KEY` for embeddings and Q&A.
 | `20260625120000_knowledge_lessons.sql` | `knowledge_lessons` table |
 | `20260626100000_knowledge_query_feedback.sql` | Feedback table, `agent_queries.retrieval_params` |
 | `20260626110000_knowledge_eval_observability.sql` | Eval tables (later removed) |
-| `20260626120000_knowledge_library_gaps.sql` | `knowledge_gaps` table |
 | `20260701100000_knowledge_agent_performance_indexes.sql` | Hot-path composite indexes |
 | `20260701120000_drop_knowledge_eval.sql` | Drops eval feature tables |
 | `20260702120000_knowledge_extraction_metadata.sql` | Extraction metadata enhancements |
 | `20260702140000_knowledge_conversations.sql` | `agent_queries.conversation_id` for grouped turns |
+| `20260710140000_drop_knowledge_gaps.sql` | Drops removed library todo table/type |
 
 ---
 
@@ -889,7 +893,7 @@ Requires valid `OPENAI_API_KEY` for embeddings and Q&A.
 | Quality trend questions with structured data | **Partial** — `_build_structured_operational_context()` adds project metrics |
 | Eval observability | **Removed** — tables dropped; frontend permission stale |
 | Vector store decision | **Resolved** — pgvector in PostgreSQL |
-| SOP approval workflow | **Partial** — manual status field; no formal approval workflow engine |
+| SOP approval workflow | **Implemented (Phase 10)** — submit/approve/reject/archive lifecycle with approval events; PATCH/upload cannot bypass |
 
 ---
 
@@ -899,10 +903,9 @@ Requires valid `OPENAI_API_KEY` for embeddings and Q&A.
 
 | Risk | Detail |
 |------|--------|
-| **Monolithic service file** | `knowledge.py` at ~4,300 lines is difficult to maintain, test, and review |
 | **No E2E API tests** | Core Q&A and streaming paths lack integration test coverage |
 | **Phase gating mismatch** | UI exposed despite Phase 2 spec; may confuse MVP rollout planning |
-| **Background job reliability** | Ingestion uses FastAPI `BackgroundTasks` — no retry queue, no job status polling from UI beyond processing_status field |
+| **Package monkeypatch indirection** | Tests patch `app.services.knowledge.*`; some call sites resolve via the package root so patches apply — prefer dependency injection long-term |
 
 ### 18.2 Medium priority
 
@@ -935,15 +938,15 @@ Requires valid `OPENAI_API_KEY` for embeddings and Q&A.
 
 ### 19.2 Medium term
 
-1. **Split `knowledge.py`** into modules: `ingestion.py`, `retrieval.py`, `qa.py`, `library.py`
+1. **Done (Phase 8):** Split monolith into `services/knowledge/` modules — see §23
 2. **Replace BackgroundTasks** with a proper job queue (Celery, ARQ, or Supabase Edge Functions) for ingestion retries
 3. **Add ingestion status webhook/polling** for upload progress in UI
-4. **Consolidate SOP storage** — migrate `sop_documents` into knowledge document library or establish clear ownership
+4. **Consolidate SOP storage** — migrate `sop_documents` into knowledge document library or establish clear ownership (Phase 10 audited; additive backfill still deferred)
 
 ### 19.3 Long term
 
 1. **Client-safe UI surface** — if approved, add client role routes with `client_safe` mode enforced
-2. **Formal approval workflow** — multi-step SOP approval before `status=approved`
+2. **Done (Phase 10):** Formal approval workflow — multi-step SOP approval before `status=approved` (lifecycle endpoints + UI; status bypass closed)
 3. **Cross-agent orchestration** — route "how is quality trending" through Quality Agent first, then enrich with OKA context
 4. **Observability** — structured metrics for retrieval latency, grounding rejection rate, gap creation rate
 
@@ -953,21 +956,272 @@ Requires valid `OPENAI_API_KEY` for embeddings and Q&A.
 
 | Constant | Value | Location |
 |----------|-------|----------|
-| `KNOWLEDGE_AGENT_NAME` | `"operational_knowledge_agent"` | `knowledge.py` |
-| `HYBRID_VECTOR_WEIGHT` | 0.68 | `knowledge.py` |
-| `HYBRID_KEYWORD_WEIGHT` | 0.32 | `knowledge.py` |
-| `RERANK_CANDIDATE_LIMIT` | 20 | `knowledge.py` |
-| `DEFAULT_MAX_SOURCES` | 3 | `knowledge.py` |
-| `LOW_CONFIDENCE_THRESHOLD` | 0.5 | `knowledge.py` |
+| `KNOWLEDGE_AGENT_NAME` | `"operational_knowledge_agent"` | `knowledge/utils.py` |
+| `HYBRID_VECTOR_WEIGHT` | 0.68 | `knowledge/utils.py` |
+| `HYBRID_KEYWORD_WEIGHT` | 0.32 | `knowledge/utils.py` |
+| `RERANK_CANDIDATE_LIMIT` | 20 | `knowledge/utils.py` |
+| `DEFAULT_MAX_SOURCES` | 3 | `knowledge/utils.py` |
+| `LOW_CONFIDENCE_THRESHOLD` | 0.5 | `knowledge/utils.py` |
 | `FAST_PATH_THRESHOLD` | 0.85 | `llm/client.py` |
-| `CHUNK_TARGET_TOKENS` | 900 | `knowledge.py` |
-| `CHUNK_OVERLAP_TOKENS` | 120 | `knowledge.py` |
-| `KNOWLEDGE_ANSWER_CACHE_TTL_S` | 300 | `knowledge.py` |
-| `SOP_STALE_DAYS` | 365 | `knowledge.py` |
-| `BOOTSTRAP_RECENT_DOCUMENT_LIMIT` | 30 | `knowledge.py` |
+| `CHUNK_TARGET_TOKENS` | 900 | `knowledge/utils.py` |
+| `CHUNK_OVERLAP_TOKENS` | 120 | `knowledge/utils.py` |
+| `KNOWLEDGE_ANSWER_CACHE_TTL_S` | 300 | `knowledge/utils.py` |
+| `SOP_STALE_DAYS` | 365 | `knowledge/utils.py` |
+| `BOOTSTRAP_RECENT_DOCUMENT_LIMIT` | 30 | `knowledge/library.py` |
 | `RAG_CONTEXT_CHUNK_CHARS` | 800 | `llm/client.py` |
 | `RAG_MAX_OUTPUT_TOKENS` | 700 | `llm/client.py` |
-| `NO_APPROVED_ANSWER` | `"I could not find this information in the uploaded knowledge base."` | `knowledge.py` |
+| `NO_APPROVED_ANSWER` | `"I could not find this information in the uploaded knowledge base."` | `knowledge/utils.py` |
+
+---
+
+## 21. Phase 4 Retrieval Tuning Update
+
+### 21.1 Pipeline Before Phase 4
+
+1. Query normalization was implicit in tokenization and gap normalization.
+2. Follow-up query rewrite used deterministic fast-path rules, with an LLM rewrite only when conversation history required disambiguation.
+3. Metadata filters were built from approved/indexed/ready documents, role visibility, client-safe mode, histories, folder, source type, project, department, and effective date.
+4. Vector retrieval used pgvector against active-version chunks.
+5. Keyword retrieval used BM25-style term ranking when embeddings were unavailable or vector candidates were too few.
+6. Candidates were merged by chunk id.
+7. Ranking blended vector and keyword scores with exact-term, recency, and metadata boosts.
+8. Reranking returned the highest scoring chunks up to `max_sources`.
+9. Confidence combined LLM confidence and top retrieval score.
+10. Grounding validation checked answer claims against retrieved context.
+11. Citation selection persisted one evidence link per selected chunk.
+
+### 21.2 Pipeline After Phase 4
+
+1. Queries are normalized to a stable lowercase string for diagnostics.
+2. Follow-up rewrite is unchanged, but diagnostics now record `rewritten_query` when it differs.
+3. A deterministic query classifier assigns `factual`, `procedural`, `broad_summary`, `troubleshooting`, `historical`, `comparative`, `project_specific`, or `policy_or_compliance`.
+4. Metadata filters now also accept org-level `max_candidates`, `min_relevance`, source-type scope, folder scope, recency preference, and exact-term preference. Production retrieval still forces approved, ready, indexed documents.
+5. Vector and keyword retrieval remain hybrid and bounded by `max_candidates`.
+6. Candidate merging still deduplicates by chunk id.
+7. Ranking now records explicit score components: vector, keyword, exact term, phrase match, metadata, recency, source type, query type, entity match, version preference, duplicate penalty, and final score.
+8. Broad/comparative queries diversify selected chunks by document, section, and fingerprint.
+9. Procedural/troubleshooting queries can include adjacent chunks when they materially complete a section.
+10. Latest valid approved versions are preferred when multiple active versions share title/source/project/department.
+11. Controlled fallback can remove optional folder/source-type restrictions only; it never relaxes org isolation, approval, readiness, client-safe restrictions, or project/department scope.
+12. Diagnostics now include query type, filters, fallback level, candidate counts, score breakdowns, rejected reasons, selected source count, and timings.
+
+### 21.3 Ranking Weights
+
+| Component | Limit / Weight |
+|-----------|----------------|
+| Vector score | 0.68 blend weight |
+| Keyword score | 0.32 blend weight |
+| Exact-term boost | up to 0.10 |
+| Phrase-match boost | up to 0.06 |
+| Metadata boost | up to 0.08 |
+| Recency boost | up to 0.12 |
+| Source-type boost | up to 0.08 |
+| Query-type boost | up to 0.10 |
+| Entity-match boost | up to 0.16 |
+| Version preference | +/- 0.07 |
+| Duplicate penalty | up to 0.18 |
+
+### 21.4 Migration Requirement
+
+Apply `supabase/migrations/20260710110000_knowledge_retrieval_phase4_settings.sql` to add Phase 4 retrieval settings columns and validation checks.
+
+---
+
+## 22. Phase 5 Q&A Behavior Update
+
+### 22.1 Pipeline After Phase 5
+
+1. Conversation history is normalized before retrieval and prompting. Diagnostics record retained turns, dropped turns, total characters, and truncation.
+2. Query rewrite is gated with explicit diagnostics: attempted, reason, succeeded, original query, rewritten query, and history turns considered.
+3. Prompt construction separates question, conversation context, numbered source blocks, structured facts, and untrusted evidence. Source blocks include document id, chunk id, title, section/page, source type, effective date, readiness, visibility, and relevance.
+4. Prompt-size diagnostics are persisted without logging prompt text.
+5. Client-safe mode is enforced in retrieval, context metadata, prompt rules, deterministic validation, and answer rejection.
+6. Grounding validation now reports claim support, unsupported numbers/dates/names, citation validity, unsupported claims, and validator version.
+7. Confidence uses an explicit formula across retrieval quality, grounding support, source readiness, source diversity, and penalties. Results include score, band, reasons, and breakdown.
+8. Citations are persisted as structured client-safe metadata in `retrieval_params.citations`.
+9. Streaming emits the Phase 5 lifecycle events: `accepted`, `searching_sources`, `sources_found`, `generating_answer`, `answer_delta`, `validating_grounding`, `final`, and legacy-compatible `done`.
+10. Feedback now stores structured reason, answer confidence, query type, selected source ids, and comment. `missing_knowledge` downvotes remain feedback only.
+
+### 22.2 Confidence Bands
+
+| Band | Score Range |
+|------|-------------|
+| high | >= 0.75 |
+| medium | >= 0.50 and < 0.75 |
+| low | >= 0.30 and < 0.50 |
+| very_low | < 0.30 |
+
+### 22.3 Migration Requirement
+
+Apply `supabase/migrations/20260710120000_knowledge_feedback_phase5.sql` to add Phase 5 feedback diagnostics columns.
+
+---
+
+## 23. Phase 8 — Modular Backend Architecture
+
+Phase 8 refactors the former monolithic `services/knowledge.py` into a package **without changing API contracts or business behavior**.
+
+### 23.1 Module structure
+
+```
+backend/app/services/knowledge/
+├── __init__.py      # Public re-exports (compatibility surface)
+├── utils.py         # Constants, caches, normalization, diagnostics helpers
+├── permissions.py   # Visibility / role access checks
+├── settings.py      # Retrieval settings read/update
+├── ranking.py       # Hybrid scoring, boosts, diversification
+├── grounding.py     # Citation validation, confidence, client-safe checks
+├── ingestion.py     # Extract, OCR, chunk, embed, index pipeline
+├── retrieval.py     # Vector/keyword search, query rewrite, structured context
+├── qa.py            # Sync ask orchestration + prompt/answer assembly
+├── streaming.py     # SSE prepare/stream lifecycle
+├── library.py       # Document/folder CRUD, bootstrap, downloads
+├── gaps.py          # Knowledge gap management
+├── feedback.py      # Query feedback persistence
+└── analytics.py     # Readiness, metrics, workflow diagnostics
+```
+
+| Module | Responsibility |
+|--------|----------------|
+| `__init__.py` | Re-exports public + test-patched symbols (`LLMClient`, `get_openai_client`, helpers) so `from app.services.knowledge import …` keeps working |
+| `utils.py` | Shared constants, embed/answer caches, query normalization, SSE helper, prompt-size diagnostics |
+| `permissions.py` | `can_access_visibility` and related RBAC helpers |
+| `settings.py` | Org retrieval settings get/update |
+| `ranking.py` | Hybrid score fusion, metadata/recency/entity boosts, diversification |
+| `grounding.py` | Grounding validation, confidence bands, client-safe answer checks |
+| `ingestion.py` | File read/store, extraction, chunking, embedding, `_process_document_version` |
+| `retrieval.py` | Hybrid search, query classification/rewrite, structured operational context |
+| `qa.py` | `ask_knowledge_agent` and non-streaming answer path |
+| `streaming.py` | `prepare_stream_knowledge_ask` / `stream_prepared_knowledge_ask` |
+| `library.py` | Folders, documents, upload metadata, bootstrap, semantic document ranking |
+| `gaps.py` | Gap CRUD / workflow |
+| `feedback.py` | Feedback create/list |
+| `analytics.py` | Readiness counts, analytics aggregates |
+
+Companion (not inside the package): `knowledge_ingestion_jobs.py` owns the Phase 7 job queue and calls into `ingestion` / cache invalidation.
+
+### 23.2 Dependency diagram
+
+```mermaid
+flowchart LR
+  ROUTES["api/routes/knowledge.py"] --> PKG["knowledge/__init__.py"]
+  JOBS["knowledge_ingestion_jobs.py"] --> ING["ingestion.py"]
+  PKG --> LIB["library.py"]
+  PKG --> QA["qa.py"]
+  PKG --> STR["streaming.py"]
+  PKG --> GAP["gaps.py"]
+  PKG --> FB["feedback.py"]
+  PKG --> SET["settings.py"]
+  PKG --> AN["analytics.py"]
+  QA --> RET["retrieval.py"]
+  STR --> RET
+  QA --> GR["grounding.py"]
+  STR --> GR
+  RET --> RANK["ranking.py"]
+  RET --> PERM["permissions.py"]
+  LIB --> PERM
+  ING --> UTILS["utils.py"]
+  RET --> UTILS
+  QA --> UTILS
+  STR --> UTILS
+  QA --> LLM["llm/client.py"]
+  STR --> LLM
+  ING --> LLM
+```
+
+### 23.3 Request flow (`/knowledge/ask`)
+
+```mermaid
+sequenceDiagram
+  participant R as routes/knowledge.py
+  participant QA as knowledge/qa.py
+  participant RET as knowledge/retrieval.py
+  participant GR as knowledge/grounding.py
+  participant LLM as llm/client.py
+  R->>QA: ask_knowledge_agent(...)
+  QA->>RET: hybrid search + optional structured context
+  RET-->>QA: matches + diagnostics
+  QA->>LLM: generate_rag_answer
+  LLM-->>QA: answer + structured_answer
+  QA->>GR: ground + confidence
+  QA-->>R: KnowledgeAskRead
+```
+
+### 23.4 Ingestion flow
+
+```mermaid
+sequenceDiagram
+  participant R as routes/knowledge.py
+  participant J as knowledge_ingestion_jobs.py
+  participant ING as knowledge/ingestion.py
+  R->>J: enqueue job (202 + job_id)
+  J->>J: claim FOR UPDATE SKIP LOCKED
+  J->>ING: _process_document_version
+  Note over ING: extract 25% → chunk 50% → embed 75% → upsert 100%
+  ING-->>J: ready / failed
+```
+
+### 23.5 Retrieval flow
+
+1. Normalize query + conversation history (`utils`)
+2. Classify query type; optionally rewrite follow-ups (`retrieval`)
+3. Embed query; run vector + keyword candidates
+4. Hybrid rank / diversify (`ranking`)
+5. Expand neighbor chunks; build context blocks
+6. Optional structured operational context for project/ops questions
+
+### 23.6 Streaming flow
+
+1. `prepare_stream_knowledge_ask` — auth, settings, retrieval, cache check
+2. Emit lifecycle SSE: `accepted` → `searching_sources` → `sources_found` → `generating_answer`
+3. `stream_prepared_knowledge_ask` — token deltas via `LLMClient.stream_rag_answer`
+4. `validating_grounding` → `final` / legacy `done`
+
+### 23.7 Compatibility layer
+
+- **Removed:** monolithic `backend/app/services/knowledge.py`
+- **Added:** package `__init__.py` re-exports the same symbols used by routes, jobs, governance, and tests
+- Call sites that must honor test monkeypatches on the package root resolve symbols via `import app.services.knowledge as knowledge_services` (e.g. `_embed_texts`, `LLMClient`, `_ground_generation`)
+
+### 23.8 Performance notes
+
+- No extra DB round-trips introduced by the split
+- Embed/answer caches remain process-local in `utils`
+- Retrieval still embeds once per ask; streaming reuses prepared matches
+- Latency target: equal to pre-refactor paths
+
+---
+
+## 24. Phase 11 — Continuous Learning & AI Enhancements
+
+Additive learning layer on the Phase 8 modular package. Core RAG/governance architecture unchanged.
+
+### Capabilities
+
+| Capability | Behavior | Auto-apply? |
+|---|---|---|
+| Content suggestions | Missing metadata, titles, summaries, tags, folder/source/dept/project | No — review then apply/dismiss |
+| Gap resolution suggestions | From repeated empty asks / `missing_knowledge` feedback | No — never auto-resolve |
+| Retrieval quality analysis | Selected vs ignored docs, weak citations, conflicts, failures | Recommendations only |
+| Semantic duplicate detection | Near-dupes, overlapping procedures, outdated copies + compare API | No — never auto-merge |
+| AI document summaries | Executive summary, procedures, warnings, departments | On-demand for approved docs |
+| Related knowledge | SOPs/guides/lessons/projects/similar questions | Display only |
+| Health score | Rollup from library readiness counts | Read-only metric |
+| Golden evaluation | Expanded suite + text report with regression detection | Offline/static fixtures |
+
+### Key files
+
+- Migration: `supabase/migrations/20260710160000_knowledge_learning_phase11.sql`
+- Service: `backend/app/services/knowledge/learning.py`
+- Eval: `backend/app/services/knowledge/evaluation.py`
+- Tests: `backend/tests/test_knowledge_learning_phase11.py`
+
+### Guardrails
+
+- Suggestions require explicit apply; approved document bodies are not rewritten by learning jobs
+- Gaps are never closed automatically
+- Duplicate compare always returns `can_merge=false`
+- Tests mock AI hooks; no live LLM calls in the Phase 11 suite
 
 ---
 
