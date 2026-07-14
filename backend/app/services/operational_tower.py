@@ -21,6 +21,7 @@ from app.agents.delivery.services.dashboard_service import get_portfolio_data
 from app.core.security import CurrentUser
 from app.db.models import (
     AlertStatus,
+    AppRole,
     DeliveryConfidenceScore,
     GovernanceEscalation,
     GovernanceEscalationSeverity,
@@ -47,7 +48,8 @@ _HEALTH_META = {
     "yellow": ("At Risk", "#f59e0b"),
     "red": ("Critical", "#ef4444"),
 }
-# Fixed line palette for the Delivery Risk Trend chart (matches the current design).
+_INSUFFICIENT_META = ("Insufficient Data", "#6b7280")
+_INFLIGHT_STATUSES = frozenset({ProjectStatus.ACTIVE, ProjectStatus.RAMPING})
 _RISK_TREND_COLORS = ["#22c55e", "#f59e0b", "#ef4444", "#3b82f6"]
 
 _TIER_RANK = {
@@ -85,36 +87,49 @@ def _traffic_light(dashboard: dict[str, Any]) -> str:
     return value if value in _HEALTH_META else "green"
 
 
+def select_inflight_projects(projects: list[Project]) -> list[Project]:
+    """Return only projects that count toward active risk (active / ramping)."""
+    return [p for p in projects if p.status in _INFLIGHT_STATUSES]
+
+
 async def get_operational_tower(
     session: AsyncSession,
     current_user: CurrentUser,
 ) -> dict[str, Any]:
-    """Return every deterministic Operational Tower section in one payload."""
+    """Return every deterministic Operational Tower section in one payload.
+
+    Every section is scoped to the projects visible to `current_user` via
+    `scoped_project_query` (a PM/leadership user sees only their own organisation;
+    a client sees only assigned projects). Risk-oriented sections are further limited
+    to in-flight projects so completed work never contributes to active risk.
+    """
     projects = list((await session.execute(scoped_project_query(current_user))).scalars())
-    project_ids = [p.id for p in projects]
     project_names = {p.id: p.name for p in projects}
 
+    inflight_projects = select_inflight_projects(projects)
+    inflight_ids = [p.id for p in inflight_projects]
+
     portfolio = await get_portfolio_data(
-        session=session, current_user=current_user, projects=projects
+        session=session, current_user=current_user, projects=inflight_projects
     )
 
     kpis, health = _summarize_portfolio(projects, portfolio)
 
-    quality_trend, avg_quality = await _quality_trend_and_avg(session, project_ids)
+    quality_trend, avg_quality = await _quality_trend_and_avg(session, inflight_ids)
     kpis["avgQualityScore"] = avg_quality
 
-    open_escalations, critical_escalations = await _escalation_counts(session, project_ids)
+    open_escalations, critical_escalations = await _escalation_counts(session, inflight_ids)
     kpis["openEscalations"] = open_escalations
 
     return {
         "kpis": kpis,
         "healthDistribution": health,
-        "riskTrend": await _risk_trend(session, project_ids, project_names),
+        "riskTrend": await _risk_trend(session, inflight_ids, project_names),
         "qualityTrend": quality_trend,
-        "utilization": await _utilization(session, project_ids),
-        "alerts": await _critical_alerts(session, project_ids, project_names),
-        "recommendations": await _recommendations(session, project_ids),
-        "milestones": await _upcoming_milestones(session, project_ids, project_names),
+        "utilization": await _utilization(session, inflight_ids),
+        "alerts": await _critical_alerts(session, inflight_ids, project_names),
+        "recommendations": await _recommendations(session, inflight_ids),
+        "milestones": await _upcoming_milestones(session, inflight_ids, project_names),
         "activity": await _recent_activity(session, current_user),
         "criticalEscalations": critical_escalations,
     }
@@ -127,19 +142,27 @@ def _summarize_portfolio(
 
     confidences: list[float] = []
     counts: dict[str, int] = {"green": 0, "yellow": 0, "red": 0}
+    insufficient = 0
     for entry in portfolio.get("projects", []):
         dashboard = entry["dashboard"]
+        has_data = dashboard.get("overview", {}).get("has_sufficient_data", True)
+        if not has_data:
+            insufficient += 1
+            continue
         counts[_traffic_light(dashboard)] += 1
-        if dashboard.get("overview", {}).get("has_sufficient_data", True):
-            confidences.append(float(dashboard.get("confidence", 0)))
+        confidences.append(float(dashboard.get("confidence", 0)))
 
     schedule_confidence = round(sum(confidences) / len(confidences)) if confidences else None
-    total = sum(counts.values())
+    total = sum(counts.values()) + insufficient
 
     health = [
         {"name": _HEALTH_META[key][0], "value": counts[key], "color": _HEALTH_META[key][1]}
         for key in ("green", "yellow", "red")
     ]
+    if insufficient:
+        health.append(
+            {"name": _INSUFFICIENT_META[0], "value": insufficient, "color": _INSUFFICIENT_META[1]}
+        )
     kpis = {
         "activeProjects": active,
         "scheduleConfidence": schedule_confidence,
@@ -524,11 +547,30 @@ async def _escalation_counts(
     return int(total), int(critical)
 
 
+_ORG_WIDE_ROLES = frozenset(
+    {AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN}
+)
+
+
 async def get_executive_summary(
     session: AsyncSession,
     current_user: CurrentUser,
 ) -> dict[str, Any] | None:
-    """Return the latest stored (AI-authored) executive summary. Never regenerates."""
+    """Return the latest stored (AI-authored) executive summary for the caller's portfolio.
+
+    Scoped to the caller's own organisation and only served to org-wide roles, so the
+    summary never reflects another organisation's or another portfolio's projects. Never
+    regenerates — it only reads what was already produced.
+    """
+    if current_user.role not in _ORG_WIDE_ROLES:
+        return None
+
+    has_scope = (
+        await session.execute(scoped_project_query(current_user).limit(1))
+    ).first()
+    if has_scope is None:
+        return None
+
     row = (
         await session.execute(
             select(GovernanceWeeklySummary)

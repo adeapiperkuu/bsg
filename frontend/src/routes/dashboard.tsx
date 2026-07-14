@@ -24,20 +24,14 @@ import {
   StatusPill,
 } from "@/components/bsg/widgets";
 import {
-  executiveSummaryQueryOptions,
   operationalTowerQueryOptions,
-  useExecutiveSummaryQuery,
   useOperationalTowerQuery,
 } from "@/lib/queries/dashboard";
 
 export const Route = createFileRoute("/dashboard")({
   component: Dashboard,
   loader: async ({ context: { queryClient } }) => {
-    // Warm the deterministic payload before paint; let the AI summary hydrate in the
-    // background so it never blocks the dashboard. prefetchQuery never throws, so a
-    // transient API error degrades to the component's empty state instead of the error page.
     await queryClient.prefetchQuery(operationalTowerQueryOptions);
-    void queryClient.prefetchQuery(executiveSummaryQueryOptions);
   },
 });
 
@@ -82,7 +76,6 @@ function confidenceTone(value: number | null): "success" | "warning" | "danger" 
 
 function Dashboard() {
   const { data } = useOperationalTowerQuery();
-  const { data: summary } = useExecutiveSummaryQuery();
 
   const kpis = data?.kpis;
   const healthDistribution = data?.healthDistribution ?? [];
@@ -368,43 +361,6 @@ function Dashboard() {
               ))}
             </tbody>
           </table>
-        </div>
-      </Card>
-
-      <Card>
-        <SectionHeader
-          title="Executive AI Summary"
-          sub={
-            summary
-              ? `${summary.generated_by_ai ? "Auto-generated" : "Manual"} · Week of ${formatDueDate(summary.week)} · ${summary.approved ? "Approved" : "Pending review"}`
-              : "Awaiting generated summary"
-          }
-          right={
-            <div className="flex gap-2">
-              {summary?.generated_by_ai && <AiBadge label="AI" />}
-              <EvidenceBadge />
-            </div>
-          }
-        />
-        {summary ? (
-          summary.text.split("\n\n").map((p, i) => (
-            <p key={i} className="mb-3 text-sm leading-6 text-foreground/90">
-              {p}
-            </p>
-          ))
-        ) : (
-          <p className="mb-3 text-sm leading-6 text-muted-foreground">
-            No executive summary has been generated yet. Governance summaries appear here once
-            produced.
-          </p>
-        )}
-        <div className="mt-2 flex gap-2">
-          <button className="rounded border border-border px-3 py-1.5 text-xs hover:bg-elevated">
-            Regenerate
-          </button>
-          <button className="rounded bg-[color:var(--brand)] px-3 py-1.5 text-xs font-medium text-[color:var(--brand-foreground)]">
-            Approve &amp; Send
-          </button>
         </div>
       </Card>
     </div>
