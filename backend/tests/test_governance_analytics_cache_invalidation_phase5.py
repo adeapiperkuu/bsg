@@ -60,7 +60,6 @@ def _detail(days: int = 30) -> GovernanceAnalyticsDetailRead:
         date_range_days=days,
         insights=[],
         recommendations=[],
-        trends=[],
         charts={
             "dependencies_by_type": [],
             "escalations_by_severity": [],
@@ -75,10 +74,8 @@ def _detail(days: int = 30) -> GovernanceAnalyticsDetailRead:
 
 def _empty_detail_bundle() -> _DetailBundle:
     return _DetailBundle(
-        trend_dependencies=[],
-        trend_escalations=[],
-        trend_actions=[],
-        trend_scopes=[],
+        window_escalations=[],
+        window_actions=[],
         blocking_dependencies=[],
         critical_escalations=[],
         overdue_actions=[],

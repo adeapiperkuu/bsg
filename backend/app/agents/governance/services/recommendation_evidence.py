@@ -279,6 +279,26 @@ def build_rule_signals(
                     evidence_ids=[i.evidence_id for i in delivery_risk[:5]],
                 )
             )
+        else:
+            project_evidence = next(
+                (item for item in items if item.entity_type == "project"),
+                None,
+            )
+            if project_evidence is not None:
+                signals.append(
+                    GovernanceRuleSignal(
+                        signal_type="governance_cadence",
+                        severity="low",
+                        project_id=pid,
+                        project_name=name,
+                        facts={"project_status": project_evidence.status or "unknown"},
+                        candidate_message=(
+                            "Maintain the current governance cadence and verify upcoming "
+                            "commitments, owners, and decision dates."
+                        ),
+                        evidence_ids=[project_evidence.evidence_id],
+                    )
+                )
     return signals[:10]
 
 

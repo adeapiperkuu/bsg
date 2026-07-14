@@ -126,7 +126,6 @@ async def test_instrument_governance_endpoint_records_optional_meta(
             execute_count=1,
             cache_hit=False,
             activity_row_count=8,
-            trend_bucket_count=30,
             project_row_count=12,
         )
         return ListResponse(data=[1], pagination=Pagination(limit=limit, offset=offset))
@@ -140,7 +139,6 @@ async def test_instrument_governance_endpoint_records_optional_meta(
     assert entry["execute_count"] == 1
     assert entry["cache_hit"] is False
     assert entry["activity_row_count"] == 8
-    assert entry["trend_bucket_count"] == 30
     assert entry["project_row_count"] == 12
 
 
@@ -185,6 +183,7 @@ async def test_governance_baseline_endpoints_emit_timing_logs(
         _user: CurrentUser,
         *,
         days: int,
+        **_kwargs: object,
     ) -> GovernanceAnalyticsRead:
         return GovernanceAnalyticsRead(
             generated_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
@@ -193,7 +192,6 @@ async def test_governance_baseline_endpoints_emit_timing_logs(
             portfolio_risk_ranking=[],
             insights=[],
             recommendations=[],
-            trends=[],
             charts={},
             recent_activity=[],
             export_sections=[],

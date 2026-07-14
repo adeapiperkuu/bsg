@@ -25,6 +25,7 @@ import type {
   GovernanceEscalationUpdatePayload,
   GovernanceListParams,
   GovernanceListPagination,
+  GovernanceWeeklySummary,
   GovernanceOptimizationCompare,
   GovernanceOptimizationSummary,
   GovernanceRegisterRowApi,
@@ -45,6 +46,63 @@ import type {
   EscalationSuggestionScanResult,
   EscalationSuggestionScanHistory,
 } from "@/types/governance";
+
+export async function getGovernanceWeeklySummary(): Promise<GovernanceWeeklySummary | null> {
+  const body = await apiFetch<{ data: GovernanceWeeklySummary | null }>(
+    "/governance/weekly-summary",
+  );
+  return body.data;
+}
+
+export async function listGovernanceWeeklySummaries(
+  limit = 12,
+): Promise<GovernanceWeeklySummary[]> {
+  const body = await apiFetch<{ data: GovernanceWeeklySummary[] }>(
+    `/governance/weekly-summaries?limit=${limit}`,
+  );
+  return body.data;
+}
+
+export async function generateGovernanceWeeklySummary(): Promise<GovernanceWeeklySummary> {
+  const body = await apiFetch<{ data: GovernanceWeeklySummary }>(
+    "/governance/weekly-summary/generate",
+    {
+      method: "POST",
+      headers: { "X-BSG-User-Action": "true" },
+      body: JSON.stringify({}),
+    },
+  );
+  return body.data;
+}
+
+export async function approveGovernanceWeeklySummary(
+  summaryId: string,
+): Promise<GovernanceWeeklySummary> {
+  const body = await apiFetch<{ data: GovernanceWeeklySummary }>(
+    `/governance/weekly-summary/${summaryId}/approve`,
+    { method: "POST" },
+  );
+  return body.data;
+}
+
+export async function exportGovernanceWeeklySummary(
+  summaryId: string,
+  format: "pdf" | "docx",
+): Promise<Blob> {
+  return apiFetchBlob(`/governance/weekly-summary/${summaryId}/export.${format}`);
+}
+
+export const governanceWeeklySummaryQueryOptions = queryOptions({
+  queryKey: queryKeys.governanceWeeklySummary,
+  queryFn: getGovernanceWeeklySummary,
+  staleTime: STALE_TIME_MS,
+});
+
+export const governanceWeeklySummariesQueryOptions = queryOptions({
+  queryKey: queryKeys.governanceWeeklySummaries,
+  queryFn: () => listGovernanceWeeklySummaries(),
+  staleTime: STALE_TIME_MS,
+});
 
 function governanceListQueryString(params?: GovernanceListParams): string {
   if (!params) return "";
@@ -91,6 +149,20 @@ export async function promoteRiskAlertToEscalation(
     {
       method: "POST",
       body: JSON.stringify({ risk_alert_id: riskAlertId }),
+    },
+  );
+  return body.data;
+}
+
+export async function publishClientEscalationSummary(
+  escalationId: string,
+  payload: { client_summary: string; client_visible?: boolean },
+): Promise<GovernanceEscalation> {
+  const body = await apiFetch<{ data: GovernanceEscalation }>(
+    `/governance/escalations/${escalationId}/publish-client-summary`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
     },
   );
   return body.data;
@@ -274,12 +346,13 @@ export function mergeGovernanceAnalytics(
     portfolio_risk_ranking: summary.portfolio_risk_ranking,
     insights: detail?.insights ?? [],
     recommendations: detail?.recommendations ?? [],
-    trends: detail?.trends ?? [],
     charts: { ...summary.charts, ...(detail?.charts ?? {}) },
     recent_activity: detail?.recent_activity ?? [],
     export_sections: [...summary.export_sections, ...(detail?.export_sections ?? [])],
     portfolio_governance_score:
-      summary.portfolio_governance_score ?? detail?.insights_kpis?.portfolio_governance_score ?? null,
+      summary.portfolio_governance_score ??
+      detail?.insights_kpis?.portfolio_governance_score ??
+      null,
     insights_kpis: detail?.insights_kpis ?? summary.insights_kpis ?? null,
     top_governance_risks: detail?.top_governance_risks ?? [],
     top_recurring_blockers: detail?.top_recurring_blockers ?? [],
@@ -296,9 +369,7 @@ export async function exportGovernanceAnalytics(
 ): Promise<Blob> {
   const normalized: GovernanceAnalyticsFilters =
     typeof filters === "number" ? { days: filters } : filters;
-  return apiFetchBlob(
-    `/governance/analytics/export.${format}?${analyticsQueryString(normalized)}`,
-  );
+  return apiFetchBlob(`/governance/analytics/export.${format}?${analyticsQueryString(normalized)}`);
 }
 
 export const governanceBootstrapQueryOptions = queryOptions({
@@ -725,13 +796,15 @@ export async function convertGovernanceAIRecommendationToEscalation(
   return body.data;
 }
 
-export async function listEscalationSuggestions(params: {
-  project_id?: string;
-  status?: string;
-  trigger_type?: string;
-  limit?: number;
-  offset?: number;
-} = {}): Promise<GovernanceAIRecommendation[]> {
+export async function listEscalationSuggestions(
+  params: {
+    project_id?: string;
+    status?: string;
+    trigger_type?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<GovernanceAIRecommendation[]> {
   const qs = new URLSearchParams();
   if (params.project_id) qs.set("project_id", params.project_id);
   if (params.status) qs.set("status", params.status);
@@ -745,11 +818,13 @@ export async function listEscalationSuggestions(params: {
   return body.data;
 }
 
-export function escalationSuggestionsQueryOptions(params: {
-  project_id?: string;
-  status?: string;
-  limit?: number;
-} = {}) {
+export function escalationSuggestionsQueryOptions(
+  params: {
+    project_id?: string;
+    status?: string;
+    limit?: number;
+  } = {},
+) {
   return queryOptions({
     queryKey: ["governance", "escalation-suggestions", params],
     queryFn: () => listEscalationSuggestions(params),
@@ -757,10 +832,12 @@ export function escalationSuggestionsQueryOptions(params: {
   });
 }
 
-export async function listEscalationSuggestionScans(params: {
-  project_id?: string;
-  limit?: number;
-} = {}): Promise<EscalationSuggestionScanHistory[]> {
+export async function listEscalationSuggestionScans(
+  params: {
+    project_id?: string;
+    limit?: number;
+  } = {},
+): Promise<EscalationSuggestionScanHistory[]> {
   const qs = new URLSearchParams();
   if (params.project_id) qs.set("project_id", params.project_id);
   if (params.limit != null) qs.set("limit", String(params.limit));
@@ -771,10 +848,12 @@ export async function listEscalationSuggestionScans(params: {
   return body.data;
 }
 
-export function escalationSuggestionScansQueryOptions(params: {
-  project_id?: string;
-  limit?: number;
-} = {}) {
+export function escalationSuggestionScansQueryOptions(
+  params: {
+    project_id?: string;
+    limit?: number;
+  } = {},
+) {
   return queryOptions({
     queryKey: ["governance", "escalation-suggestion-scans", params],
     queryFn: () => listEscalationSuggestionScans(params),
@@ -955,9 +1034,7 @@ export function recommendationEffectivenessTrendsQueryOptions(
   });
 }
 
-export function frequentlyDismissedCategoriesQueryOptions(
-  filters: GovernanceEffectivenessFilters,
-) {
+export function frequentlyDismissedCategoriesQueryOptions(filters: GovernanceEffectivenessFilters) {
   return queryOptions({
     queryKey: queryKeys.governanceRecommendationEffectivenessCategories("dismissed", {
       days: filters.days ?? 30,
@@ -969,9 +1046,7 @@ export function frequentlyDismissedCategoriesQueryOptions(
   });
 }
 
-export function frequentlyAcceptedCategoriesQueryOptions(
-  filters: GovernanceEffectivenessFilters,
-) {
+export function frequentlyAcceptedCategoriesQueryOptions(filters: GovernanceEffectivenessFilters) {
   return queryOptions({
     queryKey: queryKeys.governanceRecommendationEffectivenessCategories("accepted", {
       days: filters.days ?? 30,

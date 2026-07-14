@@ -367,6 +367,7 @@ class GovernanceEvidenceSourceType(StrEnum):
 class GovernanceEscalationSourceType(StrEnum):
     DELIVERY_RISK = "delivery_risk"
     KNOWLEDGE_DOCUMENT = "knowledge_document"
+    QUALITY_RISK = "quality_risk"
 
 
 class GovernanceAIRecommendationScope(StrEnum):
@@ -1886,6 +1887,12 @@ class GovernanceEscalation(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelet
         governance_escalation_source_type
     )
     source_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    client_summary: Mapped[str | None] = mapped_column(Text)
+    client_visible: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    client_published_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    client_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class GovernanceAction(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):

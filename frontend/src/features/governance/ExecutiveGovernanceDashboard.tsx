@@ -1,15 +1,5 @@
 import { Download } from "lucide-react";
-import { useMemo, useState, type RefObject } from "react";
-import {
-  CartesianGrid,
-  Legend,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import { useState, type RefObject } from "react";
 
 import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
 import { Button } from "@/components/ui/button";
@@ -24,7 +14,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { GovernanceRecommendationsSection } from "@/features/governance/GovernanceRecommendationsSection";
 import { GovernanceKpiStrip } from "@/features/governance/GovernanceKpiStrip";
-import { CHART_AXIS_STYLE, CHART_TOOLTIP_STYLE } from "@/features/quality/format";
 import { exportGovernanceAnalytics } from "@/lib/queries/governance";
 import type {
   GovernanceAnalytics,
@@ -116,7 +105,10 @@ function RiskRanking({
 
 export function ExecutiveAnalyticsDetailSkeleton() {
   return (
-    <div className="grid gap-4 xl:grid-cols-[1fr_1fr]" aria-label="Loading executive analytics detail">
+    <div
+      className="grid gap-4 xl:grid-cols-[1fr_1fr]"
+      aria-label="Loading executive analytics detail"
+    >
       <Card>
         <Skeleton className="h-4 w-40" />
         <Skeleton className="mt-2 h-3 w-56" />
@@ -143,7 +135,6 @@ export function ExecutiveGovernanceDashboard({
   analytics,
   kpis,
   summaryLoading,
-  detailLoading,
   rangeDays,
   onRangeChange,
   projectFilter,
@@ -159,7 +150,6 @@ export function ExecutiveGovernanceDashboard({
   analytics: GovernanceAnalytics | null;
   kpis: GovernanceKpis;
   summaryLoading: boolean;
-  detailLoading: boolean;
   rangeDays: number;
   onRangeChange: (days: number) => void;
   projectFilter?: string | null;
@@ -176,20 +166,6 @@ export function ExecutiveGovernanceDashboard({
   const [focusProjectId, setFocusProjectId] = useState<string | null>(
     ranking[0]?.project_id ?? null,
   );
-  const trends = analytics?.trends ?? [];
-  const chartData = useMemo(
-    () =>
-      trends.map((point) => ({
-        date: point.date.slice(5),
-        portfolio_health: point.portfolio_health,
-        escalations_created: point.escalations_created,
-        recommendations_created: point.recommendations_created ?? 0,
-        recommendations_accepted: point.recommendations_accepted ?? 0,
-        recommendations_dismissed: point.recommendations_dismissed ?? 0,
-      })),
-    [trends],
-  );
-
   const handleOpenProject = (projectId: string) => {
     setFocusProjectId(projectId);
     onOpenProject(projectId);
@@ -202,14 +178,12 @@ export function ExecutiveGovernanceDashboard({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <SectionHeader
           title="Executive Governance Intelligence"
-          sub="Portfolio health, trends, risks, and evidence-backed recommendations"
+          sub="Portfolio health, risks, and evidence-backed recommendations"
         />
         <div className="flex flex-wrap items-center gap-2">
           <Select
             value={projectFilter ?? "all"}
-            onValueChange={(value) =>
-              onProjectFilterChange?.(value === "all" ? null : value)
-            }
+            onValueChange={(value) => onProjectFilterChange?.(value === "all" ? null : value)}
           >
             <SelectTrigger className="h-8 w-[160px] text-xs">
               <SelectValue placeholder="All projects" />
@@ -225,9 +199,7 @@ export function ExecutiveGovernanceDashboard({
           </Select>
           <Select
             value={verticalFilter ?? "all"}
-            onValueChange={(value) =>
-              onVerticalFilterChange?.(value === "all" ? null : value)
-            }
+            onValueChange={(value) => onVerticalFilterChange?.(value === "all" ? null : value)}
           >
             <SelectTrigger className="h-8 w-[160px] text-xs">
               <SelectValue placeholder="All departments" />
@@ -274,89 +246,17 @@ export function ExecutiveGovernanceDashboard({
 
       <GovernanceKpiStrip kpis={kpis} isLoading={summaryLoading && !analytics} />
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        <Card>
-          <SectionHeader title="Governance Trend" sub="Portfolio health over time" />
-          {detailLoading && chartData.length === 0 ? (
-            <Skeleton className="h-[240px] w-full" />
-          ) : (
-            <ResponsiveContainer width="100%" height={240}>
-              <LineChart data={chartData}>
-                <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" />
-                <XAxis dataKey="date" {...CHART_AXIS_STYLE} />
-                <YAxis {...CHART_AXIS_STYLE} domain={[0, 100]} />
-                <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
-                <Line
-                  dataKey="portfolio_health"
-                  stroke="#0D1240"
-                  strokeWidth={2}
-                  name="Portfolio health"
-                  dot={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          )}
-        </Card>
-        <Card>
-          <SectionHeader
-            title="Escalation & Recommendation Trend"
-            sub="Created volume and outcomes"
-          />
-          {detailLoading && chartData.length === 0 ? (
-            <Skeleton className="h-[240px] w-full" />
-          ) : (
-            <ResponsiveContainer width="100%" height={240}>
-              <LineChart data={chartData}>
-                <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" />
-                <XAxis dataKey="date" {...CHART_AXIS_STYLE} />
-                <YAxis {...CHART_AXIS_STYLE} allowDecimals={false} />
-                <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
-                <Legend wrapperStyle={{ fontSize: 11, color: "#8b92a5" }} />
-                <Line
-                  dataKey="escalations_created"
-                  stroke="#ef4444"
-                  strokeWidth={2}
-                  name="Escalations"
-                  dot={false}
-                />
-                <Line
-                  dataKey="recommendations_created"
-                  stroke="#3b82f6"
-                  strokeWidth={2}
-                  name="Recommendations"
-                  dot={false}
-                />
-                <Line
-                  dataKey="recommendations_accepted"
-                  stroke="#22c55e"
-                  strokeWidth={2}
-                  name="Accepted"
-                  dot={false}
-                />
-                <Line
-                  dataKey="recommendations_dismissed"
-                  stroke="#a3a3a3"
-                  strokeWidth={2}
-                  name="Dismissed"
-                  dot={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          )}
-        </Card>
-      </div>
-
-      <div ref={detailSectionRef as RefObject<HTMLDivElement>} className="grid gap-4 xl:grid-cols-[1fr_1fr]">
+      <div
+        ref={detailSectionRef as RefObject<HTMLDivElement>}
+        className="grid gap-4 xl:grid-cols-[1fr_1fr]"
+      >
         <RiskRanking
           rows={ranking}
           onOpenProject={handleOpenProject}
           isLoading={summaryLoading && ranking.length === 0}
           selectedProjectId={effectiveFocus}
         />
-        <GovernanceRecommendationsSection
-          focusProjectId={effectiveFocus}
-          canWrite={canWrite}
-        />
+        <GovernanceRecommendationsSection focusProjectId={effectiveFocus} canWrite={canWrite} />
       </div>
     </section>
   );

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { AiBadge, Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
@@ -87,7 +87,9 @@ function idempotencyKey(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function conversionStatusLabel(status: GovernanceAIRecommendation["acceptance_status"]): string | null {
+function conversionStatusLabel(
+  status: GovernanceAIRecommendation["acceptance_status"],
+): string | null {
   if (status === "accepted_as_action") return "Converted to Action";
   if (status === "accepted_as_escalation") return "Converted to Escalation";
   if (status === "partially_accepted") return "Partially Accepted";
@@ -124,7 +126,9 @@ function AIRecommendationCard({
             {recommendation.is_stale ? <StatusPill status="Stale" /> : null}
             {convertedLabel ? <StatusPill status={convertedLabel} /> : null}
             {recommendation.project_name ? (
-              <span className="text-[11px] text-muted-foreground">{recommendation.project_name}</span>
+              <span className="text-[11px] text-muted-foreground">
+                {recommendation.project_name}
+              </span>
             ) : (
               <span className="text-[11px] text-muted-foreground">Portfolio</span>
             )}
@@ -132,7 +136,8 @@ function AIRecommendationCard({
           <p className="text-sm font-medium">{recommendation.title}</p>
           <p className="mt-1 text-xs text-muted-foreground">{recommendation.narrative}</p>
           <p className="mt-2 text-[11px] text-muted-foreground">
-            <span className="font-medium text-foreground">Rationale:</span> {recommendation.rationale}
+            <span className="font-medium text-foreground">Rationale:</span>{" "}
+            {recommendation.rationale}
           </p>
           {recommendation.suggested_actions.length > 0 ? (
             <ul className="mt-2 space-y-1 text-[11px] text-muted-foreground">
@@ -280,6 +285,97 @@ function AIRecommendationCard({
   );
 }
 
+function AIRecommendationsByProject({
+  recommendations,
+  busy,
+  onDismiss,
+  onRegenerate,
+  onFeedback,
+  onConvert,
+}: {
+  recommendations: GovernanceAIRecommendation[];
+  busy: boolean;
+  onDismiss: (id: string) => void;
+  onRegenerate: (id: string) => void;
+  onFeedback: (id: string, helpful: boolean) => void;
+  onConvert: (draft: ConversionDraft) => void;
+}) {
+  const groups = useMemo(() => {
+    const byProject = new Map<
+      string,
+      { key: string; label: string; recommendations: GovernanceAIRecommendation[] }
+    >();
+    for (const recommendation of recommendations) {
+      const key = recommendation.project_id ?? "portfolio";
+      const existing = byProject.get(key);
+      if (existing) {
+        existing.recommendations.push(recommendation);
+        continue;
+      }
+      byProject.set(key, {
+        key,
+        label:
+          recommendation.project_name ??
+          (recommendation.project_id
+            ? `Project ${recommendation.project_id.slice(0, 8)}`
+            : "Portfolio"),
+        recommendations: [recommendation],
+      });
+    }
+    return Array.from(byProject.values());
+  }, [recommendations]);
+  const [selectedProject, setSelectedProject] = useState(groups[0]?.key ?? "");
+
+  useEffect(() => {
+    if (!groups.some((group) => group.key === selectedProject)) {
+      setSelectedProject(groups[0]?.key ?? "");
+    }
+  }, [groups, selectedProject]);
+
+  if (groups.length === 0) return null;
+  const activeGroup = groups.find((group) => group.key === selectedProject) ?? groups[0];
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Label htmlFor="recommendation-project" className="text-xs text-muted-foreground">
+          Project
+        </Label>
+        <Select value={activeGroup.key} onValueChange={setSelectedProject}>
+          <SelectTrigger
+            id="recommendation-project"
+            aria-label="Recommendation project"
+            className="h-9 w-full sm:w-[320px]"
+          >
+            <SelectValue placeholder="Select a project" />
+          </SelectTrigger>
+          <SelectContent>
+            {groups.map((group) => (
+              <SelectItem key={group.key} value={group.key}>
+                {group.label} ({group.recommendations.length})
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="mt-3 space-y-3">
+        {activeGroup.recommendations.map((recommendation) => (
+          <AIRecommendationCard
+            key={recommendation.id}
+            recommendation={recommendation}
+            busy={busy}
+            onDismiss={onDismiss}
+            onRegenerate={onRegenerate}
+            onFeedback={onFeedback}
+            onConvert={onConvert}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ConversionDialog({
   draft,
   open,
@@ -308,7 +404,9 @@ function ConversionDialog({
     setProjectId(draft.recommendation.project_id ?? "");
     setDueDate("");
     setStatus("open");
-    setSeverity(draft.recommendation.priority === "critical" ? "high" : draft.recommendation.priority);
+    setSeverity(
+      draft.recommendation.priority === "critical" ? "high" : draft.recommendation.priority,
+    );
     setNote("");
   }, [draft]);
 
@@ -319,7 +417,9 @@ function ConversionDialog({
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>
-            {draft?.target === "escalation" ? "Create Governance Escalation" : "Create Governance Action"}
+            {draft?.target === "escalation"
+              ? "Create Governance Escalation"
+              : "Create Governance Action"}
           </DialogTitle>
           <DialogDescription>
             Review and edit the record before creating it from the selected recommendation.
@@ -334,7 +434,11 @@ function ConversionDialog({
             <div className="grid gap-3 md:grid-cols-2">
               <div className="space-y-1.5 md:col-span-2">
                 <Label htmlFor="conversion-title">Title</Label>
-                <Input id="conversion-title" value={title} onChange={(event) => setTitle(event.target.value)} />
+                <Input
+                  id="conversion-title"
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                />
               </div>
               <div className="space-y-1.5 md:col-span-2">
                 <Label htmlFor="conversion-description">Description</Label>
@@ -381,7 +485,10 @@ function ConversionDialog({
                 <>
                   <div className="space-y-1.5">
                     <Label>Severity</Label>
-                    <Select value={severity} onValueChange={(value) => setSeverity(value as GovernanceEscalationSeverity)}>
+                    <Select
+                      value={severity}
+                      onValueChange={(value) => setSeverity(value as GovernanceEscalationSeverity)}
+                    >
                       <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
@@ -420,7 +527,12 @@ function ConversionDialog({
           </div>
         ) : null}
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={pending}
+          >
             Cancel
           </Button>
           <Button
@@ -459,7 +571,7 @@ export function GovernanceRecommendationsSection({
   const [lastConversion, setLastConversion] = useState<GovernanceRecommendationConversion | null>(
     null,
   );
-  const listParams = { scope: "project" as const, status: "active", limit: 10 };
+  const listParams = { scope: "project" as const, status: "active", limit: 100 };
   const aiQuery = useQuery({
     ...governanceAIRecommendationsQueryOptions(listParams),
     // List only — never generate on mount.
@@ -471,27 +583,29 @@ export function GovernanceRecommendationsSection({
   };
 
   const generateMutation = useMutation({
-    mutationFn: () => {
-      if (!focusProjectId) {
-        return Promise.reject(new Error("Select a project from the risk ranking first."));
-      }
-      return generateGovernanceAIRecommendations({
-        project_id: focusProjectId,
+    mutationFn: () =>
+      generateGovernanceAIRecommendations({
         scope: "project",
         force: false,
-      });
-    },
+      }),
     onSuccess: async (result) => {
-      if (result.fallback_used) {
+      const generatedSummary = `${result.projects_with_recommendations} of ${result.projects_attempted} projects`;
+      if (Object.keys(result.project_failures).length > 0) {
+        toast.warning(
+          `Recommendations completed for ${generatedSummary}; ${Object.keys(result.project_failures).length} project(s) failed.`,
+        );
+      } else if (result.fallback_used) {
         toast.message(
           result.fallback_reason
-            ? `AI generation unavailable (${result.fallback_reason}). Showing rule-based recommendations.`
-            : "AI generation unavailable. Showing rule-based recommendations.",
+            ? `Processed all ${result.projects_attempted} projects; some used rule-based fallback (${result.fallback_reason}).`
+            : `Processed all ${result.projects_attempted} projects; some used rule-based fallback.`,
         );
       } else if (result.reused) {
-        toast.success("Existing AI recommendations reused for unchanged evidence.");
+        toast.success(
+          `Existing AI recommendations reused for all ${result.projects_attempted} projects.`,
+        );
       } else {
-        toast.success("AI recommendations generated.");
+        toast.success(`AI recommendations generated for ${generatedSummary}.`);
       }
       await invalidate();
     },
@@ -598,7 +712,7 @@ export function GovernanceRecommendationsSection({
             type="button"
             size="sm"
             className="shadow-none"
-            disabled={busy || !focusProjectId}
+            disabled={busy}
             onClick={() => generateMutation.mutate()}
           >
             {generateMutation.isPending ? "Generating…" : "Generate AI recommendations"}
@@ -622,8 +736,8 @@ export function GovernanceRecommendationsSection({
               ? `Action ${lastConversion.created_action_id ?? ""}`
               : `Escalation ${lastConversion.created_escalation_id ?? ""}`}
             {" · "}
-            {(lastConversion.created_action ?? lastConversion.created_escalation)?.evidence_link_count ??
-              0}{" "}
+            {(lastConversion.created_action ?? lastConversion.created_escalation)
+              ?.evidence_link_count ?? 0}{" "}
             evidence link(s) · source/evidence traceability available on the created record
           </p>
           <Button
@@ -670,22 +784,18 @@ export function GovernanceRecommendationsSection({
               </div>
             ) : aiItems.length === 0 ? (
               <p className="py-2 text-sm text-muted-foreground">
-                {focusProjectId
-                  ? "No AI recommendations yet. Generate when ready - this never runs on page load."
-                  : "Open a project from the risk ranking, then generate AI recommendations."}
+                No AI recommendations yet. Generate recommendations for every project when ready -
+                this never runs on page load.
               </p>
             ) : (
-              aiItems.map((item) => (
-                <AIRecommendationCard
-                  key={item.id}
-                  recommendation={item}
-                  busy={busy}
-                  onDismiss={(id) => dismissMutation.mutate(id)}
-                  onRegenerate={(id) => regenerateMutation.mutate(id)}
-                  onFeedback={(id, helpful) => feedbackMutation.mutate({ id, helpful })}
-                  onConvert={setConversionDraft}
-                />
-              ))
+              <AIRecommendationsByProject
+                recommendations={aiItems}
+                busy={busy}
+                onDismiss={(id) => dismissMutation.mutate(id)}
+                onRegenerate={(id) => regenerateMutation.mutate(id)}
+                onFeedback={(id, helpful) => feedbackMutation.mutate({ id, helpful })}
+                onConvert={setConversionDraft}
+              />
             )}
           </div>
         </TabsContent>
@@ -712,7 +822,6 @@ export function GovernanceRecommendationsSection({
         }}
         onSubmit={(draft, values) => conversionMutation.mutate({ draft, values })}
       />
-
     </Card>
   );
 }

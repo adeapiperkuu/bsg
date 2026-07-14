@@ -293,6 +293,11 @@ class GovernanceAIRecommendationGenerationResult(BaseModel):
     candidates_rejected_grounding: int = 0
     duplicates_suppressed: int = 0
     duration_ms: float | None = None
+    projects_attempted: int = 0
+    projects_with_recommendations: int = 0
+    projects_reused: int = 0
+    projects_using_fallback: int = 0
+    project_failures: dict[str, str] = Field(default_factory=dict)
 
 
 class GovernanceAIRecommendationListRead(BaseModel):
@@ -417,6 +422,9 @@ class GovernanceEscalationRead(ORMModel):
     assigned_to_name: str | None = None
     source_type: GovernanceEscalationSourceType | None = None
     source_id: UUID | None = None
+    client_summary: str | None = None
+    client_visible: bool = False
+    client_published_at: datetime | None = None
     provenance_source_type: Literal["manual", "ai_recommendation", "delivery_risk", "other"] = (
         "manual"
     )
@@ -447,10 +455,16 @@ class GovernanceEscalationUpdate(BaseModel):
     resolved_at: datetime | None = None
     source_type: GovernanceEscalationSourceType | None = None
     source_id: UUID | None = None
+    client_summary: str | None = Field(default=None, max_length=4000)
 
 
 class PromoteRiskAlertRequest(BaseModel):
     risk_alert_id: UUID
+
+
+class PublishClientEscalationSummaryRequest(BaseModel):
+    client_summary: str = Field(min_length=1, max_length=4000)
+    client_visible: bool = True
 
 
 class GovernanceEscalationListRead(BaseModel):
@@ -465,6 +479,10 @@ class GovernanceEscalationListRead(BaseModel):
     project_name: str | None = None
     raised_by_name: str | None = None
     assigned_to_name: str | None = None
+    description: str | None = None
+    client_summary: str | None = None
+    client_visible: bool = False
+    client_published_at: datetime | None = None
 
 
 class GovernanceActionRead(ORMModel):
@@ -759,28 +777,6 @@ class GovernanceChartPointRead(BaseModel):
     secondary_value: float | None = None
 
 
-class GovernanceTrendPointRead(BaseModel):
-    date: date
-    open_dependencies: int
-    resolved_dependencies: int
-    blocking_dependencies: int
-    escalations_created: int
-    escalations_resolved: int
-    critical_escalations: int
-    actions_created: int
-    actions_completed: int
-    overdue_actions: int
-    scope_revisions: int
-    scope_approvals: int
-    locked_scope: int
-    portfolio_health: float
-    sla_adherence_pct: float
-    recommendations_created: int = 0
-    recommendations_accepted: int = 0
-    recommendations_dismissed: int = 0
-    escalation_suggestions_created: int = 0
-
-
 class GovernanceInsightsKpisRead(BaseModel):
     portfolio_governance_score: float
     projects_at_risk: int = 0
@@ -814,7 +810,6 @@ class GovernanceAnalyticsRead(BaseModel):
     portfolio_risk_ranking: list[GovernanceHealthProjectRead]
     insights: list[GovernanceInsightRead]
     recommendations: list[GovernanceRecommendationRead]
-    trends: list[GovernanceTrendPointRead]
     charts: dict[str, list[GovernanceChartPointRead]]
     recent_activity: list[GovernanceEvidenceRead] = Field(default_factory=list)
     export_sections: list[str] = Field(default_factory=list)
@@ -846,7 +841,6 @@ class GovernanceAnalyticsDetailRead(BaseModel):
     date_range_days: int
     insights: list[GovernanceInsightRead] = Field(default_factory=list)
     recommendations: list[GovernanceRecommendationRead] = Field(default_factory=list)
-    trends: list[GovernanceTrendPointRead] = Field(default_factory=list)
     charts: dict[str, list[GovernanceChartPointRead]] = Field(default_factory=dict)
     recent_activity: list[GovernanceEvidenceRead] = Field(default_factory=list)
     export_sections: list[str] = Field(default_factory=list)

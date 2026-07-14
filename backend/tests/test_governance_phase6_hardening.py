@@ -63,10 +63,8 @@ def _kpis() -> GovernanceKpisRead:
 
 def _empty_detail_bundle() -> _DetailBundle:
     return _DetailBundle(
-        trend_dependencies=[],
-        trend_escalations=[],
-        trend_actions=[],
-        trend_scopes=[],
+        window_escalations=[],
+        window_actions=[],
         blocking_dependencies=[],
         critical_escalations=[],
         overdue_actions=[],

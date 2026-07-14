@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -11,13 +12,13 @@ from pydantic import ValidationError
 
 from app.agents.governance.schemas.governance import (
     GovernanceAIRecommendationCandidate,
+    GovernanceAIRecommendationGenerationResult,
     GovernanceAIRecommendationLLMResponse,
     GovernanceSuggestedAction,
 )
 from app.agents.governance.services.recommendation_evidence import (
     GovernanceRecommendationEvidence,
     GovernanceRecommendationEvidenceBundle,
-    GovernanceRuleSignal,
     build_rule_signals,
     compute_evidence_hash,
 )
@@ -306,6 +307,128 @@ def test_fingerprint_and_near_duplicate() -> None:
 def test_evidence_hash_stable() -> None:
     item = _evidence()
     assert compute_evidence_hash([item]) == compute_evidence_hash([item])
+
+
+def test_healthy_project_receives_governance_cadence_signal() -> None:
+    project_id = uuid4()
+    project = _evidence(
+        evidence_id=f"project:{project_id}",
+        entity_type="project",
+        project_id=project_id,
+        title="Healthy Project",
+        owner_name=None,
+        due_date=None,
+        status="active",
+        severity="low",
+        attributes={"project_name": "Healthy Project"},
+    )
+
+    signals = build_rule_signals(
+        [project],
+        project_id=project_id,
+        project_name="Healthy Project",
+    )
+
+    assert len(signals) == 1
+    assert signals[0].signal_type == "governance_cadence"
+    assert signals[0].project_id == project_id
+
+
+@pytest.mark.asyncio
+async def test_generate_without_project_id_attempts_every_visible_project(monkeypatch) -> None:
+    from app.agents.governance.services import recommendation_service as svc
+    from app.core.security import CurrentUser
+    from app.db.models import AppRole
+
+    user = CurrentUser(
+        id=uuid4(),
+        org_id=uuid4(),
+        role=AppRole.DELIVERY_MANAGER,
+        email="dm@example.com",
+        is_active=True,
+    )
+    projects = [
+        SimpleNamespace(id=uuid4(), name="Alpha"),
+        SimpleNamespace(id=uuid4(), name="Beta"),
+        SimpleNamespace(id=uuid4(), name="Gamma"),
+    ]
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        return_value=SimpleNamespace(scalars=lambda: projects)
+    )
+    session.rollback = AsyncMock()
+    per_project = AsyncMock(
+        side_effect=[
+            GovernanceAIRecommendationGenerationResult(
+                recommendations=[],
+                reused=True,
+            ),
+            GovernanceAIRecommendationGenerationResult(
+                recommendations=[],
+                fallback_used=True,
+                fallback_reason="provider_error",
+            ),
+            GovernanceAIRecommendationGenerationResult(recommendations=[]),
+        ]
+    )
+    monkeypatch.setattr(svc, "generate_governance_ai_recommendations", per_project)
+
+    result = await svc._generate_recommendations_for_all_projects(
+        session,
+        user,
+        force=False,
+    )
+
+    assert result.projects_attempted == 3
+    assert per_project.await_count == 3
+    assert [call.kwargs["project_id"] for call in per_project.await_args_list] == [
+        project.id for project in projects
+    ]
+    assert result.projects_reused == 1
+    assert result.projects_using_fallback == 1
+
+
+@pytest.mark.asyncio
+async def test_portfolio_generation_records_failure_after_rollback(monkeypatch) -> None:
+    """Regression: accessing expired ORM attrs after rollback caused MissingGreenlet 500s."""
+    from app.agents.governance.services import recommendation_service as svc
+    from app.core.security import CurrentUser
+    from app.db.models import AppRole
+
+    user = CurrentUser(
+        id=uuid4(),
+        org_id=uuid4(),
+        role=AppRole.DELIVERY_MANAGER,
+        email="dm@example.com",
+        is_active=True,
+    )
+    failed_id = uuid4()
+    ok_id = uuid4()
+    projects = [
+        SimpleNamespace(id=failed_id, name="Broken"),
+        SimpleNamespace(id=ok_id, name="Ok"),
+    ]
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=SimpleNamespace(scalars=lambda: projects))
+    session.rollback = AsyncMock()
+
+    async def _side_effect(_session, _user, **kwargs):
+        if kwargs["project_id"] == failed_id:
+            raise RuntimeError("provider boom")
+        return GovernanceAIRecommendationGenerationResult(recommendations=[], reused=True)
+
+    monkeypatch.setattr(svc, "generate_governance_ai_recommendations", AsyncMock(side_effect=_side_effect))
+
+    result = await svc._generate_recommendations_for_all_projects(
+        session,
+        user,
+        force=False,
+    )
+
+    assert result.projects_attempted == 2
+    assert result.project_failures[str(failed_id)] == "generation_failed"
+    assert result.projects_reused == 1
+    session.rollback.assert_awaited()
 
 
 @pytest.mark.asyncio

@@ -96,6 +96,11 @@ class Settings(BaseSettings):
     governance_escalation_suggestion_max_projects_per_scan: int = 25
     governance_escalation_suggestion_max_created_per_scan: int = 20
     governance_escalation_suggestion_scheduled_enabled: bool = False
+    # Quality BR-06 — promote unresolved quality drift into governance_escalations.
+    governance_quality_auto_escalation_enabled: bool = True
+    # Optional outbound delivery for critical governance notifications (no-op when unset).
+    governance_outbound_notifications_enabled: bool = False
+    slack_webhook_url: str | None = None
     # Phase 12 — recommendation effectiveness & learning (read-only analytics + bounded rules).
     governance_recommendation_effectiveness_enabled: bool = True
     governance_recommendation_effectiveness_cache_seconds: int = 180

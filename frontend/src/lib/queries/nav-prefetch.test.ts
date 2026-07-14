@@ -9,9 +9,10 @@ import {
 
 type PrefetchFn = (qc: QueryClient, signal: AbortSignal) => Promise<void>;
 
-const { governanceNav, deliveryNav } = vi.hoisted(() => ({
+const { governanceNav, deliveryNav, knowledgeNav } = vi.hoisted(() => ({
   governanceNav: vi.fn<PrefetchFn>(),
   deliveryNav: vi.fn<PrefetchFn>(),
+  knowledgeNav: vi.fn<PrefetchFn>(),
 }));
 
 vi.mock("@/features/governance/governance-prefetch", () => ({
@@ -22,14 +23,20 @@ vi.mock("@/lib/queries/delivery-prefetch", () => ({
   prefetchDeliveryNav: (qc: QueryClient, signal: AbortSignal) => deliveryNav(qc, signal),
 }));
 
+vi.mock("@/lib/queries/knowledge-prefetch", () => ({
+  prefetchKnowledgeNav: (qc: QueryClient, signal: AbortSignal) => knowledgeNav(qc, signal),
+}));
+
 describe("nav-prefetch single-flight", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     resetNavPrefetchStateForTests();
     governanceNav.mockReset();
     deliveryNav.mockReset();
+    knowledgeNav.mockReset();
     governanceNav.mockResolvedValue(undefined);
     deliveryNav.mockResolvedValue(undefined);
+    knowledgeNav.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -101,5 +108,15 @@ describe("nav-prefetch single-flight", () => {
 
     resolveGovernance();
     await Promise.resolve();
+  });
+
+  it("prefetches Knowledge bootstrap on nav hover", async () => {
+    const queryClient = new QueryClient();
+    scheduleNavPrefetch(queryClient, "/knowledge");
+    expect(knowledgeNav).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(450);
+    expect(knowledgeNav).toHaveBeenCalledTimes(1);
+    expect(governanceNav).not.toHaveBeenCalled();
   });
 });

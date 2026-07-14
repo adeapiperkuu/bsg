@@ -572,15 +572,9 @@ async def ask_knowledge_agent(
 
     llm = knowledge_services.LLMClient()
     context_chunks = _build_context_chunks_from_matches(matches, doc_map, folders_map)
-    prompt_diagnostics = _prompt_size_diagnostics(
-        query_text=query_text,
-        context_chunks=context_chunks,
-        structured_context=structured_context,
-        history=history,
-    )
 
     structured_context = ""
-    if _needs_structured_operational_context(query_text, explicit_project=project):
+    if not fast_path and _needs_structured_operational_context(query_text, explicit_project=project):
         structured_context = await knowledge_services._build_structured_operational_context(
             session,
             current_user,
@@ -605,7 +599,6 @@ async def ask_knowledge_agent(
         structured_context=structured_context,
         fast_path=fast_path,
     )
-    gap_retrieval_params["prompt"] = prompt_diagnostics
     timings.mark("llm_complete_ms")
     timings._marks["llm_first_token_ms"] = round((perf_counter() - llm_start) * 1000, 1)
 
@@ -661,6 +654,7 @@ async def ask_knowledge_agent(
         rewrite_diagnostics=retrieval.rewrite_diagnostics,
         history_diagnostics=history_norm.diagnostics(),
     )
+    gap_retrieval_params["prompt"] = prompt_diagnostics
     gap_retrieval_params["grounding"] = grounding
     if client_safe_validation is not None:
         gap_retrieval_params["client_safe_validation"] = client_safe_validation

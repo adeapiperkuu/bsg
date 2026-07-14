@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from app.agents.delivery.routes import chat as delivery_chat
 from app.agents.delivery.routes import dashboard as delivery_dashboard
+from app.agents.governance.escalation import check_quality_escalations
 from app.agents.governance.routes import governance as governance_routes
 from app.agents.governance.services.escalation_suggestion_service import (
     run_scheduled_escalation_suggestion_scan,
@@ -65,6 +66,19 @@ async def _scheduled_quality_scan() -> None:
             logger.info("Post-scan signal dispatch: %s", totals)
         except Exception:
             logger.exception("Scheduled quality scan failed")
+
+
+async def _scheduled_quality_governance_escalation() -> None:
+    """BR-06: escalate unresolved quality drift into the governance register."""
+    settings = get_settings()
+    if not settings.governance_quality_auto_escalation_enabled:
+        return
+    async with session_scope() as session:
+        try:
+            created = await check_quality_escalations(session)
+            logger.info("Scheduled quality→governance escalation created=%s", created)
+        except Exception:
+            logger.exception("Scheduled quality→governance escalation failed")
 
 
 async def _scheduled_ingestion_queue_poll() -> None:
@@ -129,6 +143,9 @@ async def _scheduled_governance_escalation_scan() -> None:
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     scheduler = AsyncIOScheduler()
     scheduler.add_job(_scheduled_quality_scan, "cron", day_of_week="mon", hour=2)
+    scheduler.add_job(
+        _scheduled_quality_governance_escalation, "cron", day_of_week="mon", hour=2, minute=30
+    )
     scheduler.add_job(_scheduled_governance_escalation_scan, "cron", day_of_week="mon", hour=3)
     scheduler.add_job(_scheduled_ingestion_queue_poll, "interval", seconds=30)
     scheduler.start()

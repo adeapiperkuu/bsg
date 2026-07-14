@@ -24,7 +24,6 @@ from app.agents.governance.services.analytics_service import (
     _build_risk_heatmap,
     _build_top_mitigation_failures,
     _build_top_recurring_blockers,
-    _build_trends,
     _filter_projects,
     _portfolio_governance_score,
     _rate_pct,
@@ -208,38 +207,6 @@ def test_mitigation_failure_aggregation() -> None:
     assert failures[0].count == 2
 
 
-def test_trends_include_recommendation_counters() -> None:
-    now = datetime.now(UTC)
-    recommendations = [
-        _recommendation(generated_at=now, auto_detected=True),
-        _recommendation(
-            generated_at=now,
-            accepted_at=now,
-            acceptance_status=GovernanceRecommendationAcceptanceStatus.ACCEPTED_AS_ACTION,
-        ),
-        _recommendation(
-            generated_at=now,
-            dismissed_at=now,
-            status=GovernanceAIRecommendationStatus.DISMISSED,
-        ),
-    ]
-    points = _build_trends(
-        days=7,
-        project_health=[_health(score=88)],
-        dependencies=[],
-        escalations=[],
-        actions=[],
-        scopes=[],
-        recommendations=recommendations,
-    )
-    assert len(points) == 7
-    assert points[-1].portfolio_health == 88.0
-    assert points[-1].recommendations_created >= 1
-    assert points[-1].recommendations_accepted >= 1
-    assert points[-1].recommendations_dismissed >= 1
-    assert points[-1].escalation_suggestions_created >= 1
-
-
 def test_analytics_cache_key_includes_filters() -> None:
     user = _user()
     project_id = uuid4()
@@ -317,10 +284,8 @@ async def test_detail_includes_insight_lists_and_respects_vertical_filter(
 
     async def _source_bundle(_session, _user, *, today, days, include_signals):
         return _DetailBundle(
-            trend_dependencies=[],
-            trend_escalations=[],
-            trend_actions=[],
-            trend_scopes=[],
+            window_escalations=[],
+            window_actions=[],
             blocking_dependencies=[
                 SimpleNamespace(
                     status=GovernanceDependencyStatus.BLOCKING,

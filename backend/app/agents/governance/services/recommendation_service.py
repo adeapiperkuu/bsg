@@ -72,9 +72,10 @@ from app.db.models import (
     GovernanceEscalationStatus,
     GovernanceRecommendationAcceptanceStatus,
     GovernanceRecommendationConversionTarget,
+    Project,
 )
 from app.services.llm.client import LLMClient
-from app.services.scoping import get_visible_project
+from app.services.scoping import get_visible_project, scoped_project_query
 
 logger = logging.getLogger(__name__)
 
@@ -569,6 +570,80 @@ async def _load_related_rows(
     return list((await session.execute(stmt)).scalars())
 
 
+async def _generate_recommendations_for_all_projects(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    *,
+    force: bool,
+) -> GovernanceAIRecommendationGenerationResult:
+    started = perf_counter()
+    projects = list(
+        (
+            await session.execute(
+                scoped_project_query(current_user).order_by(Project.name.asc())
+            )
+        ).scalars()
+    )
+    recommendations: list[GovernanceAIRecommendationRead] = []
+    rule_based_fallback: list[GovernanceRuleBasedRecommendationRead] = []
+    failures: dict[str, str] = {}
+    projects_with_recommendations = 0
+    projects_reused = 0
+    projects_using_fallback = 0
+    candidates_returned = 0
+    candidates_persisted = 0
+    candidates_rejected_grounding = 0
+    duplicates_suppressed = 0
+
+    project_ids = [project.id for project in projects]
+    for project_id in project_ids:
+        try:
+            result = await generate_governance_ai_recommendations(
+                session,
+                current_user,
+                project_id=project_id,
+                scope=GovernanceAIRecommendationScope.PROJECT,
+                force=force,
+            )
+        except Exception:  # noqa: BLE001 - one project must not abort the portfolio batch
+            await session.rollback()
+            failures[str(project_id)] = "generation_failed"
+            logger.exception(
+                "governance_ai_project_generation_failed project_id=%s",
+                project_id,
+            )
+            continue
+
+        recommendations.extend(result.recommendations)
+        rule_based_fallback.extend(result.rule_based_fallback)
+        projects_with_recommendations += int(bool(result.recommendations))
+        projects_reused += int(result.reused)
+        projects_using_fallback += int(result.fallback_used)
+        candidates_returned += result.candidates_returned
+        candidates_persisted += result.candidates_persisted
+        candidates_rejected_grounding += result.candidates_rejected_grounding
+        duplicates_suppressed += result.duplicates_suppressed
+
+    return GovernanceAIRecommendationGenerationResult(
+        recommendations=recommendations,
+        rule_based_fallback=rule_based_fallback,
+        reused=bool(project_ids) and projects_reused == len(project_ids),
+        fallback_used=projects_using_fallback > 0,
+        fallback_reason="partial_fallback" if projects_using_fallback > 0 else None,
+        generation_request_id=uuid4(),
+        candidates_returned=candidates_returned,
+        candidates_persisted=candidates_persisted,
+        candidates_rejected_grounding=candidates_rejected_grounding,
+        duplicates_suppressed=duplicates_suppressed,
+        duration_ms=round((perf_counter() - started) * 1000, 1),
+        projects_attempted=len(project_ids),
+        projects_with_recommendations=projects_with_recommendations,
+        projects_reused=projects_reused,
+        projects_using_fallback=projects_using_fallback,
+        project_failures=failures,
+    )
+
+
 async def generate_governance_ai_recommendations(
     session: AsyncSession,
     current_user: CurrentUser,
@@ -580,6 +655,12 @@ async def generate_governance_ai_recommendations(
     started = perf_counter()
     _inc_metric("generation_requests")
     assert_can_generate_ai_recommendations(current_user)
+    if scope == GovernanceAIRecommendationScope.PROJECT and project_id is None:
+        return await _generate_recommendations_for_all_projects(
+            session,
+            current_user,
+            force=force,
+        )
     settings = get_settings()
     prompt_version = settings.governance_ai_recommendation_prompt_version or PROMPT_VERSION_DEFAULT
     max_items = max(1, min(settings.governance_ai_recommendation_max_items, 10))

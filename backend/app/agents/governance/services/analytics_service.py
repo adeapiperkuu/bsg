@@ -34,7 +34,6 @@ from app.agents.governance.schemas.governance import (
     GovernanceNamedCountRead,
     GovernanceRecommendationRead,
     GovernanceRiskHeatmapCellRead,
-    GovernanceTrendPointRead,
 )
 from app.agents.governance.services.dashboard_service import (
     _overdue_action_filter,
@@ -299,25 +298,6 @@ async def _fetch_delivery_by_project(
     )
 
 
-async def _fetch_trend_series_bundle(
-    session: AsyncSession,
-    current_user: CurrentUser,
-    *,
-    today: date,
-    days: int,
-) -> tuple[list[ProjectDependency], list[GovernanceEscalation], list[GovernanceAction], list]:
-    """Fetch all trend source rows sequentially on one session."""
-    trend_dependencies = await _fetch_trend_dependencies(
-        session, current_user, today=today, days=days
-    )
-    trend_escalations = await _fetch_trend_escalations(
-        session, current_user, today=today, days=days
-    )
-    trend_actions = await _fetch_trend_actions(session, current_user, today=today, days=days)
-    trend_scopes = await _fetch_trend_scopes(session, current_user, today=today, days=days)
-    return trend_dependencies, trend_escalations, trend_actions, trend_scopes
-
-
 def _trend_window_start(*, today: date, days: int) -> datetime:
     start = today - timedelta(days=days - 1)
     return datetime.combine(start, datetime.min.time(), tzinfo=UTC)
@@ -564,29 +544,7 @@ async def _fetch_action_status_counter(
     )
 
 
-async def _fetch_trend_dependencies(
-    session: AsyncSession,
-    current_user: CurrentUser,
-    *,
-    today: date,
-    days: int,
-) -> list[ProjectDependency]:
-    if not can_read_internal_governance(current_user):
-        return []
-    window_start = _trend_window_start(today=today, days=days)
-    stmt = select(ProjectDependency).where(
-        ProjectDependency.deleted_at.is_(None),
-        or_(
-            ProjectDependency.status != GovernanceDependencyStatus.RESOLVED,
-            ProjectDependency.resolved_at >= window_start,
-            ProjectDependency.created_at >= window_start,
-        ),
-    )
-    stmt = _apply_org_filter(stmt, ProjectDependency.org_id, current_user)
-    return list((await session.execute(stmt)).scalars())
-
-
-async def _fetch_trend_escalations(
+async def _fetch_window_escalations(
     session: AsyncSession,
     current_user: CurrentUser,
     *,
@@ -606,7 +564,7 @@ async def _fetch_trend_escalations(
     return list((await session.execute(stmt)).scalars())
 
 
-async def _fetch_trend_actions(
+async def _fetch_window_actions(
     session: AsyncSession,
     current_user: CurrentUser,
     *,
@@ -625,27 +583,6 @@ async def _fetch_trend_actions(
         ),
     )
     stmt = _apply_org_filter(stmt, GovernanceAction.org_id, current_user)
-    return list((await session.execute(stmt)).scalars())
-
-
-async def _fetch_trend_scopes(
-    session: AsyncSession,
-    current_user: CurrentUser,
-    *,
-    today: date,
-    days: int,
-) -> list[ProjectScopeState]:
-    if not can_read_internal_governance(current_user):
-        return []
-    window_start = _trend_window_start(today=today, days=days)
-    stmt = select(ProjectScopeState).where(
-        ProjectScopeState.deleted_at.is_(None),
-        or_(
-            ProjectScopeState.scope_status == GovernanceScopeStatus.PENDING_REVISION,
-            ProjectScopeState.updated_at >= window_start,
-        ),
-    )
-    stmt = _apply_org_filter(stmt, ProjectScopeState.org_id, current_user)
     return list((await session.execute(stmt)).scalars())
 
 
@@ -1154,113 +1091,19 @@ def _build_recommendations(
     return [item for item in recommendations if item.evidence]
 
 
-def _bucket_date(value: datetime | date | None, start: date, end: date) -> date | None:
-    value_dt = _dt(value)
-    if value_dt is None:
-        return None
-    value_date = value_dt.date()
-    if start <= value_date <= end:
-        return value_date
-    return None
-
-
-def _build_trends(
-    *,
-    days: int,
-    project_health: list[GovernanceHealthProjectRead],
-    dependencies: list,
+def _count_escalations_created(
     escalations: list,
-    actions: list[GovernanceAction],
-    scopes: list,
-    recommendations: list[GovernanceAIRecommendation] | None = None,
-) -> list[GovernanceTrendPointRead]:
-    today = date.today()
+    *,
+    today: date,
+    days: int,
+) -> int:
     start = today - timedelta(days=days - 1)
-    points: list[GovernanceTrendPointRead] = []
-    portfolio_health = _portfolio_governance_score(project_health)
-    sla = calculate_sla_adherence_pct(actions)
-    recommendation_rows = recommendations or []
-    for offset in range(days):
-        day = start + timedelta(days=offset)
-        created_deps = [dep for dep in dependencies if _bucket_date(dep.created_at, day, day) == day]
-        resolved_deps = [dep for dep in dependencies if _bucket_date(dep.resolved_at, day, day) == day]
-        created_escalations = [
-            esc for esc in escalations if _bucket_date(esc.raised_at, day, day) == day
-        ]
-        resolved_escalations = [
-            esc for esc in escalations if _bucket_date(esc.resolved_at, day, day) == day
-        ]
-        created_actions = [action for action in actions if _bucket_date(action.created_at, day, day) == day]
-        completed_actions = [
-            action for action in actions if _bucket_date(action.completed_at, day, day) == day
-        ]
-        updated_scopes = [scope for scope in scopes if _bucket_date(scope.updated_at, day, day) == day]
-        created_recommendations = [
-            row for row in recommendation_rows if _bucket_date(row.generated_at, day, day) == day
-        ]
-        accepted_recommendations = [
-            row
-            for row in recommendation_rows
-            if _recommendation_is_accepted(row) and _bucket_date(row.accepted_at or row.generated_at, day, day) == day
-        ]
-        dismissed_recommendations = [
-            row
-            for row in recommendation_rows
-            if _recommendation_is_dismissed(row)
-            and _bucket_date(row.dismissed_at or row.generated_at, day, day) == day
-        ]
-        points.append(
-            GovernanceTrendPointRead(
-                date=day,
-                open_dependencies=sum(
-                    1
-                    for dep in dependencies
-                    if dep.status != GovernanceDependencyStatus.RESOLVED
-                    and _dt(dep.created_at)
-                    and _dt(dep.created_at).date() <= day
-                ),
-                resolved_dependencies=len(resolved_deps),
-                blocking_dependencies=sum(
-                    1 for dep in created_deps if dep.status == GovernanceDependencyStatus.BLOCKING
-                ),
-                escalations_created=len(created_escalations),
-                escalations_resolved=len(resolved_escalations),
-                critical_escalations=sum(
-                    1 for esc in created_escalations if esc.severity == GovernanceEscalationSeverity.CRITICAL
-                ),
-                actions_created=len(created_actions),
-                actions_completed=len(completed_actions),
-                overdue_actions=sum(
-                    1
-                    for action in actions
-                    if action.due_date is not None
-                    and action.due_date <= day
-                    and effective_action_status(action).value != "completed"
-                ),
-                scope_revisions=sum(
-                    1
-                    for scope in updated_scopes
-                    if scope.scope_status == GovernanceScopeStatus.PENDING_REVISION
-                ),
-                scope_approvals=sum(
-                    1 for scope in updated_scopes if scope.scope_status == GovernanceScopeStatus.APPROVED
-                ),
-                locked_scope=sum(
-                    1 for scope in updated_scopes if scope.scope_status == GovernanceScopeStatus.LOCKED
-                ),
-                portfolio_health=portfolio_health,
-                sla_adherence_pct=sla,
-                recommendations_created=len(created_recommendations),
-                recommendations_accepted=len(accepted_recommendations),
-                recommendations_dismissed=len(dismissed_recommendations),
-                escalation_suggestions_created=sum(
-                    1
-                    for row in created_recommendations
-                    if _recommendation_is_escalation_suggestion(row)
-                ),
-            )
-        )
-    return points
+    count = 0
+    for escalation in escalations:
+        raised_at = _dt(getattr(escalation, "raised_at", None))
+        if raised_at is not None and start <= raised_at.date() <= today:
+            count += 1
+    return count
 
 
 def _build_insights_kpis(
@@ -1590,18 +1433,16 @@ async def get_governance_analytics(
             project_health, key=lambda row: (row.score, -row.priority, row.project_name)
         )
 
-    trends_started = perf_counter()
-    (
-        trend_dependencies,
-        trend_escalations,
-        trend_actions,
-        trend_scopes,
-    ) = await _fetch_trend_series_bundle(session, current_user, today=today, days=effective_days)
+    window_metrics_started = perf_counter()
+    window_escalations = await _fetch_window_escalations(
+        session, current_user, today=today, days=effective_days
+    )
+    window_actions = await _fetch_window_actions(
+        session, current_user, today=today, days=effective_days
+    )
     if project_ids:
-        trend_dependencies = _filter_rows_by_project_ids(trend_dependencies, project_ids)
-        trend_escalations = _filter_rows_by_project_ids(trend_escalations, project_ids)
-        trend_actions = _filter_rows_by_project_ids(trend_actions, project_ids)
-        trend_scopes = _filter_rows_by_project_ids(trend_scopes, project_ids)
+        window_escalations = _filter_rows_by_project_ids(window_escalations, project_ids)
+        window_actions = _filter_rows_by_project_ids(window_actions, project_ids)
 
     ai_recommendations = await _fetch_ai_recommendations_for_insights(
         session,
@@ -1650,32 +1491,24 @@ async def get_governance_analytics(
             recent_activity,
         )
 
-    trends, (
+    (
         dep_type_counter,
         esc_severity_counter,
         action_status_counter,
         overdue_actions,
         recent_activity,
-    ) = await asyncio.gather(
-        asyncio.to_thread(
-            _build_trends,
-            days=effective_days,
-            project_health=project_health,
-            dependencies=trend_dependencies,
-            escalations=trend_escalations,
-            actions=trend_actions,
-            scopes=trend_scopes,
-            recommendations=ai_recommendations,
-        ),
-        _fetch_chart_and_activity(),
-    )
-    trends_ms = round((perf_counter() - trends_started) * 1000, 1)
+    ) = await _fetch_chart_and_activity()
+    window_metrics_ms = round((perf_counter() - window_metrics_started) * 1000, 1)
 
     insights_kpis = _build_insights_kpis(
         project_health=project_health,
-        escalations_created=sum(point.escalations_created for point in trends),
+        escalations_created=_count_escalations_created(
+            window_escalations,
+            today=today,
+            days=effective_days,
+        ),
         recommendations=ai_recommendations,
-        sla_adherence_pct=calculate_sla_adherence_pct(trend_actions),
+        sla_adherence_pct=calculate_sla_adherence_pct(window_actions),
     )
     top_governance_risks = _build_top_governance_risks(project_health, critical_escalations)
     top_recurring_blockers = _build_top_recurring_blockers(blocking_dependencies)
@@ -1750,7 +1583,6 @@ async def get_governance_analytics(
         portfolio_risk_ranking=ranking,
         insights=insights,
         recommendations=recommendations,
-        trends=trends,
         charts=charts,
         recent_activity=recent_activity,
         export_sections=[
@@ -1772,17 +1604,17 @@ async def get_governance_analytics(
     _analytics_cache[cache_key] = (now, analytics)
 
     total_ms = round((perf_counter() - total_started) * 1000, 1)
-    wave_ms = round(max(counts_ms, portfolio_ms, trends_ms, evidence_ms), 1)
+    wave_ms = round(max(counts_ms, portfolio_ms, window_metrics_ms, evidence_ms), 1)
     logger.info(
         "governance_analytics_timing org_id=%s role=%s days=%s total_ms=%s wave_ms=%s "
-        "counts_ms=%s trends_ms=%s portfolio_ms=%s evidence_ms=%s recommendations_ms=%s",
+        "counts_ms=%s window_metrics_ms=%s portfolio_ms=%s evidence_ms=%s recommendations_ms=%s",
         str(current_user.org_id) if current_user.org_id else None,
         current_user.role.value,
         effective_days,
         total_ms,
         wave_ms,
         counts_ms,
-        trends_ms,
+        window_metrics_ms,
         portfolio_ms,
         evidence_ms,
         recommendations_ms,
@@ -1794,7 +1626,7 @@ async def get_governance_analytics(
             "total_ms": total_ms,
             "wave_ms": wave_ms,
             "counts_ms": counts_ms,
-            "trends_ms": trends_ms,
+            "window_metrics_ms": window_metrics_ms,
             "portfolio_ms": portfolio_ms,
             "evidence_ms": evidence_ms,
             "recommendations_ms": recommendations_ms,
@@ -2118,7 +1950,7 @@ def _signal_tuples_from_json(
 
 
 def _detail_bundle_sql(*, include_internal: bool, include_signals: bool):
-    """Second analytics-detail execute: trends, counters, evidence, and activity."""
+    """Second analytics-detail execute: window KPIs, counters, evidence, and activity."""
     internal_predicate = "true" if include_internal else "false"
     signal_cte = ""
     signal_select = ""
@@ -2177,39 +2009,19 @@ def _detail_bundle_sql(*, include_internal: bool, include_signals: bool):
       WHERE {internal_predicate}
         AND a.deleted_at IS NULL
     ),
-    scope_base AS (
-      SELECT s.*
-      FROM project_scope_states s
-      JOIN visible_projects vp ON vp.id = s.project_id
-      WHERE {internal_predicate}
-        AND s.deleted_at IS NULL
-    ),
-    trend_dep AS (
-      SELECT *
-      FROM dep_base
-      WHERE status != 'resolved'
-         OR resolved_at >= :window_start
-         OR created_at >= :window_start
-    ),
-    trend_esc AS (
+    window_escalation AS (
       SELECT *
       FROM esc_base
       WHERE status IN ('open', 'in_progress')
          OR resolved_at >= :window_start
          OR raised_at >= :window_start
     ),
-    trend_action AS (
+    window_action AS (
       SELECT *
       FROM action_base
       WHERE status != 'completed'
          OR completed_at >= :window_start
          OR created_at >= :window_start
-    ),
-    trend_scope AS (
-      SELECT *
-      FROM scope_base
-      WHERE scope_status = 'pending_revision'
-         OR updated_at >= :window_start
     ),
     recent_activity AS (
       SELECT created_at AS occurred_at,
@@ -2284,22 +2096,7 @@ def _detail_bundle_sql(*, include_internal: bool, include_signals: bool):
         LIMIT 8
       ) recent_escalations
     )
-    SELECT 'trend_dependency'::text AS section,
-           jsonb_build_object(
-             'id', id,
-             'project_id', project_id,
-             'title', title,
-             'dependency_type', dependency_type,
-             'due_date', due_date,
-             'status', status,
-             'created_at', created_at,
-             'resolved_at', resolved_at,
-             'project_name', project_name
-           ) AS payload
-    FROM trend_dep
-
-    UNION ALL
-    SELECT 'trend_escalation',
+    SELECT 'window_escalation'::text AS section,
            jsonb_build_object(
              'id', id,
              'project_id', project_id,
@@ -2309,11 +2106,11 @@ def _detail_bundle_sql(*, include_internal: bool, include_signals: bool):
              'raised_at', raised_at,
              'resolved_at', resolved_at,
              'project_name', project_name
-           )
-    FROM trend_esc
+           ) AS payload
+    FROM window_escalation
 
     UNION ALL
-    SELECT 'trend_action',
+    SELECT 'window_action',
            jsonb_build_object(
              'id', id,
              'project_id', project_id,
@@ -2324,17 +2121,7 @@ def _detail_bundle_sql(*, include_internal: bool, include_signals: bool):
              'completed_at', completed_at,
              'project_name', project_name
            )
-    FROM trend_action
-
-    UNION ALL
-    SELECT 'trend_scope',
-           jsonb_build_object(
-             'id', id,
-             'project_id', project_id,
-             'scope_status', scope_status,
-             'updated_at', updated_at
-           )
-    FROM trend_scope
+    FROM window_action
 
     UNION ALL
     SELECT 'blocking_dependency',
@@ -2571,21 +2358,10 @@ def _action_from_payload(payload: dict[str, Any]) -> SimpleNamespace:
     )
 
 
-def _scope_from_payload(payload: dict[str, Any]) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=_parse_uuid(payload.get("id")),
-        project_id=_parse_uuid(payload.get("project_id")),
-        scope_status=GovernanceScopeStatus(str(payload.get("scope_status"))),
-        updated_at=_parse_datetime_value(payload.get("updated_at")),
-    )
-
-
 @dataclass
 class _DetailBundle:
-    trend_dependencies: list[Any]
-    trend_escalations: list[Any]
-    trend_actions: list[Any]
-    trend_scopes: list[Any]
+    window_escalations: list[Any]
+    window_actions: list[Any]
     blocking_dependencies: list[Any]
     critical_escalations: list[Any]
     overdue_actions: list[Any]
@@ -2617,10 +2393,8 @@ async def _fetch_detail_second_bundle(
         ),
     )
     rows = result.mappings().all()
-    trend_dependencies: list[Any] = []
-    trend_escalations: list[Any] = []
-    trend_actions: list[Any] = []
-    trend_scopes: list[Any] = []
+    window_escalations: list[Any] = []
+    window_actions: list[Any] = []
     blocking_dependencies: list[Any] = []
     critical_escalations: list[Any] = []
     overdue_actions: list[Any] = []
@@ -2633,14 +2407,10 @@ async def _fetch_detail_second_bundle(
     for row in rows:
         section = str(row["section"])
         payload = _json_payload(row["payload"])
-        if section == "trend_dependency":
-            trend_dependencies.append(_dependency_from_payload(payload))
-        elif section == "trend_escalation":
-            trend_escalations.append(_escalation_from_payload(payload))
-        elif section == "trend_action":
-            trend_actions.append(_action_from_payload(payload))
-        elif section == "trend_scope":
-            trend_scopes.append(_scope_from_payload(payload))
+        if section == "window_escalation":
+            window_escalations.append(_escalation_from_payload(payload))
+        elif section == "window_action":
+            window_actions.append(_action_from_payload(payload))
         elif section == "blocking_dependency":
             blocking_dependencies.append(_dependency_from_payload(payload))
         elif section == "critical_escalation":
@@ -2699,10 +2469,8 @@ async def _fetch_detail_second_bundle(
         )[:8]
     ]
     return _DetailBundle(
-        trend_dependencies=trend_dependencies,
-        trend_escalations=trend_escalations,
-        trend_actions=trend_actions,
-        trend_scopes=trend_scopes,
+        window_escalations=window_escalations,
+        window_actions=window_actions,
         blocking_dependencies=blocking_dependencies,
         critical_escalations=critical_escalations,
         overdue_actions=overdue_actions,
@@ -2984,7 +2752,7 @@ async def get_governance_analytics_summary(
     top_ranking = ranking[:SUMMARY_RANKING_LIMIT]
     top_health = top_ranking
 
-    # Summary stays lean: portfolio score + at-risk count only. Rates/trends live on detail.
+    # Summary stays lean: portfolio score + at-risk count only. Rates live on detail.
     insights_kpis = GovernanceInsightsKpisRead(
         portfolio_governance_score=_portfolio_governance_score(project_health),
         projects_at_risk=sum(1 for row in project_health if row.risk_level in AT_RISK_LEVELS),
@@ -3033,7 +2801,7 @@ async def get_governance_analytics_detail(
     project_id: UUID | None = None,
     vertical: str | None = None,
 ) -> GovernanceAnalyticsDetailRead:
-    """Heavy analytics sections: trends, charts, recommendations, and activity."""
+    """Heavy analytics sections: charts, recommendations, and activity."""
     assert_can_read_governance(current_user)
     effective_days = _clamp_range(days)
     normalized_vertical = _normalize_vertical_filter(vertical)
@@ -3052,7 +2820,6 @@ async def get_governance_analytics_detail(
                 cache_hit=True,
                 execute_count=0,
                 activity_row_count=len(cached[1].recent_activity),
-                trend_bucket_count=len(cached[1].trends),
             )
         return cached[1]
 
@@ -3131,19 +2898,15 @@ async def get_governance_analytics_detail(
     blocking_dependencies = detail_bundle.blocking_dependencies
     critical_escalations = detail_bundle.critical_escalations
     overdue_actions = detail_bundle.overdue_actions
-    trend_dependencies = detail_bundle.trend_dependencies
-    trend_escalations = detail_bundle.trend_escalations
-    trend_actions = detail_bundle.trend_actions
-    trend_scopes = detail_bundle.trend_scopes
+    window_escalations = detail_bundle.window_escalations
+    window_actions = detail_bundle.window_actions
     recent_activity = detail_bundle.recent_activity
     if project_ids:
         blocking_dependencies = _filter_rows_by_project_ids(blocking_dependencies, project_ids)
         critical_escalations = _filter_rows_by_project_ids(critical_escalations, project_ids)
         overdue_actions = _filter_rows_by_project_ids(overdue_actions, project_ids)
-        trend_dependencies = _filter_rows_by_project_ids(trend_dependencies, project_ids)
-        trend_escalations = _filter_rows_by_project_ids(trend_escalations, project_ids)
-        trend_actions = _filter_rows_by_project_ids(trend_actions, project_ids)
-        trend_scopes = _filter_rows_by_project_ids(trend_scopes, project_ids)
+        window_escalations = _filter_rows_by_project_ids(window_escalations, project_ids)
+        window_actions = _filter_rows_by_project_ids(window_actions, project_ids)
         recent_activity = [
             item
             for item in recent_activity
@@ -3180,21 +2943,15 @@ async def get_governance_analytics_detail(
         project_ids=project_ids or None,
     )
 
-    trends = _build_trends(
-        days=effective_days,
-        project_health=project_health,
-        dependencies=trend_dependencies,
-        escalations=trend_escalations,
-        actions=trend_actions,
-        scopes=trend_scopes,
-        recommendations=ai_recommendations,
-    )
-
     insights_kpis = _build_insights_kpis(
         project_health=project_health,
-        escalations_created=sum(point.escalations_created for point in trends),
+        escalations_created=_count_escalations_created(
+            window_escalations,
+            today=today,
+            days=effective_days,
+        ),
         recommendations=ai_recommendations,
-        sla_adherence_pct=calculate_sla_adherence_pct(trend_actions),
+        sla_adherence_pct=calculate_sla_adherence_pct(window_actions),
     )
     top_governance_risks = _build_top_governance_risks(project_health, critical_escalations)
     top_recurring_blockers = _build_top_recurring_blockers(blocking_dependencies)
@@ -3267,7 +3024,6 @@ async def get_governance_analytics_detail(
         date_range_days=effective_days,
         insights=insights,
         recommendations=recommendations,
-        trends=trends,
         charts=charts,
         recent_activity=recent_activity,
         export_sections=["Charts", "Executive Insights", "Evidence Appendix", "Insights KPIs"],
@@ -3286,18 +3042,16 @@ async def get_governance_analytics_detail(
             cache_hit=False,
             execute_count=3,
             activity_row_count=len(detail.recent_activity),
-            trend_bucket_count=len(detail.trends),
             project_row_count=len(projects),
         )
     total_ms = round((perf_counter() - started) * 1000, 1)
     if total_ms >= 300:
         logger.info(
             "governance_analytics_detail_profile total_ms=%s project_count=%s "
-            "activity_rows=%s trend_buckets=%s query_timings=%s db_executes=3 cached=false",
+            "activity_rows=%s query_timings=%s db_executes=3 cached=false",
             total_ms,
             len(projects),
             len(detail.recent_activity),
-            len(detail.trends),
             query_timings,
         )
     return detail

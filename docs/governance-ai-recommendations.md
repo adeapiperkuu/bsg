@@ -139,7 +139,8 @@ Unchanged from Phases 6–8. Conversion still requires confirmation and never ca
 - Soft mitigation “failure” maps to rejected mitigation recommendations.
 - LLM enrichment is optional and off by default.
 - Portfolio org-wide scan for super-admin without org context requires a project_id.
-- Reviewed client-facing escalation summaries remain out of scope.
+- Client-facing escalation summaries are handled separately via
+  `POST /governance/escalations/{id}/publish-client-summary` (approval-gated `client_visible`).
 
 ## Prior Phase 10 recommendation
 

@@ -43,7 +43,6 @@ class GovernanceEndpointTimer:
         self.filtered: bool | None = None
         self.cache_scope: str | None = None
         self.activity_row_count: int | None = None
-        self.trend_bucket_count: int | None = None
         self.project_row_count: int | None = None
         self._started = perf_counter()
         self._db_depth = 0
@@ -63,7 +62,6 @@ class GovernanceEndpointTimer:
         filtered: bool | None = None,
         cache_scope: str | None = None,
         activity_row_count: int | None = None,
-        trend_bucket_count: int | None = None,
         project_row_count: int | None = None,
     ) -> None:
         """Attach optional profiling fields without changing response payloads."""
@@ -85,8 +83,6 @@ class GovernanceEndpointTimer:
             self.cache_scope = cache_scope
         if activity_row_count is not None:
             self.activity_row_count = activity_row_count
-        if trend_bucket_count is not None:
-            self.trend_bucket_count = trend_bucket_count
         if project_row_count is not None:
             self.project_row_count = project_row_count
 
@@ -163,10 +159,6 @@ class GovernanceEndpointTimer:
             extra["activity_row_count"] = self.activity_row_count
             parts.append("activity_row_count=%s")
             args.append(self.activity_row_count)
-        if self.trend_bucket_count is not None:
-            extra["trend_bucket_count"] = self.trend_bucket_count
-            parts.append("trend_bucket_count=%s")
-            args.append(self.trend_bucket_count)
         if self.project_row_count is not None:
             extra["project_row_count"] = self.project_row_count
             parts.append("project_row_count=%s")

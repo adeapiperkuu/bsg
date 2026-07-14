@@ -1,4 +1,7 @@
-export type GovernanceEscalationSourceType = "delivery_risk" | "knowledge_document";
+export type GovernanceEscalationSourceType =
+  | "delivery_risk"
+  | "knowledge_document"
+  | "quality_risk";
 export type GovernanceRecommendationAcceptanceStatus =
   | "not_accepted"
   | "partially_accepted"
@@ -28,6 +31,23 @@ export type GovernanceEvidenceSourceType =
   | "knowledge_document"
   | "delivery_signal"
   | "weekly_summary";
+
+export type GovernanceSummaryStatus = "draft" | "approved";
+
+export type GovernanceWeeklySummary = {
+  id: string;
+  org_id: string;
+  summary_week: string;
+  summary_text: string;
+  status: GovernanceSummaryStatus;
+  generated_by_ai: boolean;
+  approved_by: string | null;
+  approved_at: string | null;
+  created_at: string;
+  updated_at: string;
+  evidence_links: GovernanceEvidenceLink[];
+  approved_by_name?: string | null;
+};
 
 export type GovernanceKpis = {
   open_actions: number;
@@ -125,6 +145,9 @@ export type GovernanceEscalation = {
   assigned_to_name: string | null;
   source_type?: GovernanceEscalationSourceType | null;
   source_id?: string | null;
+  client_summary?: string | null;
+  client_visible?: boolean;
+  client_published_at?: string | null;
   provenance_source_type?: "manual" | "ai_recommendation" | "delivery_risk" | "other";
   source_recommendation_id?: string | null;
   source_recommendation_title?: string | null;
@@ -300,18 +323,15 @@ export type GovernanceEscalationListItem = Pick<
   | "project_name"
   | "raised_by_name"
   | "assigned_to_name"
+  | "description"
+  | "client_summary"
+  | "client_visible"
+  | "client_published_at"
 >;
 
 export type GovernanceActionListItem = Pick<
   GovernanceAction,
-  | "id"
-  | "project_id"
-  | "title"
-  | "owner_id"
-  | "due_date"
-  | "status"
-  | "project_name"
-  | "owner_name"
+  "id" | "project_id" | "title" | "owner_id" | "due_date" | "status" | "project_name" | "owner_name"
 >;
 
 export type GovernanceBootstrap = {
@@ -506,6 +526,11 @@ export type GovernanceAIRecommendationGenerationResult = {
   candidates_rejected_grounding: number;
   duplicates_suppressed: number;
   duration_ms: number | null;
+  projects_attempted: number;
+  projects_with_recommendations: number;
+  projects_reused: number;
+  projects_using_fallback: number;
+  project_failures: Record<string, string>;
 };
 
 export type GovernanceHealthProject = {
@@ -533,28 +558,6 @@ export type GovernanceChartPoint = {
   label: string;
   value: number;
   secondary_value: number | null;
-};
-
-export type GovernanceTrendPoint = {
-  date: string;
-  open_dependencies: number;
-  resolved_dependencies: number;
-  blocking_dependencies: number;
-  escalations_created: number;
-  escalations_resolved: number;
-  critical_escalations: number;
-  actions_created: number;
-  actions_completed: number;
-  overdue_actions: number;
-  scope_revisions: number;
-  scope_approvals: number;
-  locked_scope: number;
-  portfolio_health: number;
-  sla_adherence_pct: number;
-  recommendations_created?: number;
-  recommendations_accepted?: number;
-  recommendations_dismissed?: number;
-  escalation_suggestions_created?: number;
 };
 
 export type GovernanceInsightsKpis = {
@@ -590,7 +593,6 @@ export type GovernanceAnalytics = {
   portfolio_risk_ranking: GovernanceHealthProject[];
   insights: GovernanceAnalyticsInsight[];
   recommendations: GovernanceAnalyticsRecommendation[];
-  trends: GovernanceTrendPoint[];
   charts: Record<string, GovernanceChartPoint[]>;
   recent_activity: GovernanceAnalyticsEvidence[];
   export_sections: string[];
@@ -620,7 +622,6 @@ export type GovernanceAnalyticsDetail = {
   date_range_days: number;
   insights: GovernanceAnalyticsInsight[];
   recommendations: GovernanceAnalyticsRecommendation[];
-  trends: GovernanceTrendPoint[];
   charts: Record<string, GovernanceChartPoint[]>;
   recent_activity: GovernanceAnalyticsEvidence[];
   export_sections: string[];
@@ -825,6 +826,12 @@ export type GovernanceEscalationUpdatePayload = {
   assigned_to?: string | null;
   source_type?: GovernanceEscalationSourceType | null;
   source_id?: string | null;
+  client_summary?: string | null;
+};
+
+export type PublishClientEscalationSummaryPayload = {
+  client_summary: string;
+  client_visible?: boolean;
 };
 
 export type GovernanceActionUpdatePayload = {

@@ -263,22 +263,6 @@ export interface KnowledgeDocumentApi {
   updated_at: string;
 }
 
-export interface KnowledgeSuggestionApi {
-  id: string;
-  org_id: string;
-  document_id: string | null;
-  suggestion_type: string;
-  title: string;
-  detail: string;
-  proposed_changes: Record<string, unknown>;
-  evidence: Record<string, unknown>;
-  status: string;
-  reviewed_by: string | null;
-  reviewed_at: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface KnowledgeRelatedItemApi {
   document_id: string;
   title: string;
@@ -303,71 +287,6 @@ export interface KnowledgeDocumentAiSummaryApi {
   affected_departments: string[];
   related_document_ids: string[];
   summary_generated_at: string | null;
-}
-
-export interface KnowledgeGapSuggestionApi {
-  gap_query: string;
-  occurrence_count: number;
-  existing_documents_that_may_resolve: KnowledgeRelatedItemApi[];
-  documents_that_should_be_updated: KnowledgeRelatedItemApi[];
-  documents_that_should_be_created: string[];
-  related_lessons_learned: KnowledgeRelatedItemApi[];
-  similar_historical_questions: string[];
-  auto_resolved: boolean;
-}
-
-export interface KnowledgeRetrievalQualityApi {
-  frequently_selected_documents: string[];
-  frequently_ignored_documents: string[];
-  weak_citations: string[];
-  conflicting_answers: string[];
-  repeated_retrieval_failures: number;
-  low_confidence_trend_count: number;
-  average_confidence: number | null;
-  recommendations: string[];
-}
-
-export interface KnowledgeDuplicateMatchApi {
-  document_id: string;
-  title: string;
-  similarity: number;
-  kind: string;
-  message: string;
-}
-
-export interface KnowledgeDuplicateCompareApi {
-  left_document_id: string;
-  right_document_id: string;
-  left_title: string;
-  right_title: string;
-  similarity: number;
-  kind: string;
-  left_preview: string;
-  right_preview: string;
-  can_merge: boolean;
-  message: string;
-  warnings: Array<Record<string, unknown>>;
-}
-
-export interface KnowledgeEvaluationReportApi {
-  total: number;
-  passed: number;
-  failed: number;
-  pass_rate: number;
-  retrieval_accuracy: number;
-  source_accuracy: number;
-  citation_accuracy: number;
-  answer_quality: number;
-  answer_concept_coverage: number;
-  confidence_accuracy: number;
-  confidence_pass_rate: number;
-  client_safe_compliance: number;
-  client_safe_violations: number;
-  average_retrieval_rank: number | null;
-  results: Array<Record<string, unknown>>;
-  generated_at: string;
-  regressions: string[];
-  report_text: string;
 }
 
 export interface KnowledgeDocumentLifecycleActionApi {

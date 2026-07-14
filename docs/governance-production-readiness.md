@@ -67,9 +67,18 @@ Phase 8 adds partial indexes for active governance records and monitoring paths:
 
 - Move heavy AI generation to background jobs with retry/dead-letter visibility.
 - Add first-class notification priority/archive columns if the notification schema evolves.
-- Add Slack/email delivery adapters for critical governance notifications.
+- Expand Slack/email adapters beyond critical governance notifications (digest digests, client channels).
 - Add server-side Excel exports if executive users require workbook formatting.
 - Add synthetic monitoring for `/governance`, `/governance/bootstrap`, and chatbot latency.
+- Connect Team Health Score once Workforce owns ingest (no tables yet).
+
+## Recent additions
+
+- Quality BR-06 auto-escalation into `governance_escalations` (scheduled; feature-flagged).
+- Client-safe escalation summaries (`client_summary` / `client_visible` publish gate).
+- Optional Slack webhook + Resend email for critical governance notifications
+  (`GOVERNANCE_OUTBOUND_NOTIFICATIONS_ENABLED`, `SLACK_WEBHOOK_URL`, `EMAIL_*`).
+- Critical-path dependency highlighting on Dependency Tracker (blocking + overdue).
 
 ## Related
 

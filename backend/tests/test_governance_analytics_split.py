@@ -151,10 +151,8 @@ async def test_detail_does_not_call_get_portfolio_data(
         "app.agents.governance.services.analytics_service._fetch_detail_second_bundle",
         AsyncMock(
             return_value=_DetailBundle(
-                trend_dependencies=[],
-                trend_escalations=[],
-                trend_actions=[],
-                trend_scopes=[],
+                window_escalations=[],
+                window_actions=[],
                 blocking_dependencies=[],
                 critical_escalations=[],
                 overdue_actions=[],
@@ -179,7 +177,6 @@ async def test_detail_does_not_call_get_portfolio_data(
 
     assert isinstance(detail, GovernanceAnalyticsDetailRead)
     assert detail.date_range_days == 7
-    assert len(detail.trends) == 7
     assert detail.recommendations == []
     assert detail.export_sections == [
         "Charts",
@@ -214,10 +211,8 @@ async def test_detail_cache_miss_uses_two_bundles_then_cache_hit_uses_zero(
         nonlocal source_bundle_calls
         source_bundle_calls += 1
         return _DetailBundle(
-            trend_dependencies=[],
-            trend_escalations=[],
-            trend_actions=[],
-            trend_scopes=[],
+            window_escalations=[],
+            window_actions=[],
             blocking_dependencies=[],
             critical_escalations=[],
             overdue_actions=[],
@@ -260,7 +255,6 @@ def test_detail_endpoint_complete_empty_contract_shape() -> None:
         date_range_days=30,
         insights=[],
         recommendations=[],
-        trends=[],
         charts={
             "dependencies_by_type": [],
             "escalations_by_severity": [],
@@ -277,7 +271,6 @@ def test_detail_endpoint_complete_empty_contract_shape() -> None:
         "date_range_days": 30,
         "insights": [],
         "recommendations": [],
-        "trends": [],
         "charts": {
             "dependencies_by_type": [],
             "escalations_by_severity": [],
@@ -343,7 +336,6 @@ async def test_governance_analytics_detail_endpoint_contract(
             date_range_days=days,
             insights=[],
             recommendations=[],
-            trends=[],
             charts={"dependencies_by_type": []},
             recent_activity=[],
             export_sections=["Charts"],
@@ -380,7 +372,6 @@ async def test_governance_analytics_full_endpoint_still_works(
             portfolio_risk_ranking=[health],
             insights=[],
             recommendations=[],
-            trends=[],
             charts={},
             recent_activity=[],
             export_sections=["Charts"],

@@ -15,18 +15,12 @@ import type {
   KnowledgeConversationHistoryTurnApi,
   KnowledgeDocumentFilters,
   KnowledgeDocumentVersionApi,
-  KnowledgeDuplicateCompareApi,
-  KnowledgeDuplicateMatchApi,
-  KnowledgeEvaluationReportApi,
   KnowledgeFeedbackRequestApi,
   KnowledgeFeedbackResponseApi,
   KnowledgeFolderApi,
-  KnowledgeGapSuggestionApi,
   KnowledgeLibraryHealthApi,
   KnowledgeRelatedKnowledgeApi,
-  KnowledgeRetrievalQualityApi,
   KnowledgeRetrievalSettingsApi,
-  KnowledgeSuggestionApi,
   KnowledgeVersionCompareApi,
 } from "@/types/knowledge";
 import type {
@@ -1419,36 +1413,6 @@ export async function submitKnowledgeFeedback(
   return body.data;
 }
 
-export async function listKnowledgeSuggestions(status?: string): Promise<KnowledgeSuggestionApi[]> {
-  const params = status ? `?status=${encodeURIComponent(status)}` : "";
-  const body = await apiFetch<{ data: KnowledgeSuggestionApi[] }>(`/knowledge/suggestions${params}`);
-  return body.data;
-}
-
-export async function generateKnowledgeSuggestions(documentId?: string): Promise<KnowledgeSuggestionApi[]> {
-  const params = documentId ? `?document_id=${encodeURIComponent(documentId)}` : "";
-  const body = await apiFetch<{ data: KnowledgeSuggestionApi[] }>(`/knowledge/suggestions/generate${params}`, {
-    method: "POST",
-  });
-  return body.data;
-}
-
-export async function applyKnowledgeSuggestion(suggestionId: string): Promise<KnowledgeSuggestionApi> {
-  const body = await apiFetch<{ data: KnowledgeSuggestionApi }>(
-    `/knowledge/suggestions/${suggestionId}/apply`,
-    { method: "POST" },
-  );
-  return body.data;
-}
-
-export async function dismissKnowledgeSuggestion(suggestionId: string): Promise<KnowledgeSuggestionApi> {
-  const body = await apiFetch<{ data: KnowledgeSuggestionApi }>(
-    `/knowledge/suggestions/${suggestionId}/dismiss`,
-    { method: "POST" },
-  );
-  return body.data;
-}
-
 export async function getKnowledgeRelatedDocuments(
   documentId: string,
 ): Promise<KnowledgeRelatedKnowledgeApi> {
@@ -1465,47 +1429,6 @@ export async function generateKnowledgeDocumentSummary(
     `/knowledge/documents/${documentId}/summary`,
     { method: "POST" },
   );
-  return body.data;
-}
-
-export async function listKnowledgeGapSuggestions(
-  minOccurrences = 2,
-): Promise<KnowledgeGapSuggestionApi[]> {
-  const body = await apiFetch<{ data: KnowledgeGapSuggestionApi[] }>(
-    `/knowledge/gaps/suggestions?min_occurrences=${minOccurrences}`,
-  );
-  return body.data;
-}
-
-export async function getKnowledgeRetrievalQuality(): Promise<KnowledgeRetrievalQualityApi> {
-  const body = await apiFetch<{ data: KnowledgeRetrievalQualityApi }>("/knowledge/retrieval-quality");
-  return body.data;
-}
-
-export async function listKnowledgeDocumentDuplicates(
-  documentId: string,
-): Promise<KnowledgeDuplicateMatchApi[]> {
-  const body = await apiFetch<{ data: KnowledgeDuplicateMatchApi[] }>(
-    `/knowledge/documents/${documentId}/duplicates`,
-  );
-  return body.data;
-}
-
-export async function compareKnowledgeDuplicates(
-  leftId: string,
-  rightId: string,
-): Promise<KnowledgeDuplicateCompareApi> {
-  const qs = new URLSearchParams({ left_id: leftId, right_id: rightId });
-  const body = await apiFetch<{ data: KnowledgeDuplicateCompareApi }>(
-    `/knowledge/duplicates/compare?${qs.toString()}`,
-  );
-  return body.data;
-}
-
-export async function runKnowledgeEvaluation(): Promise<KnowledgeEvaluationReportApi> {
-  const body = await apiFetch<{ data: KnowledgeEvaluationReportApi }>("/knowledge/evaluation/run", {
-    method: "POST",
-  });
   return body.data;
 }
 

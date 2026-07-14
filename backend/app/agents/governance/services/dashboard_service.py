@@ -159,6 +159,7 @@ def _escalation_kpi_subquery(
     current_user: CurrentUser,
     *,
     project_ids: Select | None = None,
+    client_visible_only: bool = False,
 ):
     stmt = (
         select(
@@ -185,6 +186,8 @@ def _escalation_kpi_subquery(
     stmt = _apply_org_filter(stmt, GovernanceEscalation.org_id, current_user)
     if project_ids is not None:
         stmt = stmt.where(GovernanceEscalation.project_id.in_(project_ids))
+    if client_visible_only:
+        stmt = stmt.where(GovernanceEscalation.client_visible.is_(True))
     return stmt.subquery("bootstrap_escalation_kpis")
 
 
@@ -226,6 +229,7 @@ async def _fetch_bootstrap_kpis_bundle(
         escalation_kpis = _escalation_kpi_subquery(
             current_user,
             project_ids=_client_assignment_ids_select(current_user),
+            client_visible_only=True,
         )
         stmt = select(
             escalation_kpis.c.open_escalations,

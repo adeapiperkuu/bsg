@@ -533,9 +533,9 @@ async def generate_weekly_governance_summary(
     *,
     summary_week: date | None = None,
 ) -> GovernanceWeeklySummary:
-    from app.agents.governance.services.governance_service import assert_can_write_governance
+    from app.agents.governance.services.governance_service import assert_can_manage_weekly_summary
 
-    assert_can_write_governance(current_user)
+    assert_can_manage_weekly_summary(current_user)
     week = summary_week or monday_of_week()
 
     evidence_items, context = await collect_weekly_summary_evidence(

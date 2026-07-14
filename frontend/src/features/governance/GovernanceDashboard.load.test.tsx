@@ -1,6 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { Suspense } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -12,6 +11,20 @@ import {
 import * as api from "@/lib/api";
 import { useAuthStore } from "@/stores/useAuthStore";
 import type { MeUser } from "@/types/auth";
+
+const { navigateMock } = vi.hoisted(() => ({ navigateMock: vi.fn() }));
+
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-router")>()),
+  useNavigate: () => navigateMock,
+}));
+
+vi.mock("@/routes/governance", () => ({
+  Route: {
+    fullPath: "/governance",
+    useSearch: () => ({}),
+  },
+}));
 
 class ResizeObserverMock {
   observe() {}
@@ -28,6 +41,14 @@ const deliveryManager: MeUser = {
   full_name: "Delivery Manager",
   role: "delivery_manager",
   is_active: true,
+};
+
+const clientUser: MeUser = {
+  ...deliveryManager,
+  id: "33333333-3333-3333-3333-333333333333",
+  email: "client@example.com",
+  full_name: "Client User",
+  role: "client",
 };
 
 const bootstrapKpis = {
@@ -158,9 +179,7 @@ describe("GovernanceDashboard load behavior", () => {
     });
 
     expect(fetchCalls.some((path) => path.startsWith("/governance/dependencies"))).toBe(true);
-    expect(fetchCalls.some((path) => path.startsWith("/governance/analytics/summary"))).toBe(
-      false,
-    );
+    expect(fetchCalls.some((path) => path.startsWith("/governance/analytics/summary"))).toBe(false);
 
     await waitFor(
       () => {
@@ -227,9 +246,11 @@ describe("GovernanceDashboard load behavior", () => {
 
     const kpiSection = await screen.findByLabelText("Governance portfolio KPIs");
 
-    expect(kpiSection).toHaveTextContent("42");
-    expect(kpiSection).toHaveTextContent("11");
-    expect(kpiSection).toHaveTextContent("6");
+    await waitFor(() => {
+      expect(kpiSection).toHaveTextContent("42");
+      expect(kpiSection).toHaveTextContent("11");
+      expect(kpiSection).toHaveTextContent("6");
+    });
     expect(fetchCalls.some((path) => path.startsWith("/governance/bootstrap"))).toBe(true);
   });
 
@@ -266,20 +287,31 @@ describe("GovernanceDashboard load behavior", () => {
     ).toBe(false);
   });
 
-  it("lazy-loads governance tools panels only after a tab is opened", async () => {
-    const user = userEvent.setup();
+  it("always shows the governance tools tabs and opens the agent by default", async () => {
     renderDashboard();
-
-    await waitFor(() => {
-      expect(screen.getByText("Vendor contract review")).toBeInTheDocument();
-    });
-
-    expect(screen.queryByText("Ask a governance question")).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: /Ask Governance Agent/i }));
 
     await waitFor(() => {
       expect(screen.getByText("Ask a governance question")).toBeInTheDocument();
     });
+
+    expect(screen.getByRole("tab", { name: /Ask Governance Agent/i })).toHaveAttribute(
+      "data-state",
+      "active",
+    );
+    expect(screen.getByRole("tab", { name: /Project Charters/i })).toBeVisible();
+    expect(screen.getByRole("tab", { name: /Governance This Week/i })).toBeVisible();
+  });
+
+  it("keeps all governance tools tabs visible for client users", async () => {
+    useAuthStore.setState({ user: clientUser });
+    renderDashboard();
+
+    await waitFor(() => {
+      expect(screen.getByText("Ask a governance question")).toBeInTheDocument();
+    });
+
+    expect(screen.getByRole("tab", { name: /Ask Governance Agent/i })).toBeVisible();
+    expect(screen.getByRole("tab", { name: /Project Charters/i })).toBeVisible();
+    expect(screen.getByRole("tab", { name: /Governance This Week/i })).toBeVisible();
   });
 });

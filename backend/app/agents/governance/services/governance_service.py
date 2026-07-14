@@ -83,6 +83,11 @@ GOVERNANCE_READ_ROLES = {
     AppRole.CLIENT,
 }
 GOVERNANCE_WRITE_ROLES = {AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN}
+WEEKLY_SUMMARY_WRITE_ROLES = {
+    AppRole.DELIVERY_MANAGER,
+    AppRole.BSG_LEADERSHIP,
+    AppRole.SUPER_ADMIN,
+}
 DEPENDENCY_AUDIT_FIELDS = (
     "title",
     "description",
@@ -103,6 +108,10 @@ ESCALATION_AUDIT_FIELDS = (
     "resolved_at",
     "source_type",
     "source_id",
+    "client_summary",
+    "client_visible",
+    "client_published_by",
+    "client_published_at",
     "deleted_at",
 )
 ACTION_AUDIT_FIELDS = (
@@ -201,6 +210,12 @@ def assert_can_read_governance(current_user: CurrentUser) -> None:
 
 def assert_can_write_governance(current_user: CurrentUser) -> None:
     if current_user.role not in GOVERNANCE_WRITE_ROLES:
+        raise ApiError(403, "FORBIDDEN", "Authenticated user lacks permission.")
+
+
+def assert_can_manage_weekly_summary(current_user: CurrentUser) -> None:
+    """Authorize the summary approval workflow without broadening other governance writes."""
+    if current_user.role not in WEEKLY_SUMMARY_WRITE_ROLES:
         raise ApiError(403, "FORBIDDEN", "Authenticated user lacks permission.")
 
 
@@ -698,11 +713,15 @@ def _escalation_list_stmt(current_user: CurrentUser) -> Select:
             GovernanceEscalation.id,
             GovernanceEscalation.project_id,
             GovernanceEscalation.title,
+            GovernanceEscalation.description,
             GovernanceEscalation.severity,
             GovernanceEscalation.status,
             GovernanceEscalation.raised_at,
             GovernanceEscalation.source_type,
             GovernanceEscalation.source_id,
+            GovernanceEscalation.client_summary,
+            GovernanceEscalation.client_visible,
+            GovernanceEscalation.client_published_at,
             Project.name.label("project_name"),
             func.coalesce(raiser.full_name, raiser.email).label("raised_by_name"),
             func.coalesce(assignee.full_name, assignee.email).label("assigned_to_name"),
@@ -743,7 +762,11 @@ def map_action_list_row(row) -> GovernanceActionListRead:
     )
 
 
-def map_escalation_list_row(row) -> GovernanceEscalationListRead:
+def map_escalation_list_row(
+    row,
+    *,
+    for_client: bool = False,
+) -> GovernanceEscalationListRead:
     return GovernanceEscalationListRead(
         id=row.id,
         project_id=row.project_id,
@@ -751,11 +774,15 @@ def map_escalation_list_row(row) -> GovernanceEscalationListRead:
         severity=row.severity,
         status=row.status,
         raised_at=row.raised_at,
-        source_type=row.source_type,
-        source_id=row.source_id,
+        source_type=None if for_client else row.source_type,
+        source_id=None if for_client else row.source_id,
         project_name=row.project_name,
         raised_by_name=row.raised_by_name,
-        assigned_to_name=row.assigned_to_name,
+        assigned_to_name=None if for_client else row.assigned_to_name,
+        description=row.client_summary if for_client else row.description,
+        client_summary=row.client_summary,
+        client_visible=bool(row.client_visible),
+        client_published_at=row.client_published_at,
     )
 
 
@@ -851,7 +878,23 @@ async def enriched_escalation_read(
         "raised_by_name": row.raised_by_name,
         "assigned_to_name": row.assigned_to_name,
     }
-    if current_user is not None:
+    if current_user is not None and current_user.role == AppRole.CLIENT:
+        updates.update(
+            {
+                "description": escalation.client_summary,
+                "source_type": None,
+                "source_id": None,
+                "assigned_to": None,
+                "assigned_to_name": None,
+                "provenance_source_type": "manual",
+                "source_recommendation_id": None,
+                "source_recommendation_title": None,
+                "source_conversion_id": None,
+                "evidence_link_count": 0,
+                "has_ai_source": False,
+            }
+        )
+    elif current_user is not None:
         from app.agents.governance.services.record_provenance_service import (
             provenance_summary_for_target,
         )
@@ -1022,8 +1065,14 @@ async def list_governance_escalations_page(
                 limit=filters.limit,
                 offset=filters.offset,
             )
-        stmt = stmt.where(GovernanceEscalation.project_id.in_(project_ids))
-        count_stmt = count_stmt.where(GovernanceEscalation.project_id.in_(project_ids))
+        stmt = stmt.where(
+            GovernanceEscalation.project_id.in_(project_ids),
+            GovernanceEscalation.client_visible.is_(True),
+        )
+        count_stmt = count_stmt.where(
+            GovernanceEscalation.project_id.in_(project_ids),
+            GovernanceEscalation.client_visible.is_(True),
+        )
     stmt = _apply_escalation_page_filters(stmt, filters)
     count_stmt = _apply_escalation_page_filters(count_stmt, filters)
     stmt = stmt.order_by(
@@ -1136,7 +1185,7 @@ async def get_escalation_or_404(
 
     if current_user.role == AppRole.CLIENT:
         project_ids = await _client_project_ids(session, current_user)
-        if escalation.project_id not in project_ids:
+        if escalation.project_id not in project_ids or not escalation.client_visible:
             raise ApiError(403, "FORBIDDEN", "Authenticated user lacks permission.")
 
     return escalation
@@ -1469,6 +1518,58 @@ async def update_escalation(
     return escalation
 
 
+async def publish_client_escalation_summary(
+    session: AsyncSession,
+    escalation_id: UUID,
+    current_user: CurrentUser,
+    *,
+    client_summary: str,
+    client_visible: bool = True,
+) -> GovernanceEscalation:
+    """DM/leadership publishes (or unpublishes) a client-safe escalation narrative."""
+    assert_can_write_governance(current_user)
+    escalation = await get_escalation_or_404(
+        session, escalation_id, current_user, for_mutation=True
+    )
+    previous = governance_snapshot(escalation, ESCALATION_AUDIT_FIELDS)
+    summary = client_summary.strip()
+    if client_visible and not summary:
+        raise ApiError(
+            422,
+            "CLIENT_SUMMARY_REQUIRED",
+            "A client summary is required before making an escalation client-visible.",
+        )
+
+    escalation.client_summary = summary or None
+    escalation.client_visible = client_visible
+    if client_visible:
+        escalation.client_published_by = current_user.id
+        escalation.client_published_at = datetime.now(UTC)
+    else:
+        escalation.client_published_by = None
+        escalation.client_published_at = None
+
+    await log_governance_event(
+        session,
+        current_user,
+        event_type=(
+            "escalation.client_summary_published"
+            if client_visible
+            else "escalation.client_summary_unpublished"
+        ),
+        org_id=escalation.org_id,
+        project_id=escalation.project_id,
+        source_table="governance_escalations",
+        source_id=escalation.id,
+        previous_values=previous,
+        new_values=governance_snapshot(escalation, ESCALATION_AUDIT_FIELDS),
+    )
+    await session.commit()
+    await session.refresh(escalation)
+    invalidate_governance_read_caches_after_commit(org_id=escalation.org_id)
+    return escalation
+
+
 async def soft_delete_escalation(
     session: AsyncSession,
     escalation_id: UUID,
@@ -1688,7 +1789,7 @@ async def create_weekly_summary(
     summary_text: str,
     evidence_links: list,
 ) -> GovernanceWeeklySummary:
-    assert_can_write_governance(current_user)
+    assert_can_manage_weekly_summary(current_user)
     org_id = current_user.org_id
     summary = GovernanceWeeklySummary(
         org_id=org_id,
@@ -1727,7 +1828,7 @@ def _leadership_sees_summary_only_if_approved(
     current_user: CurrentUser,
     summary: GovernanceWeeklySummary,
 ) -> bool:
-    restricted_to_approved = current_user.role in {AppRole.BSG_LEADERSHIP, AppRole.CLIENT}
+    restricted_to_approved = current_user.role == AppRole.CLIENT
     return not (restricted_to_approved and summary.status != GovernanceSummaryStatus.APPROVED)
 
 
@@ -1763,8 +1864,6 @@ async def list_weekly_summaries(
         return []
     stmt = select(GovernanceWeeklySummary)
     stmt = _apply_org_filter(stmt, GovernanceWeeklySummary.org_id, current_user)
-    if current_user.role == AppRole.BSG_LEADERSHIP:
-        stmt = stmt.where(GovernanceWeeklySummary.status == GovernanceSummaryStatus.APPROVED)
     stmt = stmt.order_by(GovernanceWeeklySummary.summary_week.desc()).limit(limit)
     return list((await session.execute(stmt)).scalars())
 
@@ -1776,7 +1875,7 @@ async def update_weekly_summary_draft(
     *,
     summary_text: str,
 ) -> GovernanceWeeklySummary:
-    assert_can_write_governance(current_user)
+    assert_can_manage_weekly_summary(current_user)
     summary = await get_weekly_summary_by_id(session, summary_id, current_user)
     if summary.status != GovernanceSummaryStatus.DRAFT:
         raise ApiError(409, "SUMMARY_NOT_EDITABLE", "Only draft summaries can be edited.")
@@ -1802,7 +1901,7 @@ async def approve_weekly_summary(
     summary_id: UUID,
     current_user: CurrentUser,
 ) -> GovernanceWeeklySummary:
-    assert_can_write_governance(current_user)
+    assert_can_manage_weekly_summary(current_user)
     summary = await get_weekly_summary_by_id(session, summary_id, current_user)
     if summary.status != GovernanceSummaryStatus.DRAFT:
         raise ApiError(409, "SUMMARY_NOT_APPROVABLE", "Only draft summaries can be approved.")
@@ -1884,6 +1983,7 @@ _GOVERNANCE_DB_TIMED = (
     "soft_delete_dependency",
     "create_escalation",
     "update_escalation",
+    "publish_client_escalation_summary",
     "soft_delete_escalation",
     "create_action",
     "update_action",

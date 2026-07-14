@@ -11,6 +11,11 @@ const dismissMock = vi.fn();
 const feedbackMock = vi.fn();
 const regenerateMock = vi.fn();
 
+Object.defineProperty(Element.prototype, "scrollIntoView", {
+  configurable: true,
+  value: vi.fn(),
+});
+
 vi.mock("@/lib/queries/governance", async () => {
   const actual = await vi.importActual<typeof import("@/lib/queries/governance")>(
     "@/lib/queries/governance",
@@ -32,6 +37,7 @@ vi.mock("@/lib/queries/governance", async () => {
 vi.mock("sonner", () => ({
   toast: {
     success: vi.fn(),
+    warning: vi.fn(),
     error: vi.fn(),
     message: vi.fn(),
   },
@@ -43,12 +49,40 @@ function renderSection() {
   });
   return render(
     <QueryClientProvider client={client}>
-      <GovernanceRecommendationsSection
-        focusProjectId="p1"
-        canWrite
-      />
+      <GovernanceRecommendationsSection focusProjectId="p1" canWrite />
     </QueryClientProvider>,
   );
+}
+
+function recommendationForProject(
+  id: string,
+  projectId: string,
+  projectName: string,
+  title: string,
+) {
+  return {
+    id,
+    scope: "project",
+    project_id: projectId,
+    project_name: projectName,
+    recommendation_type: "dependency_mitigation",
+    title,
+    narrative: `${projectName} governance narrative.`,
+    rationale: "Evidence-backed rationale.",
+    priority: "medium",
+    confidence: 0.8,
+    suggested_actions: [],
+    evidence: [],
+    status: "active",
+    generated_at: new Date().toISOString(),
+    expires_at: null,
+    can_regenerate: true,
+    can_dismiss: true,
+    is_ai_generated: true,
+    source_type: "ai",
+    is_stale: false,
+    evidence_hash: `hash-${id}`,
+  };
 }
 
 describe("GovernanceRecommendationsSection", () => {
@@ -141,6 +175,11 @@ describe("GovernanceRecommendationsSection", () => {
       candidates_rejected_grounding: 0,
       duplicates_suppressed: 0,
       duration_ms: 120,
+      projects_attempted: 2,
+      projects_with_recommendations: 2,
+      projects_reused: 0,
+      projects_using_fallback: 0,
+      project_failures: {},
     });
 
     renderSection();
@@ -181,9 +220,45 @@ describe("GovernanceRecommendationsSection", () => {
     });
     await user.click(generateButton);
     await waitFor(() => expect(generateMock).toHaveBeenCalledTimes(1));
+    expect(generateMock).toHaveBeenCalledWith({ scope: "project", force: false });
+    expect(listMock).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: "project", limit: 100 }),
+    );
     await waitFor(() =>
       expect(screen.getByText("Prioritize vendor integration dependency")).toBeInTheDocument(),
     );
     expect(screen.getByText(/AI Generated/)).toBeInTheDocument();
+  });
+
+  it("filters project recommendations with a dropdown instead of one long list", async () => {
+    const user = userEvent.setup();
+    listMock.mockResolvedValue({
+      items: [
+        recommendationForProject("rec-a", "p1", "Project Alpha", "Alpha recommendation"),
+        recommendationForProject("rec-b", "p2", "Project Beta", "Beta recommendation"),
+      ],
+      rule_based: [],
+      total: 2,
+      ai_enabled: true,
+      can_generate: true,
+    });
+
+    renderSection();
+
+    const projectSelect = await screen.findByRole("combobox", {
+      name: "Recommendation project",
+    });
+    expect(projectSelect).toHaveTextContent("Project Alpha");
+    expect(screen.getByText("Alpha recommendation")).toBeVisible();
+    expect(screen.queryByText("Beta recommendation")).not.toBeInTheDocument();
+
+    projectSelect.focus();
+    await user.keyboard("{Enter}{ArrowDown}{Enter}");
+
+    await waitFor(() => {
+      expect(projectSelect).toHaveTextContent("Project Beta");
+      expect(screen.getByText("Beta recommendation")).toBeVisible();
+      expect(screen.queryByText("Alpha recommendation")).not.toBeInTheDocument();
+    });
   });
 });

@@ -16,6 +16,15 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import { GovernanceFiltersBar } from "@/features/governance/GovernanceFiltersBar";
 import {
   collectProjectNamesFromGovernanceRows,
@@ -41,10 +50,9 @@ import {
 import { Route as GovernanceRoute } from "@/routes/governance";
 import type { WorkflowDialogState } from "@/features/governance/governance-workflow-types";
 import { ProjectGovernanceSheet } from "@/features/governance/ProjectGovernanceSheet";
+import { GovernanceWeeklySummaryPanel } from "@/features/governance/GovernanceWeeklySummaryPanel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  emptyGovernanceFilters,
-} from "@/features/governance/filters";
+import { emptyGovernanceFilters } from "@/features/governance/filters";
 import { listUsers } from "@/lib/api";
 import {
   mapRegisterApiRow,
@@ -56,6 +64,7 @@ import {
   formatDependencyType,
   formatEscalationSeverity,
   formatEscalationStatus,
+  isCriticalPathDependency,
   type GovernanceRegisterRow,
 } from "@/lib/governance-utils";
 import { deliveryPortfolioQueryOptions, projectsQueryOptions } from "@/lib/queries/delivery";
@@ -76,6 +85,7 @@ import {
   governanceRegisterQueryOptions,
   governanceScopeStatesQueryOptions,
   promoteRiskAlertToEscalation,
+  publishClientEscalationSummary,
   resolveDependency,
   updateDependency,
   updateGovernanceAction,
@@ -167,6 +177,10 @@ function canPublishCharter(role: AppRole | undefined): boolean {
   return role === "bsg_leadership" || role === "super_admin";
 }
 
+function canManageWeeklySummary(role: AppRole | undefined): boolean {
+  return role === "delivery_manager" || role === "bsg_leadership" || role === "super_admin";
+}
+
 function canSeeDeliveryContext(role: AppRole | undefined): boolean {
   return role !== "client";
 }
@@ -237,19 +251,23 @@ function RowActions({
   onEdit,
   onResolve,
   onDelete,
+  onClientPublish,
   showResolve,
   resolveLabel = "Resolve",
+  clientPublishLabel = "Client summary",
 }: {
   canWrite: boolean;
   onEdit: () => void;
   onResolve?: () => void;
   onDelete?: () => void;
+  onClientPublish?: () => void;
   showResolve?: boolean;
   resolveLabel?: string;
+  clientPublishLabel?: string;
 }) {
   if (!canWrite) return null;
   return (
-    <div className="flex gap-1">
+    <div className="flex flex-wrap gap-1">
       <button
         type="button"
         className="rounded border border-border px-2 py-0.5 text-[10px]"
@@ -257,6 +275,15 @@ function RowActions({
       >
         Edit
       </button>
+      {onClientPublish && (
+        <button
+          type="button"
+          className="rounded border border-border px-2 py-0.5 text-[10px]"
+          onClick={onClientPublish}
+        >
+          {clientPublishLabel}
+        </button>
+      )}
       {showResolve && onResolve && (
         <button
           type="button"
@@ -335,6 +362,7 @@ export function GovernanceDashboard() {
   const role = user?.role;
   const canWrite = canWriteGovernance(role);
   const canPublish = canPublishCharter(role);
+  const canManageSummary = canManageWeeklySummary(role);
   const showDelivery = canSeeDeliveryContext(role);
   const isClient = role === "client";
   const isReadOnly = role === "bsg_leadership";
@@ -343,6 +371,13 @@ export function GovernanceDashboard() {
   const filters = useDebouncedValue(rawFilters, 250);
   const [dialog, setDialog] = useState<WorkflowDialogState>(null);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
+  const [clientPublish, setClientPublish] = useState<{
+    id: string;
+    title: string;
+    summary: string;
+    visible: boolean;
+  } | null>(null);
+  const [clientPublishBusy, setClientPublishBusy] = useState(false);
   const [selectedRow, setSelectedRow] = useState<GovernanceRegisterRow | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [promotingRiskId, setPromotingRiskId] = useState<string | null>(null);
@@ -354,7 +389,9 @@ export function GovernanceDashboard() {
   const [actionPage, setActionPage] = useState(1);
   const [registerPage, setRegisterPage] = useState(1);
   const [escalationPage, setEscalationPage] = useState(1);
-  const [governanceToolsTab, setGovernanceToolsTab] = useState<"agent" | "charters" | null>(null);
+  const [governanceToolsTab, setGovernanceToolsTab] = useState<
+    "agent" | "charters" | "weekly-summary"
+  >("agent");
   const [filtersPopoverOpen, setFiltersPopoverOpen] = useState(false);
   const [agentNeedsProjects, setAgentNeedsProjects] = useState(false);
   const [analyticsDeferredReady, setAnalyticsDeferredReady] = useState(false);
@@ -369,8 +406,7 @@ export function GovernanceDashboard() {
   const dependencyListParams = useMemo(
     () =>
       backendListParams(filters, dependencyPage, {
-        dependency_type:
-          filters.dependencyType !== "all" ? filters.dependencyType : undefined,
+        dependency_type: filters.dependencyType !== "all" ? filters.dependencyType : undefined,
         owner_id: filters.ownerId !== "all" ? filters.ownerId : undefined,
         project_id: wantsSheetDetail ? sheetProjectId : undefined,
       }),
@@ -476,10 +512,7 @@ export function GovernanceDashboard() {
   );
   const analyticsSummaryQuery = useQuery({
     ...governanceAnalyticsSummaryQueryOptions(analyticsFilters),
-    enabled: shouldEnableGovernanceAnalyticsSummary(
-      showExecutiveAnalytics,
-      analyticsDeferredReady,
-    ),
+    enabled: shouldEnableGovernanceAnalyticsSummary(showExecutiveAnalytics, analyticsDeferredReady),
     placeholderData: keepPreviousData,
   });
   const analyticsDetailEnabled = shouldEnableGovernanceAnalyticsDetail({
@@ -559,18 +592,14 @@ export function GovernanceDashboard() {
     }
 
     const idleWindow = window as Window & {
-      requestIdleCallback?: (
-        callback: IdleRequestCallback,
-        options?: IdleRequestOptions,
-      ) => number;
+      requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number;
       cancelIdleCallback?: (handle: number) => void;
     };
 
     if (idleWindow.requestIdleCallback) {
-      const idleId = idleWindow.requestIdleCallback(
-        () => setAnalyticsDetailIdleReady(true),
-        { timeout: GOVERNANCE_ANALYTICS_DETAIL_IDLE_MS },
-      );
+      const idleId = idleWindow.requestIdleCallback(() => setAnalyticsDetailIdleReady(true), {
+        timeout: GOVERNANCE_ANALYTICS_DETAIL_IDLE_MS,
+      });
       return () => idleWindow.cancelIdleCallback?.(idleId);
     }
 
@@ -598,12 +627,7 @@ export function GovernanceDashboard() {
     return () => observer.disconnect();
   }, [showExecutiveAnalytics, mergedAnalytics]);
 
-  const analyticsSummaryLoading =
-    analyticsSummaryQuery.isLoading && !analyticsSummaryQuery.data;
-  const analyticsDetailLoading =
-    analyticsDetailEnabled &&
-    analyticsDetailQuery.isFetching &&
-    !(analyticsDetailQuery.data || analyticsDetailQuery.isPlaceholderData);
+  const analyticsSummaryLoading = analyticsSummaryQuery.isLoading && !analyticsSummaryQuery.data;
 
   const bootstrapKpis = bootstrapQuery.data?.kpis ?? EMPTY_GOVERNANCE_KPIS;
 
@@ -739,10 +763,7 @@ export function GovernanceDashboard() {
       open_actions: openActions,
       overdue_actions: bootstrapKpis.overdue_actions || openActions,
       open_escalations: registerRows.reduce((sum, row) => sum + row.openEscalations, 0),
-      blocking_dependencies: registerRows.reduce(
-        (sum, row) => sum + row.blockingDependencies,
-        0,
-      ),
+      blocking_dependencies: registerRows.reduce((sum, row) => sum + row.blockingDependencies, 0),
       at_risk_items: registerRows.filter((row) => row.health !== "Green").length,
       sla_adherence_pct: bootstrapKpis.sla_adherence_pct,
     };
@@ -810,13 +831,7 @@ export function GovernanceDashboard() {
           },
         ] satisfies Array<false | { value: GovernanceTableTab; label: string; count: number }>
       ).filter(Boolean) as Array<{ value: GovernanceTableTab; label: string; count: number }>,
-    [
-      actionTotal,
-      dependencyTotal,
-      escalationTotal,
-      isClient,
-      registerTotal,
-    ],
+    [actionTotal, dependencyTotal, escalationTotal, isClient, registerTotal],
   );
   const selectedTable = visibleTableTabs.some((tab) => tab.value === activeTable)
     ? activeTable
@@ -1015,8 +1030,8 @@ export function GovernanceDashboard() {
       )}
       {isClient && (
         <div className="rounded-md border border-border bg-elevated px-3 py-2 text-xs text-muted-foreground">
-          Client-safe escalation visibility only. Internal dependencies, actions, and draft
-          summaries are hidden.
+          Client-safe escalation visibility only. You see published summaries for your assigned
+          projects; internal dependencies, actions, and draft narratives stay hidden.
         </div>
       )}
       {primaryTableQuery.isFetching && !primaryTableQuery.data && (
@@ -1045,7 +1060,6 @@ export function GovernanceDashboard() {
                 analytics={mergedAnalytics}
                 kpis={dynamicKpis}
                 summaryLoading={analyticsSummaryLoading}
-                detailLoading={analyticsDetailLoading}
                 rangeDays={analyticsRangeDays}
                 onRangeChange={setAnalyticsRangeDays}
                 projectFilter={analyticsProjectFilter}
@@ -1165,7 +1179,16 @@ export function GovernanceDashboard() {
                             key={dep.id}
                             className={cn("border-b border-border/50", dependencyRowClass(dep))}
                           >
-                            <td className="py-2.5 pr-3 font-medium">{dep.title}</td>
+                            <td className="py-2.5 pr-3 font-medium">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span>{dep.title}</span>
+                                {isCriticalPathDependency(dep) && (
+                                  <span className="rounded border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[color:var(--danger)]">
+                                    Critical path
+                                  </span>
+                                )}
+                              </div>
+                            </td>
                             <td className="py-2.5 pr-3">{dep.project_name ?? "—"}</td>
                             <td className="py-2.5 pr-3 text-muted-foreground">
                               {formatDependencyType(dep.dependency_type)}
@@ -1329,11 +1352,11 @@ export function GovernanceDashboard() {
                 <SectionHeader title="Governance Register" sub="Click a project for details" />
                 {(registerQuery.isFetching || portfolioQuery.isFetching) &&
                   (registerQuery.data || portfolioQuery.data) && (
-                  <div className="mb-2 flex items-center gap-2 text-[10px] text-muted-foreground">
-                    <RefreshCw className="h-3 w-3 animate-spin" />
-                    Refreshing register...
-                  </div>
-                )}
+                    <div className="mb-2 flex items-center gap-2 text-[10px] text-muted-foreground">
+                      <RefreshCw className="h-3 w-3 animate-spin" />
+                      Refreshing register...
+                    </div>
+                  )}
                 <div className={GOVERNANCE_TABLE_VIEWPORT_CLASS}>
                   <table className="w-full text-xs">
                     <thead className="text-left text-muted-foreground">
@@ -1470,7 +1493,23 @@ export function GovernanceDashboard() {
                             key={esc.id}
                             className={cn("border-b border-border/50", escalationRowClass(esc))}
                           >
-                            <td className="py-2.5 pr-3 font-medium">{esc.title}</td>
+                            <td className="py-2.5 pr-3 font-medium">
+                              <div className="space-y-1">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span>{esc.title}</span>
+                                  {!isClient && esc.client_visible && (
+                                    <span className="rounded border border-border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                      Client visible
+                                    </span>
+                                  )}
+                                </div>
+                                {isClient && esc.description && (
+                                  <p className="text-[11px] font-normal text-muted-foreground">
+                                    {esc.description}
+                                  </p>
+                                )}
+                              </div>
+                            </td>
                             <td className="py-2.5 pr-3">{esc.project_name ?? "—"}</td>
                             <td className="py-2.5 pr-3">
                               <StatusPill status={formatEscalationSeverity(esc.severity)} />
@@ -1491,7 +1530,9 @@ export function GovernanceDashboard() {
                                   ? "Delivery risk"
                                   : esc.source_type === "knowledge_document"
                                     ? "Knowledge doc"
-                                    : "—"}
+                                    : esc.source_type === "quality_risk"
+                                      ? "Quality risk"
+                                      : "—"}
                               </td>
                             )}
                             {canWrite && (
@@ -1505,6 +1546,17 @@ export function GovernanceDashboard() {
                                       id: esc.id,
                                       projectId: esc.project_id,
                                     })
+                                  }
+                                  onClientPublish={() =>
+                                    setClientPublish({
+                                      id: esc.id,
+                                      title: esc.title,
+                                      summary: esc.client_summary ?? esc.description ?? "",
+                                      visible: Boolean(esc.client_visible),
+                                    })
+                                  }
+                                  clientPublishLabel={
+                                    esc.client_visible ? "Update client" : "Publish client"
                                   }
                                   showResolve={esc.status !== "resolved"}
                                   onResolve={() =>
@@ -1541,179 +1593,180 @@ export function GovernanceDashboard() {
         </Tabs>
       </div>
 
-      {!isClient && (
-        <div className="space-y-3">
-          <Tabs
-            value={governanceToolsTab ?? ""}
-            onValueChange={(value) =>
-              setGovernanceToolsTab(value as "agent" | "charters")
-            }
-          >
-            <TabsList className="h-auto flex-wrap justify-start gap-1 bg-elevated">
-              <TabsTrigger value="agent" className="text-xs">
-                Ask Governance Agent
-              </TabsTrigger>
-              <TabsTrigger value="charters" className="text-xs">
-                Project Charters
-              </TabsTrigger>
-            </TabsList>
+      <div className="space-y-3">
+        <Tabs
+          value={governanceToolsTab}
+          onValueChange={(value) =>
+            setGovernanceToolsTab(value as "agent" | "charters" | "weekly-summary")
+          }
+        >
+          <TabsList className="h-auto flex-wrap justify-start gap-1 bg-elevated">
+            <TabsTrigger value="agent" className="text-xs">
+              Ask Governance Agent
+            </TabsTrigger>
+            <TabsTrigger value="charters" className="text-xs">
+              Project Charters
+            </TabsTrigger>
+            <TabsTrigger value="weekly-summary" className="text-xs">
+              Governance This Week
+            </TabsTrigger>
+          </TabsList>
 
-            {governanceToolsTab === "agent" && (
-              <TabsContent value="agent" className="mt-3">
-                <Suspense fallback={<GovernanceToolsPanelFallback />}>
-                  <LazyAskGovernanceAgentPanel
-                    projects={projectOptions}
-                    onNeedsProjects={() => setAgentNeedsProjects(true)}
-                  />
-                </Suspense>
-              </TabsContent>
-            )}
+          <TabsContent value="agent" className="mt-3">
+            <Suspense fallback={<GovernanceToolsPanelFallback />}>
+              <LazyAskGovernanceAgentPanel
+                projects={projectOptions}
+                onNeedsProjects={() => setAgentNeedsProjects(true)}
+              />
+            </Suspense>
+          </TabsContent>
 
-            {governanceToolsTab === "charters" && (
-              <TabsContent value="charters" className="mt-3">
-                <Suspense fallback={<GovernanceToolsPanelFallback />}>
-                  <LazyProjectChartersPanel
-                    projects={projectOptions}
-                    canWrite={canWrite}
-                    canPublish={canPublish}
-                    isClient={isClient}
-                    isReadOnly={isReadOnly}
-                    loadCharters
-                  />
-                </Suspense>
-              </TabsContent>
-            )}
-          </Tabs>
-        </div>
-      )}
+          <TabsContent value="charters" className="mt-3">
+            <Suspense fallback={<GovernanceToolsPanelFallback />}>
+              <LazyProjectChartersPanel
+                projects={projectOptions}
+                canWrite={canWrite}
+                canPublish={canPublish}
+                isClient={isClient}
+                isReadOnly={isReadOnly}
+                loadCharters
+              />
+            </Suspense>
+          </TabsContent>
+
+          <TabsContent value="weekly-summary" className="mt-3">
+            <GovernanceWeeklySummaryPanel canManage={canManageSummary} />
+          </TabsContent>
+        </Tabs>
+      </div>
 
       {dialog && (
         <Suspense fallback={null}>
           <LazyGovernanceWorkflowDialogs
-        dialog={dialog}
-        onClose={() => setDialog(null)}
-        data={data}
-        projects={projectOptions}
-        users={userOptions}
-        canWrite={canWrite}
-        onSaveDependency={async ({ projectId, id, values }) => {
-          let dependency: ProjectDependency;
-          if (id) {
-            dependency = await updateDependency(id, {
-              title: values.title ?? undefined,
-              description: values.description,
-              dependency_type: values.dependency_type as GovernanceDependencyType,
-              owner_id: values.owner_id,
-              due_date: values.due_date,
-              status: values.status as "open" | "blocking" | "resolved",
-            });
-            toast.success("Dependency updated.");
-          } else {
-            dependency = await createProjectDependency(projectId, {
-              title: values.title!,
-              description: values.description,
-              dependency_type: values.dependency_type as GovernanceDependencyType,
-              owner_id: values.owner_id,
-              due_date: values.due_date,
-              status: values.status as "open" | "blocking" | "resolved",
-            });
-            toast.success("Dependency created.");
-          }
-          updateGovernanceDataCache((current) => {
-            const existing = current.dependencies.find((row) => row.id === dependency.id);
-            return {
-              ...current,
-              dependencies: replaceOrAddById(
-                current.dependencies,
-                hydrateDependency(dependency, existing),
-              ),
-            };
-          });
-        }}
-        onSaveAction={async ({ projectId, id, values }) => {
-          let action: GovernanceAction;
-          if (id) {
-            action = await updateGovernanceAction(id, {
-              title: values.title ?? undefined,
-              description: values.description,
-              owner_id: values.owner_id,
-              due_date: values.due_date,
-              status: values.status as "open" | "in_progress" | "completed" | "overdue",
-              linked_knowledge_document_id: values.linked_knowledge_document_id,
-            });
-            toast.success("Action updated.");
-          } else {
-            action = await createGovernanceAction({
-              project_id: projectId,
-              title: values.title!,
-              description: values.description,
-              owner_id: values.owner_id,
-              due_date: values.due_date,
-              status: values.status as "open" | "in_progress" | "completed" | "overdue",
-              linked_knowledge_document_id: values.linked_knowledge_document_id,
-            });
-            toast.success("Action created.");
-          }
-          updateGovernanceDataCache((current) => {
-            const existing = current.actions.find((row) => row.id === action.id);
-            return {
-              ...current,
-              actions: replaceOrAddById(current.actions, hydrateAction(action, existing)),
-            };
-          });
-        }}
-        onSaveEscalation={async ({ projectId, id, values }) => {
-          let escalation: GovernanceEscalation;
-          if (id) {
-            escalation = await updateGovernanceEscalation(id, {
-              title: values.title ?? undefined,
-              description: values.description,
-              severity: values.severity as GovernanceEscalationSeverity,
-              status: values.status as "open" | "in_progress" | "resolved",
-              assigned_to: values.assigned_to,
-              source_type: values.source_type as GovernanceEscalationSourceType | null,
-              source_id: values.source_id,
-            });
-            toast.success("Escalation updated.");
-          } else {
-            escalation = await createGovernanceEscalation({
-              project_id: projectId,
-              title: values.title!,
-              description: values.description,
-              severity: values.severity as GovernanceEscalationSeverity,
-              status: values.status as "open" | "in_progress" | "resolved",
-              assigned_to: values.assigned_to,
-              source_type: values.source_type as GovernanceEscalationSourceType | null,
-              source_id: values.source_id,
-            });
-            toast.success("Escalation created.");
-          }
-          updateGovernanceDataCache((current) => {
-            const existing = current.escalations.find((row) => row.id === escalation.id);
-            return {
-              ...current,
-              escalations: replaceOrAddById(
-                current.escalations,
-                hydrateEscalation(escalation, existing),
-              ),
-            };
-          });
-        }}
-        onSaveScope={async ({ projectId, values }) => {
-          const scope = await updateProjectScope(projectId, {
-            scope_status: values.scope_status as GovernanceScopeStatus,
-            version_label: values.version_label ?? undefined,
-            notes: values.notes,
-            linked_charter_document_id: values.linked_charter_document_id,
-          });
-          toast.success("Scope updated.");
-          updateGovernanceDataCache((current) => ({
-            ...current,
-            scope_states: current.scope_states.some((row) => row.id === scope.id)
-              ? current.scope_states.map((row) => (row.id === scope.id ? scope : row))
-              : replaceOrAddById(current.scope_states, scope),
-          }));
-        }}
+            dialog={dialog}
+            onClose={() => setDialog(null)}
+            data={data}
+            projects={projectOptions}
+            users={userOptions}
+            canWrite={canWrite}
+            onSaveDependency={async ({ projectId, id, values }) => {
+              let dependency: ProjectDependency;
+              if (id) {
+                dependency = await updateDependency(id, {
+                  title: values.title ?? undefined,
+                  description: values.description,
+                  dependency_type: values.dependency_type as GovernanceDependencyType,
+                  owner_id: values.owner_id,
+                  due_date: values.due_date,
+                  status: values.status as "open" | "blocking" | "resolved",
+                });
+                toast.success("Dependency updated.");
+              } else {
+                dependency = await createProjectDependency(projectId, {
+                  title: values.title!,
+                  description: values.description,
+                  dependency_type: values.dependency_type as GovernanceDependencyType,
+                  owner_id: values.owner_id,
+                  due_date: values.due_date,
+                  status: values.status as "open" | "blocking" | "resolved",
+                });
+                toast.success("Dependency created.");
+              }
+              updateGovernanceDataCache((current) => {
+                const existing = current.dependencies.find((row) => row.id === dependency.id);
+                return {
+                  ...current,
+                  dependencies: replaceOrAddById(
+                    current.dependencies,
+                    hydrateDependency(dependency, existing),
+                  ),
+                };
+              });
+            }}
+            onSaveAction={async ({ projectId, id, values }) => {
+              let action: GovernanceAction;
+              if (id) {
+                action = await updateGovernanceAction(id, {
+                  title: values.title ?? undefined,
+                  description: values.description,
+                  owner_id: values.owner_id,
+                  due_date: values.due_date,
+                  status: values.status as "open" | "in_progress" | "completed" | "overdue",
+                  linked_knowledge_document_id: values.linked_knowledge_document_id,
+                });
+                toast.success("Action updated.");
+              } else {
+                action = await createGovernanceAction({
+                  project_id: projectId,
+                  title: values.title!,
+                  description: values.description,
+                  owner_id: values.owner_id,
+                  due_date: values.due_date,
+                  status: values.status as "open" | "in_progress" | "completed" | "overdue",
+                  linked_knowledge_document_id: values.linked_knowledge_document_id,
+                });
+                toast.success("Action created.");
+              }
+              updateGovernanceDataCache((current) => {
+                const existing = current.actions.find((row) => row.id === action.id);
+                return {
+                  ...current,
+                  actions: replaceOrAddById(current.actions, hydrateAction(action, existing)),
+                };
+              });
+            }}
+            onSaveEscalation={async ({ projectId, id, values }) => {
+              let escalation: GovernanceEscalation;
+              if (id) {
+                escalation = await updateGovernanceEscalation(id, {
+                  title: values.title ?? undefined,
+                  description: values.description,
+                  severity: values.severity as GovernanceEscalationSeverity,
+                  status: values.status as "open" | "in_progress" | "resolved",
+                  assigned_to: values.assigned_to,
+                  source_type: values.source_type as GovernanceEscalationSourceType | null,
+                  source_id: values.source_id,
+                });
+                toast.success("Escalation updated.");
+              } else {
+                escalation = await createGovernanceEscalation({
+                  project_id: projectId,
+                  title: values.title!,
+                  description: values.description,
+                  severity: values.severity as GovernanceEscalationSeverity,
+                  status: values.status as "open" | "in_progress" | "resolved",
+                  assigned_to: values.assigned_to,
+                  source_type: values.source_type as GovernanceEscalationSourceType | null,
+                  source_id: values.source_id,
+                });
+                toast.success("Escalation created.");
+              }
+              updateGovernanceDataCache((current) => {
+                const existing = current.escalations.find((row) => row.id === escalation.id);
+                return {
+                  ...current,
+                  escalations: replaceOrAddById(
+                    current.escalations,
+                    hydrateEscalation(escalation, existing),
+                  ),
+                };
+              });
+            }}
+            onSaveScope={async ({ projectId, values }) => {
+              const scope = await updateProjectScope(projectId, {
+                scope_status: values.scope_status as GovernanceScopeStatus,
+                version_label: values.version_label ?? undefined,
+                notes: values.notes,
+                linked_charter_document_id: values.linked_charter_document_id,
+              });
+              toast.success("Scope updated.");
+              updateGovernanceDataCache((current) => ({
+                ...current,
+                scope_states: current.scope_states.some((row) => row.id === scope.id)
+                  ? current.scope_states.map((row) => (row.id === scope.id ? scope : row))
+                  : replaceOrAddById(current.scope_states, scope),
+              }));
+            }}
           />
         </Suspense>
       )}
@@ -1765,6 +1818,110 @@ export function GovernanceDashboard() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog
+        open={Boolean(clientPublish)}
+        onOpenChange={(open) => !open && !clientPublishBusy && setClientPublish(null)}
+      >
+        <DialogContent className="governance-no-shadow sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Client escalation summary</DialogTitle>
+            <DialogDescription>
+              Publish an approved, client-safe narrative for "{clientPublish?.title}". Internal
+              notes stay hidden until you publish.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            rows={5}
+            value={clientPublish?.summary ?? ""}
+            onChange={(event) =>
+              setClientPublish((current) =>
+                current ? { ...current, summary: event.target.value } : current,
+              )
+            }
+            placeholder="Client-facing summary…"
+          />
+          <DialogFooter className="gap-2 sm:gap-0">
+            {clientPublish?.visible && (
+              <Button
+                type="button"
+                variant="outline"
+                className="shadow-none"
+                disabled={clientPublishBusy}
+                onClick={() => {
+                  void (async () => {
+                    if (!clientPublish) return;
+                    setClientPublishBusy(true);
+                    try {
+                      const escalation = await publishClientEscalationSummary(clientPublish.id, {
+                        client_summary: clientPublish.summary,
+                        client_visible: false,
+                      });
+                      updateGovernanceDataCache((current) => {
+                        const existing = current.escalations.find((row) => row.id === escalation.id);
+                        return {
+                          ...current,
+                          escalations: replaceOrAddById(
+                            current.escalations,
+                            hydrateEscalation(escalation, existing),
+                          ),
+                        };
+                      });
+                      toast.success("Escalation unpublished from client view.");
+                      setClientPublish(null);
+                    } catch (error) {
+                      toast.error(
+                        error instanceof Error ? error.message : "Unable to unpublish summary.",
+                      );
+                    } finally {
+                      setClientPublishBusy(false);
+                    }
+                  })();
+                }}
+              >
+                Unpublish
+              </Button>
+            )}
+            <Button
+              type="button"
+              className="shadow-none"
+              disabled={clientPublishBusy || !(clientPublish?.summary.trim())}
+              onClick={() => {
+                void (async () => {
+                  if (!clientPublish) return;
+                  setClientPublishBusy(true);
+                  try {
+                    const escalation = await publishClientEscalationSummary(clientPublish.id, {
+                      client_summary: clientPublish.summary.trim(),
+                      client_visible: true,
+                    });
+                    updateGovernanceDataCache((current) => {
+                      const existing = current.escalations.find((row) => row.id === escalation.id);
+                      return {
+                        ...current,
+                        escalations: replaceOrAddById(
+                          current.escalations,
+                          hydrateEscalation(escalation, existing),
+                        ),
+                      };
+                    });
+                    toast.success("Client escalation summary published.");
+                    setClientPublish(null);
+                  } catch (error) {
+                    toast.error(
+                      error instanceof Error ? error.message : "Unable to publish summary.",
+                    );
+                  } finally {
+                    setClientPublishBusy(false);
+                  }
+                })();
+              }}
+            >
+              {clientPublishBusy ? "Saving…" : "Publish to client"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

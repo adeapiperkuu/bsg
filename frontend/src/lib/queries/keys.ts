@@ -32,6 +32,8 @@ export const queryKeys = {
   projectTrainingGaps: (projectId: string) => ["projects", projectId, "training-gaps"] as const,
   projectCapabilityGaps: (projectId: string) => ["projects", projectId, "capability-gaps"] as const,
   governanceBootstrap: ["governance", "bootstrap"] as const,
+  governanceWeeklySummary: ["governance", "weekly-summary", "latest"] as const,
+  governanceWeeklySummaries: ["governance", "weekly-summary", "history"] as const,
   governanceAnalyticsSummary: (
     days: number,
     filters: { projectId?: string | null; vertical?: string | null } = {},
@@ -96,7 +98,6 @@ export const queryKeys = {
   knowledgeDocumentApprovalHistory: (documentId: string) =>
     ["knowledge", "documents", documentId, "approval-history"] as const,
   knowledgeLibraryHealth: ["knowledge", "library-health"] as const,
-  knowledgeSuggestions: (status = "open") => ["knowledge", "suggestions", status] as const,
   knowledgeRelatedDocuments: (documentId: string) =>
     ["knowledge", "documents", documentId, "related"] as const,
   knowledgeRetrievalSettings: ["knowledge", "retrieval-settings"] as const,

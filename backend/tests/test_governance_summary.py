@@ -9,7 +9,21 @@ from app.agents.governance.services.summary_service import (
     has_sufficient_evidence,
     monday_of_week,
 )
-from app.db.models import GovernanceEvidenceSourceType
+from app.agents.governance.services.governance_service import assert_can_manage_weekly_summary
+from app.agents.governance.routes.governance import router as governance_router
+from app.core.exceptions import ApiError
+from app.core.security import CurrentUser
+from app.db.models import AppRole, GovernanceEvidenceSourceType
+
+
+def _user(role: AppRole) -> CurrentUser:
+    return CurrentUser(
+        id=uuid4(),
+        org_id=uuid4(),
+        email=f"{role.value}@example.com",
+        role=role,
+        is_active=True,
+    )
 
 
 def test_monday_of_week() -> None:
@@ -66,3 +80,23 @@ def test_build_template_summary_includes_sections() -> None:
     assert "## 6. Evidence Section" in text
     assert "Client API approval" in text
     assert "Phoenix" in text
+
+
+@pytest.mark.parametrize(
+    "role",
+    [AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN],
+)
+def test_summary_managers_can_generate_and_approve(role: AppRole) -> None:
+    assert_can_manage_weekly_summary(_user(role))
+
+
+def test_client_cannot_manage_weekly_summary() -> None:
+    with pytest.raises(ApiError) as exc_info:
+        assert_can_manage_weekly_summary(_user(AppRole.CLIENT))
+    assert exc_info.value.status_code == 403
+
+
+def test_weekly_summary_export_routes_are_registered() -> None:
+    paths = {route.path for route in governance_router.routes}
+    assert "/governance/weekly-summary/{summary_id}/export.pdf" in paths
+    assert "/governance/weekly-summary/{summary_id}/export.docx" in paths
