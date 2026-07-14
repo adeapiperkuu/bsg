@@ -3,6 +3,8 @@ export const queryKeys = {
   adminProjects: ["admin", "projects"] as const,
   organisations: ["organisations"] as const,
   deliveryPortfolio: ["delivery", "portfolio"] as const,
+  operationalTower: ["dashboard", "operational-tower"] as const,
+  executiveSummary: ["dashboard", "executive-summary"] as const,
   deliveryDashboard: (projectId: string) => ["delivery", "dashboard", projectId] as const,
   deliveryConversations: (projectId: string | null) =>
     ["delivery", "conversations", projectId ?? "__portfolio__"] as const,
