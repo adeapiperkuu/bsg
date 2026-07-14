@@ -1,14 +1,18 @@
 import { create } from "zustand";
 
 import { fetchMe, login as apiLogin, logout as apiLogout, resetAuthSession } from "@/lib/api";
-import type { MeUser } from "@/types/auth";
+import type { LoginResult, MeUser } from "@/types/auth";
 
 type AuthState = {
   user: MeUser | null;
   isLoading: boolean;
   isAuthenticated: boolean;
   bootstrap: () => Promise<void>;
-  login: (email: string, password: string) => Promise<MeUser>;
+  login: (email: string, password: string) => Promise<LoginResult>;
+  /** DEVELOPMENT_PLAN.md Workstream E: call after POST /auth/mfa/verify
+   * succeeds (which already set the real session cookies) to populate the
+   * store the same way a non-MFA login does. */
+  completeMfaLogin: () => Promise<MeUser>;
   logout: () => Promise<void>;
   setUser: (user: MeUser | null) => void;
 };
@@ -48,7 +52,28 @@ export const useAuthStore = create<AuthState>((set) => ({
     const requestId = ++sessionRequestId;
     set({ isLoading: true });
     try {
-      await apiLogin(email, password);
+      const result = await apiLogin(email, password);
+      if (result.status === "mfa_required") {
+        if (requestId === sessionRequestId) set({ isLoading: false });
+        return result;
+      }
+      const user = await fetchMe();
+      if (requestId === sessionRequestId) {
+        set({ user, isAuthenticated: true, isLoading: false });
+      }
+      return result;
+    } catch (err) {
+      if (requestId === sessionRequestId) {
+        set({ isLoading: false });
+      }
+      throw err;
+    }
+  },
+
+  completeMfaLogin: async () => {
+    const requestId = ++sessionRequestId;
+    set({ isLoading: true });
+    try {
       const user = await fetchMe();
       if (requestId === sessionRequestId) {
         set({ user, isAuthenticated: true, isLoading: false });

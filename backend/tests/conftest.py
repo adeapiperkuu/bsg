@@ -21,6 +21,31 @@ USER_CLIENT_A = uuid4()
 USER_SUPER = uuid4()
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--run-live-rls",
+        action="store_true",
+        default=False,
+        help=(
+            "Run backend/tests/rls against the real database configured in "
+            "DATABASE_URL (DEVELOPMENT_PLAN.md Workstream C). All writes "
+            "happen inside a transaction that is always rolled back. Omit "
+            "this flag (the default) to skip these tests, as plain `pytest` "
+            "does."
+        ),
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    if config.getoption("--run-live-rls"):
+        return
+    skip_live = pytest.mark.skip(reason="pass --run-live-rls to run against the real database")
+    for item in items:
+        parts = str(item.fspath).replace("\\", "/").split("/")
+        if "rls" in parts:
+            item.add_marker(skip_live)
+
+
 class FakeScalars:
     def __init__(self, items: list[Any] | None = None) -> None:
         self._items = items or []

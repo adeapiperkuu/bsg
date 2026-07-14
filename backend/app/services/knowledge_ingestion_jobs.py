@@ -25,6 +25,7 @@ from app.db.models.entities import (
     KnowledgeIndexingStatus,
     KnowledgeProcessingStatus,
 )
+from app.db.rls import set_service_role_context
 from app.db.session import AsyncSessionLocal
 from app.schemas.domain import KnowledgeIngestionProgressRead
 
@@ -269,6 +270,7 @@ async def run_knowledge_ingestion_job(session: AsyncSession | None, job_id: UUID
     from app.services.knowledge import _invalidate_knowledge_answer_cache, _process_document_version, _read_stored_file
 
     async with AsyncSessionLocal() as claim_session:
+        await set_service_role_context(claim_session)
         job = await _claim_job(claim_session, job_id)
         if job is None:
             return
@@ -276,6 +278,7 @@ async def run_knowledge_ingestion_job(session: AsyncSession | None, job_id: UUID
 
     async with AsyncSessionLocal() as work_session:
         try:
+            await set_service_role_context(work_session)
             job = (await work_session.execute(select(KnowledgeIngestionJob).where(KnowledgeIngestionJob.id == job_id))).scalar_one()
             doc = (
                 await work_session.execute(
@@ -349,6 +352,7 @@ async def run_knowledge_ingestion_job(session: AsyncSession | None, job_id: UUID
             await work_session.rollback()
 
             async with AsyncSessionLocal() as failure_session:
+                await set_service_role_context(failure_session)
                 job = await _get_job_or_none(failure_session, job_id)
                 doc = None
                 if job is not None:
@@ -385,6 +389,7 @@ async def process_ingestion_job_queue(session: AsyncSession | None = None, batch
     now = _utcnow()
     try:
         async with AsyncSessionLocal() as poll_session:
+            await set_service_role_context(poll_session)
             jobs = (
                 await poll_session.execute(
                     select(KnowledgeIngestionJob.id)

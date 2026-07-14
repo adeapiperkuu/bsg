@@ -61,6 +61,13 @@ class Settings(BaseSettings):
     delivery_chat_max_message_length: int = 2000
     delivery_chat_retry_max_attempts: int = 3
     delivery_chat_retry_base_delay_seconds: float = 0.5
+    # DEVELOPMENT_PLAN.md Workstream E: comma-separated app_role values
+    # (e.g. "delivery_manager,bsg_leadership,super_admin") that must complete
+    # Supabase Auth TOTP MFA (aal2) to finish POST /auth/login. Empty by
+    # default -- MFA enforcement is off until this is explicitly set, since
+    # the Supabase MFA REST API shape this integration relies on hasn't been
+    # verified against a live sandbox yet (see docs/13. Security & Compliance.md §3).
+    mfa_required_roles: str = ""
 
     model_config = SettingsConfigDict(
         env_file=(
@@ -99,6 +106,13 @@ class Settings(BaseSettings):
                 raise ValueError(msg)
 
         return self
+
+    @property
+    def mfa_required_role_values(self) -> set[str]:
+        """Plain role-value strings (not AppRole) to avoid importing db models
+        into this low-level settings module -- callers compare against
+        `user.role.value`."""
+        return {r.strip() for r in self.mfa_required_roles.split(",") if r.strip()}
 
     @property
     def jwt_secret(self) -> str:

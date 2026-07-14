@@ -1,4 +1,14 @@
-import type { AppRole, AuthSession, MeUser, OrganisationRead, UserRead } from "@/types/auth";
+import type {
+  AppRole,
+  AuthSession,
+  LoginResult,
+  MeUser,
+  MfaChallengeResult,
+  MfaEnrollResult,
+  MfaRequired,
+  OrganisationRead,
+  UserRead,
+} from "@/types/auth";
 import type { AgentQueryCreate, AgentQueryRead } from "@/types/workforce";
 import type {
   KnowledgeBootstrapApi,
@@ -199,10 +209,47 @@ export async function apiFetchBlob(
   return response.blob();
 }
 
-export async function login(email: string, password: string): Promise<AuthSession> {
-  const body = await apiFetch<{ data: AuthSession }>("/auth/login", {
+export async function login(email: string, password: string): Promise<LoginResult> {
+  const body = await apiFetch<{ data: AuthSession | MfaRequired }>("/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
+  });
+  if ("mfa_required" in body.data && body.data.mfa_required) {
+    return { status: "mfa_required", ...body.data };
+  }
+  return { status: "success", session: body.data as AuthSession };
+}
+
+/** DEVELOPMENT_PLAN.md Workstream E. `pendingToken` authenticates these calls
+ * via Authorization header -- there's no session cookie yet at this stage. */
+export async function mfaEnroll(pendingToken: string): Promise<MfaEnrollResult> {
+  const body = await apiFetch<{ data: MfaEnrollResult }>("/auth/mfa/enroll", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${pendingToken}` },
+    body: JSON.stringify({}),
+  });
+  return body.data;
+}
+
+export async function mfaChallenge(pendingToken: string, factorId: string): Promise<MfaChallengeResult> {
+  const body = await apiFetch<{ data: MfaChallengeResult }>("/auth/mfa/challenge", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${pendingToken}` },
+    body: JSON.stringify({ factor_id: factorId }),
+  });
+  return body.data;
+}
+
+export async function mfaVerify(
+  pendingToken: string,
+  factorId: string,
+  challengeId: string,
+  code: string,
+): Promise<AuthSession> {
+  const body = await apiFetch<{ data: AuthSession }>("/auth/mfa/verify", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${pendingToken}` },
+    body: JSON.stringify({ factor_id: factorId, challenge_id: challengeId, code }),
   });
   return body.data;
 }
@@ -236,6 +283,43 @@ export async function listUsers(): Promise<UserRead[]> {
 
 export async function listOrganisations(): Promise<OrganisationRead[]> {
   const body = await apiFetch<{ data: OrganisationRead[] }>("/organisations");
+  return body.data;
+}
+
+export async function createOrganisation(payload: {
+  name: string;
+  slug: string;
+  vertical: string;
+  region: string;
+  is_active?: boolean;
+}): Promise<OrganisationRead> {
+  const body = await apiFetch<{ data: OrganisationRead }>("/organisations", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
+/** Also used to deactivate (is_active: false) -- matching admin.users.tsx's
+ * convention, deactivation is a field on the edit form, not a separate
+ * destructive action. The backend's DELETE /organisations/{id} route exists
+ * but isn't used here: it also sets deleted_at, permanently hiding the org
+ * from scoped_organisation_query with no UI path to undo -- a different,
+ * more destructive operation than what "deactivate" means for users. */
+export async function updateOrganisation(
+  orgId: string,
+  payload: {
+    name?: string;
+    slug?: string;
+    vertical?: string;
+    region?: string;
+    is_active?: boolean;
+  },
+): Promise<OrganisationRead> {
+  const body = await apiFetch<{ data: OrganisationRead }>(`/organisations/${orgId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
   return body.data;
 }
 

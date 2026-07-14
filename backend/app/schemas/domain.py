@@ -116,6 +116,44 @@ class AuthSessionRead(BaseModel):
     role: AppRole
 
 
+class MfaRequiredRead(BaseModel):
+    """Returned by POST /auth/login instead of AuthSessionRead when the
+    authenticating user's role requires MFA (DEVELOPMENT_PLAN.md Workstream E)
+    and the session isn't at aal2 yet. No auth cookies are set at this point --
+    `pending_token` is a short-lived bearer token, used only to call the
+    /auth/mfa/* endpoints, never persisted by the frontend as a session."""
+
+    mfa_required: bool = True
+    stage: str  # "enroll" (no verified factor yet) or "challenge" (factor already verified)
+    pending_token: str
+    factor_id: str | None = None  # set when stage == "challenge"
+
+
+class MfaEnrollRead(BaseModel):
+    factor_id: str
+    qr_code: str
+    secret: str
+
+
+class MfaChallengeRead(BaseModel):
+    factor_id: str
+    challenge_id: str
+
+
+class MfaEnrollRequest(BaseModel):
+    friendly_name: str = "Authenticator app"
+
+
+class MfaChallengeRequest(BaseModel):
+    factor_id: str
+
+
+class MfaVerifyRequest(BaseModel):
+    factor_id: str
+    challenge_id: str
+    code: str
+
+
 class MeRead(UserRead):
     organisation: OrganisationSummary | None = None
     permissions: MePermissions = Field(default_factory=MePermissions)
