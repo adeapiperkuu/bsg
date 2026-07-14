@@ -1,6 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 import { prefetchDeliveryNav } from "@/lib/queries/delivery-prefetch";
+import { adminProjectsQueryOptions } from "@/lib/queries/delivery";
 import { prefetchGovernanceNav } from "@/features/governance/governance-prefetch";
 
 /**
@@ -12,13 +13,14 @@ import { prefetchGovernanceNav } from "@/features/governance/governance-prefetch
 const HOVER_LINGER_MS = 450;
 const SAME_ROUTE_COOLDOWN_MS = 2_500;
 
-type PrefetchPath = "/delivery" | "/governance";
+type PrefetchPath = "/delivery" | "/governance" | "/admin/projects";
 
 type Prefetcher = (queryClient: QueryClient, signal: AbortSignal) => Promise<void>;
 
 const PREFETCHERS: Record<PrefetchPath, Prefetcher> = {
   "/delivery": (qc, signal) => prefetchDeliveryNav(qc, signal),
   "/governance": (qc, signal) => prefetchGovernanceNav(qc, signal),
+  "/admin/projects": (qc) => qc.prefetchQuery(adminProjectsQueryOptions),
 };
 
 let lingerTimer: ReturnType<typeof setTimeout> | null = null;

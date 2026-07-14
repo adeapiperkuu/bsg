@@ -374,38 +374,59 @@ async def list_admin_projects(session: AsyncSession) -> list[AdminProjectRead]:
     now = datetime.now(timezone.utc)
     iso_year, iso_week, _ = now.isocalendar()
 
-    projects = list(
-        (
-            await session.execute(
-                select(Project, Organisation)
-                .join(Organisation, Project.org_id == Organisation.id)
-                .where(Project.deleted_at.is_(None))
-                .order_by(Project.name)
+    # Only the columns the Projects table needs — no full-ORM hydration of
+    # Project/Organisation and no relationship loading.
+    project_rows = (
+        await session.execute(
+            select(
+                Project.id,
+                Project.name,
+                Project.org_id,
+                Project.status,
+                Project.vertical,
+                Project.start_date,
+                Project.target_end_date,
+                Organisation.name.label("org_name"),
             )
-        ).all()
-    )
+            .join(Organisation, Project.org_id == Organisation.id)
+            .where(Project.deleted_at.is_(None))
+            .order_by(Project.name)
+        )
+    ).all()
 
-    teams_by_project: dict[UUID, dict[UUID, Team]] = {}
-    all_teams = list((await session.execute(select(Team))).scalars())
-    for team in all_teams:
-        teams_by_project.setdefault(team.project_id, {})[team.id] = team
-
-    snapshots_by_project: dict[UUID, list] = {}
-    snapshot_rows = (
+    # Latest (iso_year, iso_week) per project computed in the database as a single
+    # aggregate row per project, instead of transferring/grouping the whole snapshot
+    # history. iso_week is 1..53, so (year * 100 + week) preserves chronological order.
+    latest_by_project: dict[UUID, tuple[int, int]] = {}
+    for project_id, encoded in (
         await session.execute(
             select(
                 QualitySnapshot.project_id,
-                QualitySnapshot.team_id,
-                QualitySnapshot.iso_year,
-                QualitySnapshot.iso_week,
-                QualitySnapshot.evaluated_item_count,
-            ).order_by(
-                QualitySnapshot.iso_year.desc(), QualitySnapshot.iso_week.desc()
+                func.max(QualitySnapshot.iso_year * 100 + QualitySnapshot.iso_week),
+            ).group_by(QualitySnapshot.project_id)
+        )
+    ).all():
+        latest_by_project[project_id] = (encoded // 100, encoded % 100)
+
+    # Data-gap teams: current-week snapshots below the evaluation threshold only.
+    # The unique (project, team, year, week) constraint means one row per team,
+    # so the current-week filter is exact — no need to dedupe latest-per-team.
+    # The team name is joined in, eliminating the separate all-teams fetch.
+    gaps_by_project: dict[UUID, list[str]] = {}
+    gap_rows = (
+        await session.execute(
+            select(QualitySnapshot.project_id, Team.name)
+            .join(Team, QualitySnapshot.team_id == Team.id)
+            .where(
+                QualitySnapshot.iso_year == iso_year,
+                QualitySnapshot.iso_week == iso_week,
+                QualitySnapshot.evaluated_item_count.is_not(None),
+                QualitySnapshot.evaluated_item_count < MIN_EVALUATED_ITEMS,
             )
         )
     ).all()
-    for snap in snapshot_rows:
-        snapshots_by_project.setdefault(snap.project_id, []).append(snap)
+    for row in gap_rows:
+        gaps_by_project.setdefault(row.project_id, []).append(row.name)
 
     drift_by_project: dict[UUID, int] = dict(
         (
@@ -422,43 +443,22 @@ async def list_admin_projects(session: AsyncSession) -> list[AdminProjectRead]:
     )
 
     results: list[AdminProjectRead] = []
-    for project, org in projects:
-        snapshots = snapshots_by_project.get(project.id, [])
-
-        latest_by_team: dict[UUID, object] = {}
-        for snap in snapshots:
-            if snap.team_id not in latest_by_team:
-                latest_by_team[snap.team_id] = snap
-
-        latest_week_snaps = [
-            s for s in latest_by_team.values() if s.iso_year == iso_year and s.iso_week == iso_week
-        ]
-        project_teams = teams_by_project.get(project.id, {})
-        data_gap_teams = [
-            project_teams[snap.team_id].name if snap.team_id in project_teams else str(snap.team_id)
-            for snap in latest_week_snaps
-            if snap.evaluated_item_count is not None and snap.evaluated_item_count < MIN_EVALUATED_ITEMS
-        ]
-
-        active_drift = drift_by_project.get(project.id, 0)
-
-        latest_iso_year = snapshots[0].iso_year if snapshots else None
-        latest_iso_week = snapshots[0].iso_week if snapshots else None
-
+    for project in project_rows:
+        latest_year, latest_week = latest_by_project.get(project.id, (None, None))
         results.append(
             AdminProjectRead(
                 id=project.id,
                 name=project.name,
                 org_id=project.org_id,
-                org_name=org.name,
+                org_name=project.org_name,
                 status=project.status,
                 vertical=project.vertical,
                 start_date=project.start_date,
                 target_end_date=project.target_end_date,
-                latest_iso_year=latest_iso_year,
-                latest_iso_week=latest_iso_week,
-                active_drift_alerts=active_drift,
-                data_gap_teams=data_gap_teams,
+                latest_iso_year=latest_year,
+                latest_iso_week=latest_week,
+                active_drift_alerts=drift_by_project.get(project.id, 0),
+                data_gap_teams=gaps_by_project.get(project.id, []),
             )
         )
     return results
