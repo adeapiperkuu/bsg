@@ -2,6 +2,7 @@ import { queryOptions, useQuery } from "@tanstack/react-query";
 import {
   fetchDeliveryDashboard,
   fetchDeliveryPortfolio,
+  listAdminProjects,
   listDeliveryConversations,
   listOrganisations,
   listProjectDeliveryConfidence,
@@ -12,6 +13,12 @@ import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
 export const projectsQueryOptions = queryOptions({
   queryKey: queryKeys.projects,
   queryFn: listProjects,
+  staleTime: STALE_TIME_MS,
+});
+
+export const adminProjectsQueryOptions = queryOptions({
+  queryKey: queryKeys.adminProjects,
+  queryFn: listAdminProjects,
   staleTime: STALE_TIME_MS,
 });
 

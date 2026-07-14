@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, FolderKanban, PauseCircle, RefreshCw, Search } from "lucide-react";
 
 import { Card } from "@/components/bsg/widgets";
@@ -7,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { editControlClass, toolbarIconButtonClass, USERS_PER_PAGE, visiblePages } from "@/lib/admin-shared";
-import { listAdminProjects, type AdminProject } from "@/lib/api";
+import { adminProjectsQueryOptions } from "@/lib/queries/delivery";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/admin/projects")({ component: AdminProjectsPage });
@@ -22,28 +23,17 @@ function formatStatus(status: string): string {
 }
 
 function AdminProjectsPage() {
-  const [projects, setProjects] = useState<AdminProject[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const projectsQuery = useQuery(adminProjectsQueryOptions);
+  const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
+  const loading = projectsQuery.isFetching;
+  const error = projectsQuery.error
+    ? projectsQuery.error instanceof Error
+      ? projectsQuery.error.message
+      : "Failed to load projects."
+    : null;
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [page, setPage] = useState(1);
-
-  const load = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setProjects(await listAdminProjects());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load projects.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    void load();
-  }, []);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -54,9 +44,14 @@ function AdminProjectsPage() {
     });
   }, [projects, search, statusFilter]);
 
-  const activeCount = projects.filter((p) => p.status === "active").length;
-  const rampingPaused = projects.filter((p) => p.status === "ramping" || p.status === "paused").length;
-  const withDrift = projects.filter((p) => p.active_drift_alerts > 0).length;
+  const { activeCount, rampingPaused, withDrift } = useMemo(
+    () => ({
+      activeCount: projects.filter((p) => p.status === "active").length,
+      rampingPaused: projects.filter((p) => p.status === "ramping" || p.status === "paused").length,
+      withDrift: projects.filter((p) => p.active_drift_alerts > 0).length,
+    }),
+    [projects],
+  );
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / USERS_PER_PAGE));
   const currentPage = Math.min(page, totalPages);
@@ -75,7 +70,7 @@ function AdminProjectsPage() {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">Cross-org project health and quality posture.</p>
-        <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+        <Button variant="outline" size="sm" onClick={() => void projectsQuery.refetch()} disabled={loading}>
           <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
           Refresh
         </Button>
