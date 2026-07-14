@@ -24,19 +24,22 @@ import {
   StatusPill,
 } from "@/components/bsg/widgets";
 import {
-  kpis,
-  riskTrend,
-  qualityTrend,
-  utilization,
-  alerts,
-  recommendations,
-  milestones,
-  activity,
-  healthDistribution,
-  aiSummary,
-} from "@/lib/bsg/data";
+  executiveSummaryQueryOptions,
+  operationalTowerQueryOptions,
+  useExecutiveSummaryQuery,
+  useOperationalTowerQuery,
+} from "@/lib/queries/dashboard";
 
-export const Route = createFileRoute("/dashboard")({ component: Dashboard });
+export const Route = createFileRoute("/dashboard")({
+  component: Dashboard,
+  loader: async ({ context: { queryClient } }) => {
+    // Warm the deterministic payload before paint; let the AI summary hydrate in the
+    // background so it never blocks the dashboard. prefetchQuery never throws, so a
+    // transient API error degrades to the component's empty state instead of the error page.
+    await queryClient.prefetchQuery(operationalTowerQueryOptions);
+    void queryClient.prefetchQuery(executiveSummaryQueryOptions);
+  },
+});
 
 const axisProps = {
   tick: { fill: "#8b92a5", fontSize: 11 },
@@ -51,33 +54,83 @@ const tooltipStyle = {
   color: "#f0f2f7",
 };
 
+function formatRelative(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return iso;
+  const diff = Math.max(0, Date.now() - then);
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
+function formatDueDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { month: "short", day: "2-digit" });
+}
+
+function confidenceTone(value: number | null): "success" | "warning" | "danger" | "default" {
+  if (value == null) return "default";
+  if (value >= 85) return "success";
+  if (value >= 70) return "warning";
+  return "danger";
+}
+
 function Dashboard() {
+  const { data } = useOperationalTowerQuery();
+  const { data: summary } = useExecutiveSummaryQuery();
+
+  const kpis = data?.kpis;
+  const healthDistribution = data?.healthDistribution ?? [];
+  const riskTrend = data?.riskTrend ?? { series: [], data: [] };
+  const qualityTrend = data?.qualityTrend ?? [];
+  const utilization = data?.utilization ?? [];
+  const alerts = data?.alerts ?? [];
+  const recommendations = data?.recommendations ?? [];
+  const milestones = data?.milestones ?? [];
+  const activity = data?.activity ?? [];
+
+  const totalProjects = kpis?.totalProjects ?? 0;
+  const atRiskCount =
+    healthDistribution.find((d) => d.name === "At Risk")?.value ?? 0;
+  const criticalEscalations = data?.criticalEscalations ?? 0;
+  const recConfidence = recommendations.length
+    ? Math.round(
+        recommendations.reduce((sum, r) => sum + r.confidence, 0) / recommendations.length,
+      )
+    : null;
+  const iaaTrendingDown =
+    qualityTrend.length >= 2 &&
+    (qualityTrend.at(-1)?.iaa ?? 0) < (qualityTrend.at(-2)?.iaa ?? 0);
+
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard
           label="Active Projects"
-          value={kpis.activeProjects}
-          delta="+2 this week"
+          value={kpis?.activeProjects ?? "—"}
+          delta={totalProjects ? `${totalProjects} total in portfolio` : undefined}
           tone="success"
         />
         <KpiCard
           label="Schedule Confidence"
-          value={`${kpis.scheduleConfidence}%`}
-          delta="−1.2 pts vs last week"
-          tone="warning"
+          value={kpis?.scheduleConfidence != null ? `${kpis.scheduleConfidence}%` : "—"}
+          tone={confidenceTone(kpis?.scheduleConfidence ?? null)}
         />
         <KpiCard
           label="Open Escalations"
-          value={kpis.openEscalations}
-          delta="2 critical"
-          tone="danger"
+          value={kpis?.openEscalations ?? "—"}
+          delta={criticalEscalations ? `${criticalEscalations} critical` : undefined}
+          tone={criticalEscalations ? "danger" : "default"}
         />
         <KpiCard
           label="Avg Quality Score"
-          value={kpis.avgQualityScore}
-          delta="+0.3 vs last week"
-          tone="success"
+          value={kpis?.avgQualityScore != null ? kpis.avgQualityScore : "—"}
+          tone={confidenceTone(kpis?.avgQualityScore ?? null)}
         />
       </div>
 
@@ -86,23 +139,29 @@ function Dashboard() {
           <SectionHeader
             title="Delivery Risk Trend"
             sub="8-week rolling risk score per project"
-            right={<StatusPill status="Warning" />}
+            right={<StatusPill status={atRiskCount ? "Warning" : "On Track"} />}
           />
           <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={riskTrend}>
+            <LineChart data={riskTrend.data}>
               <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" />
               <XAxis dataKey="week" {...axisProps} />
               <YAxis {...axisProps} />
               <Tooltip contentStyle={tooltipStyle} />
               <Legend wrapperStyle={{ fontSize: 11, color: "#8b92a5" }} />
-              <Line type="monotone" dataKey="Aurora" stroke="#22c55e" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="Helios" stroke="#f59e0b" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="Nimbus" stroke="#ef4444" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="Orion" stroke="#3b82f6" strokeWidth={2} dot={false} />
+              {riskTrend.series.map((s) => (
+                <Line
+                  key={s.name}
+                  type="monotone"
+                  dataKey={s.name}
+                  stroke={s.color}
+                  strokeWidth={2}
+                  dot={false}
+                />
+              ))}
             </LineChart>
           </ResponsiveContainer>
           <div className="mt-2 text-xs text-muted-foreground">
-            3 at risk this week · <AiBadge confidence={84} />
+            {atRiskCount} at risk this week
           </div>
         </Card>
 
@@ -128,7 +187,7 @@ function Dashboard() {
             </ResponsiveContainer>
             <div className="pointer-events-none absolute inset-0 grid place-items-center">
               <div className="text-center">
-                <div className="text-2xl font-semibold">28</div>
+                <div className="text-2xl font-semibold">{totalProjects}</div>
                 <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
                   Projects
                 </div>
@@ -149,7 +208,7 @@ function Dashboard() {
           <SectionHeader
             title="Quality Trend"
             sub="Gold-set & IAA · 12 weeks"
-            right={<StatusPill status="Warning" />}
+            right={<StatusPill status={iaaTrendingDown ? "Warning" : "On Track"} />}
           />
           <ResponsiveContainer width="100%" height={200}>
             <LineChart data={qualityTrend}>
@@ -176,12 +235,14 @@ function Dashboard() {
               />
             </LineChart>
           </ResponsiveContainer>
-          <div className="mt-2 text-xs">
-            <span className="rounded bg-[color:var(--danger)]/15 px-1.5 py-0.5 text-[10px] font-medium text-[color:var(--danger)]">
-              Drift Alert
-            </span>{" "}
-            Radiology subset trending down
-          </div>
+          {iaaTrendingDown && (
+            <div className="mt-2 text-xs">
+              <span className="rounded bg-[color:var(--danger)]/15 px-1.5 py-0.5 text-[10px] font-medium text-[color:var(--danger)]">
+                Drift Alert
+              </span>{" "}
+              Inter-annotator agreement trending down
+            </div>
+          )}
         </Card>
 
         <Card>
@@ -203,7 +264,7 @@ function Dashboard() {
           <ul className="space-y-2">
             {alerts.map((a) => (
               <li
-                key={a.desc}
+                key={`${a.project}-${a.desc}`}
                 className="flex items-start justify-between gap-3 rounded-md border border-border bg-elevated p-3"
               >
                 <div className="min-w-0">
@@ -212,7 +273,9 @@ function Dashboard() {
                     <span className="truncate text-xs font-medium">{a.project}</span>
                   </div>
                   <div className="mt-1 text-[11px] text-muted-foreground">{a.desc}</div>
-                  <div className="mt-1 text-[10px] text-muted-foreground">{a.ts}</div>
+                  <div className="mt-1 text-[10px] text-muted-foreground">
+                    {formatRelative(a.ts)}
+                  </div>
                 </div>
                 <button className="shrink-0 rounded border border-border px-2 py-1 text-[11px] hover:bg-card">
                   View
@@ -228,7 +291,7 @@ function Dashboard() {
           <SectionHeader
             title="AI Recommendations"
             sub="Generated by Delivery & Workforce agents"
-            right={<AiBadge confidence={88} />}
+            right={recConfidence != null ? <AiBadge confidence={recConfidence} label="AI" /> : undefined}
           />
           <ul className="space-y-2">
             {recommendations.map((r) => (
@@ -242,7 +305,7 @@ function Dashboard() {
                     <span className="text-[10px] text-muted-foreground">
                       {r.evidence} evidence items
                     </span>
-                    <AiBadge confidence={r.confidence} />
+                    <AiBadge confidence={r.confidence} label="AI" />
                   </div>
                   <div className="mt-1 text-sm">{r.title}</div>
                 </div>
@@ -263,12 +326,12 @@ function Dashboard() {
           <SectionHeader title="Recent Activity" sub="Last 10 operational events" />
           <ul className="space-y-2.5 text-xs">
             {activity.map((a) => (
-              <li key={a.text} className="flex gap-2.5">
+              <li key={`${a.actor}-${a.ts}-${a.text}`} className="flex gap-2.5">
                 <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--brand)]" />
                 <div className="min-w-0">
                   <div className="truncate">
                     <span className="font-medium">{a.actor}</span>{" "}
-                    <span className="text-muted-foreground">· {a.ts}</span>
+                    <span className="text-muted-foreground">· {formatRelative(a.ts)}</span>
                   </div>
                   <div className="text-muted-foreground">{a.text}</div>
                 </div>
@@ -293,11 +356,11 @@ function Dashboard() {
             </thead>
             <tbody>
               {milestones.map((m) => (
-                <tr key={m.name} className="border-b border-border/50">
+                <tr key={`${m.project}-${m.name}`} className="border-b border-border/50">
                   <td className="py-2.5 pr-3 font-medium">{m.project}</td>
                   <td className="py-2.5 pr-3 text-muted-foreground">{m.name}</td>
-                  <td className="py-2.5 pr-3">{m.due}</td>
-                  <td className="py-2.5 pr-3">{m.confidence}%</td>
+                  <td className="py-2.5 pr-3">{formatDueDate(m.due)}</td>
+                  <td className="py-2.5 pr-3">{m.confidence != null ? `${m.confidence}%` : "—"}</td>
                   <td className="py-2.5 pr-3">
                     <StatusPill status={m.status} />
                   </td>
@@ -311,25 +374,36 @@ function Dashboard() {
       <Card>
         <SectionHeader
           title="Executive AI Summary"
-          sub="Auto-generated · Week 24 · Reviewed by Maya Chen"
+          sub={
+            summary
+              ? `${summary.generated_by_ai ? "Auto-generated" : "Manual"} · Week of ${formatDueDate(summary.week)} · ${summary.approved ? "Approved" : "Pending review"}`
+              : "Awaiting generated summary"
+          }
           right={
             <div className="flex gap-2">
-              <AiBadge confidence={92} label="AI" />
+              {summary?.generated_by_ai && <AiBadge label="AI" />}
               <EvidenceBadge />
             </div>
           }
         />
-        {aiSummary.split("\n\n").map((p, i) => (
-          <p key={i} className="mb-3 text-sm leading-6 text-foreground/90">
-            {p}
+        {summary ? (
+          summary.text.split("\n\n").map((p, i) => (
+            <p key={i} className="mb-3 text-sm leading-6 text-foreground/90">
+              {p}
+            </p>
+          ))
+        ) : (
+          <p className="mb-3 text-sm leading-6 text-muted-foreground">
+            No executive summary has been generated yet. Governance summaries appear here once
+            produced.
           </p>
-        ))}
+        )}
         <div className="mt-2 flex gap-2">
           <button className="rounded border border-border px-3 py-1.5 text-xs hover:bg-elevated">
             Regenerate
           </button>
           <button className="rounded bg-[color:var(--brand)] px-3 py-1.5 text-xs font-medium text-[color:var(--brand-foreground)]">
-            Approve & Send
+            Approve &amp; Send
           </button>
         </div>
       </Card>

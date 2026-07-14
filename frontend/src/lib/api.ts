@@ -717,6 +717,60 @@ export async function postAgentQuery(payload: {
   return body.data;
 }
 
+export type OperationalTowerKpis = {
+  activeProjects: number;
+  scheduleConfidence: number | null;
+  openEscalations: number;
+  avgQualityScore: number | null;
+  totalProjects: number;
+};
+
+export type OperationalTower = {
+  kpis: OperationalTowerKpis;
+  healthDistribution: Array<{ name: string; value: number; color: string }>;
+  riskTrend: {
+    series: Array<{ name: string; color: string }>;
+    data: Array<Record<string, string | number>>;
+  };
+  qualityTrend: Array<{ week: string; goldAccuracy: number | null; iaa: number | null }>;
+  utilization: Array<{ team: string; value: number }>;
+  alerts: Array<{ sev: string; project: string; desc: string; ts: string }>;
+  recommendations: Array<{
+    title: string;
+    confidence: number;
+    evidence: number;
+    priority: string;
+  }>;
+  milestones: Array<{
+    project: string;
+    name: string;
+    due: string;
+    confidence: number | null;
+    status: string;
+  }>;
+  activity: Array<{ ts: string; actor: string; text: string }>;
+  criticalEscalations: number;
+};
+
+export type ExecutiveSummary = {
+  text: string;
+  week: string;
+  generated_by_ai: boolean;
+  status: string;
+  approved: boolean;
+  updated_at: string | null;
+};
+
+export async function fetchOperationalTower(): Promise<OperationalTower> {
+  const body = await apiFetch<{ data: OperationalTower }>("/dashboard/operational-tower");
+  return body.data;
+}
+
+export async function fetchExecutiveSummary(): Promise<ExecutiveSummary | null> {
+  const body = await apiFetch<{ data: ExecutiveSummary | null }>("/dashboard/executive-summary");
+  return body.data;
+}
+
 export function defaultRouteForRole(role: AppRole): string {
   switch (role) {
     case "client":
@@ -854,6 +908,8 @@ function buildBootstrapFromDocuments(
       draft_count: libraryHealth?.draft_count ?? documents.filter((d) => d.status === "draft").length,
       archived_count:
         libraryHealth?.archived_count ?? documents.filter((d) => d.status === "archived").length,
+      approaching_expiry_count: libraryHealth?.approaching_expiry_count ?? 0,
+      outdated_count: libraryHealth?.outdated_count ?? 0,
     },
   };
 }
@@ -884,6 +940,8 @@ function normalizeKnowledgeBootstrap(data: LegacyKnowledgeBootstrapApi): Knowled
         indexing_count: data.library_health?.indexing_count ?? 0,
         draft_count: data.library_health?.draft_count ?? 0,
         archived_count: data.library_health?.archived_count ?? 0,
+        approaching_expiry_count: data.library_health?.approaching_expiry_count ?? 0,
+        outdated_count: data.library_health?.outdated_count ?? 0,
       },
     };
   }

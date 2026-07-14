@@ -14,6 +14,7 @@ from app.api.routes import (
     auth,
     communications,
     csat,
+    dashboard,
     delivery,
     knowledge,
     me,
@@ -118,6 +119,7 @@ def create_app() -> FastAPI:
     app.include_router(organisations.router, prefix=api_prefix)
     app.include_router(users.router, prefix=api_prefix)
     app.include_router(projects.router, prefix=api_prefix)
+    app.include_router(dashboard.router, prefix=api_prefix)
     app.include_router(delivery.router, prefix=api_prefix)
     app.include_router(delivery_dashboard.router, prefix=api_prefix)
     app.include_router(delivery_chat.router, prefix=api_prefix)
