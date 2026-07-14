@@ -6,9 +6,13 @@ import { createAgentQuery } from "@/lib/api";
 import type { AgentQueryRead } from "@/types/workforce";
 import { WorkforceAgentSection } from "./WorkforceAgentSection";
 
-vi.mock("@/lib/api", () => ({
-  createAgentQuery: vi.fn(),
-}));
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return {
+    ...actual,
+    createAgentQuery: vi.fn(),
+  };
+});
 
 const mockedCreateAgentQuery = vi.mocked(createAgentQuery);
 
@@ -67,13 +71,77 @@ describe("WorkforceAgentSection", () => {
     await user.click(screen.getByRole("button", { name: "Which teams are overloaded?" }));
 
     await waitFor(() => {
-      expect(
-        screen.getByRole("heading", { name: "Answer for Which teams are overloaded?" }),
-      ).toBeInTheDocument();
+      expect(screen.getByText("Which teams are overloaded?")).toBeInTheDocument();
     });
 
+    await waitFor(() => {
+      expect(screen.getByText("Answer for Which teams are overloaded?")).toBeInTheDocument();
+    });
+
+    expect(mockedCreateAgentQuery).toHaveBeenCalledTimes(1);
+    expect(mockedCreateAgentQuery).toHaveBeenCalledWith({
+      agent_name: "workforce_capability_agent",
+      project_id: "project-1",
+      query_text: "Which teams are overloaded?",
+    });
     expect(screen.getByText("You")).toBeInTheDocument();
     expect(screen.getByText("Workforce Agent")).toBeInTheDocument();
+  });
+
+  it("shows the user bubble immediately after clicking a starter prompt", async () => {
+    let resolveAnswer: ((value: AgentQueryRead) => void) | undefined;
+    mockedCreateAgentQuery.mockImplementation(
+      () =>
+        new Promise<AgentQueryRead>((resolve) => {
+          resolveAnswer = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+
+    renderSection();
+
+    await user.click(screen.getByRole("button", { name: "Which teams are overloaded?" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Which teams are overloaded?")).toBeInTheDocument();
+      expect(screen.getByText("Analyzing workforce data")).toBeInTheDocument();
+    });
+
+    resolveAnswer?.(buildAnswer("Which teams are overloaded?"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Answer for Which teams are overloaded?")).toBeInTheDocument();
+    });
+  });
+
+  it("keeps chat scrolling inside the panel when a question is submitted", async () => {
+    mockedCreateAgentQuery.mockResolvedValue(buildAnswer("Which teams are overloaded?"));
+    const user = userEvent.setup();
+    const scrollToSpy = vi
+      .spyOn(HTMLElement.prototype, "scrollTo")
+      .mockImplementation(() => undefined);
+    if (!HTMLElement.prototype.scrollIntoView) {
+      HTMLElement.prototype.scrollIntoView = vi.fn();
+    }
+    const scrollIntoViewSpy = vi
+      .spyOn(HTMLElement.prototype, "scrollIntoView")
+      .mockImplementation(() => undefined);
+
+    renderSection();
+    scrollToSpy.mockClear();
+    scrollIntoViewSpy.mockClear();
+
+    await user.click(screen.getByRole("button", { name: "Which teams are overloaded?" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Answer for Which teams are overloaded?")).toBeInTheDocument();
+    });
+
+    expect(scrollToSpy).toHaveBeenCalled();
+    expect(scrollIntoViewSpy).not.toHaveBeenCalled();
+
+    scrollToSpy.mockRestore();
+    scrollIntoViewSpy.mockRestore();
   });
 
   it("starts a new chat from the control", async () => {
@@ -85,9 +153,7 @@ describe("WorkforceAgentSection", () => {
     await user.click(screen.getByRole("button", { name: "Which teams are overloaded?" }));
 
     await waitFor(() => {
-      expect(
-        screen.getByRole("heading", { name: "Answer for Which teams are overloaded?" }),
-      ).toBeInTheDocument();
+      expect(screen.getByText("Answer for Which teams are overloaded?")).toBeInTheDocument();
     });
 
     await user.click(screen.getByRole("button", { name: /New chat/i }));
@@ -122,25 +188,19 @@ describe("WorkforceAgentSection", () => {
 
     await user.click(screen.getByRole("button", { name: "Which teams are overloaded?" }));
     await waitFor(() => {
-      expect(
-        screen.getByRole("heading", { name: "Answer for Which teams are overloaded?" }),
-      ).toBeInTheDocument();
+      expect(screen.getByText("Answer for Which teams are overloaded?")).toBeInTheDocument();
     });
 
     await user.click(screen.getByRole("button", { name: /New chat/i }));
     await user.click(screen.getByRole("button", { name: "Do we have enough SME coverage?" }));
     await waitFor(() => {
-      expect(
-        screen.getByRole("heading", { name: "Answer for Do we have enough SME coverage?" }),
-      ).toBeInTheDocument();
+      expect(screen.getByText("Answer for Do we have enough SME coverage?")).toBeInTheDocument();
     });
 
     await user.click(screen.getByRole("button", { name: /^History$/i }));
     await user.click(screen.getByRole("button", { name: /Which teams are overloaded/i }));
 
-    expect(
-      screen.getByRole("heading", { name: "Answer for Which teams are overloaded?" }),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Answer for Which teams are overloaded?")).toBeInTheDocument();
     expect(
       screen.queryByText("Answer for Do we have enough SME coverage?"),
     ).not.toBeInTheDocument();

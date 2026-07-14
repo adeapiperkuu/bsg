@@ -27,17 +27,26 @@ function updateRecommendationInCache(
       if (!current) return current;
       return {
         ...current,
-        data: current.data.map((item) => (item.id === recommendationId ? updater(item) : item)),
+        data: current.data.map((group) => {
+          const risks = group.risks.map((risk) =>
+            risk.recommendation_id === recommendationId ? updater(risk) : risk,
+          );
+          return {
+            ...group,
+            risks,
+            statuses: risks.map((risk) => risk.status),
+          };
+        }),
       };
     },
   );
 }
 
-export function useProjectRecommendationsQuery(projectId: string | null) {
+export function useProjectRecommendationsQuery(projectId: string | null, enabled = true) {
   return useQuery({
     queryKey: queryKeys.projectRecommendations(projectId ?? ""),
     queryFn: () => fetchProjectRecommendations(projectId!),
-    enabled: Boolean(projectId),
+    enabled: Boolean(projectId) && enabled,
     staleTime: STALE_TIME_MS,
   });
 }

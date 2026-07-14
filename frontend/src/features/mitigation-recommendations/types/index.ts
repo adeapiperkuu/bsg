@@ -32,6 +32,7 @@ export type GroupedRecommendationRisk = {
   recommendation_id: string;
   source_risk_id: string | null;
   source_risk_title: string | null;
+  source_risk_type: string | null;
   description: string | null;
   status: RecommendationStatus;
   confidence_score: number;

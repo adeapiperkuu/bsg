@@ -30,6 +30,8 @@ from app.services.workforce_skills import (
     create_skill,
     get_skill_or_404,
     meets_proficiency,
+    _count_matching_annotators,
+    _index_annotator_skill_proficiency,
 )
 from tests.conftest import ORG_A, client_a, delivery_manager, override_user
 
@@ -163,6 +165,42 @@ def test_meets_proficiency_matrix() -> None:
     assert meets_proficiency(ProficiencyLevel.EXPERT, ProficiencyLevel.ADVANCED) is True
     assert meets_proficiency(ProficiencyLevel.ADVANCED, ProficiencyLevel.ADVANCED) is True
     assert meets_proficiency(ProficiencyLevel.INTERMEDIATE, ProficiencyLevel.ADVANCED) is False
+
+
+def test_index_annotator_skill_proficiency_keeps_best_level() -> None:
+    org_id = uuid4()
+    team = _team(org_id, uuid4())
+    annotator = _annotator(org_id, team.id)
+    skill_id = uuid4()
+    assignments = {
+        annotator.id: [
+            AnnotatorSkill(
+                id=uuid4(),
+                org_id=org_id,
+                annotator_id=annotator.id,
+                skill_id=skill_id,
+                proficiency_level=ProficiencyLevel.INTERMEDIATE,
+            ),
+            AnnotatorSkill(
+                id=uuid4(),
+                org_id=org_id,
+                annotator_id=annotator.id,
+                skill_id=skill_id,
+                proficiency_level=ProficiencyLevel.EXPERT,
+            ),
+        ],
+    }
+    index = _index_annotator_skill_proficiency([annotator], assignments)
+    assert index[(annotator.id, skill_id)] == ProficiencyLevel.EXPERT
+    assert (
+        _count_matching_annotators(
+            [annotator],
+            index,
+            skill_id,
+            ProficiencyLevel.ADVANCED,
+        )
+        == 1
+    )
 
 
 def test_compute_coverage_status_matrix() -> None:

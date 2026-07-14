@@ -118,6 +118,21 @@ function parseSections(lines: string[]): ParsedSections {
 }
 
 function buildHeadline(answerText: string, sections: ParsedSections): string {
+  const smeCoverageMatch = answerText.match(
+    /SME coverage for .*?:\s*(\d+)\s+SME\(s\)\s+\((\d+)%\s+of\s+(\d+)\s+active annotators\)/i,
+  );
+  if (smeCoverageMatch) {
+    const percent = Number(smeCoverageMatch[2]);
+    if (percent < 50) return "SME coverage is below target";
+    return "SME coverage is on track";
+  }
+
+  const trainingGapMatch = answerText.match(/training gaps for .*?:\s*(\d+)\s+open/i);
+  if (trainingGapMatch) {
+    const count = Number(trainingGapMatch[1]);
+    return count === 1 ? "1 training gap needs attention" : `${count} training gaps need attention`;
+  }
+
   if (/no underloaded teams found/i.test(answerText)) {
     return "No underloaded teams found";
   }
@@ -207,6 +222,43 @@ function buildHeadline(answerText: string, sections: ParsedSections): string {
 }
 
 function buildSummary(sections: ParsedSections, headline: string): string {
+  const smeLine = sections.bodyLines.find((line) => /SME coverage for .*?:/i.test(line));
+  const smeMatch = smeLine?.match(
+    /:\s*(\d+)\s+SME\(s\)\s+\((\d+)%\s+of\s+(\d+)\s+active annotators\)/i,
+  );
+  if (smeMatch) {
+    const smeCount = Number(smeMatch[1]);
+    const percent = Number(smeMatch[2]);
+    const annotators = Number(smeMatch[3]);
+    return `${smeCount} SME${smeCount === 1 ? "" : "s"} cover ${percent}% of ${annotators} active annotators.`;
+  }
+
+  const trainingLine = sections.bodyLines.find((line) => /training gaps for .*?:/i.test(line));
+  const mandatoryMatch = trainingLine?.match(/(\d+)\s+mandatory\s+incomplete/i);
+  const expiredMatch = trainingLine?.match(/(\d+)\s+expired\/failed/i);
+  if (mandatoryMatch || expiredMatch) {
+    const parts: string[] = [];
+    if (mandatoryMatch) {
+      const mandatory = Number(mandatoryMatch[1]);
+      parts.push(
+        mandatory === 1
+          ? "1 mandatory training is incomplete"
+          : `${mandatory} mandatory trainings are incomplete`,
+      );
+    }
+    if (expiredMatch) {
+      const expired = Number(expiredMatch[1]);
+      parts.push(
+        expired === 0
+          ? "no expired or failed trainings were found"
+          : expired === 1
+            ? "1 training is expired or failed"
+            : `${expired} trainings are expired or failed`,
+      );
+    }
+    return `${parts.join(", ")}.`;
+  }
+
   if (sections.keyFindings.length > 0) {
     return sections.keyFindings[0]!;
   }
@@ -215,6 +267,31 @@ function buildSummary(sections: ParsedSections, headline: string): string {
   if (candidate) return candidate;
 
   return "";
+}
+
+function extractEmbeddedAdvice(line: string): {
+  finding: string;
+  nextStep: string | null;
+} {
+  const adviceMatch = line.match(/^(.*?);\s*(consider|recommend|suggest)\s+(.+?)\.?$/i);
+  if (!adviceMatch) return { finding: line, nextStep: null };
+
+  const finding = humanizeWording(adviceMatch[1] ?? "");
+  const action = humanizeWording(adviceMatch[3] ?? "").replace(/^certifying\b/i, "Certify");
+  if (!action) return { finding, nextStep: null };
+
+  return {
+    finding: finding.endsWith(".") ? finding : `${finding}.`,
+    nextStep: `${action.charAt(0).toUpperCase()}${action.slice(1)}`.replace(/\.*$/, "."),
+  };
+}
+
+function shouldHideBodyLine(line: string): boolean {
+  return (
+    /^grounded in\s+/i.test(line) ||
+    /^SME coverage for .*?:/i.test(line) ||
+    /^training gaps for .*?:/i.test(line)
+  );
 }
 
 const STALE_UTILIZATION_PATTERN =
@@ -269,17 +346,25 @@ export function formatWorkforceAnswer(
   answerText: string,
   options?: { dateContext?: string },
 ): FormattedWorkforceAnswer {
-  const lines = splitAnswerLines(answerText);
+  const safeAnswerText = typeof answerText === "string" ? answerText : "";
+  const lines = splitAnswerLines(safeAnswerText);
   const sections = parseSections(lines);
-  const headline = buildHeadline(answerText, sections);
+  const headline = buildHeadline(safeAnswerText, sections);
   const summary = buildSummary(sections, headline);
-  const freshnessContext = [answerText, options?.dateContext].filter(Boolean).join("\n");
+  const freshnessContext = [safeAnswerText, options?.dateContext].filter(Boolean).join("\n");
   const { caution, dataFreshness } = splitWarningSections(sections.caution, freshnessContext);
 
-  const extraFindings =
+  const derivedFindings =
     sections.keyFindings.length > 1
       ? sections.keyFindings.slice(1)
-      : sections.bodyLines.filter((line) => line !== headline && line !== summary);
+      : sections.bodyLines.filter(
+          (line) => line !== headline && line !== summary && !shouldHideBodyLine(line),
+        );
+  const extracted = derivedFindings.map(extractEmbeddedAdvice);
+  const embeddedNextStep = extracted.find((item) => item.nextStep)?.nextStep ?? null;
+  const extraFindings = extracted
+    .map((item) => item.finding)
+    .filter((finding) => finding && finding !== headline && finding !== summary);
 
   return {
     headline,
@@ -287,9 +372,9 @@ export function formatWorkforceAnswer(
     keyFindings: extraFindings,
     caution,
     dataFreshness,
-    nextStep: sections.nextStep,
+    nextStep: sections.nextStep ?? embeddedNextStep,
     groundedIn: sections.groundedIn,
     parsedConfidence: sections.parsedConfidence,
-    fullText: answerText,
+    fullText: safeAnswerText,
   };
 }

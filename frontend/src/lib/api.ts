@@ -108,6 +108,33 @@ export function resetAuthSession() {
   clearClientAuthState();
 }
 
+let refreshPromise: Promise<boolean> | null = null;
+
+async function refreshAuthSession(): Promise<boolean> {
+  refreshPromise ??= (async () => {
+    const refreshHeaders = new Headers();
+    const csrf = getCsrfToken();
+    if (csrf) refreshHeaders.set("X-CSRF-Token", csrf);
+
+    const refreshed = await fetch(`${API_BASE}/auth/refresh`, {
+      method: "POST",
+      headers: refreshHeaders,
+      credentials: "include",
+    });
+
+    if (refreshed.ok) return true;
+
+    if (refreshed.status === 401 || refreshed.status === 403) {
+      resetAuthSession();
+    }
+    return false;
+  })().finally(() => {
+    refreshPromise = null;
+  });
+
+  return refreshPromise;
+}
+
 async function parseResponse<T>(response: Response): Promise<T> {
   if (response.status === 204) return undefined as T;
   const body = await response.json().catch(() => ({}));
@@ -152,19 +179,12 @@ export async function apiFetch<T>(
 
   if (response.status === 401 && !path.startsWith("/auth/") && !retried) {
     const error = await parseApiError(response);
-    const refreshHeaders = new Headers();
-    const csrf = getCsrfToken();
-    if (csrf) refreshHeaders.set("X-CSRF-Token", csrf);
-    const refreshed = await fetch(`${API_BASE}/auth/refresh`, {
-      method: "POST",
-      headers: refreshHeaders,
-      credentials: "include",
-    });
-    if (refreshed.ok) {
-      return apiFetch<T>(path, init, true);
-    }
-    if (refreshed.status === 401) {
+    if (!getCsrfToken()) {
       resetAuthSession();
+      throw error;
+    }
+    if (await refreshAuthSession()) {
+      return apiFetch<T>(path, init, true);
     }
     throw error;
   }
@@ -186,19 +206,12 @@ export async function apiFetchBlob(
 
   if (response.status === 401 && !path.startsWith("/auth/") && !retried) {
     const error = await parseApiError(response);
-    const refreshHeaders = new Headers();
-    const csrf = getCsrfToken();
-    if (csrf) refreshHeaders.set("X-CSRF-Token", csrf);
-    const refreshed = await fetch(`${API_BASE}/auth/refresh`, {
-      method: "POST",
-      headers: refreshHeaders,
-      credentials: "include",
-    });
-    if (refreshed.ok) {
-      return apiFetchBlob(path, init, true);
-    }
-    if (refreshed.status === 401) {
+    if (!getCsrfToken()) {
       resetAuthSession();
+      throw error;
+    }
+    if (await refreshAuthSession()) {
+      return apiFetchBlob(path, init, true);
     }
     throw error;
   }
@@ -497,7 +510,17 @@ export async function createAgentQuery(payload: AgentQueryCreate): Promise<Agent
     method: "POST",
     body: JSON.stringify(payload),
   });
-  return body.data;
+  if (!body?.data || typeof body.data.answer_text !== "string") {
+    throw new ApiError(
+      500,
+      "INVALID_RESPONSE",
+      "The workforce agent returned an unexpected response.",
+    );
+  }
+  return {
+    ...body.data,
+    evidence_links: body.data.evidence_links ?? [],
+  };
 }
 
 export async function createUser(payload: {
@@ -1567,6 +1590,7 @@ export {
   generateWorkforceRecommendations,
   getProjectSkillMatrix,
   getProjectTrainingGaps,
+  getProjectWorkforceDashboard,
   getProjectWorkforceSummary,
   listAnnotatorCertifications,
   listAnnotatorSkills,
