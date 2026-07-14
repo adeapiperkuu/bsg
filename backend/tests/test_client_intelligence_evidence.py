@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -20,7 +21,6 @@ from app.agents.client_intelligence import (
     build_client_evidence_pack,
     resolve_reporting_period,
 )
-from app.agents.client_intelligence.evidence_pack import _fingerprint
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
 from app.db.models import (
@@ -144,11 +144,30 @@ class FakeSession:
             assert "file_url" not in compiled.lower()
             assert "storage_path" not in compiled.lower()
             return FakeResult(None, [])
+        # Metadata-only Knowledge probes (existence / source_type / document_id).
+        if (
+            re.search(r"\bselect\s+1\b", compiled, re.IGNORECASE)
+            or (
+                "knowledge_documents" in compiled.lower()
+                and "knowledge_document_versions" in compiled.lower()
+                and "chunk_text" not in compiled.lower()
+            )
+            or (
+                "knowledge_document_chunks" in compiled.lower()
+                and "chunk_text" not in compiled.lower()
+            )
+        ):
+            assert "LIMIT" in compiled.upper() or "limit" in compiled
+            return FakeResult(None, [])
         if "FROM knowledge_document_versions" in compiled:
             assert "LIMIT" in compiled.upper() or "limit" in compiled
             assert "file_name" not in compiled.lower()
+            assert "file_url" not in compiled.lower()
+            assert "storage_path" not in compiled.lower()
+            assert "uploaded_by" not in compiled.lower()
+            assert "approved_by" not in compiled.lower()
             return FakeResult(None, [])
-        if "FROM knowledge_document_chunks" in compiled:
+        if "FROM knowledge_document_chunks" in compiled or "knowledge_document_chunks" in compiled:
             assert "LIMIT" in compiled.upper() or "limit" in compiled
             assert "embedding" not in compiled.lower()
             assert "token_count" not in compiled.lower()
@@ -212,7 +231,7 @@ def _milestone(project_id, **kwargs) -> SimpleNamespace:
         "actual_date": None,
         "status": MilestoneStatus.ON_TRACK,
         "deleted_at": None,
-        "updated_at": datetime(2026, 6, 20, tzinfo=UTC),
+        "updated_at": datetime(2026, 6, 17, tzinfo=UTC),
     }
     data.update(kwargs)
     return SimpleNamespace(**data)
@@ -480,7 +499,13 @@ async def test_internal_role_can_receive_internal_mode() -> None:
 async def test_past_as_of_adds_historical_status_limitation_internal() -> None:
     project = _project()
     user = _user(AppRole.DELIVERY_MANAGER, project.org_id)
-    session = FakeSession(milestones=[_milestone(project.id)], risks=[_risk(project.id)])
+    as_of = date(2026, 1, 1)
+    session = FakeSession(
+        milestones=[
+            _milestone(project.id, updated_at=datetime(2025, 12, 15, tzinfo=UTC)),
+        ],
+        risks=[_risk(project.id, created_at=datetime(2025, 12, 20, tzinfo=UTC))],
+    )
     with patch(
         "app.agents.client_intelligence.evidence_pack.get_visible_project",
         new=AsyncMock(return_value=project),
@@ -489,7 +514,7 @@ async def test_past_as_of_adds_historical_status_limitation_internal() -> None:
             session,
             user,
             project.id,
-            as_of=date(2026, 1, 1),
+            as_of=as_of,
             visibility_mode=EvidenceVisibility.INTERNAL,
         )
     assert any("status history" in item.lower() for item in pack.limitations)
@@ -553,13 +578,19 @@ async def test_evidence_row_ids_match_included_facts() -> None:
 
 @pytest.mark.asyncio
 async def test_fingerprint_stable_when_evidence_order_changes() -> None:
+    from app.agents.client_intelligence.evidence_fingerprint import legacy_component_fingerprint
+    from app.agents.client_intelligence.evidence_validation import finalize_evidence_references
+    from app.agents.client_intelligence.reporting_period import resolve_reporting_period
+
     project_id = uuid4()
+    period = resolve_reporting_period(date(2026, 6, 18))
     a = ClientEvidenceReference(
         source_agent=SourceAgent.DELIVERY_PERFORMANCE,
         source_table="milestones",
         source_row_id=uuid4(),
         description="m1",
         visibility=EvidenceVisibility.CLIENT_SAFE,
+        claim_keys=["milestone_id"],
     )
     b = ClientEvidenceReference(
         source_agent=SourceAgent.DELIVERY_PERFORMANCE,
@@ -567,20 +598,19 @@ async def test_fingerprint_stable_when_evidence_order_changes() -> None:
         source_row_id=uuid4(),
         description="t1",
         visibility=EvidenceVisibility.CLIENT_SAFE,
+        claim_keys=["snapshot_id"],
     )
-    left = _fingerprint(
+    left = legacy_component_fingerprint(
         project_id=project_id,
-        reporting_period_start=date(2026, 6, 15),
-        reporting_period_end=date(2026, 6, 21),
+        reporting_period=period,
         visibility_mode=EvidenceVisibility.CLIENT_SAFE,
-        evidence=[a, b],
+        evidence=finalize_evidence_references([a, b]),
     )
-    right = _fingerprint(
+    right = legacy_component_fingerprint(
         project_id=project_id,
-        reporting_period_start=date(2026, 6, 15),
-        reporting_period_end=date(2026, 6, 21),
+        reporting_period=period,
         visibility_mode=EvidenceVisibility.CLIENT_SAFE,
-        evidence=[b, a],
+        evidence=finalize_evidence_references([b, a]),
     )
     assert left == right
 

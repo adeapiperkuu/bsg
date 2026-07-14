@@ -333,7 +333,7 @@ Status legend: **Implemented** / **Partial** / **Missing** / **Mock only** / **B
 
 | ID | Status | Existing evidence | Exact missing behavior | Phase |
 |---|---|---|---|---:|
-| CI-F01 | Missing | Delivery/quality/risk source APIs exist; no CI health engine | Evidence-backed project health classification with drivers/limitations | 2 |
+| CI-F01 | Partial | Policy-driven Project Health foundation (`assess_project_health`); no production thresholds | Approved CI-DQ07 policy + persistence/API | 2 |
 | CI-F02 | Partial | `DeliveryConfidenceScore` + GET delivery-confidence; Delivery analytics | CI explanation layer: band, drivers, limitations, next-milestone reliability narrative; no inventing scores | 2 |
 | CI-F03 | Missing | `RiskAlert` + list endpoint | Client-safe business-language risk narratives from typed facts | 2 |
 | CI-F04 | Missing | Mitigation recommendations / governance actions exist upstream | Quantified business impact + mitigation progress in client-safe form | 2 |
@@ -382,7 +382,7 @@ Status legend: **Implemented** / **Partial** / **Missing** / **Mock only** / **B
 
 | ID | Status | Existing evidence | Exact missing behavior | Phase |
 |---|---|---|---|---:|
-| CI-O01 | Missing | — | Project health summary snapshot/API with evidence | 2–4 |
+| CI-O01 | Partial | Typed `ProjectHealthAssessment` only; no snapshot/API | Persist assessments + client-safe projection endpoint | 2–4 |
 | CI-O02 | Partial | `ClientCommunication` executive_summary type | Full executive content contract + evidence versioning | 4 |
 | CI-O03 | Partial | Delivery score rows | CI confidence narrative + explanation evidence | 2–4 |
 | CI-O04 | Missing | — | Versioned readiness assessment + dimensions | 3–4 |
@@ -467,14 +467,16 @@ Quality Intelligence’s evidence-pack + citation validation pattern (`evidence_
 
 | Concept | Reuse? | New table required? | Requirements |
 |---|---|---|---|
-| `client_intelligence_snapshots` | No equivalent | **Yes** | RLS on org/project; indexes on `(org_id, project_id, reporting_period_*)`; append-only / version fingerprint; evidence links |
-| `client_readiness_assessments` | No (knowledge retrieval readiness ≠ this) | **Yes** | RLS; version/rules version; supersession pointer; audit |
-| `client_readiness_dimensions` | No | **Yes** | FK to assessment; dimension key uniqueness; evidence completeness |
-| `client_intelligence_insights` | No | **Yes** | Typed insights; confidence; status; prompt/model/rules version |
-| `client_intelligence_recommendations` | Delivery mitigations insufficient | **Yes** (or extend platform recs **only if** client visibility + readiness linkage preserved) | Priority, type, visibility, evidence, status |
-| `client_intelligence_evidence_links` | Comms/query evidence links are narrower | **Yes** (or generalized polymorphic evidence table) | Target type/id; visibility classification; claim key; source fingerprint; same-org/project constraint |
+| `client_intelligence_snapshots` | No equivalent | **Yes — implemented (Phase 1 substrate)** | Append-only RLS (SELECT/INSERT); idempotency UNIQUE NULLS NOT DISTINCT including `policy_fingerprint`; link identity UNIQUE `(id, org_id, project_id, source_fingerprint)` |
+| `client_readiness_assessments` | No (knowledge retrieval readiness ≠ this) | **Yes** | Deferred — **CI-DQ08 unresolved**; do not invent readiness schema yet |
+| `client_readiness_dimensions` | No | **Yes** | Deferred — blocked on CI-DQ08 |
+| `client_intelligence_insights` | No | **Yes** | Deferred (Phase 2+) |
+| `client_intelligence_recommendations` | Delivery mitigations insufficient | **Yes** (or extend platform recs **only if** client visibility + readiness linkage preserved) | Deferred (Phase 2+) |
+| `client_intelligence_evidence_links` | Comms/query evidence links are narrower | **Yes — snapshot-scoped links implemented** | Composite FK to snapshot identity; visibility; claim_keys JSON array CHECK; source fingerprint; append-only RLS |
 
-**Do not create migrations in this task.** Phase 1 migration review must resolve CI-DQ08 before locking readiness schema.
+**Phase 1 note:** Snapshot + snapshot-scoped evidence-link migration exists with savepoint idempotency and append-only policies. Loads and idempotent reuses share fail-closed integrity verification (reconstruct, re-validate, row↔payload + link consistency; CLIENT_SAFE stored form must already be persistence-redacted). Application auth rejects CLIENT/Leadership writes; Leadership INTERNAL reads fail closed until an approved sanitized aggregate scope exists. Super Admin operational “explicit scope” beyond `get_visible_project` + RLS INSERT is **not** fully solved. Live migration/RLS CI gate remains open.
+
+**Phase 2 note (bounded):** Project Health contracts + policy-injected deterministic engine foundation landed with exact source ownership/availability binding, **engine-owned pack source-quality resolution** (policies cannot upgrade/downgrade/invent `data_quality`), whole-driver reliability checks, pack-limitation propagation, Decimal-safe/float-rejected observed values, and sanitized policy-boundary errors. Injected policies classify verified pack facts only; they cannot invent Delivery Confidence or other source facts. **No production health policy/thresholds (CI-DQ07 open).** CI-F01 / CI-O01 remain partial. No health persistence/API/UI/narrative/report/Q&A. Delivery Confidence Intelligence, Risk Transparency, trends, change/milestone engines, Today’s Insight, and Phase 3 readiness were **not** started. Readiness / insight / recommendation tables remain blocked until CI-DQ08 and later engines are defined.
 
 ### 6.3 Evidence link gaps on existing tables
 
@@ -548,7 +550,7 @@ Listed in §2.16. Coverage is upstream (delivery scoring, quality summary/comms,
 | Required suite | Status |
 |---|---|
 | `test_client_intelligence_evidence.py` | Missing |
-| `test_client_intelligence_health.py` | Missing |
+| `test_client_intelligence_project_health.py` | Present — foundation only; fixture policies are not production thresholds |
 | `test_client_intelligence_confidence.py` | Missing |
 | `test_client_intelligence_risk.py` | Missing |
 | `test_client_intelligence_changes.py` | Missing |
@@ -582,7 +584,7 @@ Copied unresolved decisions. **This audit does not resolve them by assumption.**
 | CI-DQ04 | Which metrics/evidence are client-visible? | **Core** to `ClientEvidencePack` visibility classification |
 | CI-DQ05 | Q&A immediate vs PM-reviewed? | Affects query persistence/approval contracts touching evidence APIs |
 | CI-DQ06 | Exact insufficient-evidence API behavior | Evidence/query response semantics |
-| CI-DQ07 | Project-health formula and thresholds | Needed to shape snapshot fields even if engines land in Phase 2 |
+| CI-DQ07 | Project-health formula and thresholds | **Unresolved.** Engine is policy-injected; no production default policy or hardcoded thresholds. Missing policy → `INSUFFICIENT` / `POLICY_UNAVAILABLE`. |
 | CI-DQ08 | Readiness dimensions, weights, blockers, approval owner | Roadmap: **before Phase 1 migration** |
 
 ### 9.2 Decisions that can wait until later phases
@@ -609,15 +611,15 @@ Numbered small implementation tasks. **First implementation task after this audi
 Then:
 
 2. Resolve Phase 1–blocking open decisions (Section 9.1) with product/security sign-off; capture acceptance fixtures for green/amber/red/missing/stale/conflicting.
-3. Schema migration review for Section 14 CI entities + evidence-link visibility/fingerprint fields (after CI-DQ08).
+3. ~~Schema migration for CI evidence snapshots + evidence links~~ **Done (Phase 1 substrate).** Readiness/insight/recommendation schema remains deferred until CI-DQ08.
 4. Implement source adapters for CI-D01–CI-D15 (explicit `unavailable` where blocked) + RBAC retrieval matrix tests.
-5. Persist evidence links for future insights/readiness/recommendations; claim-to-evidence validator contract.
+5. Wire routes/UoW owners to call `persist_client_evidence_snapshot` when a durable snapshot is required; claim-to-evidence validator already gates persistence. Do **not** auto-persist from the pack builder.
 6. Project Health Engine (deterministic) + history comparison.
 7. Delivery Confidence Intelligence (consume Delivery scores; explain only).
 8. Risk Transparency + business-impact mapping (after CI-DQ09).
 9. Delivery Trend Engine (actual/plan/forecast; mark missing plan).
 10. Change Intelligence + Milestone Intelligence + Today’s Insight fact models.
-11. Readiness scoring engine (five dimensions + cross-cutting factors) + versioned assessments.
+11. Readiness scoring engine (five dimensions + cross-cutting factors) + versioned assessments (**after CI-DQ08**).
 12. Gap analysis + Recommendation/Guidance Engine (five recommendation types).
 13. Harden communications lifecycle (reject reason, stale approval, report types, richer draft context).
 14. Narrative generation with structured schema, claim validation, redaction, deterministic fallback.

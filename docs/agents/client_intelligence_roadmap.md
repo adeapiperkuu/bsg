@@ -337,6 +337,8 @@ Estimates assume the existing Delivery, Quality, Workforce, Governance, and Know
 | 0.13 | Change-materiality contract | Which deltas appear in “Recent Changes” |
 | 0.14 | CSAT contract | Monthly cadence, aggregation, minimum sample disclosure |
 
+**Note (TASK 10):** The Project Health engine foundation (typed contracts, policy injection, source ownership/availability binding, engine-owned source data-quality resolution, whole-driver reliability) is implemented under §8.1. That does **not** close step 0.9 or **CI-DQ07** — no production Green/Amber/Red thresholds or default policy have been approved. Steps 0.10–0.14 and later engines remain untouched.
+
 ### 6.3 Content and safety contracts
 
 - Define a client-safe language guide: transparent, calm, direct, non-blaming, business-oriented.
@@ -393,10 +395,23 @@ The evidence pack must be assembled once per request and passed to deterministic
 | Step | Deliverable | Exit criterion |
 |---:|---|---|
 | 1.6 | Reuse query and communication evidence links | Existing Q&A and reports remain transactionally grounded |
-| 1.7 | Add evidence links for insights/readiness/recommendations | Every persisted intelligence object has at least one source |
+| 1.6a | Persist validated `ClientEvidencePack` snapshots + snapshot-scoped evidence links | Append-only, idempotent, RLS-isolated; builder remains read-only |
+| 1.7 | Add evidence links for insights/readiness/recommendations | Deferred — blocked on CI-DQ08 / Phase 2–3 objects (not invented here) |
 | 1.8 | Evidence visibility field | Client responses exclude internal-only evidence references |
 | 1.9 | Evidence freshness snapshot | Audit can reconstruct what was known when output was produced |
 | 1.10 | Claim-to-evidence validator contract | Unsupported numeric/date/status claims rejected |
+
+**Phase 1 persistence substrate (implemented):**
+
+- Tables: `client_intelligence_snapshots`, `client_intelligence_evidence_links` (migration `20260714100000_client_intelligence_evidence_persistence.sql`).
+- Service: `persist_client_evidence_snapshot` re-validates the pack, enforces tenant/project identity via `get_visible_project`, writes snapshot + links inside a **SAVEPOINT** (`begin_nested`), never commits the outer UoW, and resolves concurrent unique-key races by catching only `client_intelligence_snapshots_idempotency_key` then re-querying.
+- Idempotency identity: `(org_id, project_id, visibility_mode, full reporting-period, source_fingerprint, policy_fingerprint)` with PostgreSQL **`NULLS NOT DISTINCT`** so NULL policies are idempotent with each other and distinct from non-NULL policies.
+- Composite FK enforces link `(snapshot_id, org_id, project_id, source_fingerprint)` matches the snapshot row.
+- Append-only RLS: SELECT + INSERT only (no UPDATE/DELETE policies). CLIENT and Leadership cannot INSERT; Leadership SELECT limited to `client_safe`.
+- CLIENT_SAFE snapshots store only `client_safe` evidence links and redact Knowledge `untrusted_text` / `document_title` in `pack_payload`.
+- Direct loads and idempotent reuses share `verify_stored_snapshot_integrity`: reconstruct, re-validate for the requesting role, enforce row↔payload consistency, match persistable evidence links exactly, and for CLIENT_SAFE require persistence-redacted Knowledge form. Fail closed on corruption; never repair on read.
+- Policy fingerprint is null-or-lowercase-SHA-256 in canonical validation (rejected before write); it is not part of the source-fingerprint algorithm.
+- **Not** implemented: readiness assessments/dimensions, insights, recommendations, narratives, Q&A, UI, auto persist-on-build, or full Super Admin / Leadership approved-scope RBAC exit gate. **CI-DQ08 remains unresolved.** Live Postgres RLS execution of this migration is still required for the Phase 1 integration gate.
 
 ### 7.4 RBAC retrieval matrix
 
@@ -430,11 +445,29 @@ The health engine must aggregate source-of-truth outcomes without replacing thei
 
 | Step | Deliverable | Exit criterion |
 |---:|---|---|
-| 2.1 | Health input contract | Delivery, milestone, risk, quality, readiness inputs typed |
-| 2.2 | Deterministic health classification | Same inputs always produce same health and reasons |
-| 2.3 | Driver list | Material positive and negative contributors returned |
-| 2.4 | Limitation handling | Missing critical source produces “insufficient/partial”, not false green |
-| 2.5 | Health history | Reporting-cycle comparison supported |
+| 2.1 | Health input contract | Typed signals/drivers/assessment contracts landed; readiness inputs remain deferred (CI-DQ08) |
+| 2.2 | Deterministic health classification | Policy-injected engine is deterministic; **no production policy/thresholds (CI-DQ07 open)** |
+| 2.3 | Driver list | Evidence-linked positive/negative drivers with structured reason codes |
+| 2.4 | Limitation handling | Missing policy / unreliable required signals → `INSUFFICIENT` (never false green) |
+| 2.5 | Health history | In-memory previous-assessment comparison only (no DB reads in TASK 10) |
+
+**TASK 10 foundation status (policy-driven only):**
+
+- Typed contracts in `health_contracts.py`; injected `ProjectHealthPolicy` protocol in `health_policy.py`.
+- Entry point `assess_project_health` in `project_health.py`.
+- Signals declare exact `source_agent` + `source_table`; foundation domains are `projects` and `delivery_confidence_scores` only.
+- **Engine-owned source quality** is resolved from the validated pack (`resolve_health_source_quality`). Injected policies cannot upgrade, downgrade, or invent `signal.data_quality`; mismatches raise `invalid_policy_decision` (no silent rewrite).
+- Delivery Confidence UNAVAILABLE requires both fact absence and a matching UNAVAILABLE DataQualityIssue (aliases `delivery_confidence` / `delivery_confidence_scores`). Limitation codes and unrelated sources are not proof. Presence↔quality inconsistencies fail closed in pack validation and the health engine.
+- STALE/CONFLICTING sources may remain DIRECT and source-bound for traceability but are unreliable and cannot support Green/Amber/Red; COMPLETE evidence cannot be relabeled unavailable/stale/conflicting.
+- Source-bound DIRECT facts verified against pack evidence identities + claim keys (agent/table ownership, one unambiguous governed fact, Delivery Confidence Decimal-safe; float `observed_value` rejected before coercion).
+- Material driver reliability uses engine-verified source quality and requires every linked signal reliable; GREEN needs a reliable POSITIVE signal; AMBER/RED need reliable WATCH/ADVERSE or ADVERSE support.
+- Pack `limitations` propagate deterministically into assessments (canonically deduplicated); policy-boundary exceptions are sanitized to engine-owned `invalid_policy`.
+- Driver→signal→evidence closure enforced; claim-key unions preserved across duplicate/aggregate references without silent loss.
+- Required keys come only from `policy.required_signal_keys()`.
+- **No production default policy and no hardcoded Green/Amber/Red thresholds.** Missing policy → `INSUFFICIENT` + `POLICY_UNAVAILABLE`.
+- Delivery Confidence remains Delivery-owned; history comparison is in-memory/contract-level only (including material driver fingerprint changes).
+- **CI-DQ07 remains unresolved.** CI-F01 / CI-O01 remain partial (no persistence, API, or UI).
+- **Not** started in this task: Delivery Confidence Intelligence, Risk Transparency, Delivery Trend, Change/Milestone Intelligence, Today’s Insight, Phase 3 readiness, recommendations, narratives, reports, Q&A, APIs, UI, schedulers.
 
 ### 8.2 Delivery Confidence Intelligence
 

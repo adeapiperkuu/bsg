@@ -20,7 +20,6 @@ from app.agents.client_intelligence import (
 from app.agents.client_intelligence import governance_adapter as gov_mod
 from app.agents.client_intelligence.evidence_pack import (
     _fingerprint,
-    _governance_fingerprint_projection,
 )
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
@@ -188,10 +187,22 @@ class FakeSession:
         if "FROM knowledge_documents" in compiled:
             assert "extracted_text" not in lower
             return FakeResult(None, [])
+        if (
+            re.search(r"\bselect\s+1\b", compiled, re.IGNORECASE)
+            or (
+                "knowledge_document_chunks" in lower
+                and "chunk_text" not in lower
+            )
+        ):
+            return FakeResult(None, [])
         if "FROM knowledge_document_versions" in compiled:
             assert "file_name" not in lower
+            assert "file_url" not in lower
+            assert "storage_path" not in lower
+            assert "uploaded_by" not in lower
+            assert "approved_by" not in lower
             return FakeResult(None, [])
-        if "FROM knowledge_document_chunks" in compiled:
+        if "FROM knowledge_document_chunks" in compiled or "knowledge_document_chunks" in compiled:
             assert "embedding" not in lower
             return FakeResult(None, [])
         if "FROM knowledge_document_embeddings" in compiled:
@@ -610,7 +621,7 @@ async def test_fingerprint_aggregate_and_hidden_text() -> None:
         reporting_period_end=period.end_date,
         visibility_mode=EvidenceVisibility.CLIENT_SAFE,
         evidence=left_ev,
-        governance_projection=_governance_fingerprint_projection(left),
+        governance=left,
     )
     fp_right = _fingerprint(
         project_id=project_id,
@@ -618,7 +629,7 @@ async def test_fingerprint_aggregate_and_hidden_text() -> None:
         reporting_period_end=period.end_date,
         visibility_mode=EvidenceVisibility.CLIENT_SAFE,
         evidence=right_ev,
-        governance_projection=_governance_fingerprint_projection(right),
+        governance=right,
     )
     fp_changed = _fingerprint(
         project_id=project_id,
@@ -626,7 +637,7 @@ async def test_fingerprint_aggregate_and_hidden_text() -> None:
         reporting_period_end=period.end_date,
         visibility_mode=EvidenceVisibility.CLIENT_SAFE,
         evidence=changed_ev,
-        governance_projection=_governance_fingerprint_projection(changed),
+        governance=changed,
     )
     assert fp_left == fp_right
     assert fp_left != fp_changed
@@ -666,14 +677,14 @@ async def test_hidden_charter_does_not_affect_client_safe_fingerprint() -> None:
         reporting_period_end=period.end_date,
         visibility_mode=EvidenceVisibility.CLIENT_SAFE,
         evidence=left_ev,
-        governance_projection=_governance_fingerprint_projection(left),
+        governance=left,
     ) == _fingerprint(
         project_id=project_id,
         reporting_period_start=period.start_date,
         reporting_period_end=period.end_date,
         visibility_mode=EvidenceVisibility.CLIENT_SAFE,
         evidence=right_ev,
-        governance_projection=_governance_fingerprint_projection(right),
+        governance=right,
     )
 
 
@@ -908,14 +919,14 @@ async def test_hidden_dependency_type_change_does_not_affect_client_safe_fingerp
         reporting_period_end=period.end_date,
         visibility_mode=EvidenceVisibility.CLIENT_SAFE,
         evidence=left_ev,
-        governance_projection=_governance_fingerprint_projection(left),
+        governance=left,
     ) == _fingerprint(
         project_id=project_id,
         reporting_period_start=period.start_date,
         reporting_period_end=period.end_date,
         visibility_mode=EvidenceVisibility.CLIENT_SAFE,
         evidence=right_ev,
-        governance_projection=_governance_fingerprint_projection(right),
+        governance=right,
     )
 
     left_int, left_int_ev, _, _, _ = await load_governance_evidence(
@@ -938,14 +949,14 @@ async def test_hidden_dependency_type_change_does_not_affect_client_safe_fingerp
         reporting_period_end=period.end_date,
         visibility_mode=EvidenceVisibility.INTERNAL,
         evidence=left_int_ev,
-        governance_projection=_governance_fingerprint_projection(left_int),
+        governance=left_int,
     ) != _fingerprint(
         project_id=project_id,
         reporting_period_start=period.start_date,
         reporting_period_end=period.end_date,
         visibility_mode=EvidenceVisibility.INTERNAL,
         evidence=right_int_ev,
-        governance_projection=_governance_fingerprint_projection(right_int),
+        governance=right_int,
     )
 
 

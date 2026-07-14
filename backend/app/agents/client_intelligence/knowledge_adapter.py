@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from uuid import UUID
 
-from sqlalchemy import func, or_, select, tuple_
+from sqlalchemy import and_, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.client_intelligence.contracts import (
@@ -70,6 +70,24 @@ _VERSION_EXCLUSION_LIMITATION = (
     "active version could not be validated for the reporting period."
 )
 
+_EMPTY_CHUNK_LIMITATION = (
+    "One or more Knowledge chunks were excluded because normalized source text was empty."
+)
+
+_VISIBILITY_OMISSION_LIMITATION = (
+    "Additional Operational Knowledge evidence was omitted by visibility policy."
+)
+
+_VISIBILITY_SOURCE_UNAVAILABLE_LIMITATION = (
+    "Approved Operational Knowledge evidence exists for this source but was omitted "
+    "by visibility policy."
+)
+
+_VISIBILITY_SOURCE_PARTIAL_LIMITATION = (
+    "Additional Operational Knowledge evidence for this source was omitted by "
+    "visibility policy."
+)
+
 _DQ_PRECEDENCE: dict[DataQualityState, int] = {
     DataQualityState.COMPLETE: 0,
     DataQualityState.PARTIAL: 1,
@@ -78,7 +96,6 @@ _DQ_PRECEDENCE: dict[DataQualityState, int] = {
     DataQualityState.CONFLICTING: 4,
 }
 
-# Requirement → governed KnowledgeSourceType. CI-D14 has no schema source type.
 _SOURCE_REQUIREMENTS: tuple[tuple[str, KnowledgeSourceType | None], ...] = (
     ("CI-D11", KnowledgeSourceType.SOP),
     ("CI-D12", KnowledgeSourceType.TRAINING_DOCUMENT),
@@ -142,7 +159,8 @@ class _ChunkRow:
     page_number: int | None
     section_title: str | None
     heading: str | None
-    chunk_text: str
+    display_text: str
+    content_sha256: str
     visibility: object | None
     created_at: datetime | None
 
@@ -156,6 +174,7 @@ class _BoundFlags:
     chunks_per_document: bool = False
     chars_per_chunk: bool = False
     total_chars: bool = False
+    empty_chunks: bool = False
 
     @property
     def any_bound(self) -> bool:
@@ -168,6 +187,7 @@ class _BoundFlags:
                 self.chunks_per_document,
                 self.chars_per_chunk,
                 self.total_chars,
+                self.empty_chunks,
             )
         )
 
@@ -222,6 +242,46 @@ def _content_sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _normalize_source_text(text: str | None) -> str:
+    if text is None:
+        return ""
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return normalized.strip()
+
+
+def _sql_has_normalized_text(column) -> object:
+    """True when column has non-whitespace content after CRLF/CR→LF and trim.
+
+    Matches ``_normalize_source_text`` for spaces, tabs, CR, LF, and CRLF.
+    """
+    replaced = func.replace(
+        func.replace(func.coalesce(column, ""), "\r\n", "\n"),
+        "\r",
+        "\n",
+    )
+    trimmed = func.trim(replaced, " \t\n\r")
+    return func.length(trimmed) > 0
+
+
+def _sql_chunk_has_source_text() -> object:
+    return or_(
+        _sql_has_normalized_text(KnowledgeDocumentChunk.chunk_text),
+        _sql_has_normalized_text(KnowledgeDocumentChunk.content),
+    )
+
+
+def _select_source_text(chunk_text: str | None, content: str | None) -> str:
+    primary = _normalize_source_text(chunk_text)
+    if primary:
+        return primary
+    return _normalize_source_text(content)
+
+
+def _resolve_client_safe(role: AppRole, visibility_mode: EvidenceVisibility) -> bool:
+    """CLIENT role always fail-closes to CLIENT_SAFE projection semantics."""
+    return role == AppRole.CLIENT or visibility_mode == EvidenceVisibility.CLIENT_SAFE
+
+
 def _allowed_visibilities(
     role: AppRole,
     *,
@@ -238,6 +298,40 @@ def _status_enum(value: object, enum_cls: type) -> object:
     if isinstance(value, enum_cls):
         return value
     return enum_cls(value)
+
+
+def _document_base_filters(
+    *,
+    org_id: UUID,
+    normalized_project: str,
+    as_of: date,
+    as_of_end: datetime,
+):
+    return (
+        KnowledgeDocument.org_id == org_id,
+        KnowledgeDocument.deleted_at.is_(None),
+        KnowledgeDocument.status == KnowledgeDocumentStatus.APPROVED,
+        KnowledgeDocument.indexing_status == KnowledgeIndexingStatus.INDEXED,
+        KnowledgeDocument.processing_status == KnowledgeProcessingStatus.READY,
+        KnowledgeDocument.source_type.in_(_MAPPED_SOURCE_TYPES),
+        KnowledgeDocument.project.isnot(None),
+        func.lower(func.trim(KnowledgeDocument.project)) == normalized_project,
+        KnowledgeDocument.approved_at.isnot(None),
+        KnowledgeDocument.approved_at <= as_of_end,
+        KnowledgeDocument.indexed_at.isnot(None),
+        KnowledgeDocument.indexed_at <= as_of_end,
+        KnowledgeDocument.upload_date <= as_of_end,
+        KnowledgeDocument.active_version_id.isnot(None),
+        KnowledgeDocument.effective_date.isnot(None),
+        KnowledgeDocument.effective_date <= as_of,
+        KnowledgeDocument.owner_approver.isnot(None),
+        func.length(func.trim(KnowledgeDocument.owner_approver)) > 0,
+        or_(
+            KnowledgeDocument.expiry_date.is_(None),
+            KnowledgeDocument.expiry_date >= as_of,
+        ),
+        KnowledgeDocument.created_at <= as_of_end,
+    )
 
 
 async def load_knowledge_evidence(
@@ -260,13 +354,15 @@ async def load_knowledge_evidence(
 
     ``project_id`` is retained for the authorized contract and fingerprint context.
     Document scoping uses exact normalized ``KnowledgeDocument.project`` ↔ project name.
+    ``AppRole.CLIENT`` always uses CLIENT_SAFE projection semantics.
     """
-    _ = project_id  # Authorized upstream; Knowledge rows are name-scoped, not UUID-scoped.
-    client_safe = visibility_mode == EvidenceVisibility.CLIENT_SAFE
+    _ = project_id
+    client_safe = _resolve_client_safe(role, visibility_mode)
     as_of = reporting_period.as_of
     as_of_end = _as_of_end_utc(as_of)
     scope_key = _project_scope_key(project_name)
     normalized_project = _normalize_project_name(project_name)
+    allowed = _allowed_visibilities(role, client_safe=client_safe)
 
     evidence: list[ClientEvidenceReference] = []
     issues_by_source: dict[str, DataQualityIssue] = {}
@@ -280,7 +376,7 @@ async def load_knowledge_evidence(
         normalized_project=normalized_project,
         as_of=as_of,
         as_of_end=as_of_end,
-        allowed_visibilities=_allowed_visibilities(role, client_safe=client_safe),
+        allowed_visibilities=allowed,
     )
     bounds.documents = docs_truncated
 
@@ -301,43 +397,58 @@ async def load_knowledge_evidence(
             "Referenced active Knowledge document versions could not all be validated.",
         )
 
-    chunks, chunk_flags = await _load_document_chunks(
+    chunks, chunk_flags, hidden_chunk_source_types = await _load_document_chunks(
         session,
         org_id=org_id,
         as_of_end=as_of_end,
         documents=documents,
+        allowed_visibilities=allowed,
+        role=role,
+        client_safe=client_safe,
     )
     bounds.chunks = chunk_flags.chunks
     bounds.chunks_per_document = chunk_flags.chunks_per_document
 
-    doc_by_id = {row.id: row for row in documents}
-    accessible_chunks: list[_ChunkRow] = []
-    for chunk in chunks:
-        parent = doc_by_id.get(chunk.document_id)
-        if parent is None:
-            continue
-        effective_visibility = (
-            chunk.visibility if chunk.visibility is not None else parent.visibility
+    prepared_chunks, empty_skipped = _prepare_chunk_rows(chunks)
+    bounds.empty_chunks = empty_skipped
+    if empty_skipped:
+        limitations.append(_EMPTY_CHUNK_LIMITATION)
+        _set_source_issue(
+            issues_by_source,
+            "knowledge_chunks",
+            DataQualityState.PARTIAL,
+            "One or more Knowledge chunks had empty normalized source text.",
         )
-        if not can_access_visibility(role, _status_enum(effective_visibility, KnowledgeVisibility)):
-            continue
-        if (
-            client_safe
-            and _status_enum(effective_visibility, KnowledgeVisibility)
-            != KnowledgeVisibility.CLIENT_SAFE
-        ):
-            continue
-        accessible_chunks.append(chunk)
 
-    accessible_chunks, char_flags = _apply_character_bounds(accessible_chunks)
+    prepared_chunks, char_flags = _apply_character_bounds(prepared_chunks)
     bounds.chars_per_chunk = char_flags.chars_per_chunk
     bounds.total_chars = char_flags.total_chars
+
+    hidden_document_source_types = await _probe_hidden_document_source_types(
+        session,
+        org_id=org_id,
+        normalized_project=normalized_project,
+        as_of=as_of,
+        as_of_end=as_of_end,
+        allowed_visibilities=allowed,
+    )
+    hidden_source_types = set(hidden_document_source_types) | set(hidden_chunk_source_types)
+    if hidden_source_types:
+        visibility_limitations.append(
+            VisibilityLimitation(
+                source="knowledge_visibility",
+                reason="visibility_policy",
+                detail=_VISIBILITY_OMISSION_LIMITATION,
+            )
+        )
+        if _VISIBILITY_OMISSION_LIMITATION not in limitations:
+            limitations.append(_VISIBILITY_OMISSION_LIMITATION)
 
     _record_bound_limitations(bounds, issues_by_source, limitations)
 
     document_facts, chunk_facts = _project_facts(
         documents,
-        accessible_chunks,
+        prepared_chunks,
         client_safe=client_safe,
         evidence=evidence,
     )
@@ -349,9 +460,10 @@ async def load_knowledge_evidence(
         issues_by_source=issues_by_source,
         limitations=limitations,
         visibility_limitations=visibility_limitations,
+        hidden_source_types=hidden_source_types,
     )
 
-    if documents or accessible_chunks:
+    if documents or prepared_chunks:
         _set_source_issue(
             issues_by_source,
             "knowledge_documents",
@@ -362,7 +474,7 @@ async def load_knowledge_evidence(
             issues_by_source,
             "knowledge_chunks",
             DataQualityState.COMPLETE,
-            f"Knowledge chunk query succeeded with {len(accessible_chunks)} row(s).",
+            f"Knowledge chunk query succeeded with {len(prepared_chunks)} row(s).",
         )
 
     if client_safe:
@@ -453,26 +565,17 @@ def _record_bound_limitations(
         )
 
 
-def _apply_character_bounds(chunks: list[_ChunkRow]) -> tuple[list[_ChunkRow], _BoundFlags]:
-    per_chunk_truncated = False
-    total_truncated = False
-    total_chars = 0
-    bounded: list[_ChunkRow] = []
-    for row in chunks:
-        text = row.chunk_text
-        if len(text) > _MAX_CHARS_PER_CHUNK:
-            text = text[:_MAX_CHARS_PER_CHUNK]
-            per_chunk_truncated = True
-        if total_chars + len(text) > _MAX_TOTAL_UNTRUSTED_CHARS:
-            remaining = _MAX_TOTAL_UNTRUSTED_CHARS - total_chars
-            if remaining <= 0:
-                total_truncated = True
-                break
-            text = text[:remaining]
-            total_truncated = True
-            per_chunk_truncated = True
-        if text != row.chunk_text:
-            row = _ChunkRow(
+def _prepare_chunk_rows(raw_chunks: list[tuple]) -> tuple[list[_ChunkRow], bool]:
+    """Normalize source text, hash full content, drop empty chunks."""
+    prepared: list[_ChunkRow] = []
+    empty_skipped = False
+    for row in raw_chunks:
+        full_text = _select_source_text(row.chunk_text, row.content)
+        if not full_text:
+            empty_skipped = True
+            continue
+        prepared.append(
+            _ChunkRow(
                 id=row.id,
                 document_id=row.document_id,
                 version_id=row.version_id,
@@ -480,12 +583,49 @@ def _apply_character_bounds(chunks: list[_ChunkRow]) -> tuple[list[_ChunkRow], _
                 page_number=row.page_number,
                 section_title=row.section_title,
                 heading=row.heading,
-                chunk_text=text,
+                display_text=full_text,
+                content_sha256=_content_sha256(full_text),
                 visibility=row.visibility,
                 created_at=row.created_at,
             )
-        bounded.append(row)
-        total_chars += len(text)
+        )
+    return prepared, empty_skipped
+
+
+def _apply_character_bounds(chunks: list[_ChunkRow]) -> tuple[list[_ChunkRow], _BoundFlags]:
+    per_chunk_truncated = False
+    total_truncated = False
+    total_chars = 0
+    bounded: list[_ChunkRow] = []
+    for row in chunks:
+        display = row.display_text
+        if len(display) > _MAX_CHARS_PER_CHUNK:
+            display = display[:_MAX_CHARS_PER_CHUNK]
+            per_chunk_truncated = True
+        if total_chars + len(display) > _MAX_TOTAL_UNTRUSTED_CHARS:
+            remaining = _MAX_TOTAL_UNTRUSTED_CHARS - total_chars
+            if remaining <= 0:
+                total_truncated = True
+                break
+            display = display[:remaining]
+            total_truncated = True
+            per_chunk_truncated = True
+        bounded.append(
+            _ChunkRow(
+                id=row.id,
+                document_id=row.document_id,
+                version_id=row.version_id,
+                chunk_index=row.chunk_index,
+                page_number=row.page_number,
+                section_title=row.section_title,
+                heading=row.heading,
+                display_text=display,
+                content_sha256=row.content_sha256,
+                visibility=row.visibility,
+                created_at=row.created_at,
+            )
+        )
+        total_chars += len(display)
         if total_truncated:
             break
     return bounded, _BoundFlags(
@@ -541,7 +681,6 @@ def _project_facts(
         parent = next((doc for doc in documents if doc.id == row.document_id), None)
         if parent is None:
             continue
-        text = row.chunk_text
         section_label = None
         if not client_safe:
             section_label = row.section_title or row.heading
@@ -553,8 +692,8 @@ def _project_facts(
             chunk_index=row.chunk_index,
             page_number=row.page_number,
             section_label=section_label,
-            untrusted_text=text,
-            content_sha256=_content_sha256(text),
+            untrusted_text=row.display_text,
+            content_sha256=row.content_sha256,
             observed_at=row.created_at,
         )
         chunk_facts.append(facts)
@@ -588,6 +727,7 @@ def _build_source_availability(
     issues_by_source: dict[str, DataQualityIssue],
     limitations: list[str],
     visibility_limitations: list[VisibilityLimitation],
+    hidden_source_types: set[str],
 ) -> list[KnowledgeSourceAvailabilityFacts]:
     docs_by_type: dict[str, list[KnowledgeDocumentFacts]] = {}
     for doc in documents:
@@ -629,13 +769,22 @@ def _build_source_availability(
         type_docs = docs_by_type.get(type_key, [])
         type_chunks = chunks_by_type.get(type_key, [])
         source_key = f"knowledge_{requirement_id.lower()}"
+        has_hidden = type_key in hidden_source_types
 
         if not type_docs:
-            state = DataQualityState.UNAVAILABLE
-            limitation = (
-                f"No approved retrieval-ready {type_key} documents found for the "
-                "authorized project scope at or before as_of."
-            )
+            if has_hidden:
+                state = DataQualityState.UNAVAILABLE
+                limitation = _VISIBILITY_SOURCE_UNAVAILABLE_LIMITATION
+            else:
+                state = DataQualityState.UNAVAILABLE
+                limitation = (
+                    f"No approved retrieval-ready {type_key} documents found for the "
+                    "authorized project scope at or before as_of."
+                )
+            _set_source_issue(issues_by_source, source_key, state, limitation)
+        elif has_hidden:
+            state = DataQualityState.PARTIAL
+            limitation = _VISIBILITY_SOURCE_PARTIAL_LIMITATION
             _set_source_issue(issues_by_source, source_key, state, limitation)
         elif bounds.any_bound:
             state = DataQualityState.PARTIAL
@@ -703,30 +852,13 @@ async def _load_retrieval_ready_documents(
             KnowledgeDocument.updated_at,
         )
         .where(
-            KnowledgeDocument.org_id == org_id,
-            KnowledgeDocument.deleted_at.is_(None),
-            KnowledgeDocument.status == KnowledgeDocumentStatus.APPROVED,
-            KnowledgeDocument.indexing_status == KnowledgeIndexingStatus.INDEXED,
-            KnowledgeDocument.processing_status == KnowledgeProcessingStatus.READY,
-            KnowledgeDocument.visibility.in_(allowed_visibilities),
-            KnowledgeDocument.source_type.in_(_MAPPED_SOURCE_TYPES),
-            KnowledgeDocument.project.isnot(None),
-            func.lower(func.trim(KnowledgeDocument.project)) == normalized_project,
-            KnowledgeDocument.approved_at.isnot(None),
-            KnowledgeDocument.approved_at <= as_of_end,
-            KnowledgeDocument.indexed_at.isnot(None),
-            KnowledgeDocument.indexed_at <= as_of_end,
-            KnowledgeDocument.upload_date <= as_of_end,
-            KnowledgeDocument.active_version_id.isnot(None),
-            KnowledgeDocument.effective_date.isnot(None),
-            KnowledgeDocument.effective_date <= as_of,
-            KnowledgeDocument.owner_approver.isnot(None),
-            func.length(func.trim(KnowledgeDocument.owner_approver)) > 0,
-            or_(
-                KnowledgeDocument.expiry_date.is_(None),
-                KnowledgeDocument.expiry_date >= as_of,
+            *_document_base_filters(
+                org_id=org_id,
+                normalized_project=normalized_project,
+                as_of=as_of,
+                as_of_end=as_of_end,
             ),
-            KnowledgeDocument.created_at <= as_of_end,
+            KnowledgeDocument.visibility.in_(allowed_visibilities),
         )
         .order_by(
             KnowledgeDocument.approved_at.desc(),
@@ -753,6 +885,57 @@ async def _load_retrieval_ready_documents(
         for row in result.all()
     ]
     return _trim_limit_plus_one(rows, _MAX_DOCUMENTS)
+
+
+async def _probe_hidden_document_source_types(
+    session: AsyncSession,
+    *,
+    org_id: UUID,
+    normalized_project: str,
+    as_of: date,
+    as_of_end: datetime,
+    allowed_visibilities: list[KnowledgeVisibility],
+) -> set[str]:
+    """Metadata-only probe: which mapped source types have visibility-hidden docs.
+
+    Selects only ``source_type`` — never IDs, titles, or sensitive metadata.
+    """
+    if not normalized_project:
+        return set()
+    denied = [
+        visibility for visibility in KnowledgeVisibility if visibility not in allowed_visibilities
+    ]
+    if not denied:
+        return set()
+
+    result = await session.execute(
+        select(KnowledgeDocument.source_type)
+        .join(
+            KnowledgeDocumentVersion,
+            and_(
+                KnowledgeDocumentVersion.id == KnowledgeDocument.active_version_id,
+                KnowledgeDocumentVersion.document_id == KnowledgeDocument.id,
+                KnowledgeDocumentVersion.org_id == org_id,
+                KnowledgeDocumentVersion.is_active.is_(True),
+                KnowledgeDocumentVersion.created_at <= as_of_end,
+                KnowledgeDocumentVersion.uploaded_at <= as_of_end,
+                KnowledgeDocumentVersion.version.isnot(None),
+                func.length(func.trim(KnowledgeDocumentVersion.version)) > 0,
+            ),
+        )
+        .where(
+            *_document_base_filters(
+                org_id=org_id,
+                normalized_project=normalized_project,
+                as_of=as_of,
+                as_of_end=as_of_end,
+            ),
+            KnowledgeDocument.visibility.in_(denied),
+        )
+        .distinct()
+        .limit(len(_MAPPED_SOURCE_TYPES))
+    )
+    return {_enum_str(row[0]) for row in result.all()}
 
 
 async def _validate_active_versions(
@@ -829,11 +1012,27 @@ async def _load_document_chunks(
     org_id: UUID,
     as_of_end: datetime,
     documents: list[_DocumentRow],
-) -> tuple[list[_ChunkRow], _BoundFlags]:
+    allowed_visibilities: list[KnowledgeVisibility],
+    role: AppRole,
+    client_safe: bool,
+) -> tuple[list, _BoundFlags, set[str]]:
     if not documents:
-        return [], _BoundFlags()
+        return [], _BoundFlags(), set()
 
     pairs = [(row.id, row.active_version_id) for row in documents]
+    parent_by_id = {row.id: row for row in documents}
+    parent_visibility = {
+        row.id: _status_enum(row.visibility, KnowledgeVisibility) for row in documents
+    }
+    parent_source_type = {row.id: _enum_str(row.source_type) for row in documents}
+
+    # Effective visibility before windowing: null inherits authorized parent;
+    # explicit values must be in the authorized set.
+    visibility_predicate = or_(
+        KnowledgeDocumentChunk.visibility.is_(None),
+        KnowledgeDocumentChunk.visibility.in_(allowed_visibilities),
+    )
+
     row_number = (
         func.row_number()
         .over(
@@ -845,8 +1044,6 @@ async def _load_document_chunks(
         )
         .label("rn")
     )
-    # Keep MAX+1 rows per document so per-document truncation is detectable, then
-    # apply the global bound. Pair filter happens before window/order/limit.
     ranked = (
         select(
             KnowledgeDocumentChunk.id,
@@ -857,6 +1054,7 @@ async def _load_document_chunks(
             KnowledgeDocumentChunk.section_title,
             KnowledgeDocumentChunk.heading,
             KnowledgeDocumentChunk.chunk_text,
+            KnowledgeDocumentChunk.content,
             KnowledgeDocumentChunk.visibility,
             KnowledgeDocumentChunk.created_at,
             row_number,
@@ -868,6 +1066,8 @@ async def _load_document_chunks(
                 KnowledgeDocumentChunk.version_id,
             ).in_(pairs),
             KnowledgeDocumentChunk.created_at <= as_of_end,
+            visibility_predicate,
+            _sql_chunk_has_source_text(),
         )
         .subquery()
     )
@@ -884,27 +1084,49 @@ async def _load_document_chunks(
     raw_rows = list(result.all())
     per_doc_truncated = any(int(row.rn) > _MAX_CHUNKS_PER_DOCUMENT for row in raw_rows)
 
-    per_doc: dict[UUID, list[_ChunkRow]] = defaultdict(list)
+    # Defense in depth: re-check effective visibility in Python.
+    hidden_source_types: set[str] = set()
+    visible_raw: list = []
     for row in raw_rows:
         if int(row.rn) > _MAX_CHUNKS_PER_DOCUMENT:
             continue
-        per_doc[row.document_id].append(
-            _ChunkRow(
-                id=row.id,
-                document_id=row.document_id,
-                version_id=row.version_id,
-                chunk_index=row.chunk_index,
-                page_number=row.page_number,
-                section_title=row.section_title,
-                heading=row.heading,
-                chunk_text=row.chunk_text,
-                visibility=row.visibility,
-                created_at=row.created_at,
-            )
+        parent = parent_by_id.get(row.document_id)
+        parent_vis = parent_visibility.get(row.document_id)
+        if parent is None or parent_vis is None:
+            continue
+        effective = (
+            _status_enum(row.visibility, KnowledgeVisibility)
+            if row.visibility is not None
+            else parent_vis
         )
+        if not can_access_visibility(role, effective):
+            hidden_source_types.add(parent_source_type[row.document_id])
+            continue
+        if client_safe and effective != KnowledgeVisibility.CLIENT_SAFE:
+            hidden_source_types.add(parent_source_type[row.document_id])
+            continue
+        visible_raw.append(row)
+
+    # Detect hidden siblings filtered before the window. Derive source type from
+    # already-authorized parent documents only — never load hidden content.
+    hidden_doc_ids = await _probe_hidden_chunk_document_ids(
+        session,
+        org_id=org_id,
+        as_of_end=as_of_end,
+        pairs=pairs,
+        allowed_visibilities=allowed_visibilities,
+    )
+    for doc_id in hidden_doc_ids:
+        source_type = parent_source_type.get(doc_id)
+        if source_type is not None:
+            hidden_source_types.add(source_type)
+
+    per_doc: dict[UUID, list] = defaultdict(list)
+    for row in visible_raw:
+        per_doc[row.document_id].append(row)
 
     ordered_docs = sorted(documents, key=lambda row: (str(row.id),))
-    projected: list[_ChunkRow] = []
+    projected: list = []
     global_truncated = False
     for doc in ordered_docs:
         for chunk in per_doc.get(doc.id, []):
@@ -915,7 +1137,38 @@ async def _load_document_chunks(
         if global_truncated:
             break
 
-    return projected, _BoundFlags(
-        chunks=global_truncated,
-        chunks_per_document=per_doc_truncated,
+    return (
+        projected,
+        _BoundFlags(chunks=global_truncated, chunks_per_document=per_doc_truncated),
+        hidden_source_types,
     )
+
+
+async def _probe_hidden_chunk_document_ids(
+    session: AsyncSession,
+    *,
+    org_id: UUID,
+    as_of_end: datetime,
+    pairs: list[tuple[UUID, UUID]],
+    allowed_visibilities: list[KnowledgeVisibility],
+) -> set[UUID]:
+    denied = [
+        visibility for visibility in KnowledgeVisibility if visibility not in allowed_visibilities
+    ]
+    if not denied or not pairs:
+        return set()
+    result = await session.execute(
+        select(KnowledgeDocumentChunk.document_id)
+        .where(
+            KnowledgeDocumentChunk.org_id == org_id,
+            tuple_(
+                KnowledgeDocumentChunk.document_id,
+                KnowledgeDocumentChunk.version_id,
+            ).in_(pairs),
+            KnowledgeDocumentChunk.created_at <= as_of_end,
+            KnowledgeDocumentChunk.visibility.in_(denied),
+        )
+        .distinct()
+        .limit(len(pairs))
+    )
+    return {row[0] for row in result.all()}

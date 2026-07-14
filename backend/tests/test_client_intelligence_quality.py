@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -120,10 +121,22 @@ class FakeSession:
         if "FROM knowledge_documents" in compiled:
             assert "extracted_text" not in compiled.lower()
             return FakeResult(None, [])
+        if (
+            re.search(r"\bselect\s+1\b", compiled, re.IGNORECASE)
+            or (
+                "knowledge_document_chunks" in compiled.lower()
+                and "chunk_text" not in compiled.lower()
+            )
+        ):
+            return FakeResult(None, [])
         if "FROM knowledge_document_versions" in compiled:
             assert "file_name" not in compiled.lower()
+            assert "file_url" not in compiled.lower()
+            assert "storage_path" not in compiled.lower()
+            assert "uploaded_by" not in compiled.lower()
+            assert "approved_by" not in compiled.lower()
             return FakeResult(None, [])
-        if "FROM knowledge_document_chunks" in compiled:
+        if "FROM knowledge_document_chunks" in compiled or "knowledge_document_chunks" in compiled:
             assert "embedding" not in compiled.lower()
             return FakeResult(None, [])
         if "FROM knowledge_document_embeddings" in compiled:
@@ -190,7 +203,7 @@ def _milestone(project_id) -> SimpleNamespace:
         actual_date=None,
         status=MilestoneStatus.ON_TRACK,
         deleted_at=None,
-        updated_at=datetime(2026, 6, 20, tzinfo=UTC),
+        updated_at=datetime(2026, 6, 17, tzinfo=UTC),
     )
 
 
@@ -217,7 +230,7 @@ def _snap(
         "drift_alert_detail": "SECRET_DRIFT_DETAIL",
         "root_cause": {"cause": "SECRET_ROOT_CAUSE"},
         "confidence_level": "high",
-        "created_at": datetime(2026, 6, 18, tzinfo=UTC),
+        "created_at": datetime(2026, 6, 17, 12, 0, tzinfo=UTC),
     }
     data.update(kwargs)
     return SimpleNamespace(**data)

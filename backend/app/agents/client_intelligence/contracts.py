@@ -460,3 +460,18 @@ class ClientEvidencePack(ClientIntelligenceModel):
     policy_fingerprint: str | None = None
     visibility_limitations: list[VisibilityLimitation] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
+
+
+class EvidenceValidationIssue(ClientIntelligenceModel):
+    """Integrity/redaction finding. Details must not include raw source values."""
+
+    code: str
+    detail: str
+    source: str | None = None
+    evidence_id: UUID | None = None
+
+
+class EvidencePackValidationResult(ClientIntelligenceModel):
+    is_valid: bool
+    errors: list[EvidenceValidationIssue] = Field(default_factory=list)
+    warnings: list[EvidenceValidationIssue] = Field(default_factory=list)

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from datetime import UTC, date, datetime, time
 from uuid import UUID
 
@@ -23,11 +21,25 @@ from app.agents.client_intelligence.contracts import (
     KnowledgeEvidenceFacts,
     MilestoneFacts,
     ProjectIdentityFacts,
+    ReportingPeriod,
     RiskAlertFacts,
     SourceAgent,
     ThroughputSnapshotFacts,
     VisibilityLimitation,
     WorkforceEvidenceFacts,
+)
+from app.agents.client_intelligence.evidence_fingerprint import (
+    compute_source_fingerprint,
+    legacy_component_fingerprint,
+)
+from app.agents.client_intelligence.evidence_fingerprint import (
+    worst_data_quality_state as _worst_state,
+)
+from app.agents.client_intelligence.evidence_validation import (
+    EvidencePackIntegrityError,
+    finalize_data_quality_issues,
+    finalize_pack_collections,
+    validate_client_evidence_pack,
 )
 from app.agents.client_intelligence.governance_adapter import load_governance_evidence
 from app.agents.client_intelligence.knowledge_adapter import load_knowledge_evidence
@@ -59,14 +71,6 @@ _MAX_OPEN_BOTTLENECKS = 25
 
 _OPEN_ALERT_STATUSES = (AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED)
 
-_DATA_QUALITY_RANK: dict[DataQualityState, int] = {
-    DataQualityState.COMPLETE: 0,
-    DataQualityState.PARTIAL: 1,
-    DataQualityState.STALE: 2,
-    DataQualityState.CONFLICTING: 3,
-    DataQualityState.UNAVAILABLE: 4,
-}
-
 _HISTORICAL_STATUS_LIMITATION = (
     "Risk and bottleneck rows store current status only; a past as_of cannot reliably "
     "reconstruct historical open/closed state. Status history is not claimed."
@@ -79,12 +83,6 @@ def _as_of_end_utc(as_of: date) -> datetime:
 
 def _enum_str(value: object) -> str:
     return value.value if hasattr(value, "value") else str(value)
-
-
-def _worst_state(states: list[DataQualityState]) -> DataQualityState:
-    if not states:
-        return DataQualityState.COMPLETE
-    return max(states, key=lambda state: _DATA_QUALITY_RANK[state])
 
 
 def _select_next_milestone_id(
@@ -106,59 +104,51 @@ def _select_next_milestone_id(
     return max(active, key=lambda milestone: (milestone.planned_date, str(milestone.id))).id
 
 
-def _workforce_fingerprint_projection(workforce: WorkforceEvidenceFacts) -> dict:
-    """Canonical Workforce projection for fingerprinting (no generated_at)."""
-    return workforce.model_dump(mode="json")
-
-
-def _governance_fingerprint_projection(governance: GovernanceEvidenceFacts) -> dict:
-    """Canonical Governance projection for fingerprinting (no generated_at)."""
-    return governance.model_dump(mode="json")
-
-
-def _knowledge_fingerprint_projection(knowledge: KnowledgeEvidenceFacts) -> dict:
-    """Canonical Knowledge projection for fingerprinting (hashes, not raw chunk text)."""
-    payload = knowledge.model_dump(mode="json")
-    for chunk in payload.get("chunks", []):
-        chunk.pop("untrusted_text", None)
-    for document in payload.get("documents", []):
-        document.pop("document_title", None)
-    return payload
-
-
 def _fingerprint(
     *,
     project_id: UUID,
-    reporting_period_start: date,
-    reporting_period_end: date,
     visibility_mode: EvidenceVisibility,
     evidence: list[ClientEvidenceReference],
+    reporting_period: ReportingPeriod | None = None,
+    reporting_period_start: date | None = None,
+    reporting_period_end: date | None = None,
+    workforce: WorkforceEvidenceFacts | None = None,
+    governance: GovernanceEvidenceFacts | None = None,
+    knowledge: KnowledgeEvidenceFacts | None = None,
     workforce_projection: dict | None = None,
     governance_projection: dict | None = None,
     knowledge_projection: dict | None = None,
 ) -> str:
-    pairs = sorted(f"{item.source_table}:{item.source_row_id}" for item in evidence)
-    payload_parts = [
-        str(project_id),
-        reporting_period_start.isoformat(),
-        reporting_period_end.isoformat(),
-        visibility_mode.value,
-        *pairs,
-    ]
-    if workforce_projection is not None:
-        payload_parts.append(
-            json.dumps(workforce_projection, sort_keys=True, separators=(",", ":"))
+    """Compatibility wrapper — delegates to the single canonical fingerprint algorithm.
+
+    Prefer ``compute_source_fingerprint`` / ``legacy_component_fingerprint``.
+    Projection kwargs are accepted only for call-site migration and are ignored when
+    the corresponding facts objects are provided; when only a projection dict is
+    supplied for an adapter section, that section must be passed as facts instead.
+    """
+    _ = (workforce_projection, governance_projection, knowledge_projection)
+    if reporting_period is None:
+        if reporting_period_start is None or reporting_period_end is None:
+            raise TypeError("reporting_period or start/end dates are required")
+        # Legacy adapter tests historically fingerprinted only the current window.
+        # Map onto a complete ReportingPeriod with previous = start window and as_of = end.
+        reporting_period = ReportingPeriod(
+            start_date=reporting_period_start,
+            end_date=reporting_period_end,
+            previous_start_date=reporting_period_start,
+            previous_end_date=reporting_period_end,
+            as_of=reporting_period_end,
         )
-    if governance_projection is not None:
-        payload_parts.append(
-            json.dumps(governance_projection, sort_keys=True, separators=(",", ":"))
-        )
-    if knowledge_projection is not None:
-        payload_parts.append(
-            json.dumps(knowledge_projection, sort_keys=True, separators=(",", ":"))
-        )
-    payload = "|".join(payload_parts)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return legacy_component_fingerprint(
+        project_id=project_id,
+        reporting_period=reporting_period,
+        visibility_mode=visibility_mode,
+        evidence=evidence,
+        workforce=workforce,
+        governance=governance,
+        knowledge=knowledge,
+        as_of=reporting_period.as_of,
+    )
 
 
 def _resolve_visibility_mode(
@@ -289,6 +279,19 @@ async def build_client_evidence_pack(
     visibility_limitations.extend(knowledge_visibility_limitations)
     limitations.extend(knowledge_limitations)
 
+    (
+        evidence,
+        quality_issues,
+        visibility_limitations,
+        limitations,
+    ) = finalize_pack_collections(
+        evidence=evidence,
+        data_quality=quality_issues,
+        visibility_limitations=visibility_limitations,
+        limitations=limitations,
+        as_of=effective_as_of,
+    )
+
     overall = _worst_state([issue.state for issue in quality_issues])
     if not quality_issues:
         quality_issues.append(
@@ -300,26 +303,16 @@ async def build_client_evidence_pack(
             )
         )
         overall = DataQualityState.COMPLETE
+        quality_issues = finalize_data_quality_issues(quality_issues)
 
-    generated_at = datetime.now(UTC)
-    fingerprint = _fingerprint(
+    project_facts = ProjectIdentityFacts(
         project_id=project.id,
-        reporting_period_start=reporting_period.start_date,
-        reporting_period_end=reporting_period.end_date,
-        visibility_mode=mode,
-        evidence=evidence,
-        workforce_projection=_workforce_fingerprint_projection(workforce),
-        governance_projection=_governance_fingerprint_projection(governance),
-        knowledge_projection=_knowledge_fingerprint_projection(knowledge),
+        org_id=project.org_id,
+        project_name=project.name,
+        project_status=_enum_str(project.status),
     )
-
-    return ClientEvidencePack(
-        project=ProjectIdentityFacts(
-            project_id=project.id,
-            org_id=project.org_id,
-            project_name=project.name,
-            project_status=_enum_str(project.status),
-        ),
+    fingerprint = compute_source_fingerprint(
+        project=project_facts,
         reporting_period=reporting_period,
         visibility_mode=mode,
         delivery=delivery,
@@ -330,12 +323,33 @@ async def build_client_evidence_pack(
         evidence=evidence,
         data_quality=quality_issues,
         overall_data_quality=overall,
-        generated_at=generated_at,
+        visibility_limitations=visibility_limitations,
+        limitations=limitations,
+    )
+
+    pack = ClientEvidencePack(
+        project=project_facts,
+        reporting_period=reporting_period,
+        visibility_mode=mode,
+        delivery=delivery,
+        quality=quality,
+        workforce=workforce,
+        governance=governance,
+        knowledge=knowledge,
+        evidence=evidence,
+        data_quality=quality_issues,
+        overall_data_quality=overall,
+        generated_at=datetime.now(UTC),
         source_fingerprint=fingerprint,
         policy_fingerprint=policy_fingerprint,
         visibility_limitations=visibility_limitations,
         limitations=limitations,
     )
+
+    validation = validate_client_evidence_pack(pack, role=current_user.role)
+    if not validation.is_valid:
+        raise EvidencePackIntegrityError(validation)
+    return pack
 
 
 async def _load_delivery_facts(

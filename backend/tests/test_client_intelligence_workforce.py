@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from types import SimpleNamespace
@@ -21,7 +22,6 @@ from app.agents.client_intelligence import (
 from app.agents.client_intelligence import workforce_adapter as workforce_adapter_mod
 from app.agents.client_intelligence.evidence_pack import (
     _fingerprint,
-    _workforce_fingerprint_projection,
 )
 from app.agents.client_intelligence.workforce_adapter import _UTILIZATION_CLAIM_KEYS
 from app.core.exceptions import ApiError
@@ -180,10 +180,22 @@ class FakeSession:
         if "FROM knowledge_documents" in compiled:
             assert "extracted_text" not in compiled.lower()
             return FakeResult(None, [])
+        if (
+            re.search(r"\bselect\s+1\b", compiled, re.IGNORECASE)
+            or (
+                "knowledge_document_chunks" in compiled.lower()
+                and "chunk_text" not in compiled.lower()
+            )
+        ):
+            return FakeResult(None, [])
         if "FROM knowledge_document_versions" in compiled:
             assert "file_name" not in compiled.lower()
+            assert "file_url" not in compiled.lower()
+            assert "storage_path" not in compiled.lower()
+            assert "uploaded_by" not in compiled.lower()
+            assert "approved_by" not in compiled.lower()
             return FakeResult(None, [])
-        if "FROM knowledge_document_chunks" in compiled:
+        if "FROM knowledge_document_chunks" in compiled or "knowledge_document_chunks" in compiled:
             assert "embedding" not in compiled.lower()
             return FakeResult(None, [])
         if "FROM knowledge_document_embeddings" in compiled:
@@ -898,7 +910,7 @@ async def test_fingerprint_aggregate_change_and_hidden_identity_stability() -> N
         reporting_period_end=period.end_date,
         visibility_mode=EvidenceVisibility.CLIENT_SAFE,
         evidence=left_ev,
-        workforce_projection=_workforce_fingerprint_projection(left),
+        workforce=left,
     )
     fp_right = _fingerprint(
         project_id=project_id,
@@ -906,7 +918,7 @@ async def test_fingerprint_aggregate_change_and_hidden_identity_stability() -> N
         reporting_period_end=period.end_date,
         visibility_mode=EvidenceVisibility.CLIENT_SAFE,
         evidence=right_ev,
-        workforce_projection=_workforce_fingerprint_projection(right),
+        workforce=right,
     )
     fp_changed = _fingerprint(
         project_id=project_id,
@@ -914,22 +926,32 @@ async def test_fingerprint_aggregate_change_and_hidden_identity_stability() -> N
         reporting_period_end=period.end_date,
         visibility_mode=EvidenceVisibility.CLIENT_SAFE,
         evidence=changed_ev,
-        workforce_projection=_workforce_fingerprint_projection(changed),
+        workforce=changed,
     )
     assert fp_left == fp_right
     assert fp_left != fp_changed
 
-    # Ordering of evidence pairs must not change fingerprint.
-    shuffled = list(reversed(left_ev))
+    # Ordering of finalized evidence must not change fingerprint.
+    from app.agents.client_intelligence.evidence_validation import finalize_evidence_references
+
+    shuffled = finalize_evidence_references(list(reversed(left_ev)))
+    finalized_left = finalize_evidence_references(left_ev)
     fp_shuffled = _fingerprint(
         project_id=project_id,
         reporting_period_start=period.start_date,
         reporting_period_end=period.end_date,
         visibility_mode=EvidenceVisibility.CLIENT_SAFE,
         evidence=shuffled,
-        workforce_projection=_workforce_fingerprint_projection(left),
+        workforce=left,
     )
-    assert fp_shuffled == fp_left
+    assert fp_shuffled == _fingerprint(
+        project_id=project_id,
+        reporting_period_start=period.start_date,
+        reporting_period_end=period.end_date,
+        visibility_mode=EvidenceVisibility.CLIENT_SAFE,
+        evidence=finalized_left,
+        workforce=left,
+    )
 
 
 @pytest.mark.asyncio
@@ -1114,14 +1136,14 @@ async def test_historical_fingerprint_ignores_future_created_rows() -> None:
         reporting_period_end=period.end_date,
         visibility_mode=EvidenceVisibility.CLIENT_SAFE,
         evidence=left_ev,
-        workforce_projection=_workforce_fingerprint_projection(left),
+        workforce=left,
     ) == _fingerprint(
         project_id=project_id,
         reporting_period_start=period.start_date,
         reporting_period_end=period.end_date,
         visibility_mode=EvidenceVisibility.CLIENT_SAFE,
         evidence=right_ev,
-        workforce_projection=_workforce_fingerprint_projection(right),
+        workforce=right,
     )
 
 

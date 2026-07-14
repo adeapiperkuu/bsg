@@ -10,6 +10,8 @@ from app.agents.client_intelligence.contracts import (
     DataQualityState,
     DeliveryConfidenceFacts,
     DeliveryEvidenceFacts,
+    EvidencePackValidationResult,
+    EvidenceValidationIssue,
     EvidenceVisibility,
     GovernanceActionFacts,
     GovernanceCharterFacts,
@@ -40,8 +42,40 @@ from app.agents.client_intelligence.contracts import (
     WorkforceEvidenceFacts,
 )
 from app.agents.client_intelligence.evidence_pack import build_client_evidence_pack
+from app.agents.client_intelligence.evidence_persistence import (
+    find_client_evidence_snapshot,
+    load_client_evidence_snapshot,
+    persist_client_evidence_snapshot,
+    persistable_evidence_references,
+    reconstruct_client_evidence_pack,
+    reconstruct_pack_from_snapshot,
+    serialize_client_evidence_pack_for_persistence,
+)
+from app.agents.client_intelligence.evidence_validation import (
+    EvidencePackIntegrityError,
+    finalize_pack_collections,
+    validate_client_evidence_pack,
+)
 from app.agents.client_intelligence.governance_adapter import load_governance_evidence
+from app.agents.client_intelligence.health_contracts import (
+    ProjectHealthAssessment,
+    ProjectHealthBindingType,
+    ProjectHealthDriver,
+    ProjectHealthDriverPolarity,
+    ProjectHealthEvidenceRef,
+    ProjectHealthHistoryComparison,
+    ProjectHealthPolicyDecision,
+    ProjectHealthSignal,
+    ProjectHealthSignalState,
+    ProjectHealthStatus,
+    ProjectHealthTrend,
+)
+from app.agents.client_intelligence.health_policy import ProjectHealthPolicy
 from app.agents.client_intelligence.knowledge_adapter import load_knowledge_evidence
+from app.agents.client_intelligence.project_health import (
+    ProjectHealthIntegrityError,
+    assess_project_health,
+)
 from app.agents.client_intelligence.quality_adapter import load_quality_evidence
 from app.agents.client_intelligence.reporting_period import resolve_reporting_period
 from app.agents.client_intelligence.visibility import (
@@ -63,6 +97,9 @@ __all__ = [
     "DataQualityState",
     "DeliveryConfidenceFacts",
     "DeliveryEvidenceFacts",
+    "EvidencePackIntegrityError",
+    "EvidencePackValidationResult",
+    "EvidenceValidationIssue",
     "EvidenceVisibility",
     "GovernanceActionFacts",
     "GovernanceCharterFacts",
@@ -77,6 +114,19 @@ __all__ = [
     "KnowledgeEvidenceFacts",
     "KnowledgeSourceAvailabilityFacts",
     "MilestoneFacts",
+    "ProjectHealthAssessment",
+    "ProjectHealthBindingType",
+    "ProjectHealthDriver",
+    "ProjectHealthDriverPolarity",
+    "ProjectHealthEvidenceRef",
+    "ProjectHealthHistoryComparison",
+    "ProjectHealthIntegrityError",
+    "ProjectHealthPolicy",
+    "ProjectHealthPolicyDecision",
+    "ProjectHealthSignal",
+    "ProjectHealthSignalState",
+    "ProjectHealthStatus",
+    "ProjectHealthTrend",
     "ProjectIdentityFacts",
     "QualityEvidenceFacts",
     "QualitySnapshotFacts",
@@ -91,11 +141,21 @@ __all__ = [
     "VisibilityLimitation",
     "WorkforceCapacityFacts",
     "WorkforceEvidenceFacts",
+    "assess_project_health",
     "build_client_evidence_pack",
+    "find_client_evidence_snapshot",
+    "finalize_pack_collections",
+    "load_client_evidence_snapshot",
     "load_client_visibility_policy",
     "load_governance_evidence",
     "load_knowledge_evidence",
     "load_quality_evidence",
     "load_workforce_evidence",
+    "persist_client_evidence_snapshot",
+    "persistable_evidence_references",
+    "reconstruct_client_evidence_pack",
+    "reconstruct_pack_from_snapshot",
     "resolve_reporting_period",
+    "serialize_client_evidence_pack_for_persistence",
+    "validate_client_evidence_pack",
 ]
