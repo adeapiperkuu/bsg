@@ -1,23 +1,36 @@
 import { Download } from "lucide-react";
-import type { RefObject } from "react";
+import { useMemo, useState, type RefObject } from "react";
+import {
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { GovernanceRecommendationsSection } from "@/features/governance/GovernanceRecommendationsSection";
+import { GovernanceKpiStrip } from "@/features/governance/GovernanceKpiStrip";
+import { CHART_AXIS_STYLE, CHART_TOOLTIP_STYLE } from "@/features/quality/format";
 import { exportGovernanceAnalytics } from "@/lib/queries/governance";
 import type {
   GovernanceAnalytics,
-  GovernanceAnalyticsEvidence,
+  GovernanceKpis,
   GovernanceHealthProject,
 } from "@/types/governance";
-
-function formatPriority(priority: string): string {
-  if (priority === "critical") return "Critical";
-  if (priority === "high") return "High";
-  if (priority === "medium") return "Medium";
-  return priority;
-}
 
 function scoreStatus(score: number): string {
   if (score >= 90) return "Excellent";
@@ -27,28 +40,77 @@ function scoreStatus(score: number): string {
   return "Critical";
 }
 
-async function exportAnalyticsCsv(days: number) {
-  const blob = await exportGovernanceAnalytics(days, "csv");
+async function exportAnalyticsCsv(filters: {
+  days: number;
+  projectId?: string | null;
+  vertical?: string | null;
+}) {
+  const blob = await exportGovernanceAnalytics(filters, "csv");
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `governance-analytics-${days}d.csv`;
+  link.download = `governance-analytics-${filters.days}d.csv`;
   link.click();
   URL.revokeObjectURL(url);
 }
 
-function EvidenceList({ evidence }: { evidence: GovernanceAnalyticsEvidence[] }) {
-  if (evidence.length === 0) return null;
+function RiskRanking({
+  rows,
+  onOpenProject,
+  isLoading,
+  selectedProjectId,
+}: {
+  rows: GovernanceHealthProject[];
+  onOpenProject: (projectId: string) => void;
+  isLoading?: boolean;
+  selectedProjectId?: string | null;
+}) {
   return (
-    <ul className="mt-2 space-y-1 text-[11px] text-muted-foreground">
-      {evidence.slice(0, 3).map((item, index) => (
-        <li key={`${item.source_type}-${item.source_id ?? index}`} className="truncate">
-          {item.project_name ? `${item.project_name}: ` : ""}
-          {item.label}
-          {item.detail ? ` - ${item.detail}` : ""}
-        </li>
-      ))}
-    </ul>
+    <Card className="flex h-[520px] flex-col overflow-hidden">
+      <SectionHeader title="Portfolio Risk Ranking" sub="Sorted by governance priority" />
+      {isLoading && rows.length === 0 ? (
+        <div className="mt-4 space-y-2">
+          {[0, 1, 2, 3].map((row) => (
+            <Skeleton key={row} className="h-12 w-full" />
+          ))}
+        </div>
+      ) : (
+        <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+          {rows.slice(0, 8).map((project, index) => (
+            <button
+              key={project.project_id}
+              type="button"
+              className={`flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left text-xs hover:bg-secondary/60 ${
+                selectedProjectId === project.project_id
+                  ? "border-primary bg-secondary/40"
+                  : "border-border bg-elevated"
+              }`}
+              onClick={() => onOpenProject(project.project_id)}
+            >
+              <span className="w-5 text-muted-foreground">{index + 1}</span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-medium">{project.project_name}</div>
+                <div className="mt-1 flex flex-wrap gap-2 text-[10px] text-muted-foreground">
+                  {project.vertical && <span>{project.vertical}</span>}
+                  {project.blocking_dependencies > 0 && (
+                    <span>{project.blocking_dependencies} blocking dep.</span>
+                  )}
+                  {project.critical_escalations > 0 && (
+                    <span>{project.critical_escalations} critical esc.</span>
+                  )}
+                  {project.overdue_actions > 0 && <span>{project.overdue_actions} overdue</span>}
+                  {project.delivery_traffic_light && (
+                    <span>Delivery {project.delivery_traffic_light}</span>
+                  )}
+                </div>
+              </div>
+              <StatusPill status={scoreStatus(project.score)} />
+              <span className="w-9 text-right font-semibold">{project.score}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -77,121 +139,63 @@ export function ExecutiveAnalyticsDetailSkeleton() {
   );
 }
 
-function RiskRanking({
-  rows,
-  onOpenProject,
-  isLoading,
-}: {
-  rows: GovernanceHealthProject[];
-  onOpenProject: (projectId: string) => void;
-  isLoading?: boolean;
-}) {
-  return (
-    <Card>
-      <SectionHeader title="Portfolio Risk Ranking" sub="Sorted by governance priority" />
-      {isLoading && rows.length === 0 ? (
-        <div className="space-y-2">
-          {[0, 1, 2, 3].map((row) => (
-            <Skeleton key={row} className="h-12 w-full" />
-          ))}
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {rows.slice(0, 8).map((project, index) => (
-            <button
-              key={project.project_id}
-              type="button"
-              className="flex w-full items-center gap-3 rounded-md border border-border bg-elevated px-3 py-2 text-left text-xs hover:bg-secondary/60"
-              onClick={() => onOpenProject(project.project_id)}
-            >
-              <span className="w-5 text-muted-foreground">{index + 1}</span>
-              <div className="min-w-0 flex-1">
-                <div className="truncate font-medium">{project.project_name}</div>
-                <div className="mt-1 flex flex-wrap gap-2 text-[10px] text-muted-foreground">
-                  {project.blocking_dependencies > 0 && (
-                    <span>{project.blocking_dependencies} blocking dep.</span>
-                  )}
-                  {project.critical_escalations > 0 && (
-                    <span>{project.critical_escalations} critical esc.</span>
-                  )}
-                  {project.overdue_actions > 0 && <span>{project.overdue_actions} overdue</span>}
-                  {project.delivery_traffic_light && (
-                    <span>Delivery {project.delivery_traffic_light}</span>
-                  )}
-                </div>
-              </div>
-              <StatusPill status={scoreStatus(project.score)} />
-              <span className="w-9 text-right font-semibold">{project.score}</span>
-            </button>
-          ))}
-        </div>
-      )}
-    </Card>
-  );
-}
-
-function RecommendationsPanel({
-  recommendations,
-  isLoading,
-}: {
-  recommendations: GovernanceAnalytics["recommendations"];
-  isLoading?: boolean;
-}) {
-  return (
-    <Card>
-      <SectionHeader title="AI Recommendations" sub="Evidence-backed next actions" />
-      {isLoading && recommendations.length === 0 ? (
-        <div className="space-y-2">
-          {[0, 1, 2].map((row) => (
-            <Skeleton key={row} className="h-16 w-full" />
-          ))}
-        </div>
-      ) : recommendations.length === 0 ? (
-        <p className="py-6 text-sm text-muted-foreground">
-          No recommendations were generated from current evidence.
-        </p>
-      ) : (
-        <div className="space-y-3">
-          {recommendations.slice(0, 5).map((recommendation) => (
-            <div
-              key={`${recommendation.project_id ?? "portfolio"}-${recommendation.title}`}
-              className="rounded-md border border-border bg-elevated p-3"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium">{recommendation.title}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">{recommendation.detail}</p>
-                </div>
-                <StatusPill status={formatPriority(recommendation.priority)} />
-              </div>
-              <EvidenceList evidence={recommendation.evidence} />
-            </div>
-          ))}
-        </div>
-      )}
-    </Card>
-  );
-}
-
 export function ExecutiveGovernanceDashboard({
   analytics,
+  kpis,
   summaryLoading,
   detailLoading,
   rangeDays,
   onRangeChange,
+  projectFilter,
+  onProjectFilterChange,
+  verticalFilter,
+  onVerticalFilterChange,
+  projectOptions = [],
+  verticalOptions = [],
   onOpenProject,
   detailSectionRef,
+  canWrite = false,
 }: {
   analytics: GovernanceAnalytics | null;
+  kpis: GovernanceKpis;
   summaryLoading: boolean;
   detailLoading: boolean;
   rangeDays: number;
   onRangeChange: (days: number) => void;
+  projectFilter?: string | null;
+  onProjectFilterChange?: (projectId: string | null) => void;
+  verticalFilter?: string | null;
+  onVerticalFilterChange?: (vertical: string | null) => void;
+  projectOptions?: Array<{ id: string; name: string }>;
+  verticalOptions?: string[];
   onOpenProject: (projectId: string) => void;
   detailSectionRef?: RefObject<HTMLElement | null>;
+  canWrite?: boolean;
 }) {
   const ranking = analytics?.portfolio_risk_ranking ?? [];
-  const recommendations = analytics?.recommendations ?? [];
+  const [focusProjectId, setFocusProjectId] = useState<string | null>(
+    ranking[0]?.project_id ?? null,
+  );
+  const trends = analytics?.trends ?? [];
+  const chartData = useMemo(
+    () =>
+      trends.map((point) => ({
+        date: point.date.slice(5),
+        portfolio_health: point.portfolio_health,
+        escalations_created: point.escalations_created,
+        recommendations_created: point.recommendations_created ?? 0,
+        recommendations_accepted: point.recommendations_accepted ?? 0,
+        recommendations_dismissed: point.recommendations_dismissed ?? 0,
+      })),
+    [trends],
+  );
+
+  const handleOpenProject = (projectId: string) => {
+    setFocusProjectId(projectId);
+    onOpenProject(projectId);
+  };
+
+  const effectiveFocus = focusProjectId ?? ranking[0]?.project_id ?? null;
 
   return (
     <section className="space-y-4">
@@ -201,6 +205,42 @@ export function ExecutiveGovernanceDashboard({
           sub="Portfolio health, trends, risks, and evidence-backed recommendations"
         />
         <div className="flex flex-wrap items-center gap-2">
+          <Select
+            value={projectFilter ?? "all"}
+            onValueChange={(value) =>
+              onProjectFilterChange?.(value === "all" ? null : value)
+            }
+          >
+            <SelectTrigger className="h-8 w-[160px] text-xs">
+              <SelectValue placeholder="All projects" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All projects</SelectItem>
+              {projectOptions.map((project) => (
+                <SelectItem key={project.id} value={project.id}>
+                  {project.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            value={verticalFilter ?? "all"}
+            onValueChange={(value) =>
+              onVerticalFilterChange?.(value === "all" ? null : value)
+            }
+          >
+            <SelectTrigger className="h-8 w-[160px] text-xs">
+              <SelectValue placeholder="All departments" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All departments</SelectItem>
+              {verticalOptions.map((vertical) => (
+                <SelectItem key={vertical} value={vertical}>
+                  {vertical}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Tabs value={String(rangeDays)} onValueChange={(value) => onRangeChange(Number(value))}>
             <TabsList className="h-8">
               {[7, 30, 90, 365].map((days) => (
@@ -218,7 +258,11 @@ export function ExecutiveGovernanceDashboard({
             disabled={!analytics}
             onClick={() => {
               if (analytics) {
-                void exportAnalyticsCsv(analytics.date_range_days);
+                void exportAnalyticsCsv({
+                  days: analytics.date_range_days,
+                  projectId: projectFilter,
+                  vertical: verticalFilter,
+                });
               }
             }}
           >
@@ -228,13 +272,91 @@ export function ExecutiveGovernanceDashboard({
         </div>
       </div>
 
+      <GovernanceKpiStrip kpis={kpis} isLoading={summaryLoading && !analytics} />
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card>
+          <SectionHeader title="Governance Trend" sub="Portfolio health over time" />
+          {detailLoading && chartData.length === 0 ? (
+            <Skeleton className="h-[240px] w-full" />
+          ) : (
+            <ResponsiveContainer width="100%" height={240}>
+              <LineChart data={chartData}>
+                <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" />
+                <XAxis dataKey="date" {...CHART_AXIS_STYLE} />
+                <YAxis {...CHART_AXIS_STYLE} domain={[0, 100]} />
+                <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
+                <Line
+                  dataKey="portfolio_health"
+                  stroke="#0D1240"
+                  strokeWidth={2}
+                  name="Portfolio health"
+                  dot={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </Card>
+        <Card>
+          <SectionHeader
+            title="Escalation & Recommendation Trend"
+            sub="Created volume and outcomes"
+          />
+          {detailLoading && chartData.length === 0 ? (
+            <Skeleton className="h-[240px] w-full" />
+          ) : (
+            <ResponsiveContainer width="100%" height={240}>
+              <LineChart data={chartData}>
+                <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" />
+                <XAxis dataKey="date" {...CHART_AXIS_STYLE} />
+                <YAxis {...CHART_AXIS_STYLE} allowDecimals={false} />
+                <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
+                <Legend wrapperStyle={{ fontSize: 11, color: "#8b92a5" }} />
+                <Line
+                  dataKey="escalations_created"
+                  stroke="#ef4444"
+                  strokeWidth={2}
+                  name="Escalations"
+                  dot={false}
+                />
+                <Line
+                  dataKey="recommendations_created"
+                  stroke="#3b82f6"
+                  strokeWidth={2}
+                  name="Recommendations"
+                  dot={false}
+                />
+                <Line
+                  dataKey="recommendations_accepted"
+                  stroke="#22c55e"
+                  strokeWidth={2}
+                  name="Accepted"
+                  dot={false}
+                />
+                <Line
+                  dataKey="recommendations_dismissed"
+                  stroke="#a3a3a3"
+                  strokeWidth={2}
+                  name="Dismissed"
+                  dot={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </Card>
+      </div>
+
       <div ref={detailSectionRef as RefObject<HTMLDivElement>} className="grid gap-4 xl:grid-cols-[1fr_1fr]">
         <RiskRanking
           rows={ranking}
-          onOpenProject={onOpenProject}
+          onOpenProject={handleOpenProject}
           isLoading={summaryLoading && ranking.length === 0}
+          selectedProjectId={effectiveFocus}
         />
-        <RecommendationsPanel recommendations={recommendations} isLoading={detailLoading} />
+        <GovernanceRecommendationsSection
+          focusProjectId={effectiveFocus}
+          canWrite={canWrite}
+        />
       </div>
     </section>
   );

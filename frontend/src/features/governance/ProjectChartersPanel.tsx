@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
-import { Archive, Download, FileText, Loader2, Sparkles } from "lucide-react";
+import { Archive, BookOpen, Download, FileText, Loader2, RefreshCw, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 import { AiBadge, Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
@@ -38,10 +38,18 @@ import {
   archiveProjectCharter,
   exportProjectCharter,
   generateProjectCharter,
+  listProjectCharterPublicationVersions,
   listProjectCharters,
+  publishProjectCharter,
+  republishProjectCharter,
+  retryProjectCharterPublication,
   updateProjectCharter,
 } from "@/lib/queries/governance";
-import type { KnowledgeVisibility, ProjectCharter } from "@/types/governance";
+import type {
+  GovernanceCharterPublicationStatus,
+  KnowledgeVisibility,
+  ProjectCharter,
+} from "@/types/governance";
 
 type ProjectOption = {
   value: string;
@@ -51,6 +59,7 @@ type ProjectOption = {
 type ProjectChartersPanelProps = {
   projects: ProjectOption[];
   canWrite: boolean;
+  canPublish?: boolean;
   isClient: boolean;
   isReadOnly: boolean;
   loadCharters?: boolean;
@@ -60,6 +69,21 @@ function formatCharterStatus(status: ProjectCharter["status"]): string {
   if (status === "approved") return "Approved";
   if (status === "archived") return "Archived";
   return "Draft";
+}
+
+function formatPublicationStatus(status: GovernanceCharterPublicationStatus | undefined): string {
+  switch (status) {
+    case "published":
+      return "Published";
+    case "publishing":
+      return "Publishing";
+    case "failed":
+      return "Failed";
+    case "superseded":
+      return "Superseded";
+    default:
+      return "Not Published";
+  }
 }
 
 function formatVisibility(value: KnowledgeVisibility): string {
@@ -98,6 +122,7 @@ function filenameFor(charter: ProjectCharter, format: "pdf" | "docx"): string {
 export function ProjectChartersPanel({
   projects,
   canWrite,
+  canPublish = false,
   isClient,
   isReadOnly,
   loadCharters = true,
@@ -203,9 +228,60 @@ export function ProjectChartersPanel({
     },
   });
 
+  const publishMutation = useMutation({
+    mutationFn: (id: string) => publishProjectCharter(id),
+    onSuccess: async (charter) => {
+      toast.success("Charter published to Knowledge.");
+      setActiveCharter(charter);
+      await refresh();
+      await queryClient.invalidateQueries({
+        queryKey: ["governance", "project-charter-versions", charter.id],
+      });
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : "Failed to publish charter.");
+    },
+  });
+
+  const retryPublishMutation = useMutation({
+    mutationFn: (id: string) => retryProjectCharterPublication(id),
+    onSuccess: async (charter) => {
+      toast.success("Publication retry succeeded.");
+      setActiveCharter(charter);
+      await refresh();
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : "Failed to retry publication.");
+    },
+  });
+
+  const republishMutation = useMutation({
+    mutationFn: (id: string) => republishProjectCharter(id),
+    onSuccess: async (charter) => {
+      toast.success("Charter republished to Knowledge.");
+      setActiveCharter(charter);
+      await refresh();
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : "Failed to republish charter.");
+    },
+  });
+
   const charters = useMemo(() => chartersQuery.data ?? [], [chartersQuery.data]);
   const currentCharter = pickCurrentCharter(charters);
   const displayCharter = activeCharter ?? currentCharter;
+
+  const versionsQuery = useQuery({
+    queryKey: ["governance", "project-charter-versions", displayCharter?.id],
+    queryFn: () => listProjectCharterPublicationVersions(displayCharter!.id),
+    enabled: Boolean(displayCharter?.id) && loadCharters,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const publicationStatus = displayCharter?.publication_status ?? "not_published";
+  const showKnowledgePanel = Boolean(displayCharter && displayCharter.status !== "draft");
+  const publishBusy =
+    publishMutation.isPending || retryPublishMutation.isPending || republishMutation.isPending;
   const canEditActive = canWrite && activeCharter?.status === "draft";
   const selectedVersionId = displayCharter?.id ?? "";
 
@@ -301,6 +377,110 @@ export function ProjectChartersPanel({
                       ? ` by ${displayCharter.approved_by_name}`
                       : ""}
                   </p>
+                )}
+                {showKnowledgePanel && (
+                  <div className="mb-3 rounded-md border border-border bg-background/60 p-3">
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <BookOpen className="h-3.5 w-3.5 text-muted-foreground" />
+                      <span className="text-xs font-medium">Knowledge publication</span>
+                      <StatusPill status={formatPublicationStatus(publicationStatus)} />
+                    </div>
+                    <div className="grid gap-1 text-[10px] text-muted-foreground">
+                      <p>
+                        Status: {formatPublicationStatus(publicationStatus)}
+                        {displayCharter.knowledge_version_id
+                          ? ` · Knowledge version ${displayCharter.version}`
+                          : ""}
+                      </p>
+                      {displayCharter.published_at && (
+                        <p>
+                          Published {formatDate(displayCharter.published_at)}
+                          {displayCharter.published_by_name
+                            ? ` by ${displayCharter.published_by_name}`
+                            : ""}
+                        </p>
+                      )}
+                      {displayCharter.publication_error && (
+                        <p className="text-destructive">{displayCharter.publication_error}</p>
+                      )}
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {displayCharter.knowledge_document_id && (
+                        <Button asChild type="button" size="sm" variant="outline" className="h-7 text-[11px]">
+                          <a
+                            href={
+                              displayCharter.knowledge_url ??
+                              `/knowledge?documentId=${displayCharter.knowledge_document_id}`
+                            }
+                          >
+                            View Knowledge
+                          </a>
+                        </Button>
+                      )}
+                      {canPublish &&
+                        displayCharter.status === "approved" &&
+                        (publicationStatus === "not_published" ||
+                          publicationStatus === "failed") && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="h-7 text-[11px]"
+                            disabled={publishBusy}
+                            onClick={() =>
+                              publicationStatus === "failed"
+                                ? retryPublishMutation.mutate(displayCharter.id)
+                                : publishMutation.mutate(displayCharter.id)
+                            }
+                          >
+                            {publishBusy ? (
+                              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                            ) : (
+                              <BookOpen className="mr-1 h-3 w-3" />
+                            )}
+                            {publicationStatus === "failed" ? "Retry" : "Publish"}
+                          </Button>
+                        )}
+                      {canPublish && publicationStatus === "published" && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-[11px]"
+                          disabled={publishBusy}
+                          onClick={() => republishMutation.mutate(displayCharter.id)}
+                        >
+                          {republishMutation.isPending ? (
+                            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                          ) : (
+                            <RefreshCw className="mr-1 h-3 w-3" />
+                          )}
+                          Republish
+                        </Button>
+                      )}
+                    </div>
+                    {(versionsQuery.data?.length ?? 0) > 0 && (
+                      <div className="mt-3 border-t border-border pt-2">
+                        <p className="mb-1 text-[10px] font-medium text-muted-foreground">
+                          Version history
+                        </p>
+                        <ul className="space-y-1 text-[10px] text-muted-foreground">
+                          {versionsQuery.data?.map((version) => (
+                            <li key={version.charter_id} className="flex flex-wrap gap-x-2">
+                              <span>
+                                {version.charter_version} ·{" "}
+                                {formatPublicationStatus(version.publication_status)}
+                              </span>
+                              {version.knowledge_url && version.knowledge_document_id && (
+                                <a href={version.knowledge_url} className="underline">
+                                  Open
+                                </a>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
                 )}
                 <div className="min-h-0 flex-1 overflow-y-auto">
                   <DeliveryMarkdown content={displayCharter.generated_text} />

@@ -101,7 +101,7 @@ async def promote_risk_alert_to_escalation(
     )
     await session.commit()
     await session.refresh(escalation)
-    invalidate_governance_read_caches_after_commit()
+    invalidate_governance_read_caches_after_commit(org_id=escalation.org_id)
     return escalation
 
 

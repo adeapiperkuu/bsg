@@ -271,7 +271,7 @@ def test_document_summary_generation_with_mocked_ai() -> None:
 
 def test_evaluation_report_tracks_metrics_and_regressions() -> None:
     current = run_static_golden_evaluation()
-    assert current["total"] >= 6
+    assert current["total"] >= 8
     assert current["pass_rate"] == 1.0
     assert "answer_quality" in current
     assert "confidence_accuracy" in current

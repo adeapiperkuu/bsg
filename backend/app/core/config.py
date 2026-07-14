@@ -61,6 +61,61 @@ class Settings(BaseSettings):
     delivery_chat_max_message_length: int = 2000
     delivery_chat_retry_max_attempts: int = 3
     delivery_chat_retry_base_delay_seconds: float = 0.5
+    # Governance AI recommendations (Phase 6) — disabled by default for safe rollout.
+    governance_ai_recommendations_enabled: bool = False
+    governance_ai_recommendation_model: str | None = None
+    governance_ai_recommendation_max_items: int = 5
+    governance_ai_recommendation_cooldown_seconds: int = 600
+    governance_ai_recommendation_max_evidence_items: int = 20
+    governance_ai_recommendation_timeout_seconds: float = 45.0
+    governance_ai_recommendation_prompt_version: str = "v1"
+    # Governance escalation suggestions (Phase 9) — deterministic detection; no auto-create.
+    governance_escalation_suggestions_enabled: bool = False
+    governance_escalation_suggestion_overdue_days: int = 7
+    governance_escalation_suggestion_blocking_count: int = 3
+    governance_escalation_suggestion_confidence_drop: float = 10.0
+    governance_escalation_suggestion_confidence_threshold: float = 65.0
+    governance_escalation_suggestion_action_overdue_days: int = 5
+    governance_escalation_suggestion_cooldown_seconds: int = 300
+    governance_escalation_suggestion_max_per_project: int = 5
+    governance_escalation_suggestion_use_llm_enrichment: bool = False
+    governance_escalation_suggestion_snooze_days: int = 7
+    governance_escalation_suggestion_signal_max_age_days: int = 14
+    governance_escalation_suggestion_confidence_periods: int = 3
+    governance_escalation_suggestion_scope_pending_days: int = 5
+    governance_escalation_suggestion_mitigation_failure_count: int = 2
+    governance_escalation_suggestion_repeated_overdue_count: int = 2
+    governance_escalation_suggestion_overdue_lookback_days: int = 30
+    governance_escalation_suggestion_milestone_risk_threshold: float = 70.0
+    governance_escalation_suggestion_milestone_due_days: int = 14
+    governance_escalation_suggestion_combined_min_categories: int = 2
+    governance_escalation_suggestion_cross_agent_enabled: bool = False
+    governance_escalation_suggestion_quality_weight: float = 10.0
+    governance_escalation_suggestion_workforce_weight: float = 10.0
+    governance_escalation_suggestion_delivery_weight: float = 10.0
+    governance_escalation_suggestion_max_projects_per_scan: int = 25
+    governance_escalation_suggestion_max_created_per_scan: int = 20
+    governance_escalation_suggestion_scheduled_enabled: bool = False
+    # Phase 12 — recommendation effectiveness & learning (read-only analytics + bounded rules).
+    governance_recommendation_effectiveness_enabled: bool = True
+    governance_recommendation_effectiveness_cache_seconds: int = 180
+    governance_recommendation_effectiveness_min_sample: int = 5
+    governance_recommendation_calibration_min_sample: int = 10
+    governance_recommendation_quality_score_version: str = "v1"
+    governance_recommendation_calibration_version: str = "v1"
+    governance_recommendation_learning_rules_enabled: bool = False
+    governance_recommendation_explanation_version: str = "v2"
+    governance_recommendation_optimization_enabled: bool = True
+    governance_recommendation_optimization_cache_seconds: int = 180
+    governance_recommendation_strategy_version: str = "v1"
+    governance_recommendation_confidence_version: str = "v1"
+    governance_recommendation_drift_acceptance_drop_pp: float = 15.0
+    governance_recommendation_drift_fp_rise_pp: float = 10.0
+    governance_recommendation_drift_volume_ratio: float = 2.0
+    governance_recommendation_shadow_sample_limit: int = 200
+    # Phase 14 — publish approved Project Charters into Operational Knowledge.
+    governance_charter_knowledge_publish_enabled: bool = True
+    auto_publish_approved_charters: bool = True
 
     model_config = SettingsConfigDict(
         env_file=(

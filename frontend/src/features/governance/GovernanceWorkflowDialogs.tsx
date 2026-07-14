@@ -32,6 +32,7 @@ import type {
   ProjectScopeState,
 } from "@/types/governance";
 import type { WorkflowDialogState } from "@/features/governance/governance-workflow-types";
+import { GovernanceRecordProvenancePanel } from "@/features/governance/GovernanceRecordProvenancePanel";
 
 export type { WorkflowDialogState } from "@/features/governance/governance-workflow-types";
 
@@ -112,6 +113,8 @@ export function GovernanceWorkflowDialogs({
   const [escalationSourceId, setEscalationSourceId] = useState<string | null>(null);
   const [loadingEdit, setLoadingEdit] = useState(false);
   const [knowledgeDocs, setKnowledgeDocs] = useState<KnowledgeDocumentApi[]>([]);
+  const [loadedAction, setLoadedAction] = useState<GovernanceAction | null>(null);
+  const [loadedEscalation, setLoadedEscalation] = useState<GovernanceEscalation | null>(null);
 
   useEffect(() => {
     if (!dialog || !canWrite) return;
@@ -141,6 +144,8 @@ export function GovernanceWorkflowDialogs({
       setLinkedDocId("");
       setEscalationSourceType(null);
       setEscalationSourceId(null);
+      setLoadedAction(null);
+      setLoadedEscalation(null);
     };
 
     function fillDependency(dep: ProjectDependency) {
@@ -213,9 +218,15 @@ export function GovernanceWorkflowDialogs({
         if (dialog.kind === "dependency") {
           fillDependency(await getDependency(dialog.id!));
         } else if (dialog.kind === "action") {
-          fillAction(await getAction(dialog.id!));
+          const action = await getAction(dialog.id!);
+          if (cancelled) return;
+          fillAction(action);
+          setLoadedAction(action);
         } else if (dialog.kind === "escalation") {
-          fillEscalation(await getEscalation(dialog.id!));
+          const escalation = await getEscalation(dialog.id!);
+          if (cancelled) return;
+          fillEscalation(escalation);
+          setLoadedEscalation(escalation);
         }
       } catch {
         if (!cancelled) toast.error("Failed to load record for editing.");
@@ -352,6 +363,18 @@ export function GovernanceWorkflowDialogs({
         </DialogHeader>
 
         <div className="space-y-3 py-2">
+          {dialog.kind === "action" && dialog.mode === "edit" && loadedAction ? (
+            <GovernanceRecordProvenancePanel
+              target={{ kind: "action", record: loadedAction }}
+              enabled
+            />
+          ) : null}
+          {dialog.kind === "escalation" && dialog.mode === "edit" && loadedEscalation ? (
+            <GovernanceRecordProvenancePanel
+              target={{ kind: "escalation", record: loadedEscalation }}
+              enabled
+            />
+          ) : null}
           {dialog.kind !== "scope" && (
             <>
               <div>

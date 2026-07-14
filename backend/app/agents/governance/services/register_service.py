@@ -95,8 +95,10 @@ def _is_default_register_cacheable(
     )
 
 
-def invalidate_register_list_cache() -> None:
+def invalidate_register_list_cache() -> int:
+    removed = len(_register_list_cache)
     _register_list_cache.clear()
+    return removed
 
 
 def _compute_register_health(

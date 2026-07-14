@@ -121,7 +121,7 @@ async def test_get_governance_analytics_summary_limits_ranking(
     assert len(summary.portfolio_risk_ranking) <= SUMMARY_RANKING_LIMIT
     assert len(summary.project_health) <= SUMMARY_RANKING_LIMIT
     assert "health_distribution" in summary.charts
-    assert summary.export_sections == ["Governance Health"]
+    assert summary.export_sections == ["Governance Health", "Insights KPIs"]
 
 
 @pytest.mark.asyncio
@@ -170,6 +170,10 @@ async def test_detail_does_not_call_get_portfolio_data(
         "app.agents.governance.services.analytics_service._analytics_detail_cache",
         {},
     )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_ai_recommendations_for_insights",
+        AsyncMock(return_value=[]),
+    )
 
     detail = await get_governance_analytics_detail(session, dm, days=7)
 
@@ -177,7 +181,12 @@ async def test_detail_does_not_call_get_portfolio_data(
     assert detail.date_range_days == 7
     assert len(detail.trends) == 7
     assert detail.recommendations == []
-    assert detail.export_sections == ["Charts", "Executive Insights", "Evidence Appendix"]
+    assert detail.export_sections == [
+        "Charts",
+        "Executive Insights",
+        "Evidence Appendix",
+        "Insights KPIs",
+    ]
 
 
 @pytest.mark.asyncio
@@ -231,6 +240,10 @@ async def test_detail_cache_miss_uses_two_bundles_then_cache_hit_uses_zero(
         "app.agents.governance.services.analytics_service._analytics_detail_cache",
         {},
     )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_ai_recommendations_for_insights",
+        AsyncMock(return_value=[]),
+    )
 
     first = await get_governance_analytics_detail(session, dm, days=30)
     second = await get_governance_analytics_detail(session, dm, days=30)
@@ -274,6 +287,13 @@ def test_detail_endpoint_complete_empty_contract_shape() -> None:
         },
         "recent_activity": [],
         "export_sections": ["Charts", "Executive Insights", "Evidence Appendix"],
+        "insights_kpis": None,
+        "top_governance_risks": [],
+        "top_recurring_blockers": [],
+        "top_recurring_mitigation_failures": [],
+        "most_affected_projects": [],
+        "most_affected_departments": [],
+        "risk_heatmap": [],
     }
 
 
@@ -285,7 +305,7 @@ async def test_governance_analytics_summary_endpoint_contract(
 ) -> None:
     from datetime import UTC, datetime
 
-    async def _summary(_session, _user, *, days: int) -> GovernanceAnalyticsSummaryRead:
+    async def _summary(_session, _user, *, days: int, **_kwargs) -> GovernanceAnalyticsSummaryRead:
         return GovernanceAnalyticsSummaryRead(
             generated_at=datetime.now(UTC),
             date_range_days=days,
@@ -317,7 +337,7 @@ async def test_governance_analytics_detail_endpoint_contract(
 ) -> None:
     from datetime import UTC, datetime
 
-    async def _detail(_session, _user, *, days: int) -> GovernanceAnalyticsDetailRead:
+    async def _detail(_session, _user, *, days: int, **_kwargs) -> GovernanceAnalyticsDetailRead:
         return GovernanceAnalyticsDetailRead(
             generated_at=datetime.now(UTC),
             date_range_days=days,
@@ -351,7 +371,7 @@ async def test_governance_analytics_full_endpoint_still_works(
 ) -> None:
     from datetime import UTC, datetime
 
-    async def _analytics(_session, _user, *, days: int) -> GovernanceAnalyticsRead:
+    async def _analytics(_session, _user, *, days: int, **_kwargs) -> GovernanceAnalyticsRead:
         health = _sample_health()
         return GovernanceAnalyticsRead(
             generated_at=datetime.now(UTC),

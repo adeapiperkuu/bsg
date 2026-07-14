@@ -15,7 +15,6 @@ import statistics
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from time import perf_counter
 from uuid import UUID
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -34,8 +33,10 @@ from app.agents.governance.services.dashboard_service import (  # noqa: E402
 )
 from app.agents.governance.services.governance_service import (  # noqa: E402
     _invalidate_dependencies_list_cache,
+    list_governance_actions_page,
     list_governance_dependencies_page,
     list_governance_escalations_page,
+    list_governance_scope_states_page,
 )
 from app.agents.governance.services.project_governance_summary_service import (  # noqa: E402
     _org_summary_day_refreshed,
@@ -44,8 +45,13 @@ from app.agents.governance.services.register_service import (  # noqa: E402
     _register_list_cache,
     list_governance_register_page,
 )
+from app.agents.governance.timing import (  # noqa: E402
+    GovernanceEndpointTimer,
+    _reset_governance_timer,
+    _set_governance_timer,
+)
 from app.core.security import CurrentUser  # noqa: E402
-from app.db.models import AppRole  # noqa: E402
+from app.db.models import AppRole, Project  # noqa: E402
 from app.db.session import AsyncSessionLocal  # noqa: E402
 
 # Matches frontend TABLE_PAGE_SIZE / GOVERNANCE_DEFAULT_TABLE_PARAMS.
@@ -65,6 +71,8 @@ CACHE_HIT_RUNS = 5
 @dataclass
 class Sample:
     total_ms: float
+    db_ms: float
+    serialization_ms: float
     db_executes: int | None
     cache_hit: bool
     row_count: int
@@ -94,6 +102,8 @@ def _summarize(label: str, samples: list[Sample]) -> None:
         f"median={statistics.median(timings):.1f}ms "
         f"p90={_percentile(ordered, 0.90):.1f}ms p95={_percentile(ordered, 0.95):.1f}ms "
         f"max={max(timings):.1f}ms "
+        f"db_ms_avg={statistics.mean(s.db_ms for s in samples):.1f}ms "
+        f"serialization_ms_avg={statistics.mean(s.serialization_ms for s in samples):.1f}ms "
         f"db_executes={executes[0] if executes else 'n/a'} "
         f"cache_hits={cache_hits}/{len(samples)} "
         f"row_count={rows[0] if rows else 0}"
@@ -134,90 +144,253 @@ async def _warm_pool() -> None:
         await session.execute(select(1))
 
 
-async def _measure_bootstrap(user: CurrentUser, *, expect_cache: bool) -> Sample:
-    started = perf_counter()
+async def _first_project_id(user: CurrentUser) -> UUID | None:
     async with AsyncSessionLocal() as session:
-        await get_governance_bootstrap(session, user)
+        stmt = select(Project.id).where(Project.deleted_at.is_(None))
+        if user.role != AppRole.SUPER_ADMIN:
+            stmt = stmt.where(Project.org_id == user.org_id)
+        return (await session.execute(stmt.limit(1))).scalar_one_or_none()
+
+
+async def _measure_with_timer(
+    endpoint: str,
+    user: CurrentUser,
+    fn: Callable[[], Awaitable[tuple[int | None, bool, int]]],
+    *,
+    prefer_returned_executes: bool = False,
+) -> Sample:
+    timer = GovernanceEndpointTimer(endpoint, user)
+    token = _set_governance_timer(timer)
+    try:
+        db_executes, cache_hit, row_count = await fn()
+        timer.finish(row_count=row_count)
+    finally:
+        _reset_governance_timer(token)
     return Sample(
-        total_ms=(perf_counter() - started) * 1000,
-        db_executes=0 if expect_cache else 1,
-        cache_hit=expect_cache,
-        row_count=1,
+        total_ms=timer.total_ms,
+        db_ms=round(timer.db_ms, 1),
+        serialization_ms=timer.serialization_ms,
+        db_executes=(
+            db_executes
+            if prefer_returned_executes
+            else timer.execute_count
+            if timer.execute_count is not None
+            else db_executes
+        ),
+        cache_hit=timer.cache_hit if timer.cache_hit is not None else cache_hit,
+        row_count=row_count,
     )
 
 
+async def _measure_bootstrap(user: CurrentUser, *, expect_cache: bool) -> Sample:
+    return await _measure_with_timer(
+        "GET /governance/bootstrap",
+        user,
+        lambda: _measure_bootstrap_inner(user, expect_cache=expect_cache),
+    )
+
+
+async def _measure_bootstrap_inner(
+    user: CurrentUser,
+    *,
+    expect_cache: bool,
+) -> tuple[int | None, bool, int]:
+    async with AsyncSessionLocal() as session:
+        await get_governance_bootstrap(session, user)
+    return (0 if expect_cache else 1, expect_cache, 1)
+
+
 async def _measure_dependencies(user: CurrentUser) -> Sample:
-    started = perf_counter()
+    return await _measure_with_timer(
+        "GET /governance/dependencies",
+        user,
+        lambda: _measure_dependencies_inner(user),
+    )
+
+
+async def _measure_dependencies_inner(
+    user: CurrentUser,
+    *,
+    project_id: UUID | None = None,
+) -> tuple[int | None, bool, int]:
     async with AsyncSessionLocal() as session:
         page = await list_governance_dependencies_page(
             session,
             user,
             limit=DASHBOARD_PAGE_LIMIT,
             offset=DASHBOARD_PAGE_OFFSET,
+            project_id=project_id,
         )
-    return Sample(
-        total_ms=(perf_counter() - started) * 1000,
-        db_executes=page.db_executes,
-        cache_hit=page.db_executes == 0,
-        row_count=len(page.items),
+    return (page.db_executes, page.db_executes == 0, len(page.items))
+
+
+async def _measure_actions(user: CurrentUser) -> Sample:
+    return await _measure_with_timer(
+        "GET /governance/actions",
+        user,
+        lambda: _measure_actions_inner(user),
     )
 
 
+async def _measure_actions_inner(
+    user: CurrentUser,
+    *,
+    project_id: UUID | None = None,
+) -> tuple[int | None, bool, int]:
+    async with AsyncSessionLocal() as session:
+        page = await list_governance_actions_page(
+            session,
+            user,
+            limit=DASHBOARD_PAGE_LIMIT,
+            offset=DASHBOARD_PAGE_OFFSET,
+            project_id=project_id,
+        )
+    return (page.db_executes, False, len(page.items))
+
+
 async def _measure_escalations(user: CurrentUser) -> Sample:
-    started = perf_counter()
+    return await _measure_with_timer(
+        "GET /governance/escalations",
+        user,
+        lambda: _measure_escalations_inner(user),
+    )
+
+
+async def _measure_escalations_inner(
+    user: CurrentUser,
+    *,
+    project_id: UUID | None = None,
+) -> tuple[int | None, bool, int]:
     async with AsyncSessionLocal() as session:
         page = await list_governance_escalations_page(
             session,
             user,
             limit=DASHBOARD_PAGE_LIMIT,
             offset=DASHBOARD_PAGE_OFFSET,
+            project_id=project_id,
         )
-    return Sample(
-        total_ms=(perf_counter() - started) * 1000,
-        db_executes=page.db_executes,
-        cache_hit=False,
-        row_count=len(page.items),
-    )
+    return (page.db_executes, False, len(page.items))
 
 
 async def _measure_register(user: CurrentUser) -> Sample:
-    started = perf_counter()
+    return await _measure_with_timer(
+        "GET /governance/register",
+        user,
+        lambda: _measure_register_inner(user),
+    )
+
+
+async def _measure_register_inner(
+    user: CurrentUser,
+    *,
+    project_id: UUID | None = None,
+) -> tuple[int | None, bool, int]:
     async with AsyncSessionLocal() as session:
         page = await list_governance_register_page(
             session,
             user,
             limit=DASHBOARD_PAGE_LIMIT,
             offset=DASHBOARD_PAGE_OFFSET,
+            project_id=project_id,
         )
-    return Sample(
-        total_ms=(perf_counter() - started) * 1000,
-        db_executes=page.db_executes,
-        cache_hit=page.db_executes == 0,
-        row_count=len(page.items),
-    )
+    return (page.db_executes, page.db_executes == 0, len(page.items))
+
+
+async def _measure_scope_states_inner(
+    user: CurrentUser,
+    *,
+    project_id: UUID | None = None,
+) -> tuple[int | None, bool, int]:
+    async with AsyncSessionLocal() as session:
+        page = await list_governance_scope_states_page(
+            session,
+            user,
+            limit=1 if project_id else DASHBOARD_PAGE_LIMIT,
+            offset=DASHBOARD_PAGE_OFFSET,
+            project_id=project_id,
+        )
+    return (page.db_executes, False, len(page.items))
 
 
 async def _measure_analytics_summary(user: CurrentUser, *, expect_cache: bool) -> Sample:
-    started = perf_counter()
-    async with AsyncSessionLocal() as session:
-        data = await get_governance_analytics_summary(session, user, days=ANALYTICS_DAYS)
-    return Sample(
-        total_ms=(perf_counter() - started) * 1000,
-        db_executes=0 if expect_cache else 1,
-        cache_hit=expect_cache,
-        row_count=len(data.portfolio_risk_ranking),
+    return await _measure_with_timer(
+        "GET /governance/analytics/summary",
+        user,
+        lambda: _measure_analytics_summary_inner(user, expect_cache=expect_cache),
     )
 
 
+async def _measure_analytics_summary_inner(
+    user: CurrentUser,
+    *,
+    expect_cache: bool,
+) -> tuple[int | None, bool, int]:
+    async with AsyncSessionLocal() as session:
+        data = await get_governance_analytics_summary(session, user, days=ANALYTICS_DAYS)
+    return (0 if expect_cache else 1, expect_cache, len(data.portfolio_risk_ranking))
+
+
 async def _measure_analytics_detail(user: CurrentUser, *, expect_cache: bool) -> Sample:
-    started = perf_counter()
+    return await _measure_with_timer(
+        "GET /governance/analytics/detail",
+        user,
+        lambda: _measure_analytics_detail_inner(user, expect_cache=expect_cache),
+    )
+
+
+async def _measure_analytics_detail_inner(
+    user: CurrentUser,
+    *,
+    expect_cache: bool,
+) -> tuple[int | None, bool, int]:
     async with AsyncSessionLocal() as session:
         data = await get_governance_analytics_detail(session, user, days=ANALYTICS_DAYS)
-    return Sample(
-        total_ms=(perf_counter() - started) * 1000,
-        db_executes=0 if expect_cache else 2,
-        cache_hit=expect_cache,
-        row_count=len(data.insights) + len(data.recommendations),
+    return (0 if expect_cache else 2, expect_cache, len(data.insights) + len(data.recommendations))
+
+
+async def _measure_project_sheet(user: CurrentUser, project_id: UUID | None) -> Sample:
+    if project_id is None:
+        return Sample(
+            total_ms=0.0,
+            db_ms=0.0,
+            serialization_ms=0.0,
+            db_executes=0,
+            cache_hit=False,
+            row_count=0,
+        )
+
+    async def _inner() -> tuple[int | None, bool, int]:
+        deps_executes, _, deps_rows = await _measure_dependencies_inner(user, project_id=project_id)
+        actions_executes, _, actions_rows = await _measure_actions_inner(
+            user, project_id=project_id
+        )
+        escalations_executes, _, escalation_rows = await _measure_escalations_inner(
+            user, project_id=project_id
+        )
+        register_executes, _, register_rows = await _measure_register_inner(
+            user, project_id=project_id
+        )
+        scope_executes, _, scope_rows = await _measure_scope_states_inner(
+            user, project_id=project_id
+        )
+        executes = sum(
+            item or 0
+            for item in [
+                deps_executes,
+                actions_executes,
+                escalations_executes,
+                register_executes,
+                scope_executes,
+            ]
+        )
+        rows = deps_rows + actions_rows + escalation_rows + register_rows + scope_rows
+        return (executes, False, rows)
+
+    return await _measure_with_timer(
+        "PROJECT SHEET governance filtered reads",
+        user,
+        _inner,
+        prefer_returned_executes=True,
     )
 
 
@@ -238,7 +411,8 @@ async def _run_series(
         executes = "n/a" if sample.db_executes is None else str(sample.db_executes)
         print(
             f"    {label} run {index + 1}: {sample.total_ms:.1f} ms "
-            f"(db_executes={executes}, cache={cache_label}, rows={sample.row_count})"
+            f"(db_ms={sample.db_ms:.1f}, serialization_ms={sample.serialization_ms:.1f}, "
+            f"db_executes={executes}, cache={cache_label}, rows={sample.row_count})"
         )
     return samples
 
@@ -301,6 +475,7 @@ async def main() -> None:
     await _warm_pool()
     internal = _internal_user()
     client = _client_user()
+    project_id = await _first_project_id(internal)
 
     print("\n######## INTERNAL USER PATH ########")
 
@@ -325,6 +500,16 @@ async def main() -> None:
     )
 
     await _benchmark_endpoint(
+        "GET /governance/actions?limit=6&offset=0 (actions tab)",
+        lambda: _measure_actions(internal),
+    )
+
+    await _benchmark_endpoint(
+        "GET /governance/escalations?limit=6&offset=0 (internal escalations tab)",
+        lambda: _measure_escalations(internal),
+    )
+
+    await _benchmark_endpoint(
         "GET /governance/analytics/summary?days=30 (internal)",
         lambda: _measure_analytics_summary(internal, expect_cache=False),
         cache_hit_measure=lambda: _measure_analytics_summary(internal, expect_cache=True),
@@ -334,6 +519,11 @@ async def main() -> None:
         "GET /governance/analytics/detail?days=30 (internal progressive)",
         lambda: _measure_analytics_detail(internal, expect_cache=False),
         cache_hit_measure=lambda: _measure_analytics_detail(internal, expect_cache=True),
+    )
+
+    await _benchmark_endpoint(
+        "PROJECT SHEET filtered governance reads (internal)",
+        lambda: _measure_project_sheet(internal, project_id),
     )
 
     print("\n######## CLIENT USER PATH ########")

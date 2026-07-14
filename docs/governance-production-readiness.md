@@ -29,6 +29,8 @@ Notifications reuse the existing notifications table and `SYSTEM` notification t
 
 The governance chatbot and generated artifacts continue to rely on approved governance evidence. Monitoring tracks empty or low-evidence answers so operators can detect evidence gaps and prompt quality issues.
 
+Phase 6 adds grounded AI recommendations (`docs/governance-ai-recommendations.md`). Generation is user-triggered, validated, and persisted separately from analytics reads. Rule-based recommendations remain the fallback when AI is disabled or fails grounding.
+
 ## Monitoring
 
 `GET /governance/monitoring?window_hours=24` returns operational counters for:
@@ -68,3 +70,7 @@ Phase 8 adds partial indexes for active governance records and monitoring paths:
 - Add Slack/email delivery adapters for critical governance notifications.
 - Add server-side Excel exports if executive users require workbook formatting.
 - Add synthetic monitoring for `/governance`, `/governance/bootstrap`, and chatbot latency.
+
+## Related
+
+- Phase 11 executive insights dashboard (scores, rates, heatmap, filtered exports): `docs/governance-insights-dashboard.md`

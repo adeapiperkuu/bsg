@@ -43,6 +43,17 @@ def _bootstrap_cache_key(current_user: CurrentUser) -> tuple[UUID | None, str, U
     return (org_id, current_user.role.value, current_user.id)
 
 
+def clear_governance_bootstrap_cache(*, org_id: UUID | None) -> int:
+    """Clear cached bootstrap KPI reads affected by a committed governance write."""
+    if org_id is None:
+        keys_to_remove = list(_bootstrap_kpi_cache)
+    else:
+        keys_to_remove = [key for key in _bootstrap_kpi_cache if key[0] in {org_id, None}]
+    for key in keys_to_remove:
+        _bootstrap_kpi_cache.pop(key, None)
+    return len(keys_to_remove)
+
+
 def _open_action_filter(today: date):
     return or_(
         GovernanceAction.status.in_(

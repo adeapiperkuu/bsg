@@ -482,11 +482,28 @@ async def collect_project_charter_evidence(
         )
 
     knowledge_refs = await list_approved_governance_document_refs(session, current_user)
-    knowledge_refs = [
+    # Prefer same-project charters and related docs; then department/org examples.
+    project_matched = [
         doc
         for doc in knowledge_refs
-        if doc.project is None or doc.project.casefold() == project.name.casefold()
-    ][:8]
+        if doc.project is not None and doc.project.casefold() == project.name.casefold()
+    ]
+    charter_docs = [
+        doc for doc in knowledge_refs if doc.source_type == "project_charter"
+    ]
+    department_matched = [
+        doc
+        for doc in knowledge_refs
+        if doc not in project_matched
+        and doc.department
+        and doc.department.casefold() == project.vertical.casefold()
+    ]
+    ranked_refs: list = []
+    for bucket in (project_matched, charter_docs, department_matched, knowledge_refs):
+        for doc in bucket:
+            if doc not in ranked_refs:
+                ranked_refs.append(doc)
+    knowledge_refs = ranked_refs[:12]
     for doc_ref in knowledge_refs:
         doc = (
             await session.execute(
@@ -504,7 +521,7 @@ async def collect_project_charter_evidence(
                     select(KnowledgeDocumentChunk)
                     .where(*chunk_filters)
                     .order_by(KnowledgeDocumentChunk.chunk_index.asc())
-                    .limit(3)
+                    .limit(4)
                 )
             )
             .scalars()
@@ -530,11 +547,46 @@ async def collect_project_charter_evidence(
                 "title": doc.title,
                 "source_type": doc.source_type.value,
                 "project": doc.project,
+                "department": doc.department,
                 "version": doc.version,
                 "visibility": doc.visibility.value,
                 "excerpts": excerpts,
+                "is_project_charter": doc.source_type.value == "project_charter",
+                "is_same_project": (
+                    doc.project is not None
+                    and doc.project.casefold() == project.name.casefold()
+                ),
             }
         )
+
+    # Previously approved charters for this project (organizational memory).
+    prior_charters = (
+        (
+            await session.execute(
+                select(ProjectCharter)
+                .where(
+                    ProjectCharter.project_id == project.id,
+                    ProjectCharter.status == GovernanceCharterStatus.APPROVED,
+                )
+                .order_by(ProjectCharter.approved_at.desc())
+                .limit(5)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    context["previous_approved_charters"] = [
+        {
+            "charter_id": str(row.id),
+            "version": row.version,
+            "approved_at": row.approved_at.isoformat() if row.approved_at else None,
+            "excerpt": _truncate(sanitize_charter_text(row.generated_text), 1500),
+            "knowledge_document_id": (
+                str(row.knowledge_document_id) if row.knowledge_document_id else None
+            ),
+        }
+        for row in prior_charters
+    ]
 
     return evidence, context
 
@@ -939,6 +991,9 @@ async def build_project_charter_read(
         GovernanceEvidenceLinkRead,
         ProjectCharterRead,
     )
+    from app.agents.governance.services.governance_charter_publish_service import (
+        knowledge_deep_link,
+    )
     from app.agents.governance.services.summary_service import enrich_evidence_links
 
     evidence_rows = (
@@ -953,7 +1008,8 @@ async def build_project_charter_read(
         .all()
     )
     enriched = await enrich_evidence_links(session, list(evidence_rows))
-    names = await load_user_names(session, {charter.approved_by} if charter.approved_by else set())
+    name_ids = {uid for uid in (charter.approved_by, charter.published_by) if uid}
+    names = await load_user_names(session, name_ids)
     project_names = await load_project_names(session, {charter.project_id})
     return ProjectCharterRead.model_validate(charter, from_attributes=True).model_copy(
         update={
@@ -962,7 +1018,11 @@ async def build_project_charter_read(
             ],
             "generated_text": sanitize_charter_text(charter.generated_text),
             "approved_by_name": names.get(charter.approved_by) if charter.approved_by else None,
+            "published_by_name": (
+                names.get(charter.published_by) if charter.published_by else None
+            ),
             "project_name": project_names.get(charter.project_id),
+            "knowledge_url": knowledge_deep_link(charter.knowledge_document_id),
         }
     )
 

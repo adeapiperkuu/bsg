@@ -5,10 +5,14 @@ from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import select
 
 from app.agents.delivery.routes import chat as delivery_chat
 from app.agents.delivery.routes import dashboard as delivery_dashboard
 from app.agents.governance.routes import governance as governance_routes
+from app.agents.governance.services.escalation_suggestion_service import (
+    run_scheduled_escalation_suggestion_scan,
+)
 from app.api.routes import (
     agents,
     auth,
@@ -27,9 +31,10 @@ from app.api.routes import (
 )
 from app.core.config import get_settings
 from app.core.csrf import CsrfMiddleware
+from app.core.security import CurrentUser
 from app.core.exceptions import register_exception_handlers
 from app.core.security_headers import SecurityHeadersMiddleware
-from app.db.models import ScanTrigger
+from app.db.models import AppRole, Organisation, ScanTrigger, User
 from app.db.session import dispose_engine, session_scope
 from app.services.quality import scan_all_projects
 from app.services.quality_thresholds import warm_thresholds_cache
@@ -71,10 +76,60 @@ async def _scheduled_ingestion_queue_poll() -> None:
         logger.exception("Knowledge ingestion queue poll failed")
 
 
+async def _scheduled_governance_escalation_scan() -> None:
+    settings = get_settings()
+    if not settings.governance_escalation_suggestion_scheduled_enabled:
+        return
+    async with session_scope() as session:
+        try:
+            orgs = list((await session.execute(select(Organisation))).scalars())
+            for org in orgs[: settings.governance_escalation_suggestion_max_projects_per_scan]:
+                user = (
+                    await session.execute(
+                        select(User)
+                        .where(
+                            User.org_id == org.id,
+                            User.is_active.is_(True),
+                            User.role.in_(
+                                {
+                                    AppRole.DELIVERY_MANAGER,
+                                    AppRole.BSG_LEADERSHIP,
+                                    AppRole.SUPER_ADMIN,
+                                }
+                            ),
+                        )
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if user is None:
+                    logger.info(
+                        "Skipping scheduled governance escalation scan for org=%s: no internal user",
+                        org.id,
+                    )
+                    continue
+                current_user = CurrentUser(
+                    id=user.id,
+                    org_id=org.id,
+                    email=user.email,
+                    role=user.role,
+                    is_active=user.is_active,
+                )
+                result = await run_scheduled_escalation_suggestion_scan(session, current_user)
+                logger.info(
+                    "Scheduled governance escalation scan org=%s created=%s reused=%s",
+                    org.id,
+                    result.suggestions_created,
+                    result.suggestions_reused,
+                )
+        except Exception:
+            logger.exception("Scheduled governance escalation scan failed")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     scheduler = AsyncIOScheduler()
     scheduler.add_job(_scheduled_quality_scan, "cron", day_of_week="mon", hour=2)
+    scheduler.add_job(_scheduled_governance_escalation_scan, "cron", day_of_week="mon", hour=3)
     scheduler.add_job(_scheduled_ingestion_queue_poll, "interval", seconds=30)
     scheduler.start()
     try:

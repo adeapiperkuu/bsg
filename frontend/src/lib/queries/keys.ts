@@ -32,9 +32,51 @@ export const queryKeys = {
   projectTrainingGaps: (projectId: string) => ["projects", projectId, "training-gaps"] as const,
   projectCapabilityGaps: (projectId: string) => ["projects", projectId, "capability-gaps"] as const,
   governanceBootstrap: ["governance", "bootstrap"] as const,
-  governanceAnalyticsSummary: (days: number) =>
-    ["governance", "analytics", "summary", days] as const,
-  governanceAnalyticsDetail: (days: number) => ["governance", "analytics", "detail", days] as const,
+  governanceAnalyticsSummary: (
+    days: number,
+    filters: { projectId?: string | null; vertical?: string | null } = {},
+  ) =>
+    [
+      "governance",
+      "analytics",
+      "summary",
+      days,
+      filters.projectId ?? null,
+      filters.vertical ?? null,
+    ] as const,
+  governanceAnalyticsDetail: (
+    days: number,
+    filters: { projectId?: string | null; vertical?: string | null } = {},
+  ) =>
+    [
+      "governance",
+      "analytics",
+      "detail",
+      days,
+      filters.projectId ?? null,
+      filters.vertical ?? null,
+    ] as const,
+  governanceRecommendationEffectivenessSummary: (
+    filters: Record<string, string | number | boolean | null | undefined>,
+  ) => ["governance", "effectiveness", "summary", filters] as const,
+  governanceRecommendationEffectivenessFunnel: (
+    filters: Record<string, string | number | boolean | null | undefined>,
+  ) => ["governance", "effectiveness", "funnel", filters] as const,
+  governanceRecommendationEffectivenessTrends: (
+    filters: Record<string, string | number | boolean | null | undefined>,
+  ) => ["governance", "effectiveness", "trends", filters] as const,
+  governanceRecommendationEffectivenessCategories: (
+    kind: "dismissed" | "accepted",
+    filters: Record<string, string | number | boolean | null | undefined>,
+  ) => ["governance", "effectiveness", kind, filters] as const,
+  governanceRecommendationOptimizationSummary: (
+    filters: Record<string, string | number | boolean | null | undefined>,
+  ) => ["governance", "optimization", "summary", filters] as const,
+  governanceRecommendationOptimizationCompare: (
+    strategyA: string,
+    strategyB: string,
+    days: number,
+  ) => ["governance", "optimization", "compare", strategyA, strategyB, days] as const,
   governanceDependencies: (params: Record<string, unknown> = {}) =>
     ["governance", "dependencies", params] as const,
   governanceActions: (params: Record<string, unknown> = {}) =>
@@ -45,6 +87,8 @@ export const queryKeys = {
     ["governance", "scope-states", params] as const,
   governanceRegister: (params: Record<string, unknown> = {}) =>
     ["governance", "register", params] as const,
+  governanceAIRecommendations: (params: Record<string, unknown> = {}) =>
+    ["governance", "ai-recommendations", params] as const,
   qualityPage: (projectId: string) => ["quality", "page", projectId] as const,
   knowledgeBootstrap: ["knowledge", "bootstrap"] as const,
   knowledgeDocuments: ["knowledge", "documents"] as const,

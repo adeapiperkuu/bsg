@@ -30,7 +30,10 @@ from app.agents.governance.schemas.governance import (
     GovernanceEvidenceRead,
     GovernanceHealthProjectRead,
     GovernanceInsightRead,
+    GovernanceInsightsKpisRead,
+    GovernanceNamedCountRead,
     GovernanceRecommendationRead,
+    GovernanceRiskHeatmapCellRead,
     GovernanceTrendPointRead,
 )
 from app.agents.governance.services.dashboard_service import (
@@ -54,10 +57,15 @@ from app.db.models import (
     AppRole,
     GovernanceAction,
     GovernanceActionStatus,
+    GovernanceAIRecommendation,
+    GovernanceAIRecommendationStatus,
+    GovernanceAIRecommendationType,
     GovernanceDependencyStatus,
     GovernanceEscalation,
     GovernanceEscalationSeverity,
     GovernanceEscalationStatus,
+    GovernanceEscalationTriggerType,
+    GovernanceRecommendationAcceptanceStatus,
     GovernanceScopeStatus,
     Project,
     ProjectDependency,
@@ -78,26 +86,91 @@ OPEN_ESCALATION_STATUSES = {
     GovernanceEscalationStatus.IN_PROGRESS,
 }
 ANALYTICS_CACHE_TTL = timedelta(minutes=3)
+AnalyticsCacheKey = tuple[UUID | None, str, UUID, int, str | None, str | None]
 _analytics_cache: dict[
-    tuple[UUID | None, str, UUID, int],
+    AnalyticsCacheKey,
     tuple[datetime, GovernanceAnalyticsRead],
 ] = {}
 _analytics_summary_cache: dict[
-    tuple[UUID | None, str, UUID, int],
+    AnalyticsCacheKey,
     tuple[datetime, GovernanceAnalyticsSummaryRead],
 ] = {}
 _analytics_detail_cache: dict[
-    tuple[UUID | None, str, UUID, int],
+    AnalyticsCacheKey,
     tuple[datetime, GovernanceAnalyticsDetailRead],
 ] = {}
+
+ACCEPTED_RECOMMENDATION_STATUSES = {
+    GovernanceRecommendationAcceptanceStatus.PARTIALLY_ACCEPTED,
+    GovernanceRecommendationAcceptanceStatus.ACCEPTED_AS_ACTION,
+    GovernanceRecommendationAcceptanceStatus.ACCEPTED_AS_ESCALATION,
+}
+AT_RISK_LEVELS = {"high_risk", "critical"}
+INSIGHTS_TOP_LIMIT = 8
+
+
+@dataclass(frozen=True)
+class AnalyticsCacheInvalidationResult:
+    summary_removed: int = 0
+    detail_removed: int = 0
 
 
 def _analytics_cache_key(
     current_user: CurrentUser,
     days: int,
-) -> tuple[UUID | None, str, UUID, int]:
+    *,
+    project_id: UUID | None = None,
+    vertical: str | None = None,
+) -> AnalyticsCacheKey:
     org_id = None if current_user.role == AppRole.SUPER_ADMIN else current_user.org_id
-    return (org_id, current_user.role.value, current_user.id, days)
+    normalized_vertical = vertical.strip().lower() if vertical and vertical.strip() else None
+    return (
+        org_id,
+        current_user.role.value,
+        current_user.id,
+        days,
+        str(project_id) if project_id else None,
+        normalized_vertical,
+    )
+
+
+def _clear_analytics_cache_by_org(
+    cache: dict[AnalyticsCacheKey, tuple[datetime, T]],
+    *,
+    org_id: UUID | None,
+) -> int:
+    if org_id is None:
+        keys_to_remove = list(cache)
+    else:
+        keys_to_remove = [key for key in cache if key[0] in {org_id, None}]
+    for key in keys_to_remove:
+        cache.pop(key, None)
+    return len(keys_to_remove)
+
+
+def clear_governance_analytics_summary_cache(*, org_id: UUID | None) -> int:
+    """Clear cached summary reads affected by a committed governance write."""
+    return _clear_analytics_cache_by_org(_analytics_summary_cache, org_id=org_id)
+
+
+def clear_governance_analytics_detail_cache(*, org_id: UUID | None) -> int:
+    """Clear cached detail reads affected by a committed governance write."""
+    return _clear_analytics_cache_by_org(_analytics_detail_cache, org_id=org_id)
+
+
+def clear_governance_analytics_caches(
+    *,
+    org_id: UUID | None,
+) -> AnalyticsCacheInvalidationResult:
+    """Clear summary/detail analytics caches without touching the database.
+
+    Concrete org writes also clear the super-admin aggregate scope (`org_id=None`).
+    If no org is available, clear every summary/detail entry to avoid stale reads.
+    """
+    return AnalyticsCacheInvalidationResult(
+        summary_removed=clear_governance_analytics_summary_cache(org_id=org_id),
+        detail_removed=clear_governance_analytics_detail_cache(org_id=org_id),
+    )
 
 
 def _clamp_range(days: int) -> int:
@@ -113,7 +186,79 @@ def _empty_charts() -> dict[str, list[GovernanceChartPointRead]]:
         "actions_by_status": [],
         "health_distribution": [],
         "most_active_projects": [],
+        "recommendation_outcomes": [],
+        "affected_departments": [],
     }
+
+
+def _normalize_vertical_filter(vertical: str | None) -> str | None:
+    if vertical is None:
+        return None
+    cleaned = vertical.strip()
+    return cleaned or None
+
+
+def _filter_projects(
+    projects: list[Project],
+    *,
+    project_id: UUID | None = None,
+    vertical: str | None = None,
+) -> list[Project]:
+    normalized_vertical = _normalize_vertical_filter(vertical)
+    filtered = projects
+    if project_id is not None:
+        filtered = [project for project in filtered if project.id == project_id]
+    if normalized_vertical is not None:
+        needle = normalized_vertical.casefold()
+        filtered = [
+            project
+            for project in filtered
+            if (project.vertical or "").casefold() == needle
+        ]
+    return filtered
+
+
+def _project_activity_count(project: GovernanceHealthProjectRead) -> int:
+    return (
+        project.open_dependencies
+        + project.open_escalations
+        + project.overdue_actions
+        + project.pending_scope_revisions
+        + project.blocking_dependencies
+    )
+
+
+def _portfolio_governance_score(project_health: list[GovernanceHealthProjectRead]) -> float:
+    if not project_health:
+        return 100.0
+    return round(mean([project.score for project in project_health]), 1)
+
+
+def _recommendation_is_accepted(row: GovernanceAIRecommendation) -> bool:
+    if row.accepted_at is not None:
+        return True
+    return row.acceptance_status in ACCEPTED_RECOMMENDATION_STATUSES
+
+
+def _recommendation_is_dismissed(row: GovernanceAIRecommendation) -> bool:
+    if row.dismissed_at is not None:
+        return True
+    return row.status == GovernanceAIRecommendationStatus.DISMISSED
+
+
+def _recommendation_is_escalation_suggestion(row: GovernanceAIRecommendation) -> bool:
+    if row.auto_detected:
+        return True
+    return (
+        row.recommendation_type == GovernanceAIRecommendationType.ESCALATION_REQUIRED
+        and row.trigger_type is not None
+    )
+
+
+def _rate_pct(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round((numerator / denominator) * 100.0, 1)
 
 
 async def _with_analytics_session(
@@ -841,6 +986,7 @@ def _score_project_from_metrics(
         quality_risk=quality_risk,
         workforce_risk=None,
         trend="stable",
+        vertical=project.vertical or None,
         evidence=project_evidence,
     )
 
@@ -1026,12 +1172,14 @@ def _build_trends(
     escalations: list,
     actions: list[GovernanceAction],
     scopes: list,
+    recommendations: list[GovernanceAIRecommendation] | None = None,
 ) -> list[GovernanceTrendPointRead]:
     today = date.today()
     start = today - timedelta(days=days - 1)
     points: list[GovernanceTrendPointRead] = []
-    portfolio_health = round(mean([project.score for project in project_health]), 1) if project_health else 100.0
+    portfolio_health = _portfolio_governance_score(project_health)
     sla = calculate_sla_adherence_pct(actions)
+    recommendation_rows = recommendations or []
     for offset in range(days):
         day = start + timedelta(days=offset)
         created_deps = [dep for dep in dependencies if _bucket_date(dep.created_at, day, day) == day]
@@ -1047,6 +1195,20 @@ def _build_trends(
             action for action in actions if _bucket_date(action.completed_at, day, day) == day
         ]
         updated_scopes = [scope for scope in scopes if _bucket_date(scope.updated_at, day, day) == day]
+        created_recommendations = [
+            row for row in recommendation_rows if _bucket_date(row.generated_at, day, day) == day
+        ]
+        accepted_recommendations = [
+            row
+            for row in recommendation_rows
+            if _recommendation_is_accepted(row) and _bucket_date(row.accepted_at or row.generated_at, day, day) == day
+        ]
+        dismissed_recommendations = [
+            row
+            for row in recommendation_rows
+            if _recommendation_is_dismissed(row)
+            and _bucket_date(row.dismissed_at or row.generated_at, day, day) == day
+        ]
         points.append(
             GovernanceTrendPointRead(
                 date=day,
@@ -1088,9 +1250,240 @@ def _build_trends(
                 ),
                 portfolio_health=portfolio_health,
                 sla_adherence_pct=sla,
+                recommendations_created=len(created_recommendations),
+                recommendations_accepted=len(accepted_recommendations),
+                recommendations_dismissed=len(dismissed_recommendations),
+                escalation_suggestions_created=sum(
+                    1
+                    for row in created_recommendations
+                    if _recommendation_is_escalation_suggestion(row)
+                ),
             )
         )
     return points
+
+
+def _build_insights_kpis(
+    *,
+    project_health: list[GovernanceHealthProjectRead],
+    escalations_created: int,
+    recommendations: list[GovernanceAIRecommendation],
+    sla_adherence_pct: float,
+) -> GovernanceInsightsKpisRead:
+    created = len(recommendations)
+    accepted = sum(1 for row in recommendations if _recommendation_is_accepted(row))
+    dismissed = sum(1 for row in recommendations if _recommendation_is_dismissed(row))
+    return GovernanceInsightsKpisRead(
+        portfolio_governance_score=_portfolio_governance_score(project_health),
+        projects_at_risk=sum(1 for row in project_health if row.risk_level in AT_RISK_LEVELS),
+        recommendation_acceptance_rate_pct=_rate_pct(accepted, created),
+        recommendation_dismissal_rate_pct=_rate_pct(dismissed, created),
+        escalations_created=escalations_created,
+        recommendations_created=created,
+        sla_adherence_pct=round(sla_adherence_pct, 1),
+    )
+
+
+def _build_top_governance_risks(
+    project_health: list[GovernanceHealthProjectRead],
+    escalations: list,
+) -> list[GovernanceNamedCountRead]:
+    rows: list[GovernanceNamedCountRead] = []
+    for project in sorted(
+        [row for row in project_health if row.risk_level in AT_RISK_LEVELS],
+        key=lambda row: (row.score, -row.priority),
+    )[:INSIGHTS_TOP_LIMIT]:
+        rows.append(
+            GovernanceNamedCountRead(
+                label=project.project_name,
+                count=max(1, project.critical_escalations + project.blocking_dependencies),
+                project_id=project.project_id,
+                project_name=project.project_name,
+                vertical=project.vertical,
+                detail=f"score={project.score}, risk_level={project.risk_level}",
+            )
+        )
+    critical_open = [
+        esc
+        for esc in escalations
+        if esc.status in OPEN_ESCALATION_STATUSES
+        and esc.severity == GovernanceEscalationSeverity.CRITICAL
+    ]
+    if critical_open and len(rows) < INSIGHTS_TOP_LIMIT:
+        rows.append(
+            GovernanceNamedCountRead(
+                label="Open critical escalations",
+                count=len(critical_open),
+                detail="critical open escalations across filtered portfolio",
+            )
+        )
+    return rows[:INSIGHTS_TOP_LIMIT]
+
+
+def _build_top_recurring_blockers(dependencies: list) -> list[GovernanceNamedCountRead]:
+    blocking = [dep for dep in dependencies if dep.status == GovernanceDependencyStatus.BLOCKING]
+    by_type = Counter(_enum_value(dep.dependency_type) for dep in blocking)
+    rows: list[GovernanceNamedCountRead] = []
+    for dep_type, count in by_type.most_common(INSIGHTS_TOP_LIMIT):
+        sample = next(
+            (dep for dep in blocking if _enum_value(dep.dependency_type) == dep_type),
+            None,
+        )
+        rows.append(
+            GovernanceNamedCountRead(
+                label=dep_type.replace("_", " ").title(),
+                count=count,
+                project_id=sample.project_id if sample else None,
+                detail=f"blocking dependency type={dep_type}",
+            )
+        )
+    return rows
+
+
+def _build_top_mitigation_failures(
+    recommendations: list[GovernanceAIRecommendation],
+) -> list[GovernanceNamedCountRead]:
+    failures = [
+        row
+        for row in recommendations
+        if row.trigger_type == GovernanceEscalationTriggerType.REPEATED_MITIGATION_FAILURE
+        or (
+            row.recommendation_type == GovernanceAIRecommendationType.DEPENDENCY_MITIGATION
+            and _recommendation_is_dismissed(row)
+        )
+    ]
+    by_label = Counter(row.title for row in failures)
+    rows: list[GovernanceNamedCountRead] = []
+    for title, count in by_label.most_common(INSIGHTS_TOP_LIMIT):
+        sample = next((row for row in failures if row.title == title), None)
+        rows.append(
+            GovernanceNamedCountRead(
+                label=title,
+                count=count,
+                project_id=sample.project_id if sample else None,
+                detail=(
+                    f"trigger={_enum_value(sample.trigger_type)}"
+                    if sample and sample.trigger_type
+                    else "dismissed dependency mitigation"
+                ),
+            )
+        )
+    return rows
+
+
+def _build_most_affected_projects(
+    project_health: list[GovernanceHealthProjectRead],
+) -> list[GovernanceNamedCountRead]:
+    ranked = sorted(project_health, key=_project_activity_count, reverse=True)
+    return [
+        GovernanceNamedCountRead(
+            label=project.project_name,
+            count=_project_activity_count(project),
+            project_id=project.project_id,
+            project_name=project.project_name,
+            vertical=project.vertical,
+            detail=f"score={project.score}, priority={project.priority}",
+        )
+        for project in ranked[:INSIGHTS_TOP_LIMIT]
+        if _project_activity_count(project) > 0
+    ]
+
+
+def _build_most_affected_departments(
+    project_health: list[GovernanceHealthProjectRead],
+) -> list[GovernanceNamedCountRead]:
+    activity_by_vertical: Counter[str] = Counter()
+    for project in project_health:
+        vertical = project.vertical or "Unassigned"
+        activity_by_vertical[vertical] += _project_activity_count(project)
+    return [
+        GovernanceNamedCountRead(
+            label=vertical,
+            count=count,
+            vertical=vertical,
+            detail="open governance activity across projects",
+        )
+        for vertical, count in activity_by_vertical.most_common(INSIGHTS_TOP_LIMIT)
+        if count > 0
+    ]
+
+
+def _build_risk_heatmap(
+    project_health: list[GovernanceHealthProjectRead],
+) -> list[GovernanceRiskHeatmapCellRead]:
+    buckets: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for project in project_health:
+        vertical = project.vertical or "Unassigned"
+        buckets[(vertical, project.risk_level)].append(project.score)
+    cells = [
+        GovernanceRiskHeatmapCellRead(
+            vertical=vertical,
+            risk_level=risk_level,
+            project_count=len(scores),
+            avg_score=round(mean(scores), 1),
+        )
+        for (vertical, risk_level), scores in buckets.items()
+    ]
+    return sorted(cells, key=lambda cell: (cell.vertical, cell.risk_level))
+
+
+def _recommendation_outcome_charts(
+    recommendations: list[GovernanceAIRecommendation],
+) -> list[GovernanceChartPointRead]:
+    accepted = sum(1 for row in recommendations if _recommendation_is_accepted(row))
+    dismissed = sum(1 for row in recommendations if _recommendation_is_dismissed(row))
+    active = sum(
+        1
+        for row in recommendations
+        if not _recommendation_is_accepted(row) and not _recommendation_is_dismissed(row)
+    )
+    return [
+        GovernanceChartPointRead(label="Accepted", value=float(accepted)),
+        GovernanceChartPointRead(label="Dismissed", value=float(dismissed)),
+        GovernanceChartPointRead(label="Open", value=float(active)),
+    ]
+
+
+def _affected_department_charts(
+    project_health: list[GovernanceHealthProjectRead],
+) -> list[GovernanceChartPointRead]:
+    return [
+        GovernanceChartPointRead(label=row.label, value=float(row.count))
+        for row in _build_most_affected_departments(project_health)
+    ]
+
+
+async def _fetch_ai_recommendations_for_insights(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    *,
+    today: date,
+    days: int,
+    project_ids: set[UUID] | None = None,
+) -> list[GovernanceAIRecommendation]:
+    window_start = _trend_window_start(today=today, days=days)
+    stmt = (
+        select(GovernanceAIRecommendation)
+        .where(
+            GovernanceAIRecommendation.deleted_at.is_(None),
+            GovernanceAIRecommendation.generated_at >= window_start,
+        )
+        .order_by(GovernanceAIRecommendation.generated_at.desc())
+        .limit(2000)
+    )
+    stmt = _apply_org_filter(stmt, GovernanceAIRecommendation.org_id, current_user)
+    if project_ids is not None:
+        stmt = stmt.where(
+            or_(
+                GovernanceAIRecommendation.project_id.in_(project_ids),
+                GovernanceAIRecommendation.project_id.is_(None),
+            )
+        )
+    return list((await session.execute(stmt)).scalars())
+
+
+def _filter_rows_by_project_ids(rows: list, project_ids: set[UUID]) -> list:
+    return [row for row in rows if getattr(row, "project_id", None) in project_ids]
 
 
 async def get_governance_analytics(
@@ -1098,10 +1491,18 @@ async def get_governance_analytics(
     current_user: CurrentUser,
     *,
     days: int = 30,
+    project_id: UUID | None = None,
+    vertical: str | None = None,
 ) -> GovernanceAnalyticsRead:
     assert_can_read_governance(current_user)
     effective_days = _clamp_range(days)
-    cache_key = _analytics_cache_key(current_user, effective_days)
+    normalized_vertical = _normalize_vertical_filter(vertical)
+    cache_key = _analytics_cache_key(
+        current_user,
+        effective_days,
+        project_id=project_id,
+        vertical=normalized_vertical,
+    )
     now = datetime.now(UTC)
     cached = _analytics_cache.get(cache_key)
     if cached and now - cached[0] < ANALYTICS_CACHE_TTL:
@@ -1110,7 +1511,12 @@ async def get_governance_analytics(
     total_started = perf_counter()
     today = now.date()
 
-    projects = await _fetch_visible_projects(session, current_user)
+    projects = _filter_projects(
+        await _fetch_visible_projects(session, current_user),
+        project_id=project_id,
+        vertical=normalized_vertical,
+    )
+    project_ids = {project.id for project in projects}
     project_names = {project.id: project.name for project in projects}
 
     counts_started = perf_counter()
@@ -1148,8 +1554,14 @@ async def get_governance_analytics(
     ranking = sorted(project_health, key=lambda row: (row.score, -row.priority, row.project_name))
     top_project_ids = [row.project_id for row in ranking[:10]]
 
-    blocking_dependencies = await _fetch_blocking_dependencies(session, current_user)
-    critical_escalations = await _fetch_critical_escalations(session, current_user)
+    blocking_dependencies = _filter_rows_by_project_ids(
+        await _fetch_blocking_dependencies(session, current_user),
+        project_ids,
+    ) if project_ids else []
+    critical_escalations = _filter_rows_by_project_ids(
+        await _fetch_critical_escalations(session, current_user),
+        project_ids,
+    ) if project_ids else []
 
     evidence_started = perf_counter()
     evidence_by_project = await _fetch_project_evidence(
@@ -1185,6 +1597,19 @@ async def get_governance_analytics(
         trend_actions,
         trend_scopes,
     ) = await _fetch_trend_series_bundle(session, current_user, today=today, days=effective_days)
+    if project_ids:
+        trend_dependencies = _filter_rows_by_project_ids(trend_dependencies, project_ids)
+        trend_escalations = _filter_rows_by_project_ids(trend_escalations, project_ids)
+        trend_actions = _filter_rows_by_project_ids(trend_actions, project_ids)
+        trend_scopes = _filter_rows_by_project_ids(trend_scopes, project_ids)
+
+    ai_recommendations = await _fetch_ai_recommendations_for_insights(
+        session,
+        current_user,
+        today=today,
+        days=effective_days,
+        project_ids=project_ids or None,
+    )
 
     async def _fetch_chart_and_activity() -> tuple[
         Counter[str],
@@ -1210,6 +1635,13 @@ async def get_governance_analytics(
         action_status_counter = await _fetch_action_status_counter(session, current_user, today=today)
         overdue_actions = await _fetch_overdue_actions(session, current_user, today=today)
         recent_activity = await _fetch_recent_activity(session, current_user, project_names)
+        if project_ids:
+            overdue_actions = _filter_rows_by_project_ids(overdue_actions, project_ids)
+            recent_activity = [
+                item
+                for item in recent_activity
+                if item.project_id is None or item.project_id in project_ids
+            ]
         return (
             dep_type_counter,
             esc_severity_counter,
@@ -1233,10 +1665,24 @@ async def get_governance_analytics(
             escalations=trend_escalations,
             actions=trend_actions,
             scopes=trend_scopes,
+            recommendations=ai_recommendations,
         ),
         _fetch_chart_and_activity(),
     )
     trends_ms = round((perf_counter() - trends_started) * 1000, 1)
+
+    insights_kpis = _build_insights_kpis(
+        project_health=project_health,
+        escalations_created=sum(point.escalations_created for point in trends),
+        recommendations=ai_recommendations,
+        sla_adherence_pct=calculate_sla_adherence_pct(trend_actions),
+    )
+    top_governance_risks = _build_top_governance_risks(project_health, critical_escalations)
+    top_recurring_blockers = _build_top_recurring_blockers(blocking_dependencies)
+    top_recurring_mitigation_failures = _build_top_mitigation_failures(ai_recommendations)
+    most_affected_projects = _build_most_affected_projects(project_health)
+    most_affected_departments = _build_most_affected_departments(project_health)
+    risk_heatmap = _build_risk_heatmap(project_health)
 
     charts = {
         "dependencies_by_type": _chart_points(
@@ -1278,16 +1724,13 @@ async def get_governance_analytics(
         "most_active_projects": [
             GovernanceChartPointRead(
                 label=project.project_name,
-                value=float(
-                    project.open_dependencies
-                    + project.open_escalations
-                    + project.overdue_actions
-                    + project.pending_scope_revisions
-                ),
+                value=float(_project_activity_count(project)),
                 secondary_value=float(project.score),
             )
             for project in sorted(project_health, key=lambda row: row.priority, reverse=True)[:8]
         ],
+        "recommendation_outcomes": _recommendation_outcome_charts(ai_recommendations),
+        "affected_departments": _affected_department_charts(project_health),
     }
 
     recommendations_started = perf_counter()
@@ -1315,7 +1758,16 @@ async def get_governance_analytics(
             "Executive Insights",
             "Governance Health",
             "Evidence Appendix",
+            "Insights KPIs",
         ],
+        portfolio_governance_score=insights_kpis.portfolio_governance_score,
+        insights_kpis=insights_kpis,
+        top_governance_risks=top_governance_risks,
+        top_recurring_blockers=top_recurring_blockers,
+        top_recurring_mitigation_failures=top_recurring_mitigation_failures,
+        most_affected_projects=most_affected_projects,
+        most_affected_departments=most_affected_departments,
+        risk_heatmap=risk_heatmap,
     )
     _analytics_cache[cache_key] = (now, analytics)
 
@@ -2468,11 +2920,19 @@ async def get_governance_analytics_summary(
     current_user: CurrentUser,
     *,
     days: int = 30,
+    project_id: UUID | None = None,
+    vertical: str | None = None,
 ) -> GovernanceAnalyticsSummaryRead:
     """Fast executive header: top risk ranking without heavy analytics work."""
     assert_can_read_governance(current_user)
     effective_days = _clamp_range(days)
-    cache_key = _analytics_cache_key(current_user, effective_days)
+    normalized_vertical = _normalize_vertical_filter(vertical)
+    cache_key = _analytics_cache_key(
+        current_user,
+        effective_days,
+        project_id=project_id,
+        vertical=normalized_vertical,
+    )
     now = datetime.now(UTC)
     timer = get_governance_timer()
     cached = _analytics_summary_cache.get(cache_key)
@@ -2497,6 +2957,11 @@ async def get_governance_analytics_summary(
         current_user,
         today=today,
     )
+    projects = _filter_projects(
+        projects,
+        project_id=project_id,
+        vertical=normalized_vertical,
+    )
 
     project_health: list[GovernanceHealthProjectRead] = []
     for project in projects:
@@ -2519,13 +2984,26 @@ async def get_governance_analytics_summary(
     top_ranking = ranking[:SUMMARY_RANKING_LIMIT]
     top_health = top_ranking
 
+    # Summary stays lean: portfolio score + at-risk count only. Rates/trends live on detail.
+    insights_kpis = GovernanceInsightsKpisRead(
+        portfolio_governance_score=_portfolio_governance_score(project_health),
+        projects_at_risk=sum(1 for row in project_health if row.risk_level in AT_RISK_LEVELS),
+        recommendation_acceptance_rate_pct=0.0,
+        recommendation_dismissal_rate_pct=0.0,
+        escalations_created=0,
+        recommendations_created=0,
+        sla_adherence_pct=0.0,
+    )
+
     summary = GovernanceAnalyticsSummaryRead(
         generated_at=now,
         date_range_days=effective_days,
         project_health=top_health,
         portfolio_risk_ranking=top_ranking,
         charts=_summary_health_charts(project_health),
-        export_sections=["Governance Health"],
+        export_sections=["Governance Health", "Insights KPIs"],
+        portfolio_governance_score=insights_kpis.portfolio_governance_score,
+        insights_kpis=insights_kpis,
     )
     _analytics_summary_cache[cache_key] = (now, summary)
 
@@ -2552,11 +3030,19 @@ async def get_governance_analytics_detail(
     current_user: CurrentUser,
     *,
     days: int = 30,
+    project_id: UUID | None = None,
+    vertical: str | None = None,
 ) -> GovernanceAnalyticsDetailRead:
     """Heavy analytics sections: trends, charts, recommendations, and activity."""
     assert_can_read_governance(current_user)
     effective_days = _clamp_range(days)
-    cache_key = _analytics_cache_key(current_user, effective_days)
+    normalized_vertical = _normalize_vertical_filter(vertical)
+    cache_key = _analytics_cache_key(
+        current_user,
+        effective_days,
+        project_id=project_id,
+        vertical=normalized_vertical,
+    )
     now = datetime.now(UTC)
     timer = get_governance_timer()
     cached = _analytics_detail_cache.get(cache_key)
@@ -2583,6 +3069,12 @@ async def get_governance_analytics_detail(
         overdue_by_project,
         pending_by_project,
     ) = await _fetch_detail_project_bundle(session, current_user, today=today)
+    projects = _filter_projects(
+        projects,
+        project_id=project_id,
+        vertical=normalized_vertical,
+    )
+    project_ids = {project.id for project in projects}
     query_timings["detail_project_metrics"] = round((perf_counter() - project_started) * 1000, 1)
 
     project_names = {project.id: project.name for project in projects}
@@ -2599,14 +3091,14 @@ async def get_governance_analytics_detail(
 
     delivery_by_project: dict[UUID, dict] = {}
     if include_signals and projects:
-        project_ids = [project.id for project in projects]
+        signal_project_ids = [project.id for project in projects]
         throughput, quality, milestones, risks, bottlenecks = _parse_governance_signal_bundle_rows(
             detail_bundle.delivery_signal_tuples,
-            project_ids,
+            signal_project_ids,
         )
         delivery_by_project = build_governance_delivery_signals_from_inputs(
             current_user,
-            project_ids,
+            signal_project_ids,
             {project.id: project for project in projects},
             throughput=throughput,
             quality=quality,
@@ -2636,9 +3128,31 @@ async def get_governance_analytics_detail(
     ranking = sorted(project_health, key=lambda row: (row.score, -row.priority, row.project_name))
     top_project_ids = [row.project_id for row in ranking[:10]]
 
+    blocking_dependencies = detail_bundle.blocking_dependencies
+    critical_escalations = detail_bundle.critical_escalations
+    overdue_actions = detail_bundle.overdue_actions
+    trend_dependencies = detail_bundle.trend_dependencies
+    trend_escalations = detail_bundle.trend_escalations
+    trend_actions = detail_bundle.trend_actions
+    trend_scopes = detail_bundle.trend_scopes
+    recent_activity = detail_bundle.recent_activity
+    if project_ids:
+        blocking_dependencies = _filter_rows_by_project_ids(blocking_dependencies, project_ids)
+        critical_escalations = _filter_rows_by_project_ids(critical_escalations, project_ids)
+        overdue_actions = _filter_rows_by_project_ids(overdue_actions, project_ids)
+        trend_dependencies = _filter_rows_by_project_ids(trend_dependencies, project_ids)
+        trend_escalations = _filter_rows_by_project_ids(trend_escalations, project_ids)
+        trend_actions = _filter_rows_by_project_ids(trend_actions, project_ids)
+        trend_scopes = _filter_rows_by_project_ids(trend_scopes, project_ids)
+        recent_activity = [
+            item
+            for item in recent_activity
+            if item.project_id is None or item.project_id in project_ids
+        ]
+
     evidence_by_project = _derive_project_evidence(
-        detail_bundle.blocking_dependencies,
-        detail_bundle.critical_escalations,
+        blocking_dependencies,
+        critical_escalations,
         project_ids=top_project_ids,
         project_names=project_names,
     )
@@ -2658,14 +3172,36 @@ async def get_governance_analytics_detail(
             project_health, key=lambda row: (row.score, -row.priority, row.project_name)
         )
 
+    ai_recommendations = await _fetch_ai_recommendations_for_insights(
+        session,
+        current_user,
+        today=today,
+        days=effective_days,
+        project_ids=project_ids or None,
+    )
+
     trends = _build_trends(
         days=effective_days,
         project_health=project_health,
-        dependencies=detail_bundle.trend_dependencies,
-        escalations=detail_bundle.trend_escalations,
-        actions=detail_bundle.trend_actions,
-        scopes=detail_bundle.trend_scopes,
+        dependencies=trend_dependencies,
+        escalations=trend_escalations,
+        actions=trend_actions,
+        scopes=trend_scopes,
+        recommendations=ai_recommendations,
     )
+
+    insights_kpis = _build_insights_kpis(
+        project_health=project_health,
+        escalations_created=sum(point.escalations_created for point in trends),
+        recommendations=ai_recommendations,
+        sla_adherence_pct=calculate_sla_adherence_pct(trend_actions),
+    )
+    top_governance_risks = _build_top_governance_risks(project_health, critical_escalations)
+    top_recurring_blockers = _build_top_recurring_blockers(blocking_dependencies)
+    top_recurring_mitigation_failures = _build_top_mitigation_failures(ai_recommendations)
+    most_affected_projects = _build_most_affected_projects(project_health)
+    most_affected_departments = _build_most_affected_departments(project_health)
+    risk_heatmap = _build_risk_heatmap(project_health)
 
     charts = {
         "dependencies_by_type": _chart_points(
@@ -2707,25 +3243,22 @@ async def get_governance_analytics_detail(
         "most_active_projects": [
             GovernanceChartPointRead(
                 label=project.project_name,
-                value=float(
-                    project.open_dependencies
-                    + project.open_escalations
-                    + project.overdue_actions
-                    + project.pending_scope_revisions
-                ),
+                value=float(_project_activity_count(project)),
                 secondary_value=float(project.score),
             )
             for project in sorted(project_health, key=lambda row: row.priority, reverse=True)[
                 :SUMMARY_RANKING_LIMIT
             ]
         ],
+        "recommendation_outcomes": _recommendation_outcome_charts(ai_recommendations),
+        "affected_departments": _affected_department_charts(project_health),
     }
 
     insights = _build_insights(
         project_health,
-        detail_bundle.blocking_dependencies,
-        detail_bundle.critical_escalations,
-        detail_bundle.overdue_actions,
+        blocking_dependencies,
+        critical_escalations,
+        overdue_actions,
     )
     recommendations = _build_recommendations(ranking)
 
@@ -2736,14 +3269,22 @@ async def get_governance_analytics_detail(
         recommendations=recommendations,
         trends=trends,
         charts=charts,
-        recent_activity=detail_bundle.recent_activity,
-        export_sections=["Charts", "Executive Insights", "Evidence Appendix"],
+        recent_activity=recent_activity,
+        export_sections=["Charts", "Executive Insights", "Evidence Appendix", "Insights KPIs"],
+        insights_kpis=insights_kpis,
+        top_governance_risks=top_governance_risks,
+        top_recurring_blockers=top_recurring_blockers,
+        top_recurring_mitigation_failures=top_recurring_mitigation_failures,
+        most_affected_projects=most_affected_projects,
+        most_affected_departments=most_affected_departments,
+        risk_heatmap=risk_heatmap,
     )
     _analytics_detail_cache[cache_key] = (now, detail)
+    # Detail path: project metrics + source bundle + AI recommendation window.
     if timer is not None:
         timer.record_meta(
             cache_hit=False,
-            execute_count=2,
+            execute_count=3,
             activity_row_count=len(detail.recent_activity),
             trend_bucket_count=len(detail.trends),
             project_row_count=len(projects),
@@ -2752,7 +3293,7 @@ async def get_governance_analytics_detail(
     if total_ms >= 300:
         logger.info(
             "governance_analytics_detail_profile total_ms=%s project_count=%s "
-            "activity_rows=%s trend_buckets=%s query_timings=%s db_executes=2 cached=false",
+            "activity_rows=%s trend_buckets=%s query_timings=%s db_executes=3 cached=false",
             total_ms,
             len(projects),
             len(detail.recent_activity),

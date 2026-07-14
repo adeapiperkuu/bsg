@@ -86,6 +86,8 @@ def test_summary_contract_serializes_all_public_fields() -> None:
         "portfolio_risk_ranking",
         "charts",
         "export_sections",
+        "portfolio_governance_score",
+        "insights_kpis",
     }
     health = payload["project_health"][0]
     assert set(health.keys()) == {
@@ -105,6 +107,7 @@ def test_summary_contract_serializes_all_public_fields() -> None:
         "quality_risk",
         "workforce_risk",
         "trend",
+        "vertical",
         "evidence",
     }
     assert payload["export_sections"] == ["Governance Health"]
@@ -237,7 +240,7 @@ async def test_summary_cache_miss_performs_one_execute(
     assert summary.date_range_days == 30
     assert summary.project_health[0].open_dependencies == 2
     assert summary.project_health[0].blocking_dependencies == 1
-    assert summary.export_sections == ["Governance Health"]
+    assert summary.export_sections == ["Governance Health", "Insights KPIs"]
 
 
 @pytest.mark.asyncio

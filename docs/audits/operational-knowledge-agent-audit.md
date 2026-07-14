@@ -1216,6 +1216,12 @@ Additive learning layer on the Phase 8 modular package. Core RAG/governance arch
 - Eval: `backend/app/services/knowledge/evaluation.py`
 - Tests: `backend/tests/test_knowledge_learning_phase11.py`
 
+### Frontend
+
+- Continuous learning panel on the Knowledge library (suggestions apply/dismiss, gaps, retrieval quality, duplicates compare, evaluation run)
+- Metadata tab: generate/regenerate AI document summary for approved docs
+- Related knowledge display on document metadata
+
 ### Guardrails
 
 - Suggestions require explicit apply; approved document bodies are not rewritten by learning jobs

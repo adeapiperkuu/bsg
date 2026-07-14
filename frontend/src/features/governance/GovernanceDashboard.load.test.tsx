@@ -13,6 +13,14 @@ import * as api from "@/lib/api";
 import { useAuthStore } from "@/stores/useAuthStore";
 import type { MeUser } from "@/types/auth";
 
+class ResizeObserverMock {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+vi.stubGlobal("ResizeObserver", ResizeObserverMock);
+
 const deliveryManager: MeUser = {
   id: "11111111-1111-1111-1111-111111111111",
   org_id: "22222222-2222-2222-2222-222222222222",
@@ -112,6 +120,22 @@ describe("GovernanceDashboard load behavior", () => {
         return await new Promise((resolve) => {
           detailResolve = resolve;
         });
+      }
+
+      if (path.startsWith("/governance/ai-recommendations/generate")) {
+        throw new Error("AI generate must not run during dashboard load");
+      }
+
+      if (path.startsWith("/governance/ai-recommendations")) {
+        return {
+          data: {
+            items: [],
+            rule_based: [],
+            total: 0,
+            ai_enabled: false,
+            can_generate: false,
+          },
+        };
       }
 
       if (path.startsWith("/projects")) {
@@ -223,6 +247,23 @@ describe("GovernanceDashboard load behavior", () => {
     );
 
     expect(fetchCalls.some((path) => path.startsWith("/governance/analytics/detail"))).toBe(false);
+  });
+
+  it("does not invoke AI recommendation generation during dashboard load", async () => {
+    renderDashboard();
+
+    await waitFor(
+      () => {
+        expect(fetchCalls.some((path) => path.startsWith("/governance/analytics/summary"))).toBe(
+          true,
+        );
+      },
+      { timeout: GOVERNANCE_ANALYTICS_DEFER_MS + 800 },
+    );
+
+    expect(
+      fetchCalls.some((path) => path.startsWith("/governance/ai-recommendations/generate")),
+    ).toBe(false);
   });
 
   it("lazy-loads governance tools panels only after a tab is opened", async () => {

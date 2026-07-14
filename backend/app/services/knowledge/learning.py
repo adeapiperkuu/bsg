@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
-from typing import Any, Callable
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -37,13 +38,17 @@ from app.schemas.domain import (
     KnowledgeGapSuggestionRead,
     KnowledgeHealthScoreRead,
     KnowledgeLibraryHealthCountsRead,
-    KnowledgeRelatedKnowledgeRead,
     KnowledgeRelatedItemRead,
+    KnowledgeRelatedKnowledgeRead,
     KnowledgeRetrievalQualityRead,
     KnowledgeSuggestionRead,
 )
 from app.services.knowledge.evaluation import build_evaluation_report, run_static_golden_evaluation
-from app.services.knowledge.utils import KNOWLEDGE_AGENT_NAME, NO_APPROVED_ANSWER, _tokenize_search_text
+from app.services.knowledge.utils import (
+    KNOWLEDGE_AGENT_NAME,
+    NO_APPROVED_ANSWER,
+    _tokenize_search_text,
+)
 from app.services.knowledge_intelligence import (
     analyze_chunk_content,
     detect_document_duplicates,
@@ -793,7 +798,7 @@ async def dismiss_knowledge_suggestion(
         raise ApiError("not_found", "Suggestion not found.", 404)
     row.status = KnowledgeSuggestionStatus.DISMISSED.value
     row.reviewed_by = current_user.id
-    row.reviewed_at = datetime.now(timezone.utc)
+    row.reviewed_at = datetime.now(UTC)
     await session.flush()
     return suggestion_to_read(row)
 
@@ -811,7 +816,21 @@ async def apply_knowledge_suggestion(
     if row.status not in {KnowledgeSuggestionStatus.OPEN.value, KnowledgeSuggestionStatus.ACCEPTED.value}:
         raise ApiError("conflict", "Suggestion is not open for apply.", 409)
 
-    changes = {k: v for k, v in (row.proposed_changes or {}).items() if k in APPLYABLE_FIELDS and v is not None}
+    changes = {
+        k: v for k, v in (row.proposed_changes or {}).items() if k in APPLYABLE_FIELDS and v is not None
+    }
+    # Tags are advisory metadata; persist into description when no tags column exists.
+    raw_tags = (row.proposed_changes or {}).get("tags")
+    if isinstance(raw_tags, list) and raw_tags and "description" not in changes:
+        tag_line = "Tags: " + ", ".join(str(tag) for tag in raw_tags[:12])
+        existing_desc = ""
+        if row.document_id is not None:
+            preview_doc = await session.get(KnowledgeDocument, row.document_id)
+            existing_desc = (preview_doc.description or "").strip() if preview_doc else ""
+        changes["description"] = (
+            f"{existing_desc}\n{tag_line}".strip() if existing_desc else tag_line
+        )[:4000]
+
     if row.document_id is not None and changes:
         doc = await session.get(KnowledgeDocument, row.document_id)
         if doc is None or doc.org_id != current_user.org_id:
@@ -849,7 +868,7 @@ async def apply_knowledge_suggestion(
 
     row.status = KnowledgeSuggestionStatus.APPLIED.value
     row.reviewed_by = current_user.id
-    row.reviewed_at = datetime.now(timezone.utc)
+    row.reviewed_at = datetime.now(UTC)
     await session.flush()
     return suggestion_to_read(row)
 
@@ -885,7 +904,7 @@ async def generate_document_ai_summary(
             related_ids.append(UUID(str(item)))
     if related_ids:
         doc.related_document_ids = related_ids
-    doc.summary_generated_at = datetime.now(timezone.utc)
+    doc.summary_generated_at = datetime.now(UTC)
     await session.flush()
     return KnowledgeDocumentAiSummaryRead(
         document_id=doc.id,
@@ -973,7 +992,8 @@ async def get_gap_resolution_suggestions(
             await session.execute(
                 select(KnowledgeSuggestion).where(
                     KnowledgeSuggestion.org_id == current_user.org_id,
-                    KnowledgeSuggestion.suggestion_type == KnowledgeSuggestionType.GAP_RESOLUTION.value,
+                    KnowledgeSuggestion.suggestion_type
+                    == KnowledgeSuggestionType.GAP_RESOLUTION.value,
                     KnowledgeSuggestion.status == KnowledgeSuggestionStatus.OPEN.value,
                 )
             )
@@ -1041,7 +1061,9 @@ async def get_retrieval_quality_analysis(
     feedback = list(
         (
             await session.execute(
-                select(KnowledgeQueryFeedback).where(KnowledgeQueryFeedback.org_id == current_user.org_id)
+                select(KnowledgeQueryFeedback).where(
+                    KnowledgeQueryFeedback.org_id == current_user.org_id
+                )
             )
         ).scalars().all()
     )
@@ -1092,7 +1114,12 @@ async def run_knowledge_evaluation_report(
     current_user: CurrentUser,
 ) -> KnowledgeEvaluationReportRead:
     _require_learning_manager(current_user)
-    if current_user.role not in {AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN, AppRole.DELIVERY_MANAGER}:
+    manager_roles = {
+        AppRole.BSG_LEADERSHIP,
+        AppRole.SUPER_ADMIN,
+        AppRole.DELIVERY_MANAGER,
+    }
+    if current_user.role not in manager_roles:
         raise ApiError("forbidden", "Evaluation reports require manager access.", 403)
     raw = run_static_golden_evaluation()
     report = build_evaluation_report(raw)
@@ -1105,6 +1132,10 @@ async def get_knowledge_health_score(
 ) -> KnowledgeHealthScoreRead:
     import app.services.knowledge as knowledge_services
 
-    visible_docs, _ = await knowledge_services._list_visible_documents_with_folders(session, current_user)
-    counts = knowledge_services._health_counts_from_documents(visible_docs, org_id=current_user.org_id)
+    visible_docs, _ = await knowledge_services._list_visible_documents_with_folders(
+        session, current_user
+    )
+    counts = knowledge_services._health_counts_from_documents(
+        visible_docs, org_id=current_user.org_id
+    )
     return compute_knowledge_health_score(counts)

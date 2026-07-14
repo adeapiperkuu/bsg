@@ -15,11 +15,16 @@ import type {
   KnowledgeConversationHistoryTurnApi,
   KnowledgeDocumentFilters,
   KnowledgeDocumentVersionApi,
+  KnowledgeDuplicateCompareApi,
+  KnowledgeDuplicateMatchApi,
+  KnowledgeEvaluationReportApi,
   KnowledgeFeedbackRequestApi,
   KnowledgeFeedbackResponseApi,
   KnowledgeFolderApi,
+  KnowledgeGapSuggestionApi,
   KnowledgeLibraryHealthApi,
   KnowledgeRelatedKnowledgeApi,
+  KnowledgeRetrievalQualityApi,
   KnowledgeRetrievalSettingsApi,
   KnowledgeSuggestionApi,
   KnowledgeVersionCompareApi,
@@ -1460,6 +1465,47 @@ export async function generateKnowledgeDocumentSummary(
     `/knowledge/documents/${documentId}/summary`,
     { method: "POST" },
   );
+  return body.data;
+}
+
+export async function listKnowledgeGapSuggestions(
+  minOccurrences = 2,
+): Promise<KnowledgeGapSuggestionApi[]> {
+  const body = await apiFetch<{ data: KnowledgeGapSuggestionApi[] }>(
+    `/knowledge/gaps/suggestions?min_occurrences=${minOccurrences}`,
+  );
+  return body.data;
+}
+
+export async function getKnowledgeRetrievalQuality(): Promise<KnowledgeRetrievalQualityApi> {
+  const body = await apiFetch<{ data: KnowledgeRetrievalQualityApi }>("/knowledge/retrieval-quality");
+  return body.data;
+}
+
+export async function listKnowledgeDocumentDuplicates(
+  documentId: string,
+): Promise<KnowledgeDuplicateMatchApi[]> {
+  const body = await apiFetch<{ data: KnowledgeDuplicateMatchApi[] }>(
+    `/knowledge/documents/${documentId}/duplicates`,
+  );
+  return body.data;
+}
+
+export async function compareKnowledgeDuplicates(
+  leftId: string,
+  rightId: string,
+): Promise<KnowledgeDuplicateCompareApi> {
+  const qs = new URLSearchParams({ left_id: leftId, right_id: rightId });
+  const body = await apiFetch<{ data: KnowledgeDuplicateCompareApi }>(
+    `/knowledge/duplicates/compare?${qs.toString()}`,
+  );
+  return body.data;
+}
+
+export async function runKnowledgeEvaluation(): Promise<KnowledgeEvaluationReportApi> {
+  const body = await apiFetch<{ data: KnowledgeEvaluationReportApi }>("/knowledge/evaluation/run", {
+    method: "POST",
+  });
   return body.data;
 }
 

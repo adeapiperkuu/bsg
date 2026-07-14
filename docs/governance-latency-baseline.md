@@ -722,9 +722,223 @@ detail strategy, is not part of first paint, and is not included in hover prefet
 ### Remaining work
 
 - Run live EXPLAIN/benchmark against remote Supabase and paste measured planning/execution/RTT numbers
-- Add optional analytics cache invalidation after governance writes
 - Revisit register day-rollover optimization separately
 - Consider business-rule cleanup for inconsistent `days` semantics
+
+## Phase 5: Analytics Cache Invalidation
+
+Phase 5 replaces TTL-only freshness for split analytics reads with post-commit invalidation.
+No SQL, API contract, Redis, TTL, or frontend behavior changed.
+
+### Previous behavior
+
+The summary and detail endpoints used independent in-process caches with a 3-minute TTL:
+
+- summary cache key: `(org_id|None, role, user_id, days)`
+- detail cache key: `(org_id|None, role, user_id, days)`
+- `org_id=None` represents super-admin cross-org reads
+
+After dependency, escalation, action, scope, or delivery-risk-promotion writes, the list/register
+caches were cleared after commit, but analytics summary/detail entries could remain stale until TTL
+expiry.
+
+### New invalidation behavior
+
+`analytics_service.py` now exposes pure in-memory helpers:
+
+- `clear_governance_analytics_summary_cache(org_id=...)`
+- `clear_governance_analytics_detail_cache(org_id=...)`
+- `clear_governance_analytics_caches(org_id=...)`
+
+These helpers do not create sessions and do not execute SQL. For a concrete org write, they remove:
+
+- all summary/detail entries whose key org scope matches that org
+- all summary/detail entries whose key org scope is `None`, because super-admin aggregate reads can
+  include the changed org
+
+They preserve other org-specific entries. If no org can be supplied, the helper clears every
+summary/detail entry rather than risking an unknown stale org.
+
+The existing `invalidate_governance_read_caches_after_commit()` hook now returns removal counts for
+dependencies, register, analytics summary, and analytics detail caches, and logs a single structured
+line with org scope, counts, and invalidation duration.
+
+### Write matrix
+
+The following successful write paths now pass the committed row's org into the post-commit helper:
+
+| Write path | Cache invalidation timing |
+|------------|---------------------------|
+| dependency create/update/resolve/archive | after `session.commit()` |
+| escalation create/update/archive | after `session.commit()` |
+| action create/update/archive | after `session.commit()` |
+| scope state upsert | after `session.commit()` |
+| delivery risk promotion to escalation | after `session.commit()` |
+
+`refresh_project_governance_summary()` still runs before commit as part of the mutation transaction.
+Read caches are cleared only after the commit succeeds, so rollback/error paths keep the old cache
+entries.
+
+### Scope decisions
+
+- Dashboard bootstrap KPI cache remains unchanged; it is keyed separately and should be reviewed in a
+  dedicated pass with the bootstrap endpoint's own freshness requirements.
+- The legacy full analytics cache was not expanded or redesigned in this phase. Phase 5 is limited to
+  the progressive summary/detail reads that back the optimized Governance dashboard path.
+
+### Tests
+
+Added `test_governance_analytics_cache_invalidation_phase5.py` covering:
+
+- direct summary/detail helper clearing by org
+- preservation of org B entries after org A invalidation
+- removal of `org_id=None` super-admin aggregate entries after concrete org writes
+- all-entry fallback when org scope is unknown
+- post-commit helper forces the next summary/detail read to miss and rebuild once
+- failed write/rollback boundary leaves cached summary/detail entries intact
+
+Focused validation:
+
+```
+python -m pytest backend/tests/test_governance_analytics_cache_invalidation_phase5.py \
+  backend/tests/test_governance_first_paint_cache.py \
+  backend/tests/test_governance_analytics_summary_phase3.py \
+  backend/tests/test_governance_analytics_split.py \
+  backend/tests/test_governance_timing.py
+# 48 passed
+```
+
+## Phase 6: Final Hardening and Production Readiness
+
+Phase 6 was a final validation pass before AI feature development. It did not redesign the
+Governance architecture or add product features.
+
+### Small hardening changes
+
+- Bootstrap KPI cache now has the same post-commit invalidation behavior as analytics:
+  concrete org writes clear that org plus `org_id=None` super-admin aggregate entries; unknown org
+  scope clears all bootstrap entries.
+- Actions and scope-state list services now record `execute_count` and `cache_hit` metadata in the
+  request timer, matching dependencies, register, escalations, bootstrap, and analytics.
+- `benchmark_governance_latency_baseline.py` now reports `db_ms`, `serialization_ms`, and composite
+  project-sheet timings, and covers actions, escalations, and representative project-sheet reads.
+- Added Phase 6 regression guards for bootstrap invalidation, analytics execute ceilings, and
+  list-service timing metadata.
+
+### Final endpoint profile
+
+Captured **2026-07-13** against remote Supabase with the expanded benchmark script, warm DB pool,
+`limit=6`, `offset=0`, `days=30`. Cold rows below drop the first warm-up sample, matching the
+historical baseline method.
+
+| Endpoint / workload | Cache miss p50 | Cache miss p95 | Avg `db_ms` | Avg serialization/Python ms | Miss executes | Cache hit p50 | Cache hit p95 | Hit executes |
+|---------------------|----------------|----------------|-------------|-----------------------------|---------------|---------------|---------------|--------------|
+| Bootstrap, internal | **807.4 ms** | **825.9 ms** | 708.5 | 100.5 | 1 | **0.1 ms** | **0.2 ms** | 0 |
+| Dependencies first page | **826.1 ms** | **834.9 ms** | 718.3 | 102.7 | 1 | **0.2 ms** | **0.3 ms** | 0 |
+| Register first page | **1386.4 ms** | **1413.2 ms** | 1279.3 | 105.5 | 4 | **0.1 ms** | **0.2 ms** | 0 |
+| Actions first page | **803.8 ms** | **829.0 ms** | 703.6 | 101.8 | 1 | N/A | N/A | N/A |
+| Escalations first page, internal | **812.6 ms** | **831.5 ms** | 711.0 | 103.2 | 1 | N/A | N/A | N/A |
+| Analytics summary | **943.7 ms** | **960.6 ms** | 841.0 | 105.1 | **1** | **0.2 ms** | **0.4 ms** | **0** |
+| Analytics detail | **1072.8 ms** | **1082.3 ms** | 963.2 | 106.2 | **2** | **0.1 ms** | **0.3 ms** | **0** |
+| Project sheet filtered reads | **4814.0 ms** | **5000.2 ms** | 4298.0 | 533.9 | 8 cold / 5 repeat | N/A | N/A | N/A |
+| Bootstrap, client | **819.0 ms** | **836.2 ms** | 719.5 | 103.8 | 1 | **0.4 ms** | **0.5 ms** | 0 |
+| Escalations first page, client | **665.2 ms** | **1123.8 ms** | 675.3 | 106.8 | 1 | N/A | N/A | N/A |
+
+Current execute-count contract:
+
+- bootstrap miss: 1; hit: 0
+- dependencies default first page miss: 1; hit: 0
+- register default first page cold miss: 4; hit: 0
+- actions first page: 1; no cache
+- escalations first page: 1; no cache
+- analytics summary miss: 1; hit: 0
+- analytics detail miss: 2; hit: 0
+- project sheet representative filtered workload: 8 cold, 5 repeated in this dataset
+
+### Cache invalidation coverage
+
+Post-commit invalidation now covers the read caches affected by Governance writes:
+
+| Mutation | Dependencies cache | Register cache | Bootstrap cache | Analytics summary/detail |
+|----------|--------------------|----------------|-----------------|--------------------------|
+| Dependency create/update/resolve/archive | cleared | cleared | org + super-admin cleared | org + super-admin cleared |
+| Escalation create/update/archive | cleared | cleared | org + super-admin cleared | org + super-admin cleared |
+| Action create/update/archive | cleared | cleared | org + super-admin cleared | org + super-admin cleared |
+| Scope state upsert | cleared | cleared | org + super-admin cleared | org + super-admin cleared |
+| Delivery risk promotion | cleared | cleared | org + super-admin cleared | org + super-admin cleared |
+
+Remaining TTL-only or intentionally scoped caches:
+
+- legacy monolithic analytics cache remains TTL-only; the active dashboard path uses split
+  summary/detail endpoints
+- register `_org_summary_day_refreshed` marker is date-scoped correctness state, not user response
+  cache, and is intentionally cleared when a project summary is refreshed
+
+### Register cold path review
+
+The register cold path still performs about four executes when the daily summary marker is cold and
+summaries require date-sensitive refresh:
+
+1. check whether any project governance summary row is stale for the org/day
+2. load stale summary rows
+3. compute per-project overdue action and blocking-overdue dependency counts
+4. load the register page
+
+This is not duplicated work in the current design; it preserves date rollover correctness for
+overdue action/dependency counts before the register page is built. Optimizing it likely means a
+small schema/job decision, such as scheduled daily refresh or consolidating the stale-row check and
+refresh load. That is intentionally deferred because remote RTT, not SQL execution, is the dominant
+cost and because the cache-hit path is already zero executes.
+
+### Remaining bottlenecks
+
+- Remote Supabase RTT dominates every cold one-query endpoint. A single execute is consistently
+  around **800-950 ms** in this environment even when SQL itself is small.
+- Register cold latency is higher because correctness can require multiple round trips at day
+  rollover.
+- Project-sheet reads are slow because they are a composite of several filtered, uncached list
+  requests. This is a frontend/workload orchestration concern rather than a single-query regression.
+- Python/serialization overhead is usually about **100 ms** per cold request in these service-level
+  measurements; project-sheet composite overhead is higher because it chains several service calls.
+
+### Production recommendations
+
+- Prefer API and database colocation, or Supabase transaction pooler/region alignment, before doing
+  more SQL micro-optimization.
+- Keep `governance_endpoint_timing` logs on for Governance routes and alert on execute-count
+  regressions: summary > 1, detail > 2, cache-hit executes > 0.
+- Track cache-hit ratios for dependencies, register, bootstrap, and analytics split endpoints.
+- Defer project-sheet optimization until usage data confirms it is a frequent workflow; likely
+  approaches are frontend request batching or a narrowly scoped project-sheet read model.
+- Defer register day-rollover optimization unless cold register p95 remains user-visible after
+  deployment topology is fixed.
+
+### Phase 6 validation
+
+```
+python -m pytest backend/tests/test_governance_phase6_hardening.py \
+  backend/tests/test_governance_analytics_cache_invalidation_phase5.py \
+  backend/tests/test_governance_first_paint_cache.py \
+  backend/tests/test_governance_analytics_summary_phase3.py \
+  backend/tests/test_governance_analytics_split.py \
+  backend/tests/test_governance_timing.py
+# 52 passed
+
+python scripts/benchmark_governance_latency_baseline.py
+# completed against remote Supabase, values summarized above
+```
+
+Ruff on the new Phase 6 test and benchmark script is clean after formatting. Broader Governance
+ruff still includes pre-existing long-line findings in older service files and should be handled as
+a separate style cleanup.
+
+### Lessons learned
+
+- The biggest wins came from removing remote round trips, not changing local Python shape.
+- Cache-hit correctness is now as important as cache-hit speed; post-commit invalidation prevents
+  the three-minute stale window for active dashboard reads.
+- Endpoint timing metadata is the right regression surface: `execute_count`, `cache_hit`, `db_ms`,
+  `serialization_ms`, and `total_ms` explain almost every observed latency change.
 
 ## Historical profiling notes
 

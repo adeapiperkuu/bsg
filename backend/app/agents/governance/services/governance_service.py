@@ -486,16 +486,59 @@ def _is_default_dependencies_cacheable(filters: GovernanceListFilters) -> bool:
     )
 
 
-def _invalidate_dependencies_list_cache() -> None:
+@dataclass(frozen=True)
+class GovernanceReadCacheInvalidationResult:
+    dependencies_removed: int = 0
+    register_removed: int = 0
+    analytics_summary_removed: int = 0
+    analytics_detail_removed: int = 0
+    bootstrap_removed: int = 0
+
+
+def _invalidate_dependencies_list_cache() -> int:
+    removed = len(_dependencies_list_cache)
     _dependencies_list_cache.clear()
+    return removed
 
 
-def invalidate_governance_read_caches_after_commit() -> None:
-    """Clear list caches only after a successful write commit (deps + register)."""
-    _invalidate_dependencies_list_cache()
+def invalidate_governance_read_caches_after_commit(
+    *,
+    org_id: UUID | None = None,
+) -> GovernanceReadCacheInvalidationResult:
+    """Clear read caches only after a successful governance write commit."""
+    started = perf_counter()
+    dependencies_removed = _invalidate_dependencies_list_cache()
+    from app.agents.governance.services.analytics_service import (
+        clear_governance_analytics_caches,
+    )
     from app.agents.governance.services.register_service import invalidate_register_list_cache
 
-    invalidate_register_list_cache()
+    register_removed = invalidate_register_list_cache()
+    analytics_removed = clear_governance_analytics_caches(org_id=org_id)
+    from app.agents.governance.services.dashboard_service import clear_governance_bootstrap_cache
+
+    bootstrap_removed = clear_governance_bootstrap_cache(org_id=org_id)
+    result = GovernanceReadCacheInvalidationResult(
+        dependencies_removed=dependencies_removed,
+        register_removed=register_removed,
+        analytics_summary_removed=analytics_removed.summary_removed,
+        analytics_detail_removed=analytics_removed.detail_removed,
+        bootstrap_removed=bootstrap_removed,
+    )
+    duration_ms = round((perf_counter() - started) * 1000, 2)
+    logger.info(
+        "governance_cache_invalidation org_scope=%s dependencies_removed=%s "
+        "register_removed=%s analytics_summary_removed=%s analytics_detail_removed=%s "
+        "bootstrap_removed=%s duration_ms=%s",
+        str(org_id) if org_id is not None else "all",
+        result.dependencies_removed,
+        result.register_removed,
+        result.analytics_summary_removed,
+        result.analytics_detail_removed,
+        result.bootstrap_removed,
+        duration_ms,
+    )
+    return result
 
 
 def _dependency_list_stmt(current_user: CurrentUser) -> Select:
@@ -744,6 +787,7 @@ async def enriched_dependency_read(
 async def enriched_action_read(
     session: AsyncSession,
     action: GovernanceAction,
+    current_user: CurrentUser | None = None,
 ) -> GovernanceActionRead:
     owner = aliased(User)
     row = (
@@ -757,18 +801,35 @@ async def enriched_action_read(
             .where(Project.id == action.project_id)
         )
     ).one()
+    updates: dict = {
+        "status": effective_action_status(action),
+        "project_name": row.project_name,
+        "owner_name": row.owner_name,
+    }
+    if current_user is not None:
+        from app.agents.governance.services.record_provenance_service import (
+            provenance_summary_for_target,
+        )
+        from app.db.models import GovernanceRecordTargetType
+
+        updates.update(
+            await provenance_summary_for_target(
+                session,
+                current_user,
+                target_type=GovernanceRecordTargetType.ACTION,
+                target_id=action.id,
+                org_id=action.org_id,
+            )
+        )
     return GovernanceActionRead.model_validate(action, from_attributes=True).model_copy(
-        update={
-            "status": effective_action_status(action),
-            "project_name": row.project_name,
-            "owner_name": row.owner_name,
-        }
+        update=updates
     )
 
 
 async def enriched_escalation_read(
     session: AsyncSession,
     escalation: GovernanceEscalation,
+    current_user: CurrentUser | None = None,
 ) -> GovernanceEscalationRead:
     assignee = aliased(User)
     raiser = aliased(User)
@@ -785,12 +846,28 @@ async def enriched_escalation_read(
             .where(Project.id == escalation.project_id)
         )
     ).one()
+    updates: dict = {
+        "project_name": row.project_name,
+        "raised_by_name": row.raised_by_name,
+        "assigned_to_name": row.assigned_to_name,
+    }
+    if current_user is not None:
+        from app.agents.governance.services.record_provenance_service import (
+            provenance_summary_for_target,
+        )
+        from app.db.models import GovernanceRecordTargetType
+
+        updates.update(
+            await provenance_summary_for_target(
+                session,
+                current_user,
+                target_type=GovernanceRecordTargetType.ESCALATION,
+                target_id=escalation.id,
+                org_id=escalation.org_id,
+            )
+        )
     return GovernanceEscalationRead.model_validate(escalation, from_attributes=True).model_copy(
-        update={
-            "project_name": row.project_name,
-            "raised_by_name": row.raised_by_name,
-            "assigned_to_name": row.assigned_to_name,
-        }
+        update=updates
     )
 
 
@@ -816,7 +893,12 @@ async def list_governance_dependencies_page(
 ) -> PaginatedGovernanceRows:
     if not can_read_internal_governance(current_user):
         filters = _bounded_list_filters(**raw_filters)
-        return PaginatedGovernanceRows(items=[], total=0, limit=filters.limit, offset=filters.offset)
+        return PaginatedGovernanceRows(
+            items=[],
+            total=0,
+            limit=filters.limit,
+            offset=filters.offset,
+        )
     filters = _bounded_list_filters(**raw_filters)
     cacheable = _is_default_dependencies_cacheable(filters)
     cache_key = _dependencies_cache_key(current_user, filters)
@@ -883,18 +965,39 @@ async def list_governance_actions_page(
     current_user: CurrentUser,
     **raw_filters,
 ) -> PaginatedGovernanceRows:
+    timer = get_governance_timer()
     if not can_read_internal_governance(current_user):
         filters = _bounded_list_filters(**raw_filters)
-        return PaginatedGovernanceRows(items=[], total=0, limit=filters.limit, offset=filters.offset)
+        if timer is not None:
+            timer.record_meta(
+                execute_count=0,
+                cache_hit=False,
+                limit=filters.limit,
+                offset=filters.offset,
+            )
+        return PaginatedGovernanceRows(
+            items=[],
+            total=0,
+            limit=filters.limit,
+            offset=filters.offset,
+        )
     filters = _bounded_list_filters(**raw_filters)
+    if timer is not None:
+        timer.record_meta(limit=filters.limit, offset=filters.offset, cache_hit=False)
     stmt = _action_list_stmt(current_user)
     count_stmt = _action_count_stmt(current_user)
     stmt = _apply_action_page_filters(stmt, filters)
     count_stmt = _apply_action_page_filters(count_stmt, filters)
-    stmt = stmt.order_by(GovernanceAction.due_date.asc().nulls_last(), GovernanceAction.created_at.desc())
-    return await _execute_paginated_rows(
+    stmt = stmt.order_by(
+        GovernanceAction.due_date.asc().nulls_last(),
+        GovernanceAction.created_at.desc(),
+    )
+    page = await _execute_paginated_rows(
         session, stmt, limit=filters.limit, offset=filters.offset, count_stmt=count_stmt
     )
+    if timer is not None:
+        timer.record_meta(execute_count=page.db_executes)
+    return page
 
 
 async def list_governance_escalations_page(
@@ -942,19 +1045,37 @@ async def list_governance_scope_states_page(
     current_user: CurrentUser,
     **raw_filters,
 ) -> PaginatedGovernanceRows:
+    timer = get_governance_timer()
     if not can_read_internal_governance(current_user):
         filters = _bounded_list_filters(**raw_filters)
-        return PaginatedGovernanceRows(items=[], total=0, limit=filters.limit, offset=filters.offset)
+        if timer is not None:
+            timer.record_meta(
+                execute_count=0,
+                cache_hit=False,
+                limit=filters.limit,
+                offset=filters.offset,
+            )
+        return PaginatedGovernanceRows(
+            items=[],
+            total=0,
+            limit=filters.limit,
+            offset=filters.offset,
+        )
     filters = _bounded_list_filters(**raw_filters)
+    if timer is not None:
+        timer.record_meta(limit=filters.limit, offset=filters.offset, cache_hit=False)
     stmt = select(ProjectScopeState).where(ProjectScopeState.deleted_at.is_(None))
     stmt = _apply_org_filter(stmt, ProjectScopeState.org_id, current_user)
     count_stmt = _scope_state_count_stmt(current_user)
     stmt = _apply_scope_state_page_filters(stmt, filters)
     count_stmt = _apply_scope_state_page_filters(count_stmt, filters)
     stmt = stmt.order_by(ProjectScopeState.updated_at.desc(), ProjectScopeState.created_at.desc())
-    return await _execute_paginated_rows(
+    page = await _execute_paginated_rows(
         session, stmt, limit=filters.limit, offset=filters.offset, count_stmt=count_stmt
     )
+    if timer is not None:
+        timer.record_meta(execute_count=page.db_executes)
+    return page
 
 
 async def get_dependency_or_404(
@@ -1133,9 +1254,16 @@ async def create_dependency(
             source_row_id=dep.id,
         )
     await refresh_project_governance_summary(session, dep.org_id, dep.project_id)
+    from app.agents.governance.services.escalation_suggestion_service import (
+        mark_project_escalation_suggestions_stale,
+    )
+
+    await mark_project_escalation_suggestions_stale(
+        session, org_id=dep.org_id, project_id=dep.project_id
+    )
     await session.commit()
     await session.refresh(dep)
-    invalidate_governance_read_caches_after_commit()
+    invalidate_governance_read_caches_after_commit(org_id=dep.org_id)
     return dep
 
 
@@ -1163,9 +1291,16 @@ async def update_dependency(
         new_values=governance_snapshot(dep, DEPENDENCY_AUDIT_FIELDS),
     )
     await refresh_project_governance_summary(session, dep.org_id, dep.project_id)
+    from app.agents.governance.services.escalation_suggestion_service import (
+        mark_project_escalation_suggestions_stale,
+    )
+
+    await mark_project_escalation_suggestions_stale(
+        session, org_id=dep.org_id, project_id=dep.project_id
+    )
     await session.commit()
     await session.refresh(dep)
-    invalidate_governance_read_caches_after_commit()
+    invalidate_governance_read_caches_after_commit(org_id=dep.org_id)
     return dep
 
 
@@ -1194,7 +1329,7 @@ async def resolve_dependency(
     await refresh_project_governance_summary(session, dep.org_id, dep.project_id)
     await session.commit()
     await session.refresh(dep)
-    invalidate_governance_read_caches_after_commit()
+    invalidate_governance_read_caches_after_commit(org_id=dep.org_id)
     return dep
 
 
@@ -1220,7 +1355,7 @@ async def soft_delete_dependency(
     )
     await refresh_project_governance_summary(session, dep.org_id, dep.project_id)
     await session.commit()
-    invalidate_governance_read_caches_after_commit()
+    invalidate_governance_read_caches_after_commit(org_id=dep.org_id)
 
 
 async def create_escalation(
@@ -1235,6 +1370,7 @@ async def create_escalation(
     assigned_to: UUID | None,
     source_type=None,
     source_id: UUID | None = None,
+    commit: bool = True,
 ) -> GovernanceEscalation:
     assert_can_write_governance(current_user)
     project = await get_visible_project(session, project_id, current_user)
@@ -1276,9 +1412,17 @@ async def create_escalation(
     await refresh_project_governance_summary(
         session, escalation.org_id, escalation.project_id
     )
-    await session.commit()
-    await session.refresh(escalation)
-    invalidate_governance_read_caches_after_commit()
+    if commit:
+        from app.agents.governance.services.escalation_suggestion_service import (
+            mark_project_escalation_suggestions_stale,
+        )
+
+        await mark_project_escalation_suggestions_stale(
+            session, org_id=escalation.org_id, project_id=escalation.project_id
+        )
+        await session.commit()
+        await session.refresh(escalation)
+        invalidate_governance_read_caches_after_commit(org_id=escalation.org_id)
     return escalation
 
 
@@ -1321,7 +1465,7 @@ async def update_escalation(
     )
     await session.commit()
     await session.refresh(escalation)
-    invalidate_governance_read_caches_after_commit()
+    invalidate_governance_read_caches_after_commit(org_id=escalation.org_id)
     return escalation
 
 
@@ -1350,7 +1494,7 @@ async def soft_delete_escalation(
         session, escalation.org_id, escalation.project_id
     )
     await session.commit()
-    invalidate_governance_read_caches_after_commit()
+    invalidate_governance_read_caches_after_commit(org_id=escalation.org_id)
 
 
 async def create_action(
@@ -1364,6 +1508,7 @@ async def create_action(
     due_date,
     status,
     linked_knowledge_document_id: UUID | None = None,
+    commit: bool = True,
 ) -> GovernanceAction:
     assert_can_write_governance(current_user)
     project = await get_visible_project(session, project_id, current_user)
@@ -1392,9 +1537,10 @@ async def create_action(
         new_values=governance_snapshot(action, ACTION_AUDIT_FIELDS),
     )
     await refresh_project_governance_summary(session, action.org_id, action.project_id)
-    await session.commit()
-    await session.refresh(action)
-    invalidate_governance_read_caches_after_commit()
+    if commit:
+        await session.commit()
+        await session.refresh(action)
+        invalidate_governance_read_caches_after_commit(org_id=action.org_id)
     return action
 
 
@@ -1431,7 +1577,7 @@ async def update_action(
     await refresh_project_governance_summary(session, action.org_id, action.project_id)
     await session.commit()
     await session.refresh(action)
-    invalidate_governance_read_caches_after_commit()
+    invalidate_governance_read_caches_after_commit(org_id=action.org_id)
     return action
 
 
@@ -1457,7 +1603,7 @@ async def soft_delete_action(
     )
     await refresh_project_governance_summary(session, action.org_id, action.project_id)
     await session.commit()
-    invalidate_governance_read_caches_after_commit()
+    invalidate_governance_read_caches_after_commit(org_id=action.org_id)
 
 
 async def update_scope_state(
@@ -1530,7 +1676,7 @@ async def update_scope_state(
     await refresh_project_governance_summary(session, scope.org_id, scope.project_id)
     await session.commit()
     await session.refresh(scope)
-    invalidate_governance_read_caches_after_commit()
+    invalidate_governance_read_caches_after_commit(org_id=scope.org_id)
     return scope
 
 

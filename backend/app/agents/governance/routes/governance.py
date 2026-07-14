@@ -3,25 +3,71 @@ import io
 from datetime import date
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import select
 
 from app.agents.governance.analytics.sla import dependency_overdue_days, effective_action_status
 from app.agents.governance.schemas.governance import (
+    ConvertRecommendationToActionRequest,
+    ConvertRecommendationToEscalationRequest,
+    EscalationSuggestionScanHistoryRead,
+    EscalationSuggestionScanRequest,
+    EscalationSuggestionScanResult,
+    EscalationSuggestionSnoozeRequest,
     GovernanceActionCreate,
     GovernanceActionListRead,
     GovernanceActionRead,
     GovernanceActionUpdate,
-    GovernanceAnalyticsRead,
+    GovernanceAIRecommendationDismissRequest,
+    GovernanceAIRecommendationFeedbackRead,
+    GovernanceAIRecommendationFeedbackRequest,
+    GovernanceAIRecommendationGenerateRequest,
+    GovernanceAIRecommendationGenerationResult,
+    GovernanceAIRecommendationListRead,
+    GovernanceAIRecommendationRead,
     GovernanceAnalyticsDetailRead,
+    GovernanceAnalyticsRead,
     GovernanceAnalyticsSummaryRead,
     GovernanceBootstrapRead,
+    GovernanceEffectivenessCalibrationRead,
+    GovernanceEffectivenessCategoryStatRead,
+    GovernanceEffectivenessDrilldownRead,
+    GovernanceEffectivenessFalsePositiveRead,
+    GovernanceEffectivenessFunnelRead,
+    GovernanceEffectivenessQualityRead,
+    GovernanceEffectivenessRecurrenceRead,
+    GovernanceEffectivenessReportRead,
+    GovernanceEffectivenessSummaryRead,
+    GovernanceEffectivenessTimingRead,
+    GovernanceEffectivenessTrendsRead,
     GovernanceEscalationCreate,
     GovernanceEscalationListRead,
     GovernanceEscalationRead,
     GovernanceEscalationUpdate,
+    GovernanceLearningRuleApproveRequest,
+    GovernanceLearningRuleRead,
+    GovernanceLearningRuleRollbackRequest,
     GovernanceMonitoringRead,
+    GovernanceOptimizationCompareRead,
+    GovernanceOptimizationDriftRead,
+    GovernanceOptimizationFilters,
+    GovernanceOptimizationReportRead,
+    GovernanceOptimizationShadowRead,
+    GovernanceOptimizationStrategyRead,
+    GovernanceOptimizationSummaryRead,
+    GovernanceRecommendationCancelResolutionRequest,
+    GovernanceRecommendationChangeConversionTargetRequest,
+    GovernanceRecommendationConvertRequest,
+    GovernanceRecommendationConversionRead,
+    GovernanceRecommendationLifecycleActionRead,
+    GovernanceRecommendationReopenRequest,
+    GovernanceRecommendationResolveRequest,
+    GovernanceRecordEvidenceLinkRead,
     GovernanceRegisterRowRead,
+    GovernanceRecommendationLifecycleEventRead,
+    GovernanceSourceRecommendationRead,
+    GovernanceStructuredFeedbackRead,
+    GovernanceStructuredFeedbackRequest,
     GovernanceWeeklySummaryCreate,
     GovernanceWeeklySummaryGenerateRequest,
     GovernanceWeeklySummaryRead,
@@ -29,6 +75,11 @@ from app.agents.governance.schemas.governance import (
     ProjectCharterGenerateRequest,
     ProjectCharterRead,
     ProjectCharterUpdate,
+    CharterKnowledgeLinkRead,
+    CharterPublicationActionRequest,
+    CharterPublicationEventRead,
+    CharterPublicationStatusRead,
+    CharterPublicationVersionRead,
     ProjectDependencyCreate,
     ProjectDependencyListRead,
     ProjectDependencyRead,
@@ -57,12 +108,22 @@ from app.agents.governance.services.charter_service import (
     list_project_charters,
     update_project_charter_draft,
 )
+from app.agents.governance.services.governance_charter_publish_service import (
+    PUBLISH_ROLES,
+    get_charter_knowledge_link,
+    get_publication_versions,
+    get_publish_status,
+    list_charter_publication_timeline,
+    maybe_auto_publish_after_approval,
+    publish_charter,
+    republish_charter,
+    retry_publication,
+    unpublish_charter,
+)
 from app.agents.governance.services.dashboard_service import get_governance_bootstrap
 from app.agents.governance.services.delivery_integration import promote_risk_alert_to_escalation
-from app.agents.governance.services.register_service import list_governance_register_page
 from app.agents.governance.services.governance_service import (
     approve_weekly_summary,
-    can_read_internal_governance,
     create_action,
     create_dependency,
     create_escalation,
@@ -94,7 +155,57 @@ from app.agents.governance.services.governance_service import (
     update_scope_state,
     update_weekly_summary_draft,
 )
+from app.agents.governance.services.effectiveness_service import (
+    EffectivenessFilters,
+    effectiveness_report_csv,
+    get_effectiveness_calibration,
+    get_effectiveness_drilldown,
+    get_effectiveness_false_positives,
+    get_effectiveness_funnel,
+    get_effectiveness_quality,
+    get_effectiveness_recurrence,
+    get_effectiveness_report,
+    get_effectiveness_summary,
+    get_effectiveness_timing,
+    get_effectiveness_trends,
+    get_frequently_accepted,
+    get_frequently_dismissed,
+    get_recommendation_lifecycle,
+    submit_structured_recommendation_feedback,
+)
 from app.agents.governance.services.monitoring_service import get_governance_monitoring
+from app.agents.governance.services.optimization_service import (
+    approve_learning_rule,
+    cancel_recommendation_resolution,
+    change_conversion_target,
+    compare_strategy_versions,
+    convert_recommendation_lifecycle,
+    generate_evaluation_report,
+    get_optimization_drift,
+    get_optimization_summary,
+    list_evaluation_reports,
+    list_learning_rules,
+    list_shadow_evaluations,
+    list_strategy_versions,
+    optimization_report_csv,
+    reopen_recommendation,
+    resolve_recommendation,
+    rollback_learning_rule,
+    run_shadow_evaluation,
+)
+from app.agents.governance.services.recommendation_service import (
+    _to_read,
+    can_generate_ai_recommendations,
+    convert_governance_recommendation_to_action,
+    convert_governance_recommendation_to_escalation,
+    dismiss_governance_ai_recommendation,
+    generate_governance_ai_recommendations,
+    get_governance_ai_recommendation,
+    list_governance_ai_recommendation_conversions,
+    list_governance_ai_recommendations,
+    submit_governance_ai_recommendation_feedback,
+)
+from app.agents.governance.services.register_service import list_governance_register_page
 from app.agents.governance.services.summary_service import (
     build_weekly_summary_read,
     generate_weekly_governance_summary,
@@ -102,7 +213,7 @@ from app.agents.governance.services.summary_service import (
 from app.agents.governance.timing import instrument_governance_routes
 from app.api.deps import ExplicitUserActionDep, SessionDep
 from app.core.security import CurrentUser, require_role
-from app.db.models import AppRole, Project
+from app.db.models import AppRole, GovernanceRecommendationEvaluationPeriod, Project
 from app.schemas.common import DataResponse, ListResponse, Pagination
 from app.services.pdf_export import generate_simple_pdf
 
@@ -110,6 +221,8 @@ router = APIRouter(tags=["governance"])
 
 READ_ROLES = (AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN, AppRole.CLIENT)
 WRITE_ROLES = (AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)
+CHARTER_PUBLISH_ROLES = tuple(PUBLISH_ROLES)
+AI_RECOMMENDATION_ROLES = (AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
 MONITORING_ROLES = (AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
 
 
@@ -161,10 +274,18 @@ async def list_governance_register(
 async def governance_analytics_summary(
     session: SessionDep,
     days: int = 30,
+    project_id: UUID | None = Query(default=None),
+    vertical: str | None = Query(default=None),
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
 ) -> DataResponse[GovernanceAnalyticsSummaryRead]:
     return DataResponse(
-        data=await get_governance_analytics_summary(session, current_user, days=days)
+        data=await get_governance_analytics_summary(
+            session,
+            current_user,
+            days=days,
+            project_id=project_id,
+            vertical=vertical,
+        )
     )
 
 
@@ -172,21 +293,41 @@ async def governance_analytics_summary(
 async def governance_analytics_detail(
     session: SessionDep,
     days: int = 30,
+    project_id: UUID | None = Query(default=None),
+    vertical: str | None = Query(default=None),
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
 ) -> DataResponse[GovernanceAnalyticsDetailRead]:
-    return DataResponse(data=await get_governance_analytics_detail(session, current_user, days=days))
+    return DataResponse(
+        data=await get_governance_analytics_detail(
+            session,
+            current_user,
+            days=days,
+            project_id=project_id,
+            vertical=vertical,
+        )
+    )
 
 
 @router.get("/governance/analytics", response_model=DataResponse[GovernanceAnalyticsRead])
 async def governance_analytics(
     session: SessionDep,
     days: int = 30,
+    project_id: UUID | None = Query(default=None),
+    vertical: str | None = Query(default=None),
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
 ) -> DataResponse[GovernanceAnalyticsRead]:
     # TODO(deprecate): Monolithic analytics payload. The live /governance UI uses
     # GET /governance/analytics/summary + GET /governance/analytics/detail instead.
     # Keep this route for backward compatibility until external callers are confirmed gone.
-    return DataResponse(data=await get_governance_analytics(session, current_user, days=days))
+    return DataResponse(
+        data=await get_governance_analytics(
+            session,
+            current_user,
+            days=days,
+            project_id=project_id,
+            vertical=vertical,
+        )
+    )
 
 
 @router.get("/governance/monitoring", response_model=DataResponse[GovernanceMonitoringRead])
@@ -208,6 +349,42 @@ def _analytics_csv(data: GovernanceAnalyticsRead) -> str:
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["section", "project", "metric", "value", "evidence"])
+    if data.insights_kpis is not None:
+        kpis = data.insights_kpis
+        writer.writerow(
+            [
+                "insights_kpis",
+                "",
+                "portfolio_governance_score",
+                kpis.portfolio_governance_score,
+                "",
+            ]
+        )
+        writer.writerow(
+            [
+                "insights_kpis",
+                "",
+                "recommendation_acceptance_rate_pct",
+                kpis.recommendation_acceptance_rate_pct,
+                "",
+            ]
+        )
+        writer.writerow(
+            [
+                "insights_kpis",
+                "",
+                "recommendation_dismissal_rate_pct",
+                kpis.recommendation_dismissal_rate_pct,
+                "",
+            ]
+        )
+        writer.writerow(
+            ["insights_kpis", "", "escalations_created", kpis.escalations_created, ""]
+        )
+        writer.writerow(
+            ["insights_kpis", "", "recommendations_created", kpis.recommendations_created, ""]
+        )
+        writer.writerow(["insights_kpis", "", "projects_at_risk", kpis.projects_at_risk, ""])
     for project in data.portfolio_risk_ranking:
         writer.writerow(
             [
@@ -216,6 +393,56 @@ def _analytics_csv(data: GovernanceAnalyticsRead) -> str:
                 "governance_health_score",
                 project.score,
                 "; ".join(item.label for item in project.evidence),
+            ]
+        )
+    for risk in data.top_governance_risks:
+        writer.writerow(
+            [
+                "top_governance_risks",
+                risk.project_name or "",
+                risk.label,
+                risk.count,
+                risk.detail or "",
+            ]
+        )
+    for blocker in data.top_recurring_blockers:
+        writer.writerow(
+            [
+                "top_recurring_blockers",
+                blocker.project_name or "",
+                blocker.label,
+                blocker.count,
+                blocker.detail or "",
+            ]
+        )
+    for failure in data.top_recurring_mitigation_failures:
+        writer.writerow(
+            [
+                "top_recurring_mitigation_failures",
+                failure.project_name or "",
+                failure.label,
+                failure.count,
+                failure.detail or "",
+            ]
+        )
+    for department in data.most_affected_departments:
+        writer.writerow(
+            [
+                "most_affected_departments",
+                "",
+                department.label,
+                department.count,
+                department.detail or "",
+            ]
+        )
+    for cell in data.risk_heatmap:
+        writer.writerow(
+            [
+                "risk_heatmap",
+                cell.vertical,
+                cell.risk_level,
+                cell.project_count,
+                f"avg_score={cell.avg_score}",
             ]
         )
     for recommendation in data.recommendations:
@@ -235,16 +462,29 @@ def _analytics_csv(data: GovernanceAnalyticsRead) -> str:
 async def export_governance_analytics_csv(
     session: SessionDep,
     days: int = 30,
+    project_id: UUID | None = Query(default=None),
+    vertical: str | None = Query(default=None),
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
 ) -> Response:
-    data = await get_governance_analytics(session, current_user, days=days)
+    data = await get_governance_analytics(
+        session,
+        current_user,
+        days=days,
+        project_id=project_id,
+        vertical=vertical,
+    )
     await log_governance_event(
         session,
         current_user,
         event_type="dashboard.exported",
         org_id=current_user.org_id,
         source_table="governance_analytics",
-        metadata={"format": "csv", "days": data.date_range_days},
+        metadata={
+            "format": "csv",
+            "days": data.date_range_days,
+            "project_id": str(project_id) if project_id else None,
+            "vertical": vertical,
+        },
     )
     await session.commit()
     return Response(
@@ -262,16 +502,52 @@ async def export_governance_analytics_csv(
 async def export_governance_analytics_pdf(
     session: SessionDep,
     days: int = 30,
+    project_id: UUID | None = Query(default=None),
+    vertical: str | None = Query(default=None),
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
 ) -> Response:
-    data = await get_governance_analytics(session, current_user, days=days)
+    data = await get_governance_analytics(
+        session,
+        current_user,
+        days=days,
+        project_id=project_id,
+        vertical=vertical,
+    )
+    kpis = data.insights_kpis
+    kpi_block = ""
+    if kpis is not None:
+        kpi_block = (
+            "Insights KPIs\n"
+            f"- Portfolio score: {kpis.portfolio_governance_score}\n"
+            f"- Acceptance rate: {kpis.recommendation_acceptance_rate_pct}%\n"
+            f"- Dismissal rate: {kpis.recommendation_dismissal_rate_pct}%\n"
+            f"- Escalations created: {kpis.escalations_created}\n"
+            f"- Recommendations created: {kpis.recommendations_created}\n"
+            f"- Projects at risk: {kpis.projects_at_risk}\n\n"
+        )
     body = (
         f"Generated: {data.generated_at.isoformat()}\n"
         f"Range: {data.date_range_days} days\n\n"
+        f"{kpi_block}"
         "Portfolio Risk Ranking\n"
         + "\n".join(
             f"- {project.project_name}: score={project.score}, risk={project.risk_level}"
             for project in data.portfolio_risk_ranking[:10]
+        )
+        + "\n\nTop Governance Risks\n"
+        + "\n".join(
+            f"- {item.label}: count={item.count}"
+            for item in data.top_governance_risks[:10]
+        )
+        + "\n\nTop Recurring Blockers\n"
+        + "\n".join(
+            f"- {item.label}: count={item.count}"
+            for item in data.top_recurring_blockers[:10]
+        )
+        + "\n\nMost Affected Departments\n"
+        + "\n".join(
+            f"- {item.label}: count={item.count}"
+            for item in data.most_affected_departments[:10]
         )
         + "\n\nRecommendations\n"
         + "\n".join(
@@ -285,7 +561,12 @@ async def export_governance_analytics_pdf(
         event_type="dashboard.exported",
         org_id=current_user.org_id,
         source_table="governance_analytics",
-        metadata={"format": "pdf", "days": data.date_range_days},
+        metadata={
+            "format": "pdf",
+            "days": data.date_range_days,
+            "project_id": str(project_id) if project_id else None,
+            "vertical": vertical,
+        },
     )
     await session.commit()
     return Response(
@@ -481,7 +762,55 @@ async def get_escalation(
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
 ) -> DataResponse[GovernanceEscalationRead]:
     escalation = await get_escalation_or_404(session, escalation_id, current_user)
-    return DataResponse(data=await enriched_escalation_read(session, escalation))
+    return DataResponse(data=await enriched_escalation_read(session, escalation, current_user))
+
+
+@router.get(
+    "/governance/escalations/{escalation_id}/evidence",
+    response_model=ListResponse[GovernanceRecordEvidenceLinkRead],
+)
+async def get_escalation_evidence(
+    escalation_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> ListResponse[GovernanceRecordEvidenceLinkRead]:
+    from app.agents.governance.services.record_provenance_service import list_record_evidence_links
+    from app.db.models import GovernanceRecordTargetType
+
+    escalation = await get_escalation_or_404(session, escalation_id, current_user)
+    items = await list_record_evidence_links(
+        session,
+        current_user,
+        target_type=GovernanceRecordTargetType.ESCALATION,
+        target_id=escalation.id,
+        org_id=escalation.org_id,
+    )
+    return ListResponse(data=items)
+
+
+@router.get(
+    "/governance/escalations/{escalation_id}/source-recommendation",
+    response_model=DataResponse[GovernanceSourceRecommendationRead | None],
+)
+async def get_escalation_source_recommendation(
+    escalation_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> DataResponse[GovernanceSourceRecommendationRead | None]:
+    from app.agents.governance.services.record_provenance_service import (
+        get_source_recommendation_summary,
+    )
+    from app.db.models import GovernanceRecordTargetType
+
+    escalation = await get_escalation_or_404(session, escalation_id, current_user)
+    data = await get_source_recommendation_summary(
+        session,
+        current_user,
+        target_type=GovernanceRecordTargetType.ESCALATION,
+        target_id=escalation.id,
+        org_id=escalation.org_id,
+    )
+    return DataResponse(data=data)
 
 
 @router.post("/governance/escalations", response_model=DataResponse[GovernanceEscalationRead])
@@ -575,7 +904,55 @@ async def get_action(
     current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
 ) -> DataResponse[GovernanceActionRead]:
     action = await get_action_or_404(session, action_id, current_user)
-    return DataResponse(data=await enriched_action_read(session, action))
+    return DataResponse(data=await enriched_action_read(session, action, current_user))
+
+
+@router.get(
+    "/governance/actions/{action_id}/evidence",
+    response_model=ListResponse[GovernanceRecordEvidenceLinkRead],
+)
+async def get_action_evidence(
+    action_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> ListResponse[GovernanceRecordEvidenceLinkRead]:
+    from app.agents.governance.services.record_provenance_service import list_record_evidence_links
+    from app.db.models import GovernanceRecordTargetType
+
+    action = await get_action_or_404(session, action_id, current_user)
+    items = await list_record_evidence_links(
+        session,
+        current_user,
+        target_type=GovernanceRecordTargetType.ACTION,
+        target_id=action.id,
+        org_id=action.org_id,
+    )
+    return ListResponse(data=items)
+
+
+@router.get(
+    "/governance/actions/{action_id}/source-recommendation",
+    response_model=DataResponse[GovernanceSourceRecommendationRead | None],
+)
+async def get_action_source_recommendation(
+    action_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> DataResponse[GovernanceSourceRecommendationRead | None]:
+    from app.agents.governance.services.record_provenance_service import (
+        get_source_recommendation_summary,
+    )
+    from app.db.models import GovernanceRecordTargetType
+
+    action = await get_action_or_404(session, action_id, current_user)
+    data = await get_source_recommendation_summary(
+        session,
+        current_user,
+        target_type=GovernanceRecordTargetType.ACTION,
+        target_id=action.id,
+        org_id=action.org_id,
+    )
+    return DataResponse(data=data)
 
 
 @router.post("/governance/actions", response_model=DataResponse[GovernanceActionRead])
@@ -810,7 +1187,146 @@ async def approve_governance_project_charter(
         new_values={"version": charter.version, "status": charter.status.value},
     )
     await session.commit()
+    # Auto-publish is best-effort; approval is already committed and never rolled back.
+    charter = await maybe_auto_publish_after_approval(session, current_user, charter)
     return DataResponse(data=await build_project_charter_read(session, charter))
+
+
+@router.post(
+    "/governance/project-charters/{charter_id}/publish",
+    response_model=DataResponse[ProjectCharterRead],
+)
+async def publish_governance_project_charter(
+    charter_id: UUID,
+    session: SessionDep,
+    payload: CharterPublicationActionRequest | None = None,
+    current_user: CurrentUser = Depends(require_role(*CHARTER_PUBLISH_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[ProjectCharterRead]:
+    charter = await publish_charter(
+        session,
+        current_user,
+        charter_id,
+        reason=payload.reason if payload else None,
+    )
+    return DataResponse(data=await build_project_charter_read(session, charter))
+
+
+@router.post(
+    "/governance/project-charters/{charter_id}/republish",
+    response_model=DataResponse[ProjectCharterRead],
+)
+async def republish_governance_project_charter(
+    charter_id: UUID,
+    session: SessionDep,
+    payload: CharterPublicationActionRequest | None = None,
+    current_user: CurrentUser = Depends(require_role(*CHARTER_PUBLISH_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[ProjectCharterRead]:
+    charter = await republish_charter(
+        session,
+        current_user,
+        charter_id,
+        reason=payload.reason if payload else None,
+    )
+    return DataResponse(data=await build_project_charter_read(session, charter))
+
+
+@router.post(
+    "/governance/project-charters/{charter_id}/retry-publication",
+    response_model=DataResponse[ProjectCharterRead],
+)
+async def retry_governance_project_charter_publication(
+    charter_id: UUID,
+    session: SessionDep,
+    payload: CharterPublicationActionRequest | None = None,
+    current_user: CurrentUser = Depends(require_role(*CHARTER_PUBLISH_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[ProjectCharterRead]:
+    charter = await retry_publication(
+        session,
+        current_user,
+        charter_id,
+        reason=payload.reason if payload else None,
+    )
+    return DataResponse(data=await build_project_charter_read(session, charter))
+
+
+@router.post(
+    "/governance/project-charters/{charter_id}/unpublish",
+    response_model=DataResponse[ProjectCharterRead],
+)
+async def unpublish_governance_project_charter(
+    charter_id: UUID,
+    session: SessionDep,
+    payload: CharterPublicationActionRequest | None = None,
+    current_user: CurrentUser = Depends(require_role(*CHARTER_PUBLISH_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[ProjectCharterRead]:
+    charter = await unpublish_charter(
+        session,
+        current_user,
+        charter_id,
+        reason=payload.reason if payload else None,
+    )
+    return DataResponse(data=await build_project_charter_read(session, charter))
+
+
+@router.get(
+    "/governance/project-charters/{charter_id}/publication-status",
+    response_model=DataResponse[CharterPublicationStatusRead],
+)
+async def get_governance_project_charter_publication_status(
+    charter_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
+) -> DataResponse[CharterPublicationStatusRead]:
+    status = await get_publish_status(session, current_user, charter_id)
+    return DataResponse(data=CharterPublicationStatusRead.model_validate(status))
+
+
+@router.get(
+    "/governance/project-charters/{charter_id}/knowledge",
+    response_model=DataResponse[CharterKnowledgeLinkRead],
+)
+async def get_governance_project_charter_knowledge(
+    charter_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
+) -> DataResponse[CharterKnowledgeLinkRead]:
+    link = await get_charter_knowledge_link(session, current_user, charter_id)
+    return DataResponse(data=CharterKnowledgeLinkRead.model_validate(link))
+
+
+@router.get(
+    "/governance/project-charters/{charter_id}/versions",
+    response_model=ListResponse[CharterPublicationVersionRead],
+)
+async def get_governance_project_charter_versions(
+    charter_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
+) -> ListResponse[CharterPublicationVersionRead]:
+    versions = await get_publication_versions(session, current_user, charter_id)
+    reads = [CharterPublicationVersionRead.model_validate(row) for row in versions]
+    return ListResponse(data=reads, pagination=Pagination(limit=len(reads), items=len(reads)))
+
+
+@router.get(
+    "/governance/project-charters/{charter_id}/publication-timeline",
+    response_model=ListResponse[CharterPublicationEventRead],
+)
+async def get_governance_project_charter_publication_timeline(
+    charter_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*READ_ROLES)),
+) -> ListResponse[CharterPublicationEventRead]:
+    events = await list_charter_publication_timeline(session, current_user, charter_id)
+    reads = [
+        CharterPublicationEventRead.model_validate(event, from_attributes=True)
+        for event in events
+    ]
+    return ListResponse(data=reads, pagination=Pagination(limit=len(reads), items=len(reads)))
 
 
 @router.post(
@@ -1114,6 +1630,1057 @@ async def post_weekly_summary(
         evidence_links=payload.evidence_links,
     )
     return DataResponse(data=await build_weekly_summary_read(session, summary))
+
+
+@router.get(
+    "/governance/ai-recommendations",
+    response_model=DataResponse[GovernanceAIRecommendationListRead],
+)
+async def get_governance_ai_recommendations(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+    project_id: UUID | None = Query(default=None),
+    scope: str = Query(default="project"),
+    status: str | None = Query(default="active"),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> DataResponse[GovernanceAIRecommendationListRead]:
+    from app.db.models import (
+        GovernanceAIRecommendationScope,
+        GovernanceAIRecommendationStatus,
+    )
+
+    scope_enum = GovernanceAIRecommendationScope(scope)
+    status_enum = GovernanceAIRecommendationStatus(status) if status else None
+    data = await list_governance_ai_recommendations(
+        session,
+        current_user,
+        project_id=project_id,
+        scope=scope_enum,
+        status=status_enum,
+        limit=limit,
+        offset=offset,
+        include_rule_based=False,
+    )
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/ai-recommendations/{recommendation_id}",
+    response_model=DataResponse[GovernanceAIRecommendationRead],
+)
+async def get_one_governance_ai_recommendation(
+    recommendation_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> DataResponse[GovernanceAIRecommendationRead]:
+    from app.agents.governance.services.governance_service import load_project_names
+
+    row = await get_governance_ai_recommendation(session, current_user, recommendation_id)
+    names = await load_project_names(session, {row.project_id} if row.project_id else set())
+    return DataResponse(
+        data=_to_read(
+            row,
+            project_name=names.get(row.project_id) if row.project_id else None,
+            can_generate=can_generate_ai_recommendations(current_user),
+        )
+    )
+
+
+@router.post(
+    "/governance/ai-recommendations/generate",
+    response_model=DataResponse[GovernanceAIRecommendationGenerationResult],
+)
+async def post_generate_governance_ai_recommendations(
+    payload: GovernanceAIRecommendationGenerateRequest,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[GovernanceAIRecommendationGenerationResult]:
+    result = await generate_governance_ai_recommendations(
+        session,
+        current_user,
+        project_id=payload.project_id,
+        scope=payload.scope,
+        force=payload.force,
+    )
+    return DataResponse(data=result)
+
+
+@router.post(
+    "/governance/ai-recommendations/{recommendation_id}/regenerate",
+    response_model=DataResponse[GovernanceAIRecommendationGenerationResult],
+)
+async def post_regenerate_governance_ai_recommendation(
+    recommendation_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[GovernanceAIRecommendationGenerationResult]:
+    row = await get_governance_ai_recommendation(session, current_user, recommendation_id)
+    result = await generate_governance_ai_recommendations(
+        session,
+        current_user,
+        project_id=row.project_id,
+        scope=row.scope,
+        force=True,
+    )
+    return DataResponse(data=result)
+
+
+@router.post(
+    "/governance/ai-recommendations/{recommendation_id}/dismiss",
+    response_model=DataResponse[GovernanceAIRecommendationRead],
+)
+async def post_dismiss_governance_ai_recommendation(
+    recommendation_id: UUID,
+    payload: GovernanceAIRecommendationDismissRequest,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[GovernanceAIRecommendationRead]:
+    data = await dismiss_governance_ai_recommendation(
+        session,
+        current_user,
+        recommendation_id,
+        reason=payload.reason,
+    )
+    return DataResponse(data=data)
+
+
+@router.post(
+    "/governance/ai-recommendations/{recommendation_id}/feedback",
+    response_model=DataResponse[GovernanceAIRecommendationFeedbackRead],
+)
+async def post_governance_ai_recommendation_feedback(
+    recommendation_id: UUID,
+    payload: GovernanceAIRecommendationFeedbackRequest,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[GovernanceAIRecommendationFeedbackRead]:
+    data = await submit_governance_ai_recommendation_feedback(
+        session,
+        current_user,
+        recommendation_id,
+        helpful=payload.helpful,
+        reason=payload.reason,
+    )
+    return DataResponse(data=data)
+
+
+@router.post(
+    "/governance/ai-recommendations/{recommendation_id}/convert/action",
+    response_model=DataResponse[GovernanceRecommendationConversionRead],
+)
+async def post_convert_governance_ai_recommendation_to_action(
+    recommendation_id: UUID,
+    payload: ConvertRecommendationToActionRequest,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*WRITE_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[GovernanceRecommendationConversionRead]:
+    data = await convert_governance_recommendation_to_action(
+        session,
+        current_user,
+        recommendation_id,
+        payload,
+    )
+    return DataResponse(data=data)
+
+
+@router.post(
+    "/governance/ai-recommendations/{recommendation_id}/convert/escalation",
+    response_model=DataResponse[GovernanceRecommendationConversionRead],
+)
+async def post_convert_governance_ai_recommendation_to_escalation(
+    recommendation_id: UUID,
+    payload: ConvertRecommendationToEscalationRequest,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*WRITE_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[GovernanceRecommendationConversionRead]:
+    data = await convert_governance_recommendation_to_escalation(
+        session,
+        current_user,
+        recommendation_id,
+        payload,
+    )
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/ai-recommendations/{recommendation_id}/conversions",
+    response_model=DataResponse[list[GovernanceRecommendationConversionRead]],
+)
+async def get_governance_ai_recommendation_conversions(
+    recommendation_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> DataResponse[list[GovernanceRecommendationConversionRead]]:
+    data = await list_governance_ai_recommendation_conversions(
+        session,
+        current_user,
+        recommendation_id,
+    )
+    return DataResponse(data=data)
+
+
+@router.post(
+    "/governance/escalation-suggestions/scan",
+    response_model=DataResponse[EscalationSuggestionScanResult],
+)
+async def post_scan_escalation_suggestions(
+    payload: EscalationSuggestionScanRequest,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[EscalationSuggestionScanResult]:
+    from app.agents.governance.services.escalation_suggestion_service import (
+        scan_governance_escalation_suggestions,
+    )
+
+    data = await scan_governance_escalation_suggestions(
+        session,
+        current_user,
+        project_id=payload.project_id,
+        force=payload.force,
+    )
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/escalation-suggestions",
+    response_model=DataResponse[list[GovernanceAIRecommendationRead]],
+)
+async def get_escalation_suggestions(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+    project_id: UUID | None = Query(default=None),
+    status: str | None = Query(default="active"),
+    trigger_type: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> DataResponse[list[GovernanceAIRecommendationRead]]:
+    from app.agents.governance.services.escalation_suggestion_service import (
+        list_escalation_suggestions,
+    )
+    from app.db.models import (
+        GovernanceAIRecommendationStatus,
+        GovernanceEscalationTriggerType,
+    )
+
+    status_enum = GovernanceAIRecommendationStatus(status) if status else None
+    trigger_enum = GovernanceEscalationTriggerType(trigger_type) if trigger_type else None
+    data = await list_escalation_suggestions(
+        session,
+        current_user,
+        project_id=project_id,
+        status=status_enum,
+        trigger_type=trigger_enum,
+        limit=limit,
+        offset=offset,
+    )
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/escalation-suggestions/scans",
+    response_model=DataResponse[list[EscalationSuggestionScanHistoryRead]],
+)
+async def get_escalation_suggestion_scans(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+    project_id: UUID | None = Query(default=None),
+    limit: int = Query(default=10, ge=1, le=50),
+) -> DataResponse[list[EscalationSuggestionScanHistoryRead]]:
+    from app.agents.governance.services.escalation_suggestion_service import (
+        list_escalation_suggestion_scans,
+    )
+
+    rows = await list_escalation_suggestion_scans(
+        session,
+        current_user,
+        project_id=project_id,
+        limit=limit,
+    )
+    return DataResponse(
+        data=[EscalationSuggestionScanHistoryRead.model_validate(row) for row in rows]
+    )
+
+
+@router.post(
+    "/governance/escalation-suggestions/{suggestion_id}/snooze",
+    response_model=DataResponse[GovernanceAIRecommendationRead],
+)
+async def post_snooze_escalation_suggestion(
+    suggestion_id: UUID,
+    payload: EscalationSuggestionSnoozeRequest,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[GovernanceAIRecommendationRead]:
+    from app.agents.governance.services.escalation_suggestion_service import (
+        snooze_escalation_suggestion,
+    )
+
+    data = await snooze_escalation_suggestion(
+        session,
+        current_user,
+        suggestion_id,
+        payload,
+    )
+    return DataResponse(data=data)
+
+
+@router.post(
+    "/governance/ai-recommendations/{recommendation_id}/snooze",
+    response_model=DataResponse[GovernanceAIRecommendationRead],
+)
+async def post_snooze_ai_recommendation(
+    recommendation_id: UUID,
+    payload: EscalationSuggestionSnoozeRequest,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[GovernanceAIRecommendationRead]:
+    from app.agents.governance.services.escalation_suggestion_service import (
+        snooze_escalation_suggestion,
+    )
+
+    data = await snooze_escalation_suggestion(
+        session,
+        current_user,
+        recommendation_id,
+        payload,
+    )
+    return DataResponse(data=data)
+
+
+def _effectiveness_filters(
+    *,
+    days: int = 30,
+    project_id: UUID | None = None,
+    vertical: str | None = None,
+    trigger_type: str | None = None,
+    severity: str | None = None,
+    status: str | None = None,
+    confidence_band: str | None = None,
+    quality_band: str | None = None,
+    false_positive_status: str | None = None,
+    recurring_only: bool = False,
+) -> EffectivenessFilters:
+    return EffectivenessFilters(
+        days=days,
+        project_id=project_id,
+        vertical=vertical,
+        trigger_type=trigger_type,
+        severity=severity,
+        status=status,
+        confidence_band=confidence_band,
+        quality_band=quality_band,
+        false_positive_status=false_positive_status,
+        recurring_only=recurring_only,
+    )
+
+
+@router.get(
+    "/governance/insights/recommendations/effectiveness/summary",
+    response_model=DataResponse[GovernanceEffectivenessSummaryRead],
+)
+async def governance_recommendation_effectiveness_summary(
+    session: SessionDep,
+    days: int = 30,
+    project_id: UUID | None = Query(default=None),
+    vertical: str | None = Query(default=None),
+    trigger_type: str | None = Query(default=None),
+    severity: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    confidence_band: str | None = Query(default=None),
+    quality_band: str | None = Query(default=None),
+    false_positive_status: str | None = Query(default=None),
+    recurring_only: bool = Query(default=False),
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> DataResponse[GovernanceEffectivenessSummaryRead]:
+    data = await get_effectiveness_summary(
+        session,
+        current_user,
+        _effectiveness_filters(
+            days=days,
+            project_id=project_id,
+            vertical=vertical,
+            trigger_type=trigger_type,
+            severity=severity,
+            status=status,
+            confidence_band=confidence_band,
+            quality_band=quality_band,
+            false_positive_status=false_positive_status,
+            recurring_only=recurring_only,
+        ),
+    )
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/insights/recommendations/effectiveness/trends",
+    response_model=DataResponse[GovernanceEffectivenessTrendsRead],
+)
+async def governance_recommendation_effectiveness_trends(
+    session: SessionDep,
+    days: int = 30,
+    project_id: UUID | None = Query(default=None),
+    vertical: str | None = Query(default=None),
+    trigger_type: str | None = Query(default=None),
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> DataResponse[GovernanceEffectivenessTrendsRead]:
+    data = await get_effectiveness_trends(
+        session,
+        current_user,
+        _effectiveness_filters(days=days, project_id=project_id, vertical=vertical, trigger_type=trigger_type),
+    )
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/insights/recommendations/effectiveness/funnel",
+    response_model=DataResponse[GovernanceEffectivenessFunnelRead],
+)
+async def governance_recommendation_effectiveness_funnel(
+    session: SessionDep,
+    days: int = 30,
+    project_id: UUID | None = Query(default=None),
+    vertical: str | None = Query(default=None),
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> DataResponse[GovernanceEffectivenessFunnelRead]:
+    data = await get_effectiveness_funnel(
+        session,
+        current_user,
+        _effectiveness_filters(days=days, project_id=project_id, vertical=vertical),
+    )
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/insights/recommendations/effectiveness/timing",
+    response_model=DataResponse[GovernanceEffectivenessTimingRead],
+)
+async def governance_recommendation_effectiveness_timing(
+    session: SessionDep,
+    days: int = 30,
+    project_id: UUID | None = Query(default=None),
+    vertical: str | None = Query(default=None),
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> DataResponse[GovernanceEffectivenessTimingRead]:
+    data = await get_effectiveness_timing(
+        session,
+        current_user,
+        _effectiveness_filters(days=days, project_id=project_id, vertical=vertical),
+    )
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/insights/recommendations/effectiveness/quality",
+    response_model=DataResponse[GovernanceEffectivenessQualityRead],
+)
+async def governance_recommendation_effectiveness_quality(
+    session: SessionDep,
+    days: int = 30,
+    project_id: UUID | None = Query(default=None),
+    vertical: str | None = Query(default=None),
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> DataResponse[GovernanceEffectivenessQualityRead]:
+    data = await get_effectiveness_quality(
+        session,
+        current_user,
+        _effectiveness_filters(days=days, project_id=project_id, vertical=vertical),
+    )
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/insights/recommendations/effectiveness/calibration",
+    response_model=DataResponse[GovernanceEffectivenessCalibrationRead],
+)
+async def governance_recommendation_effectiveness_calibration(
+    session: SessionDep,
+    days: int = 30,
+    project_id: UUID | None = Query(default=None),
+    vertical: str | None = Query(default=None),
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> DataResponse[GovernanceEffectivenessCalibrationRead]:
+    data = await get_effectiveness_calibration(
+        session,
+        current_user,
+        _effectiveness_filters(days=days, project_id=project_id, vertical=vertical),
+    )
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/insights/recommendations/effectiveness/false-positives",
+    response_model=DataResponse[GovernanceEffectivenessFalsePositiveRead],
+)
+async def governance_recommendation_effectiveness_false_positives(
+    session: SessionDep,
+    days: int = 30,
+    project_id: UUID | None = Query(default=None),
+    vertical: str | None = Query(default=None),
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> DataResponse[GovernanceEffectivenessFalsePositiveRead]:
+    data = await get_effectiveness_false_positives(
+        session,
+        current_user,
+        _effectiveness_filters(days=days, project_id=project_id, vertical=vertical),
+    )
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/insights/recommendations/effectiveness/frequently-dismissed",
+    response_model=DataResponse[list[GovernanceEffectivenessCategoryStatRead]],
+)
+async def governance_recommendation_effectiveness_frequently_dismissed(
+    session: SessionDep,
+    days: int = 30,
+    project_id: UUID | None = Query(default=None),
+    vertical: str | None = Query(default=None),
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> DataResponse[list[GovernanceEffectivenessCategoryStatRead]]:
+    data = await get_frequently_dismissed(
+        session,
+        current_user,
+        _effectiveness_filters(days=days, project_id=project_id, vertical=vertical),
+    )
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/insights/recommendations/effectiveness/frequently-accepted",
+    response_model=DataResponse[list[GovernanceEffectivenessCategoryStatRead]],
+)
+async def governance_recommendation_effectiveness_frequently_accepted(
+    session: SessionDep,
+    days: int = 30,
+    project_id: UUID | None = Query(default=None),
+    vertical: str | None = Query(default=None),
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> DataResponse[list[GovernanceEffectivenessCategoryStatRead]]:
+    data = await get_frequently_accepted(
+        session,
+        current_user,
+        _effectiveness_filters(days=days, project_id=project_id, vertical=vertical),
+    )
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/insights/recommendations/effectiveness/recurrence",
+    response_model=DataResponse[GovernanceEffectivenessRecurrenceRead],
+)
+async def governance_recommendation_effectiveness_recurrence(
+    session: SessionDep,
+    days: int = 30,
+    project_id: UUID | None = Query(default=None),
+    vertical: str | None = Query(default=None),
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> DataResponse[GovernanceEffectivenessRecurrenceRead]:
+    data = await get_effectiveness_recurrence(
+        session,
+        current_user,
+        _effectiveness_filters(days=days, project_id=project_id, vertical=vertical),
+    )
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/insights/recommendations/effectiveness/drilldown",
+    response_model=DataResponse[GovernanceEffectivenessDrilldownRead],
+)
+async def governance_recommendation_effectiveness_drilldown(
+    session: SessionDep,
+    days: int = 30,
+    project_id: UUID | None = Query(default=None),
+    vertical: str | None = Query(default=None),
+    trigger_type: str | None = Query(default=None),
+    limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> DataResponse[GovernanceEffectivenessDrilldownRead]:
+    data = await get_effectiveness_drilldown(
+        session,
+        current_user,
+        _effectiveness_filters(
+            days=days,
+            project_id=project_id,
+            vertical=vertical,
+            trigger_type=trigger_type,
+        ),
+        limit=limit,
+        offset=offset,
+    )
+    return DataResponse(data=data)
+
+
+@router.get("/governance/insights/recommendations/effectiveness/export")
+async def governance_recommendation_effectiveness_export(
+    session: SessionDep,
+    days: int = 30,
+    project_id: UUID | None = Query(default=None),
+    vertical: str | None = Query(default=None),
+    format: str = Query(default="csv", pattern="^(csv|json|pdf)$"),
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> Response:
+    filters = _effectiveness_filters(days=days, project_id=project_id, vertical=vertical)
+    report = await get_effectiveness_report(session, current_user, filters)
+    await log_governance_event(
+        session,
+        current_user,
+        event_type="dashboard.exported",
+        org_id=current_user.org_id,
+        source_table="governance_recommendation_effectiveness",
+        metadata={"format": format, "days": report.date_range_days},
+    )
+    await session.commit()
+    if format == "json":
+        return Response(
+            content=report.model_dump_json(),
+            media_type="application/json",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="governance_recommendation_effectiveness_{report.date_range_days}d.json"'
+                )
+            },
+        )
+    if format == "pdf":
+        body = (
+            f"Generated: {report.generated_at.isoformat()}\n"
+            f"Range: {report.date_range_days} days\n"
+            f"Reviewed: {report.summary.reviewed}\n"
+            f"Acceptance: {report.summary.acceptance_rate.value}\n"
+            f"Dismissal: {report.summary.dismissal_rate.value}\n"
+            f"Conversion: {report.summary.conversion_rate.value}\n"
+            f"Resolution: {report.summary.resolution_rate.value}\n"
+            f"False positive: {report.summary.false_positive_rate.value}\n"
+            + "\nWarnings\n"
+            + "\n".join(f"- {item}" for item in report.warnings)
+        )
+        return Response(
+            content=generate_simple_pdf("Recommendation Effectiveness", body),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="governance_recommendation_effectiveness_{report.date_range_days}d.pdf"'
+                )
+            },
+        )
+    return Response(
+        content=effectiveness_report_csv(report),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="governance_recommendation_effectiveness_{report.date_range_days}d.csv"'
+            )
+        },
+    )
+
+
+@router.post(
+    "/governance/recommendations/{recommendation_id}/feedback",
+    response_model=DataResponse[GovernanceStructuredFeedbackRead],
+)
+async def post_governance_recommendation_structured_feedback(
+    recommendation_id: UUID,
+    payload: GovernanceStructuredFeedbackRequest,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[GovernanceStructuredFeedbackRead]:
+    data = await submit_structured_recommendation_feedback(
+        session,
+        current_user,
+        recommendation_id,
+        payload,
+    )
+    await session.commit()
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/recommendations/{recommendation_id}/lifecycle",
+    response_model=DataResponse[list[GovernanceRecommendationLifecycleEventRead]],
+)
+async def get_governance_recommendation_lifecycle(
+    recommendation_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*AI_RECOMMENDATION_ROLES)),
+) -> DataResponse[list[GovernanceRecommendationLifecycleEventRead]]:
+    data = await get_recommendation_lifecycle(session, current_user, recommendation_id)
+    return DataResponse(data=data)
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 — Controlled Recommendation Optimization
+# ---------------------------------------------------------------------------
+
+
+def _optimization_filters(
+    days: int = 30,
+    project_id: UUID | None = None,
+    vertical: str | None = None,
+    trigger_type: str | None = None,
+    strategy_version: str | None = None,
+    learning_rule_id: UUID | None = None,
+    quality_band: str | None = None,
+    confidence_band: str | None = None,
+    status: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> GovernanceOptimizationFilters:
+    return GovernanceOptimizationFilters(
+        days=days,
+        project_id=project_id,
+        vertical=vertical,
+        trigger_type=trigger_type,
+        strategy_version=strategy_version,
+        learning_rule_id=learning_rule_id,
+        quality_band=quality_band,
+        confidence_band=confidence_band,
+        status=status,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+
+@router.get(
+    "/governance/recommendations/optimization/summary",
+    response_model=DataResponse[GovernanceOptimizationSummaryRead],
+)
+async def get_recommendation_optimization_summary(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*MONITORING_ROLES)),
+    days: int = Query(default=30, ge=1, le=365),
+    project_id: UUID | None = None,
+    vertical: str | None = None,
+    trigger_type: str | None = None,
+    strategy_version: str | None = None,
+    learning_rule_id: UUID | None = None,
+    quality_band: str | None = None,
+    confidence_band: str | None = None,
+    status: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> DataResponse[GovernanceOptimizationSummaryRead]:
+    data = await get_optimization_summary(
+        session,
+        current_user,
+        _optimization_filters(
+            days=days,
+            project_id=project_id,
+            vertical=vertical,
+            trigger_type=trigger_type,
+            strategy_version=strategy_version,
+            learning_rule_id=learning_rule_id,
+            quality_band=quality_band,
+            confidence_band=confidence_band,
+            status=status,
+            date_from=date_from,
+            date_to=date_to,
+        ),
+    )
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/recommendations/optimization/drift",
+    response_model=DataResponse[GovernanceOptimizationDriftRead],
+)
+async def get_recommendation_optimization_drift(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*MONITORING_ROLES)),
+    days: int = Query(default=30, ge=1, le=365),
+    project_id: UUID | None = None,
+    vertical: str | None = None,
+    strategy_version: str | None = None,
+) -> DataResponse[GovernanceOptimizationDriftRead]:
+    data = await get_optimization_drift(
+        session,
+        current_user,
+        _optimization_filters(
+            days=days,
+            project_id=project_id,
+            vertical=vertical,
+            strategy_version=strategy_version,
+        ),
+        persist=True,
+    )
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/recommendations/optimization/strategies",
+    response_model=DataResponse[list[GovernanceOptimizationStrategyRead]],
+)
+async def get_recommendation_optimization_strategies(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*MONITORING_ROLES)),
+) -> DataResponse[list[GovernanceOptimizationStrategyRead]]:
+    data = await list_strategy_versions(session, current_user)
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/recommendations/optimization/compare",
+    response_model=DataResponse[GovernanceOptimizationCompareRead],
+)
+async def get_recommendation_optimization_compare(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*MONITORING_ROLES)),
+    strategy_a: str = Query(...),
+    strategy_b: str = Query(...),
+    days: int = Query(default=30, ge=1, le=365),
+) -> DataResponse[GovernanceOptimizationCompareRead]:
+    data = await compare_strategy_versions(
+        session,
+        current_user,
+        strategy_a=strategy_a,
+        strategy_b=strategy_b,
+        days=days,
+    )
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/recommendations/optimization/shadow",
+    response_model=DataResponse[list[GovernanceOptimizationShadowRead]],
+)
+async def get_recommendation_optimization_shadow(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*MONITORING_ROLES)),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> DataResponse[list[GovernanceOptimizationShadowRead]]:
+    data = await list_shadow_evaluations(session, current_user, limit=limit)
+    return DataResponse(data=data)
+
+
+@router.get(
+    "/governance/recommendations/optimization/reports",
+    response_model=DataResponse[list[GovernanceOptimizationReportRead]],
+)
+async def get_recommendation_optimization_reports(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*MONITORING_ROLES)),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> DataResponse[list[GovernanceOptimizationReportRead]]:
+    data = await list_evaluation_reports(session, current_user, limit=limit)
+    return DataResponse(data=data)
+
+
+@router.post(
+    "/governance/recommendations/optimization/reports",
+    response_model=DataResponse[GovernanceOptimizationReportRead],
+)
+async def post_recommendation_optimization_report(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*MONITORING_ROLES)),
+    period: str = Query(default="weekly"),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[GovernanceOptimizationReportRead]:
+    try:
+        period_enum = GovernanceRecommendationEvaluationPeriod(period)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="period must be weekly, monthly, or quarterly") from exc
+    data = await generate_evaluation_report(session, current_user, period=period_enum)
+    return DataResponse(data=data)
+
+
+@router.get("/governance/recommendations/optimization/reports/{report_id}/export")
+async def export_recommendation_optimization_report(
+    report_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*MONITORING_ROLES)),
+    format: str = Query(default="csv", pattern="^(json|csv|pdf)$"),
+) -> Response:
+    reports = await list_evaluation_reports(session, current_user, limit=200)
+    report = next((r for r in reports if r.id == report_id), None)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    if format == "json":
+        import json
+
+        return Response(
+            content=json.dumps(report.model_dump(mode="json"), indent=2),
+            media_type="application/json",
+            headers={
+                "Content-Disposition": f'attachment; filename="governance_optimization_report_{report_id}.json"'
+            },
+        )
+    if format == "pdf":
+        lines = [
+            f"Period: {report.period}",
+            f"Range: {report.period_start} – {report.period_end}",
+            f"Strategy: {report.strategy_version or 'n/a'}",
+            "",
+            "KPI summary and drift alerts are included in the JSON/CSV exports.",
+        ]
+        for alert in ((report.report_payload or {}).get("drift") or {}).get("alerts") or []:
+            lines.append(f"- {alert.get('message')}")
+        return Response(
+            content=generate_simple_pdf(
+                title="Governance Recommendation Optimization Report",
+                body="\n".join(lines),
+            ),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="governance_optimization_report_{report_id}.pdf"'
+            },
+        )
+    return Response(
+        content=optimization_report_csv(report),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="governance_optimization_report_{report_id}.csv"'
+        },
+    )
+
+
+@router.get(
+    "/governance/recommendations/learning-rules",
+    response_model=DataResponse[list[GovernanceLearningRuleRead]],
+)
+async def get_recommendation_learning_rules(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*MONITORING_ROLES)),
+) -> DataResponse[list[GovernanceLearningRuleRead]]:
+    data = await list_learning_rules(session, current_user)
+    return DataResponse(data=data)
+
+
+@router.post(
+    "/governance/recommendations/{recommendation_id}/convert",
+    response_model=DataResponse[GovernanceRecommendationLifecycleActionRead],
+)
+async def post_recommendation_convert(
+    recommendation_id: UUID,
+    payload: GovernanceRecommendationConvertRequest,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*WRITE_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[GovernanceRecommendationLifecycleActionRead]:
+    data = await convert_recommendation_lifecycle(
+        session, current_user, recommendation_id, payload
+    )
+    return DataResponse(data=data)
+
+
+@router.post(
+    "/governance/recommendations/{recommendation_id}/resolve",
+    response_model=DataResponse[GovernanceRecommendationLifecycleActionRead],
+)
+async def post_recommendation_resolve(
+    recommendation_id: UUID,
+    payload: GovernanceRecommendationResolveRequest,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*WRITE_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[GovernanceRecommendationLifecycleActionRead]:
+    data = await resolve_recommendation(session, current_user, recommendation_id, payload)
+    return DataResponse(data=data)
+
+
+@router.post(
+    "/governance/recommendations/{recommendation_id}/reopen",
+    response_model=DataResponse[GovernanceRecommendationLifecycleActionRead],
+)
+async def post_recommendation_reopen(
+    recommendation_id: UUID,
+    payload: GovernanceRecommendationReopenRequest,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*WRITE_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[GovernanceRecommendationLifecycleActionRead]:
+    data = await reopen_recommendation(session, current_user, recommendation_id, payload)
+    return DataResponse(data=data)
+
+
+@router.post(
+    "/governance/recommendations/{recommendation_id}/cancel-resolution",
+    response_model=DataResponse[GovernanceRecommendationLifecycleActionRead],
+)
+async def post_recommendation_cancel_resolution(
+    recommendation_id: UUID,
+    payload: GovernanceRecommendationCancelResolutionRequest,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*WRITE_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[GovernanceRecommendationLifecycleActionRead]:
+    data = await cancel_recommendation_resolution(
+        session, current_user, recommendation_id, payload
+    )
+    return DataResponse(data=data)
+
+
+@router.post(
+    "/governance/recommendations/{recommendation_id}/change-conversion-target",
+    response_model=DataResponse[GovernanceRecommendationLifecycleActionRead],
+)
+async def post_recommendation_change_conversion_target(
+    recommendation_id: UUID,
+    payload: GovernanceRecommendationChangeConversionTargetRequest,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*WRITE_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[GovernanceRecommendationLifecycleActionRead]:
+    data = await change_conversion_target(session, current_user, recommendation_id, payload)
+    return DataResponse(data=data)
+
+
+@router.post(
+    "/governance/recommendations/learning-rules/{rule_id}/approve",
+    response_model=DataResponse[GovernanceLearningRuleRead],
+)
+async def post_learning_rule_approve(
+    rule_id: UUID,
+    payload: GovernanceLearningRuleApproveRequest,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*MONITORING_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[GovernanceLearningRuleRead]:
+    data = await approve_learning_rule(
+        session, current_user, rule_id, activate=payload.activate
+    )
+    return DataResponse(data=data)
+
+
+@router.post(
+    "/governance/recommendations/learning-rules/{rule_id}/rollback",
+    response_model=DataResponse[GovernanceLearningRuleRead],
+)
+async def post_learning_rule_rollback(
+    rule_id: UUID,
+    payload: GovernanceLearningRuleRollbackRequest,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*MONITORING_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[GovernanceLearningRuleRead]:
+    data = await rollback_learning_rule(
+        session, current_user, rule_id, disable_only=payload.disable_only
+    )
+    return DataResponse(data=data)
+
+
+@router.post(
+    "/governance/recommendations/learning-rules/{rule_id}/shadow",
+    response_model=DataResponse[GovernanceOptimizationShadowRead],
+)
+async def post_learning_rule_shadow(
+    rule_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(require_role(*MONITORING_ROLES)),
+    _user_action: ExplicitUserActionDep = None,
+) -> DataResponse[GovernanceOptimizationShadowRead]:
+    data = await run_shadow_evaluation(session, current_user, rule_id)
+    return DataResponse(data=data)
 
 
 instrument_governance_routes(router)

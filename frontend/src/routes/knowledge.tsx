@@ -36,6 +36,7 @@ import {
   downloadKnowledgeDocumentFile,
   getKnowledgeConversation,
   getKnowledgeRelatedDocuments,
+  generateKnowledgeDocumentSummary,
   isUuid,
   listKnowledgeDocumentApprovalHistory,
   streamKnowledgeAsk,
@@ -58,6 +59,7 @@ import {
   useUploadKnowledgeDocumentMutation,
 } from "@/lib/queries/knowledge";
 import { KnowledgeHistoryPopover } from "@/components/knowledge/KnowledgeHistoryPopover";
+import { KnowledgeLearningPanel } from "@/components/knowledge/KnowledgeLearningPanel";
 import { DocBadge, Field, MetaRow, QualityScoreBadge } from "@/components/knowledge/knowledge-ui";
 import { TypewriterText } from "@/components/knowledge/TypewriterText";
 import { TypingIndicator } from "@/components/knowledge/TypingIndicator";
@@ -118,7 +120,15 @@ import {
   Upload,
 } from "lucide-react";
 
-export const Route = createFileRoute("/knowledge")({ component: KnowledgePage });
+export const Route = createFileRoute("/knowledge")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    documentId:
+      typeof search.documentId === "string" && isUuid(search.documentId)
+        ? search.documentId
+        : undefined,
+  }),
+  component: KnowledgePage,
+});
 
 const LazyKnowledgeDocumentTabPanels = lazy(() =>
   import("@/components/knowledge/KnowledgeDocumentTabPanels").then((module) => ({
@@ -594,6 +604,7 @@ function processingProgress(status: KnowledgeProcessingStatusApi): number {
 function KnowledgePage() {
   const user = useAuthStore((s) => s.user);
   const queryClient = useQueryClient();
+  const { documentId: deepLinkedDocumentId } = Route.useSearch();
   const { ref: librarySectionRef } = useLazyWhenVisible();
   const { ref: askPanelRef, isVisible: askPanelVisible } = useLazyWhenVisible();
   const [retrievalSettingsRequested, setRetrievalSettingsRequested] = useState(false);
@@ -755,6 +766,12 @@ function KnowledgePage() {
   const canReviewApprovals =
     knowledgePermissions?.can_review_approvals ??
     (user?.role === "bsg_leadership" || user?.role === "super_admin");
+  const canManageLearning =
+    user?.role === "delivery_manager" ||
+    user?.role === "bsg_leadership" ||
+    user?.role === "super_admin";
+
+  const [summaryPending, setSummaryPending] = useState(false);
 
   const handleDocumentLoaded = useCallback(
     (document: KnowledgeDocument) => {
@@ -764,6 +781,32 @@ function KnowledgePage() {
     },
     [queryClient],
   );
+
+  const handleGenerateSummary = useCallback(async () => {
+    if (!selectedDoc?.id) return;
+    setSummaryPending(true);
+    try {
+      const summary = await generateKnowledgeDocumentSummary(selectedDoc.id);
+      patchKnowledgeDocumentsCache(queryClient, (current) =>
+        current.map((item) =>
+          item.id === selectedDoc.id
+            ? {
+                ...item,
+                executiveSummary: summary.executive_summary,
+                keyProcedures: summary.key_procedures,
+                importantWarnings: summary.important_warnings,
+                affectedDepartments: summary.affected_departments,
+                summaryGeneratedAt: summary.summary_generated_at,
+              }
+            : item,
+        ),
+      );
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSummaryPending(false);
+    }
+  }, [selectedDoc?.id, queryClient]);
 
   const { loadingDetail, loadingVersions } = useDocumentTabLoader({
     documentId: selectedDoc?.id ?? null,
@@ -1817,6 +1860,11 @@ function KnowledgePage() {
     if (openDialog) setIsDocumentOpen(true);
   };
 
+  useEffect(() => {
+    if (!deepLinkedDocumentId) return;
+    openDocumentWithChunk(deepLinkedDocumentId, null, true);
+  }, [deepLinkedDocumentId]);
+
   const openCreateFolder = () => {
     setCreateFolderName("");
     setCreateFolderError("");
@@ -1989,6 +2037,14 @@ function KnowledgePage() {
                 )}
               </div>
             </div>
+          )}
+
+          {!loadingDocs && canManageLearning && (
+            <KnowledgeLearningPanel
+              enabled
+              selectedDocumentId={selectedDoc?.id ?? null}
+              canManage={canManageLearning}
+            />
           )}
 
           {!loadingDocs && (
@@ -2909,6 +2965,9 @@ function KnowledgePage() {
                           compareLeftId={compareLeftId}
                           compareRightId={compareRightId}
                           relatedKnowledge={relatedKnowledgeQuery.data ?? null}
+                          canGenerateSummary={canManageLearning}
+                          summaryPending={summaryPending}
+                          onGenerateSummary={() => void handleGenerateSummary()}
                           onCompareLeftChange={setCompareLeftId}
                           onCompareRightChange={setCompareRightId}
                           onRunVersionCompare={() => void runVersionCompare()}

@@ -1,6 +1,5 @@
-from uuid import uuid4
-
 import inspect
+from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
@@ -123,7 +122,13 @@ async def test_instrument_governance_endpoint_records_optional_meta(
 
         timer = get_governance_timer()
         assert timer is not None
-        timer.record_meta(execute_count=1, cache_hit=False)
+        timer.record_meta(
+            execute_count=1,
+            cache_hit=False,
+            activity_row_count=8,
+            trend_bucket_count=30,
+            project_row_count=12,
+        )
         return ListResponse(data=[1], pagination=Pagination(limit=limit, offset=offset))
 
     result = await handler(current_user=_user(), limit=6, offset=0)
@@ -134,6 +139,9 @@ async def test_instrument_governance_endpoint_records_optional_meta(
     assert entry["offset"] == 0
     assert entry["execute_count"] == 1
     assert entry["cache_hit"] is False
+    assert entry["activity_row_count"] == 8
+    assert entry["trend_bucket_count"] == 30
+    assert entry["project_row_count"] == 12
 
 
 @pytest.mark.asyncio
@@ -172,7 +180,12 @@ async def test_governance_baseline_endpoints_emit_timing_logs(
             )
         )
 
-    async def _analytics(_session: object, _user: CurrentUser, *, days: int) -> GovernanceAnalyticsRead:
+    async def _analytics(
+        _session: object,
+        _user: CurrentUser,
+        *,
+        days: int,
+    ) -> GovernanceAnalyticsRead:
         return GovernanceAnalyticsRead(
             generated_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
             date_range_days=days,

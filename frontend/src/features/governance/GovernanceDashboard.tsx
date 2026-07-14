@@ -1,4 +1,5 @@
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Plus, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
@@ -16,7 +17,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { GovernanceFiltersBar } from "@/features/governance/GovernanceFiltersBar";
-import { GovernanceKpiStrip } from "@/features/governance/GovernanceKpiStrip";
 import {
   collectProjectNamesFromGovernanceRows,
   GOVERNANCE_ANALYTICS_DEFER_MS,
@@ -38,6 +38,7 @@ import {
   LazyGovernanceWorkflowDialogs,
   LazyProjectChartersPanel,
 } from "@/features/governance/governance-lazy";
+import { Route as GovernanceRoute } from "@/routes/governance";
 import type { WorkflowDialogState } from "@/features/governance/governance-workflow-types";
 import { ProjectGovernanceSheet } from "@/features/governance/ProjectGovernanceSheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -160,6 +161,10 @@ function replaceOrAddById<T extends { id: string }>(rows: T[], next: T): T[] {
 
 function canWriteGovernance(role: AppRole | undefined): boolean {
   return role === "delivery_manager" || role === "super_admin";
+}
+
+function canPublishCharter(role: AppRole | undefined): boolean {
+  return role === "bsg_leadership" || role === "super_admin";
 }
 
 function canSeeDeliveryContext(role: AppRole | undefined): boolean {
@@ -329,6 +334,7 @@ export function GovernanceDashboard() {
   const user = useAuthStore((state) => state.user);
   const role = user?.role;
   const canWrite = canWriteGovernance(role);
+  const canPublish = canPublishCharter(role);
   const showDelivery = canSeeDeliveryContext(role);
   const isClient = role === "client";
   const isReadOnly = role === "bsg_leadership";
@@ -424,7 +430,7 @@ export function GovernanceDashboard() {
   });
   const registerQuery = useQuery({
     ...governanceRegisterQueryOptions(registerListParams),
-    enabled: wantsRegisterData,
+    enabled: !isClient || wantsRegisterData,
     placeholderData: keepPreviousData,
   });
 
@@ -436,9 +442,40 @@ export function GovernanceDashboard() {
     placeholderData: keepPreviousData,
   });
 
-  const [analyticsRangeDays, setAnalyticsRangeDays] = useState(GOVERNANCE_DEFAULT_ANALYTICS_DAYS);
+  const navigate = useNavigate({ from: GovernanceRoute.fullPath });
+  const search = GovernanceRoute.useSearch();
+  const [analyticsRangeDays, setAnalyticsRangeDays] = useState(
+    search.days ?? GOVERNANCE_DEFAULT_ANALYTICS_DAYS,
+  );
+  const [analyticsProjectFilter, setAnalyticsProjectFilter] = useState<string | null>(
+    search.projectId ?? null,
+  );
+  const [analyticsVerticalFilter, setAnalyticsVerticalFilter] = useState<string | null>(
+    search.vertical ?? null,
+  );
+
+  useEffect(() => {
+    void navigate({
+      search: (prev) => ({
+        ...prev,
+        days: analyticsRangeDays,
+        projectId: analyticsProjectFilter ?? undefined,
+        vertical: analyticsVerticalFilter ?? undefined,
+      }),
+      replace: true,
+    });
+  }, [analyticsProjectFilter, analyticsRangeDays, analyticsVerticalFilter, navigate]);
+
+  const analyticsFilters = useMemo(
+    () => ({
+      days: analyticsRangeDays,
+      projectId: analyticsProjectFilter,
+      vertical: analyticsVerticalFilter,
+    }),
+    [analyticsProjectFilter, analyticsRangeDays, analyticsVerticalFilter],
+  );
   const analyticsSummaryQuery = useQuery({
-    ...governanceAnalyticsSummaryQueryOptions(analyticsRangeDays),
+    ...governanceAnalyticsSummaryQueryOptions(analyticsFilters),
     enabled: shouldEnableGovernanceAnalyticsSummary(
       showExecutiveAnalytics,
       analyticsDeferredReady,
@@ -452,7 +489,7 @@ export function GovernanceDashboard() {
     detailTriggerReady: analyticsDetailIdleReady || analyticsDetailInView,
   });
   const analyticsDetailQuery = useQuery({
-    ...governanceAnalyticsDetailQueryOptions(analyticsRangeDays),
+    ...governanceAnalyticsDetailQueryOptions(analyticsFilters),
     enabled: analyticsDetailEnabled,
     placeholderData: keepPreviousData,
   });
@@ -473,8 +510,26 @@ export function GovernanceDashboard() {
   });
   const projectsQuery = useQuery({
     ...projectsQueryOptions,
-    enabled: needsProjects,
+    enabled: needsProjects || showExecutiveAnalytics,
   });
+  const analyticsProjectOptions = useMemo(
+    () =>
+      (projectsQuery.data ?? []).map((project) => ({
+        id: project.id,
+        name: project.name,
+      })),
+    [projectsQuery.data],
+  );
+  const analyticsVerticalOptions = useMemo(() => {
+    const values = new Set<string>();
+    for (const project of projectsQuery.data ?? []) {
+      if (project.vertical) values.add(project.vertical);
+    }
+    for (const row of mergedAnalytics?.portfolio_risk_ranking ?? []) {
+      if (row.vertical) values.add(row.vertical);
+    }
+    return [...values].sort();
+  }, [mergedAnalytics?.portfolio_risk_ranking, projectsQuery.data]);
   const usersQuery = useQuery({
     queryKey: ["users"],
     queryFn: listUsers,
@@ -550,11 +605,11 @@ export function GovernanceDashboard() {
     analyticsDetailQuery.isFetching &&
     !(analyticsDetailQuery.data || analyticsDetailQuery.isPlaceholderData);
 
-  const kpis = bootstrapQuery.data?.kpis ?? EMPTY_GOVERNANCE_KPIS;
+  const bootstrapKpis = bootstrapQuery.data?.kpis ?? EMPTY_GOVERNANCE_KPIS;
 
   const data = useMemo<GovernanceBootstrap>(() => {
     return {
-      kpis,
+      kpis: bootstrapKpis,
       dependencies: dependenciesQuery.data?.items ?? [],
       actions: actionsQuery.data?.items ?? [],
       escalations: escalationsQuery.data?.items ?? [],
@@ -564,7 +619,7 @@ export function GovernanceDashboard() {
     actionsQuery.data,
     dependenciesQuery.data,
     escalationsQuery.data,
-    kpis,
+    bootstrapKpis,
     scopeStatesQuery.data,
   ]);
 
@@ -674,6 +729,24 @@ export function GovernanceDashboard() {
       mapRegisterApiRow(row, portfolioQuery.data),
     );
   }, [portfolioQuery.data, registerQuery.data?.items]);
+
+  const dynamicKpis = useMemo<GovernanceBootstrap["kpis"]>(() => {
+    if (registerRows.length === 0 && !registerQuery.data) {
+      return bootstrapKpis;
+    }
+    const openActions = registerRows.reduce((sum, row) => sum + row.openActions, 0);
+    return {
+      open_actions: openActions,
+      overdue_actions: bootstrapKpis.overdue_actions || openActions,
+      open_escalations: registerRows.reduce((sum, row) => sum + row.openEscalations, 0),
+      blocking_dependencies: registerRows.reduce(
+        (sum, row) => sum + row.blockingDependencies,
+        0,
+      ),
+      at_risk_items: registerRows.filter((row) => row.health !== "Green").length,
+      sla_adherence_pct: bootstrapKpis.sla_adherence_pct,
+    };
+  }, [bootstrapKpis, registerQuery.data, registerRows]);
 
   const projectNameById = useMemo(() => {
     const fromRows = collectProjectNamesFromGovernanceRows([
@@ -953,11 +1026,6 @@ export function GovernanceDashboard() {
         </div>
       )}
 
-      <GovernanceKpiStrip
-        kpis={kpis}
-        isLoading={bootstrapQuery.isLoading && !bootstrapQuery.data}
-      />
-
       {showExecutiveAnalytics && (
         <>
           {analyticsSummaryQuery.isError && !mergedAnalytics ? (
@@ -975,12 +1043,20 @@ export function GovernanceDashboard() {
             <Suspense fallback={<ExecutiveDashboardFallback />}>
               <LazyExecutiveGovernanceDashboard
                 analytics={mergedAnalytics}
+                kpis={dynamicKpis}
                 summaryLoading={analyticsSummaryLoading}
                 detailLoading={analyticsDetailLoading}
                 rangeDays={analyticsRangeDays}
                 onRangeChange={setAnalyticsRangeDays}
+                projectFilter={analyticsProjectFilter}
+                onProjectFilterChange={setAnalyticsProjectFilter}
+                verticalFilter={analyticsVerticalFilter}
+                onVerticalFilterChange={setAnalyticsVerticalFilter}
+                projectOptions={analyticsProjectOptions}
+                verticalOptions={analyticsVerticalOptions}
                 onOpenProject={openAnalyticsProjectSheet}
                 detailSectionRef={analyticsDetailSectionRef}
+                canWrite={!isClient}
               />
             </Suspense>
           )}
@@ -1499,6 +1575,7 @@ export function GovernanceDashboard() {
                   <LazyProjectChartersPanel
                     projects={projectOptions}
                     canWrite={canWrite}
+                    canPublish={canPublish}
                     isClient={isClient}
                     isReadOnly={isReadOnly}
                     loadCharters
