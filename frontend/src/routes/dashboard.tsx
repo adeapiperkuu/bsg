@@ -1,22 +1,6 @@
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import {
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
-  PieChart,
-  Pie,
-  Cell,
-  ResponsiveContainer,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ReferenceLine,
-} from "recharts";
 import {
   Card,
   SectionHeader,
@@ -48,10 +32,17 @@ import {
   useOperationalTowerQuery,
 } from "@/lib/queries/dashboard";
 
+// Charts pull in `recharts` (~300 KB); load them in a separate chunk so the KPI
+// cards paint first and the heavy dependency stays out of the critical path.
+const DashboardCharts = lazy(() => import("@/features/dashboard/DashboardCharts"));
+
 export const Route = createFileRoute("/dashboard")({
   component: Dashboard,
-  loader: async ({ context: { queryClient } }) => {
-    await queryClient.prefetchQuery(operationalTowerQueryOptions);
+  loader: ({ context: { queryClient } }) => {
+    // Warm the cache but do NOT await — the route must render immediately so the
+    // KPI cards and shell are interactive while the payload is still in flight.
+    // The component reads the query with graceful placeholders until data lands.
+    void queryClient.prefetchQuery(operationalTowerQueryOptions);
   },
 });
 
@@ -59,19 +50,6 @@ export const Route = createFileRoute("/dashboard")({
 const RECS_PREVIEW = 3;
 const MILESTONES_PREVIEW = 5;
 const ACTIVITY_PREVIEW = 3;
-
-const axisProps = {
-  tick: { fill: "#8b92a5", fontSize: 11 },
-  axisLine: { stroke: "#2a2d3a" },
-  tickLine: { stroke: "#2a2d3a" },
-};
-const tooltipStyle = {
-  backgroundColor: "#20242f",
-  border: "1px solid #2a2d3a",
-  borderRadius: 8,
-  fontSize: 12,
-  color: "#f0f2f7",
-};
 
 function formatRelative(iso: string): string {
   const then = new Date(iso).getTime();
@@ -143,6 +121,18 @@ function FilterDropdown({
         ))}
       </SelectContent>
     </Select>
+  );
+}
+
+/** Placeholder that reserves the charts' layout height while the chunk loads. */
+function ChartsSkeleton() {
+  return (
+    <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-3">
+      <Card className="lg:col-span-2 h-[292px] animate-pulse"><span /></Card>
+      <Card className="h-[292px] animate-pulse"><span /></Card>
+      <Card className="h-[272px] animate-pulse"><span /></Card>
+      <Card className="lg:col-span-2 h-[272px] animate-pulse"><span /></Card>
+    </div>
   );
 }
 
@@ -297,132 +287,18 @@ function Dashboard() {
         />
       </div>
 
-      {/* 1b. Trend charts — delivery risk, portfolio health, quality, utilization */}
-      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <SectionHeader
-            title="Delivery Risk Trend"
-            sub="8-week rolling risk score per project"
-            right={<StatusPill status={atRiskCount ? "Warning" : "On Track"} />}
-          />
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={riskTrend.data}>
-              <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" />
-              <XAxis dataKey="week" {...axisProps} />
-              <YAxis {...axisProps} />
-              <Tooltip contentStyle={tooltipStyle} />
-              <Legend wrapperStyle={{ fontSize: 11, color: "#8b92a5" }} />
-              {riskTrend.series.map((s) => (
-                <Line
-                  key={s.name}
-                  type="monotone"
-                  dataKey={s.name}
-                  stroke={s.color}
-                  strokeWidth={2}
-                  dot={false}
-                />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
-          <div className="mt-2 text-xs text-muted-foreground">
-            {atRiskCount} at risk this week
-          </div>
-        </Card>
-
-        <Card>
-          <SectionHeader title="Operational Health" sub="Distribution across portfolio" />
-          <div className="relative">
-            <ResponsiveContainer width="100%" height={220}>
-              <PieChart>
-                <Pie
-                  data={healthDistribution}
-                  dataKey="value"
-                  innerRadius={55}
-                  outerRadius={85}
-                  paddingAngle={3}
-                  stroke="none"
-                >
-                  {healthDistribution.map((d) => (
-                    <Cell key={d.name} fill={d.color} />
-                  ))}
-                </Pie>
-                <Tooltip contentStyle={tooltipStyle} />
-              </PieChart>
-            </ResponsiveContainer>
-            <div className="pointer-events-none absolute inset-0 grid place-items-center">
-              <div className="text-center">
-                <div className="text-2xl font-semibold">{totalProjects}</div>
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                  Projects
-                </div>
-              </div>
-            </div>
-          </div>
-          <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-muted-foreground">
-            {healthDistribution.map((d) => (
-              <span key={d.name} className="flex items-center gap-1.5">
-                <span className="h-2 w-2 rounded-full" style={{ background: d.color }} />
-                {d.name} · {d.value}
-              </span>
-            ))}
-          </div>
-        </Card>
-
-        <Card>
-          <SectionHeader
-            title="Quality Trend"
-            sub="Gold-set & IAA · 12 weeks"
-            right={<StatusPill status={iaaTrendingDown ? "Warning" : "On Track"} />}
-          />
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={qualityTrend}>
-              <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" />
-              <XAxis dataKey="week" {...axisProps} />
-              <YAxis yAxisId="l" {...axisProps} domain={[80, 100]} />
-              <YAxis yAxisId="r" orientation="right" {...axisProps} domain={[0.75, 0.95]} />
-              <Tooltip contentStyle={tooltipStyle} />
-              <Line
-                yAxisId="l"
-                dataKey="goldAccuracy"
-                stroke="#0D1240"
-                strokeWidth={2}
-                dot={false}
-                name="Gold Acc %"
-              />
-              <Line
-                yAxisId="r"
-                dataKey="iaa"
-                stroke="#3b82f6"
-                strokeWidth={2}
-                dot={false}
-                name="IAA"
-              />
-            </LineChart>
-          </ResponsiveContainer>
-          {iaaTrendingDown && (
-            <div className="mt-2 text-xs">
-              <span className="rounded bg-[color:var(--danger)]/15 px-1.5 py-0.5 text-[10px] font-medium text-[color:var(--danger)]">
-                Drift Alert
-              </span>{" "}
-              Inter-annotator agreement trending down
-            </div>
-          )}
-        </Card>
-
-        <Card className="lg:col-span-2">
-          <SectionHeader title="Resource Utilization" sub="By team · threshold 85%" />
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={utilization} layout="vertical" margin={{ left: 20 }}>
-              <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" horizontal={false} />
-              <XAxis type="number" {...axisProps} domain={[0, 100]} />
-              <YAxis dataKey="team" type="category" {...axisProps} width={110} />
-              <Tooltip contentStyle={tooltipStyle} />
-              <ReferenceLine x={85} stroke="#ef4444" strokeDasharray="4 4" />
-              <Bar dataKey="value" fill="#0D1240" radius={[0, 4, 4, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </Card>
-      </div>
+      {/* 1b. Trend charts — lazily loaded so KPI cards paint first (recharts is heavy). */}
+      <Suspense fallback={<ChartsSkeleton />}>
+        <DashboardCharts
+          riskTrend={riskTrend}
+          qualityTrend={qualityTrend}
+          utilization={utilization}
+          healthDistribution={healthDistribution}
+          totalProjects={totalProjects}
+          atRiskCount={atRiskCount}
+          iaaTrendingDown={iaaTrendingDown}
+        />
+      </Suspense>
 
       {/* 2 + 3. Critical Alerts (primary) beside AI Recommendations */}
       <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-3">
