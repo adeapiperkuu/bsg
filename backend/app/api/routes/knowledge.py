@@ -660,7 +660,7 @@ async def knowledge_health_score(
         require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
     ),
 ) -> DataResponse[KnowledgeHealthScoreRead]:
-    await set_rls_context(session, current_user.id, current_user.org_id, current_user.role.value)
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
     return DataResponse(data=await get_knowledge_health_score(session, current_user))
 
 
@@ -673,7 +673,7 @@ async def knowledge_list_suggestions(
         require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
     ),
 ) -> ListResponse[KnowledgeSuggestionRead]:
-    await set_rls_context(session, current_user.id, current_user.org_id, current_user.role.value)
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
     rows = await list_knowledge_suggestions(session, current_user, status=status, document_id=document_id)
     return ListResponse(data=rows, pagination=Pagination(total=len(rows), limit=len(rows), offset=0))
 
@@ -686,7 +686,7 @@ async def knowledge_generate_suggestions(
         require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
     ),
 ) -> ListResponse[KnowledgeSuggestionRead]:
-    await set_rls_context(session, current_user.id, current_user.org_id, current_user.role.value)
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
     rows = await generate_content_suggestions(session, current_user, document_id=document_id)
     await session.commit()
     return ListResponse(data=rows, pagination=Pagination(total=len(rows), limit=len(rows), offset=0))
@@ -700,7 +700,7 @@ async def knowledge_apply_suggestion(
         require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
     ),
 ) -> DataResponse[KnowledgeSuggestionRead]:
-    await set_rls_context(session, current_user.id, current_user.org_id, current_user.role.value)
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
     row = await apply_knowledge_suggestion(session, current_user, suggestion_id)
     await session.commit()
     return DataResponse(data=row)
@@ -714,7 +714,7 @@ async def knowledge_dismiss_suggestion(
         require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
     ),
 ) -> DataResponse[KnowledgeSuggestionRead]:
-    await set_rls_context(session, current_user.id, current_user.org_id, current_user.role.value)
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
     row = await dismiss_knowledge_suggestion(session, current_user, suggestion_id)
     await session.commit()
     return DataResponse(data=row)
@@ -728,7 +728,7 @@ async def knowledge_gap_suggestions(
         require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
     ),
 ) -> ListResponse[KnowledgeGapSuggestionRead]:
-    await set_rls_context(session, current_user.id, current_user.org_id, current_user.role.value)
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
     rows = await get_gap_resolution_suggestions(session, current_user, min_occurrences=min_occurrences)
     await session.commit()
     return ListResponse(data=rows, pagination=Pagination(total=len(rows), limit=len(rows), offset=0))
@@ -741,7 +741,7 @@ async def knowledge_retrieval_quality(
         require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
     ),
 ) -> DataResponse[KnowledgeRetrievalQualityRead]:
-    await set_rls_context(session, current_user.id, current_user.org_id, current_user.role.value)
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
     return DataResponse(data=await get_retrieval_quality_analysis(session, current_user))
 
 
@@ -756,7 +756,7 @@ async def knowledge_document_duplicates(
         require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
     ),
 ) -> ListResponse[KnowledgeDuplicateMatchRead]:
-    await set_rls_context(session, current_user.id, current_user.org_id, current_user.role.value)
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
     rows = await list_document_duplicates(session, current_user, document_id)
     return ListResponse(data=rows, pagination=Pagination(total=len(rows), limit=len(rows), offset=0))
 
@@ -770,7 +770,7 @@ async def knowledge_duplicates_compare(
         require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
     ),
 ) -> DataResponse[KnowledgeDuplicateCompareRead]:
-    await set_rls_context(session, current_user.id, current_user.org_id, current_user.role.value)
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
     return DataResponse(data=await compare_duplicate_documents(session, current_user, left_id, right_id))
 
 
@@ -785,7 +785,7 @@ async def knowledge_generate_summary(
         require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
     ),
 ) -> DataResponse[KnowledgeDocumentAiSummaryRead]:
-    await set_rls_context(session, current_user.id, current_user.org_id, current_user.role.value)
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
     row = await generate_document_ai_summary(session, current_user, document_id)
     await session.commit()
     return DataResponse(data=row)
@@ -802,7 +802,7 @@ async def knowledge_related_documents(
         require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
     ),
 ) -> DataResponse[KnowledgeRelatedKnowledgeRead]:
-    await set_rls_context(session, current_user.id, current_user.org_id, current_user.role.value)
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
     return DataResponse(data=await get_related_knowledge_for_document(session, current_user, document_id))
 
 
@@ -813,5 +813,5 @@ async def knowledge_run_evaluation(
         require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
     ),
 ) -> DataResponse[KnowledgeEvaluationReportRead]:
-    await set_rls_context(session, current_user.id, current_user.org_id, current_user.role.value)
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
     return DataResponse(data=await run_knowledge_evaluation_report(session, current_user))
