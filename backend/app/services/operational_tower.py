@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, timedelta
-from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -565,10 +564,10 @@ async def get_executive_summary(
     if current_user.role not in _ORG_WIDE_ROLES:
         return None
 
-    has_scope = (
+    in_scope = (
         await session.execute(scoped_project_query(current_user).limit(1))
-    ).first()
-    if has_scope is None:
+    ).scalars().all()
+    if not in_scope:
         return None
 
     row = (
