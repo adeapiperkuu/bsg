@@ -6,7 +6,7 @@ from decimal import Decimal
 from time import perf_counter
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal
@@ -390,19 +390,42 @@ async def list_admin_projects(session: AsyncSession) -> list[AdminProjectRead]:
     for team in all_teams:
         teams_by_project.setdefault(team.project_id, {})[team.id] = team
 
+    snapshots_by_project: dict[UUID, list] = {}
+    snapshot_rows = (
+        await session.execute(
+            select(
+                QualitySnapshot.project_id,
+                QualitySnapshot.team_id,
+                QualitySnapshot.iso_year,
+                QualitySnapshot.iso_week,
+                QualitySnapshot.evaluated_item_count,
+            ).order_by(
+                QualitySnapshot.iso_year.desc(), QualitySnapshot.iso_week.desc()
+            )
+        )
+    ).all()
+    for snap in snapshot_rows:
+        snapshots_by_project.setdefault(snap.project_id, []).append(snap)
+
+    drift_by_project: dict[UUID, int] = dict(
+        (
+            await session.execute(
+                select(RiskAlert.project_id, func.count())
+                .where(
+                    RiskAlert.alert_type == AlertType.QUALITY_DRIFT,
+                    RiskAlert.deleted_at.is_(None),
+                    RiskAlert.status.in_([AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED]),
+                )
+                .group_by(RiskAlert.project_id)
+            )
+        ).all()
+    )
+
     results: list[AdminProjectRead] = []
     for project, org in projects:
-        snapshots = list(
-            (
-                await session.execute(
-                    select(QualitySnapshot)
-                    .where(QualitySnapshot.project_id == project.id)
-                    .order_by(QualitySnapshot.iso_year.desc(), QualitySnapshot.iso_week.desc())
-                )
-            ).scalars()
-        )
+        snapshots = snapshots_by_project.get(project.id, [])
 
-        latest_by_team: dict[UUID, QualitySnapshot] = {}
+        latest_by_team: dict[UUID, object] = {}
         for snap in snapshots:
             if snap.team_id not in latest_by_team:
                 latest_by_team[snap.team_id] = snap
@@ -417,17 +440,7 @@ async def list_admin_projects(session: AsyncSession) -> list[AdminProjectRead]:
             if snap.evaluated_item_count is not None and snap.evaluated_item_count < MIN_EVALUATED_ITEMS
         ]
 
-        drift_count = (
-            await session.execute(
-                select(RiskAlert).where(
-                    RiskAlert.project_id == project.id,
-                    RiskAlert.alert_type == AlertType.QUALITY_DRIFT,
-                    RiskAlert.deleted_at.is_(None),
-                    RiskAlert.status.in_([AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED]),
-                )
-            )
-        ).scalars()
-        active_drift = len(list(drift_count))
+        active_drift = drift_by_project.get(project.id, 0)
 
         latest_iso_year = snapshots[0].iso_year if snapshots else None
         latest_iso_week = snapshots[0].iso_week if snapshots else None
