@@ -8,7 +8,7 @@ import {
   fetchTowerPulse,
   fetchTowerWork,
 } from "@/lib/api";
-import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
+import { queryKeys, TOWER_RISK_POLL_MS, TOWER_STALE_TIME_MS } from "@/lib/queries/keys";
 
 /**
  * The Operational Tower's sections are separate queries so the browser requests them in
@@ -18,40 +18,43 @@ import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
  * wait on its slowest part.
  */
 
+const towerSectionDefaults = {
+  staleTime: TOWER_STALE_TIME_MS,
+  refetchOnWindowFocus: true,
+} as const;
+
 export const towerPulseQueryOptions = queryOptions({
   queryKey: queryKeys.towerPulse,
   queryFn: fetchTowerPulse,
-  staleTime: STALE_TIME_MS,
+  ...towerSectionDefaults,
+  refetchInterval: TOWER_RISK_POLL_MS,
 });
 
 export const towerEscalationsQueryOptions = queryOptions({
   queryKey: queryKeys.towerEscalations,
   queryFn: fetchTowerEscalations,
-  staleTime: STALE_TIME_MS,
+  ...towerSectionDefaults,
+  refetchInterval: TOWER_RISK_POLL_MS,
 });
 
 export const towerHealthQueryOptions = queryOptions({
   queryKey: queryKeys.towerHealth,
   queryFn: fetchTowerHealth,
-  staleTime: STALE_TIME_MS,
+  ...towerSectionDefaults,
 });
 
 export const towerWorkQueryOptions = queryOptions({
   queryKey: queryKeys.towerWork,
   queryFn: fetchTowerWork,
-  staleTime: STALE_TIME_MS,
+  ...towerSectionDefaults,
 });
 
 export const towerActivityQueryOptions = queryOptions({
   queryKey: queryKeys.towerActivity,
   queryFn: fetchTowerActivity,
-  staleTime: STALE_TIME_MS,
+  ...towerSectionDefaults,
 });
 
-/**
- * Kick off every tower section at once, without awaiting: the route renders immediately and
- * each section paints as its own request lands.
- */
 export function prefetchTowerSections(queryClient: QueryClient): void {
   void queryClient.prefetchQuery(towerPulseQueryOptions);
   void queryClient.prefetchQuery(towerEscalationsQueryOptions);
@@ -60,10 +63,6 @@ export function prefetchTowerSections(queryClient: QueryClient): void {
   void queryClient.prefetchQuery(towerActivityQueryOptions);
 }
 
-/**
- * The executive summary is AI-authored and stored, so it can be cached longer and is
- * fetched independently of the deterministic dashboard payload — it never blocks render.
- */
 export const executiveSummaryQueryOptions = queryOptions({
   queryKey: queryKeys.executiveSummary,
   queryFn: fetchExecutiveSummary,

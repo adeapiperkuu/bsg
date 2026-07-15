@@ -40,21 +40,15 @@ import {
   useTowerWorkQuery,
 } from "@/lib/queries/dashboard";
 
-// Charts pull in `recharts` (~300 KB); load them in a separate chunk so the KPI
-// cards paint first and the heavy dependency stays out of the critical path.
 const DashboardCharts = lazy(() => import("@/features/dashboard/DashboardCharts"));
 
 export const Route = createFileRoute("/dashboard")({
   component: Dashboard,
   loader: ({ context: { queryClient } }) => {
-    // Kick off every section at once and do NOT await — the route must render immediately
-    // so the shell is interactive while the payloads are in flight, and each section paints
-    // independently as its own request lands.
     prefetchTowerSections(queryClient);
   },
 });
 
-// How many rows each secondary list shows before "View all".
 const RECS_PREVIEW = 3;
 const MILESTONES_PREVIEW = 5;
 const ACTIVITY_PREVIEW = 3;
@@ -89,7 +83,6 @@ const EVIDENCE_TYPES = "dependency|action|escalation|scope_state|delivery_signal
 const INLINE_EVIDENCE_RE = new RegExp(`\\s*\\((?:${EVIDENCE_TYPES}):[0-9a-fA-F-]{8,}\\)`, "g");
 const BOLD_EVIDENCE_RE = new RegExp(`\\*\\*(${EVIDENCE_TYPES}):[0-9a-fA-F-]{8,}\\*\\*`, "g");
 
-/** Strip the redundant top-level H1 and noisy raw evidence UUID tokens for readable display. */
 function prepareSummary(text: string): string {
   return sanitizeDeliveryMarkdown(text)
     .replace(/^#\s+.+\n+/, "")
@@ -99,7 +92,6 @@ function prepareSummary(text: string): string {
 
 const ALL = "all";
 
-/** Compact dropdown filter used in section headers. Values are humanised for display. */
 function FilterDropdown({
   value,
   onChange,
@@ -132,7 +124,6 @@ function FilterDropdown({
   );
 }
 
-/** Placeholder that reserves the charts' layout height while the chunk loads. */
 function ChartsSkeleton() {
   return (
     <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-3">
@@ -155,7 +146,6 @@ function ViewAllButton({ onClick, label }: { onClick: () => void; label: string 
   );
 }
 
-/** "View Weekly Summary" — exposes the stored executive summary behind an action (lazy-loaded). */
 function WeeklySummaryDialog() {
   const [open, setOpen] = useState(false);
   const { data: summary, isLoading } = useQuery({
@@ -198,15 +188,6 @@ function WeeklySummaryDialog() {
   );
 }
 
-/**
- * States when this dashboard's data was captured.
- *
- * The cache is persisted across reloads, so the page can paint a full portfolio instantly
- * from data read minutes or hours ago while the refresh is still in flight. Without this
- * stamp, "0 critical escalations" from the last session is indistinguishable from a live
- * zero — the reader cannot tell they are looking at history. Always rendered when data is
- * on screen, never collapsed to a bare spinner.
- */
 function FreshnessStamp({
   updatedAt,
   isFetching,
@@ -218,8 +199,6 @@ function FreshnessStamp({
 }) {
   const [, forceTick] = useState(0);
 
-  // The label is relative ("4m ago"), so re-render periodically or a left-open tab keeps
-  // claiming the data is as fresh as it was on mount.
   useEffect(() => {
     const id = setInterval(() => forceTick((n) => n + 1), 30_000);
     return () => clearInterval(id);
@@ -235,23 +214,19 @@ function FreshnessStamp({
 
   return (
     <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-      {isFetching && (
-        <span
-          className="size-1.5 animate-pulse rounded-full bg-amber-500"
-          aria-hidden="true"
-        />
-      )}
-      <span>
-        {isFetching ? "Refreshing · showing data from " : "Updated "}
-        {formatRelative(new Date(updatedAt).toISOString())}
-      </span>
+      <span
+        className={`size-1.5 rounded-full ${
+          isFetching ? "animate-pulse bg-amber-500" : "bg-transparent"
+        }`}
+        aria-hidden="true"
+      />
+      <span>Updated {formatRelative(new Date(updatedAt).toISOString())}</span>
+      <span className="sr-only">{isFetching ? " — refreshing now" : ""}</span>
     </span>
   );
 }
 
 function Dashboard() {
-  // Five independent queries: each section renders the moment its own request lands, rather
-  // than the whole page waiting on the slowest (health, which runs the scoring pipeline).
   const pulse = useTowerPulseQuery();
   const escalations = useTowerEscalationsQuery();
   const health = useTowerHealthQuery();
@@ -271,8 +246,6 @@ function Dashboard() {
   const atRiskCount = healthDistribution.find((d) => d.name === "At Risk")?.value ?? 0;
   const criticalEscalations = escalations.data?.criticalEscalations ?? 0;
 
-  // The page is as old as its oldest section; report that rather than the newest, so the
-  // stamp can never overstate freshness.
   const sections = [pulse, escalations, health, work, activityQuery];
   const loadedSections = sections.filter((s) => s.data !== undefined);
   const dataUpdatedAt = loadedSections.length
@@ -292,7 +265,6 @@ function Dashboard() {
   const [showAllMilestones, setShowAllMilestones] = useState(false);
   const [showAllActivity, setShowAllActivity] = useState(false);
 
-  // Dropdown filters for the three list/table sections.
   const [alertSev, setAlertSev] = useState(ALL);
   const [recPriority, setRecPriority] = useState(ALL);
   const [milestoneStatus, setMilestoneStatus] = useState(ALL);
@@ -341,10 +313,6 @@ function Dashboard() {
 
       {/* 1. KPIs — portfolio health at a glance */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        {/* Each card is fed by its own section, so they fill in as their data arrives
-            rather than all four waiting on the slowest. Active Projects and Avg Quality
-            come from the cheap pulse request and land first; Schedule Confidence needs the
-            scoring pipeline and lands last. */}
         <KpiCard
           label="Active Projects"
           value={pulse.data?.activeProjects ?? "—"}

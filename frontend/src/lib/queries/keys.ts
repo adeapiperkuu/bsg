@@ -4,9 +4,6 @@ export const queryKeys = {
   organisations: ["organisations"] as const,
   users: ["users"] as const,
   deliveryPortfolio: ["delivery", "portfolio"] as const,
-  // One key per Operational Tower section: each is fetched independently so it can paint
-  // as soon as it arrives. All share the "dashboard/operational-tower" prefix, which is what
-  // the localStorage persistence allowlist matches on.
   towerPulse: ["dashboard", "operational-tower", "pulse"] as const,
   towerEscalations: ["dashboard", "operational-tower", "escalations"] as const,
   towerHealth: ["dashboard", "operational-tower", "health"] as const,
@@ -76,10 +73,10 @@ export const queryKeys = {
 };
 
 export const STALE_TIME_MS = 5 * 60 * 1000;
-/** Admin lists are small and fully client-filtered; keep them resident across navigations. */
+export const TOWER_STALE_TIME_MS = 60 * 1000;
+
+export const TOWER_RISK_POLL_MS = 60 * 1000;
 export const ADMIN_LIST_GC_TIME_MS = 30 * 60 * 1000;
 export const KNOWLEDGE_BOOTSTRAP_STALE_TIME_MS = 10 * 60 * 1000;
-/** Catalog taxonomies change rarely; prefer longer cache on Workforce. */
 export const WORKFORCE_CATALOG_STALE_TIME_MS = 15 * 60 * 1000;
-/** Project workforce aggregates; safe to keep briefly without instant refresh. */
 export const WORKFORCE_PROJECT_STALE_TIME_MS = 10 * 60 * 1000;
