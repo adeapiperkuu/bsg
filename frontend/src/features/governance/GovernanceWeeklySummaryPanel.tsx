@@ -21,6 +21,7 @@ import {
   approveGovernanceWeeklySummary,
   exportGovernanceWeeklySummary,
   generateGovernanceWeeklySummary,
+  getGovernanceWeeklySummaryById,
   governanceWeeklySummariesQueryOptions,
   governanceWeeklySummaryDetailQueryOptions,
   governanceWeeklySummaryQueryOptions,
@@ -110,6 +111,45 @@ export function GovernanceWeeklySummaryPanel({ canManage }: { canManage: boolean
   const selectedDetailLoading = Boolean(selectedDetailId) && selectedDetailQuery.isLoading;
   const selectedDetailError = Boolean(selectedDetailId) && selectedDetailQuery.isError;
 
+  const hydrateGeneratedSummary = async (summaryId: string) => {
+    const summary = await getGovernanceWeeklySummaryById(summaryId);
+    setSelectedId(summary.id);
+    queryClient.setQueryData(queryKeys.governanceWeeklySummary, summary);
+    queryClient.setQueryData(queryKeys.governanceWeeklySummaryDetail(summary.id), summary);
+    queryClient.setQueryData<GovernanceWeeklySummaryListItem[] | undefined>(
+      queryKeys.governanceWeeklySummaries,
+      (existing) => {
+        if (!existing) return existing;
+        const next = {
+          id: summary.id,
+          org_id: summary.org_id,
+          summary_week: summary.summary_week,
+          status: summary.status,
+          generated_by_ai: summary.generated_by_ai,
+          approved_by: summary.approved_by,
+          approved_at: summary.approved_at,
+          created_at: summary.created_at,
+          updated_at: summary.updated_at,
+          evidence_link_count: summary.evidence_link_count ?? summary.evidence_links.length,
+          approved_by_name: summary.approved_by_name,
+        };
+        return existing.some((row) => row.id === summary.id)
+          ? existing.map((row) => (row.id === summary.id ? next : row))
+          : [next, ...existing];
+      },
+    );
+    await Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.governanceWeeklySummary,
+        refetchType: "inactive",
+      }),
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.governanceWeeklySummaries,
+        refetchType: "inactive",
+      }),
+    ]);
+  };
+
   const refreshSummaryCache = async (summary: GovernanceWeeklySummary) => {
     setSelectedId(summary.id);
     queryClient.setQueryData(queryKeys.governanceWeeklySummaryDetail(summary.id), summary);
@@ -128,9 +168,12 @@ export function GovernanceWeeklySummaryPanel({ canManage }: { canManage: boolean
     jobType: "weekly_summary_generate",
     enabled: canManage,
     onSucceeded: async (job) => {
-      if (job.result_record_id) setSelectedId(job.result_record_id);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.governanceWeeklySummary });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.governanceWeeklySummaries });
+      if (job.result_record_id) {
+        await hydrateGeneratedSummary(job.result_record_id);
+      } else {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.governanceWeeklySummary });
+        await queryClient.invalidateQueries({ queryKey: queryKeys.governanceWeeklySummaries });
+      }
       toast.success("Weekly governance summary generated for review.");
     },
   });

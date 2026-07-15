@@ -443,6 +443,8 @@ async def test_supported_job_handlers_persist_review_first_products(
 
     product = await _execute_product(make_job(job_type=job_type, payload=payload))
     assert product.record_type == record_type
+    if job_type in {JOB_WEEKLY_SUMMARY, JOB_CHARTER}:
+        assert product.record_id is not None
     # All generated records remain drafts/suggestions; handlers perform no approval/conversion.
     assert "approved" not in product.data
     assert "converted" not in product.data

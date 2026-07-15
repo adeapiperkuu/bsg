@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Archive, BookOpen, Download, FileText, Loader2, RefreshCw, Sparkles } from "lucide-react";
 import { toast } from "sonner";
@@ -41,6 +41,7 @@ import {
   archiveProjectCharter,
   exportProjectCharter,
   generateProjectCharter,
+  getProjectCharter,
   governanceProjectChartersPanelQueryOptions,
   listProjectCharterPublicationVersions,
   publishProjectCharter,
@@ -53,6 +54,7 @@ import type {
   GovernanceCharterPublicationStatus,
   KnowledgeVisibility,
   ProjectCharter,
+  ProjectChartersPanelData,
 } from "@/types/governance";
 
 const PROJECT_CHARTER_PAGE_SIZE = 5;
@@ -170,7 +172,47 @@ export function ProjectChartersPanel({
   const panelQuery = useQuery({
     ...governanceProjectChartersPanelQueryOptions(charterListParams),
     enabled: Boolean(selectedProjectId) && loadCharters,
+    placeholderData: keepPreviousData,
   });
+
+  const hydrateGeneratedCharter = async (charterId: string) => {
+    const charter = await getProjectCharter(charterId);
+    setActiveCharterId(charter.id);
+    queryClient.setQueryData(queryKeys.governanceProjectCharter(charter.id), charter);
+    queryClient.setQueriesData<ProjectChartersPanelData>(
+      { queryKey: ["governance", "project-charters-panel"] },
+      (existing) => {
+        if (!existing) {
+          return {
+            charters: [
+              {
+                ...charter,
+                generated_text: "",
+                evidence_links: [],
+              },
+            ],
+            selected_charter: charter,
+            limit: PROJECT_CHARTER_PAGE_SIZE,
+            offset: 0,
+            has_more: false,
+          };
+        }
+        const nextListRow = { ...charter, generated_text: "", evidence_links: [] };
+        const charters = existing.charters.some((row) => row.id === charter.id)
+          ? existing.charters.map((row) => (row.id === charter.id ? nextListRow : row))
+          : [nextListRow, ...existing.charters];
+        return {
+          ...existing,
+          charters,
+          selected_charter: charter,
+        };
+      },
+    );
+    await queryClient.invalidateQueries({
+      queryKey: ["governance", "project-charters"],
+      refetchType: "inactive",
+    });
+  };
 
   const refresh = async () => {
     await Promise.all([
@@ -211,9 +253,13 @@ export function ProjectChartersPanel({
     jobType: "project_charter_generate",
     projectId: selectedProjectId,
     enabled: canWrite && Boolean(selectedProjectId) && loadCharters,
-    onSucceeded: async () => {
+    onSucceeded: async (job) => {
+      if (job.result_record_id) {
+        await hydrateGeneratedCharter(job.result_record_id);
+      } else {
+        await refresh();
+      }
       toast.success("Project charter draft generated for review.");
-      await refresh();
     },
   });
 
@@ -459,9 +505,12 @@ export function ProjectChartersPanel({
           </div>
           <div className="flex min-h-0 flex-1 flex-col rounded-md border border-border bg-elevated p-3">
             {panelQuery.isLoading ? (
-              <div className="flex flex-1 items-center gap-2 text-sm text-muted-foreground">
+              <div
+                role="status"
+                aria-label="Loading project charters"
+                className="flex flex-1 items-center justify-center text-muted-foreground"
+              >
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Loading charters...
               </div>
             ) : displayCharter ? (
               <div className="flex min-h-0 flex-1 flex-col">

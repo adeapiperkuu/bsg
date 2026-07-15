@@ -5,6 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ProjectChartersPanel } from "@/features/governance/ProjectChartersPanel";
 import {
+  generateProjectCharter,
+  getProjectCharter,
   getProjectChartersPanel,
   listProjectCharterPublicationVersions,
   publishProjectCharter,
@@ -40,8 +42,25 @@ const fixtures = vi.hoisted(() => {
     knowledge_url: "/knowledge?documentId=44444444-4444-4444-4444-444444444444",
   } as const;
 
+  const generated = {
+    ...listRow,
+    id: "99999999-9999-9999-9999-999999999999",
+    version: "v2",
+    status: "draft",
+    generated_text: "## Executive Summary\nGenerated immediately",
+    knowledge_document_id: null,
+    knowledge_version_id: null,
+    publication_status: "not_published",
+    published_at: null,
+    published_by: null,
+    published_by_name: null,
+    knowledge_url: null,
+    evidence_links: [],
+  } as const;
+
   return {
     listRow,
+    generated,
     detail: {
       ...listRow,
       generated_text: "## Executive Summary\nTest charter",
@@ -70,7 +89,11 @@ vi.mock("@/lib/queries/governance", () => {
     offset: 0,
     has_more: false,
   }));
+  const generatedJobs = new Set<string>();
   return {
+    getProjectCharter: vi.fn(async (id: string) =>
+      id === fixtures.generated.id ? fixtures.generated : fixtures.detail,
+    ),
     getProjectChartersPanel,
     governanceProjectChartersPanelQueryOptions: (params: Record<string, unknown> = {}) => ({
       queryKey: ["governance", "project-charters-panel", params],
@@ -93,7 +116,15 @@ vi.mock("@/lib/queries/governance", () => {
         knowledge_url: "/knowledge?documentId=44444444-4444-4444-4444-444444444444",
       },
     ]),
-    generateProjectCharter: vi.fn(),
+    generateProjectCharter: vi.fn(async () => {
+      generatedJobs.add("job-charter");
+      return {
+        job_id: "job-charter",
+        job_type: "project_charter_generate",
+        status: "queued",
+        deduplicated: false,
+      };
+    }),
     updateProjectCharter: vi.fn(),
     approveProjectCharter: vi.fn(),
     archiveProjectCharter: vi.fn(),
@@ -111,7 +142,31 @@ vi.mock("@/lib/queries/governance", () => {
     }),
     governanceJobQueryOptions: (jobId: string) => ({
       queryKey: ["governance", "jobs", jobId],
-      queryFn: async () => null,
+      queryFn: async () =>
+        generatedJobs.has(jobId)
+          ? {
+              id: jobId,
+              org_id: fixtures.listRow.org_id,
+              project_id: fixtures.listRow.project_id,
+              job_type: "project_charter_generate",
+              status: "succeeded",
+              progress_stage: "completed",
+              progress_percent: 100,
+              attempt_count: 1,
+              max_attempts: 3,
+              requested_at: "2026-07-15T08:00:00Z",
+              started_at: "2026-07-15T08:00:01Z",
+              completed_at: "2026-07-15T08:00:02Z",
+              next_attempt_at: null,
+              retryable: false,
+              cancellable: false,
+              error_code: null,
+              error_message: null,
+              result_record_type: "project_charter",
+              result_record_id: fixtures.generated.id,
+              result: null,
+            }
+          : null,
     }),
     cancelGovernanceJob: vi.fn(),
     retryGovernanceJob: vi.fn(),
@@ -169,6 +224,8 @@ function expectCharterInvalidations(invalidateSpy: ReturnType<typeof vi.spyOn>) 
 describe("ProjectChartersPanel Knowledge publication", () => {
   beforeEach(() => {
     vi.mocked(getProjectChartersPanel).mockClear();
+    vi.mocked(getProjectCharter).mockClear();
+    vi.mocked(generateProjectCharter).mockClear();
     vi.mocked(listProjectCharterPublicationVersions).mockClear();
     vi.mocked(publishProjectCharter).mockClear();
     vi.mocked(republishProjectCharter).mockClear();
@@ -193,6 +250,19 @@ describe("ProjectChartersPanel Knowledge publication", () => {
       }),
     );
     expect(listProjectCharterPublicationVersions).not.toHaveBeenCalled();
+  });
+
+  it("does not generate on mount and hydrates the completed generated charter", async () => {
+    renderPanel({ canWrite: true, isReadOnly: false });
+
+    expect(await screen.findByText("Test charter")).toBeInTheDocument();
+    expect(generateProjectCharter).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /Generate charter/i }));
+
+    expect(await screen.findByText("Generated immediately")).toBeInTheDocument();
+    expect(generateProjectCharter).toHaveBeenCalledTimes(1);
+    expect(getProjectCharter).toHaveBeenCalledWith(fixtures.generated.id);
   });
 
   it("loads publication version history only after explicit expansion", async () => {

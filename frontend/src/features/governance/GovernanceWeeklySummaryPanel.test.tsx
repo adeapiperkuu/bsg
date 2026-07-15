@@ -144,9 +144,9 @@ describe("GovernanceWeeklySummaryPanel", () => {
 
     expect(await screen.findByText("Portfolio governance remains stable.")).toBeInTheDocument();
     expect(requestedPaths()).toEqual(["/governance/weekly-summary"]);
-    expect(
-      requestedPaths().some((path) => path.startsWith("/governance/weekly-summaries")),
-    ).toBe(false);
+    expect(requestedPaths().some((path) => path.startsWith("/governance/weekly-summaries"))).toBe(
+      false,
+    );
   });
 
   it("loads weekly summary history once when the version selector is opened", async () => {
@@ -161,9 +161,9 @@ describe("GovernanceWeeklySummaryPanel", () => {
 
     renderPanel();
     expect(await screen.findByText("Portfolio governance remains stable.")).toBeInTheDocument();
-    expect(
-      requestedPaths().some((path) => path.startsWith("/governance/weekly-summaries")),
-    ).toBe(false);
+    expect(requestedPaths().some((path) => path.startsWith("/governance/weekly-summaries"))).toBe(
+      false,
+    );
 
     openVersionSelector();
 
@@ -208,7 +208,9 @@ describe("GovernanceWeeklySummaryPanel", () => {
 
     expect(await screen.findByText("Older approved summary")).toBeInTheDocument();
     expect(
-      requestedPaths().filter((path) => path === `/governance/weekly-summary/${olderListSummary.id}`),
+      requestedPaths().filter(
+        (path) => path === `/governance/weekly-summary/${olderListSummary.id}`,
+      ),
     ).toHaveLength(1);
 
     openVersionSelector();
@@ -219,7 +221,9 @@ describe("GovernanceWeeklySummaryPanel", () => {
 
     expect(await screen.findByText("Older approved summary")).toBeInTheDocument();
     expect(
-      requestedPaths().filter((path) => path === `/governance/weekly-summary/${olderListSummary.id}`),
+      requestedPaths().filter(
+        (path) => path === `/governance/weekly-summary/${olderListSummary.id}`,
+      ),
     ).toHaveLength(1);
   });
 
@@ -251,9 +255,13 @@ describe("GovernanceWeeklySummaryPanel", () => {
               retryable: false,
               cancellable: false,
               error_message: null,
+              result_record_type: "governance_weekly_summary",
               result_record_id: draft.id,
             },
           };
+        }
+        if (path === `/governance/weekly-summary/${draft.id}` && !options) {
+          return { data: draft };
         }
         if (path === "/governance/weekly-summary" && !options) {
           if (!generated) return { data: null };
@@ -303,6 +311,7 @@ describe("GovernanceWeeklySummaryPanel", () => {
     await waitFor(() => expect(generateButton).toBeEnabled());
     fireEvent.click(generateButton);
     expect(await screen.findByText("Portfolio governance remains stable.")).toBeInTheDocument();
+    expect(mocks.apiFetch).toHaveBeenCalledWith(`/governance/weekly-summary/${draft.id}`);
     fireEvent.click(screen.getByRole("button", { name: /Approve summary/i }));
 
     await waitFor(() =>
