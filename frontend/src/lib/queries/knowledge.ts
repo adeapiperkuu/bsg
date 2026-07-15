@@ -126,6 +126,24 @@ export function seedKnowledgeDocumentsFromBootstrap(
   });
 }
 
+export function seedKnowledgeLibraryHealthFromBootstrap(
+  queryClient: QueryClient,
+  bootstrap: KnowledgeBootstrapApi,
+) {
+  const counts = bootstrap.library_health;
+  if (!counts) return;
+  queryClient.setQueryData<KnowledgeLibraryHealthApi>(queryKeys.knowledgeLibraryHealth, (current) => {
+    // Keep a fresher full-health response (includes score/recommendations) if present.
+    if (current && current.health_score != null) return current;
+    return {
+      ...counts,
+      health_score: current?.health_score ?? null,
+      health_band: current?.health_band ?? null,
+      health_recommendations: current?.health_recommendations ?? [],
+    };
+  });
+}
+
 export function knowledgeBootstrapQueryOptions(enabled = true) {
   return queryOptions({
     queryKey: queryKeys.knowledgeBootstrap,
@@ -206,6 +224,7 @@ export function useKnowledgeBootstrapQuery() {
   useEffect(() => {
     if (query.data) {
       seedKnowledgeDocumentsFromBootstrap(queryClient, query.data);
+      seedKnowledgeLibraryHealthFromBootstrap(queryClient, query.data);
     }
   }, [query.data, queryClient]);
 

@@ -58,3 +58,4 @@ __pycache__/
 .env.development
 .env.production
 .env.example
+!backend/.env.example

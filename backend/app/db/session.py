@@ -3,6 +3,7 @@ import logging
 import ssl
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Literal
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -19,6 +20,11 @@ logger = logging.getLogger(__name__)
 # cannot trigger EMAXCONNSESSION.
 _SESSION_MODE_MAX_CONCURRENT = 4
 _session_semaphore: asyncio.Semaphore | None = None
+DatabaseConnectionMode = Literal[
+    "direct_postgres",
+    "supabase_session_pooler",
+    "supabase_transaction_pooler",
+]
 
 
 def _normalized_url(database_url: str) -> str:
@@ -34,8 +40,17 @@ def _is_transaction_pooler(database_url: str) -> bool:
     return ":6543/" in database_url or ":6543?" in database_url
 
 
+def classify_database_url(database_url: str) -> DatabaseConnectionMode:
+    """Classify DB URLs without exposing credentials in logs."""
+    if not _is_supabase_pooler(database_url):
+        return "direct_postgres"
+    if _is_transaction_pooler(database_url):
+        return "supabase_transaction_pooler"
+    return "supabase_session_pooler"
+
+
 def _uses_session_pooler(database_url: str) -> bool:
-    return _is_supabase_pooler(database_url) and not _is_transaction_pooler(database_url)
+    return classify_database_url(database_url) == "supabase_session_pooler"
 
 
 def _get_session_semaphore() -> asyncio.Semaphore:
@@ -46,7 +61,8 @@ def _get_session_semaphore() -> asyncio.Semaphore:
 
 
 def _engine_connect_args(database_url: str) -> dict:
-    if not _is_supabase_pooler(database_url):
+    mode = classify_database_url(database_url)
+    if mode == "direct_postgres":
         return {}
 
     ctx = ssl.create_default_context()
@@ -54,9 +70,10 @@ def _engine_connect_args(database_url: str) -> dict:
     ctx.verify_mode = ssl.CERT_NONE
     connect_args: dict = {"ssl": ctx}
 
-    if _is_transaction_pooler(database_url):
+    if mode == "supabase_transaction_pooler":
         # PgBouncer transaction mode: disable asyncpg + SQLAlchemy prepared-statement caches.
-        # Unique names per prepare() call; NullPool ensures connections are not reused across requests.
+        # Unique names per prepare() call so a pooled connection cannot collide with a
+        # prepared statement left behind on a different PgBouncer backend.
         connect_args["statement_cache_size"] = 0
         connect_args["prepared_statement_cache_size"] = 0
         connect_args["prepared_statement_name_func"] = lambda: f"__asyncpg_{uuid4()}__"
@@ -69,11 +86,12 @@ def _engine_kwargs(database_url: str) -> dict:
         "connect_args": _engine_connect_args(database_url),
     }
 
-    if not _is_supabase_pooler(database_url):
+    mode = classify_database_url(database_url)
+    if mode == "direct_postgres":
         kwargs["pool_pre_ping"] = True
         return kwargs
 
-    if _is_transaction_pooler(database_url):
+    if mode == "supabase_transaction_pooler":
         # PgBouncer owns *server*-side pooling, but the client still has to establish its own
         # TCP + TLS + auth handshake to reach it — measured at ~1.5s against
         # aws-0-eu-west-1 from a dev machine. Under NullPool that handshake was paid on

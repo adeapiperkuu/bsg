@@ -213,7 +213,7 @@ export function Shell({ children }: { children: ReactNode }) {
                     <Link
                       to={item.to}
                       title={!mobile && collapsed ? item.label : undefined}
-                      preload="viewport"
+                      preload={false}
                       onMouseEnter={() => prefetchForNav(item.to)}
                       onFocus={() => prefetchForNav(item.to)}
                       onClick={() => {
@@ -287,11 +287,6 @@ export function Shell({ children }: { children: ReactNode }) {
           </button>
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold text-foreground">{currentTitle}</div>
-            {pathname !== "/knowledge" && (
-              <div className="hidden text-[11px] text-muted-foreground sm:block">
-                Insights Hub <span className="px-1">/</span> {currentTitle}
-              </div>
-            )}
           </div>
 
           <div className="hidden items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs text-muted-foreground md:flex">

@@ -270,6 +270,7 @@ def test_map_dependency_list_row_response_shape() -> None:
 
 
 def test_default_dependencies_request_is_cacheable() -> None:
+    """First-paint limit=6 and legacy limit=50 are both cacheable when unfiltered."""
     filters = _bounded_list_filters(limit=50, offset=0)
     assert _is_default_dependencies_cacheable(filters) is True
 
@@ -278,10 +279,12 @@ def test_default_dependencies_request_is_cacheable() -> None:
 
     assert _is_default_dependencies_cacheable(_bounded_list_filters(limit=25, offset=0)) is False
     assert _is_default_dependencies_cacheable(_bounded_list_filters(limit=50, offset=50)) is False
+    # Production dashboard first page (TABLE_PAGE_SIZE=6) is cacheable after Phase 1.
+    assert _is_default_dependencies_cacheable(_bounded_list_filters(limit=6, offset=0)) is True
 
 
 @pytest.mark.asyncio
-async def test_list_governance_dependencies_page_uses_cache_for_default_request(
+async def test_list_governance_dependencies_page_uses_cache_for_legacy_limit_50(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _invalidate_dependencies_list_cache()
@@ -317,7 +320,36 @@ async def test_list_governance_dependencies_page_uses_cache_for_default_request(
 
 
 @pytest.mark.asyncio
-async def test_list_governance_dependencies_page_skips_cache_for_non_first_paint(
+async def test_list_governance_dependencies_page_uses_cache_for_dashboard_limit_6(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Frontend first-page shape (limit=6) hits the in-process cache on repeat."""
+    _invalidate_dependencies_list_cache()
+    user = _user()
+    calls = 0
+
+    async def _fake_execute(_session, _user, _filters, *, limit, offset):
+        nonlocal calls
+        calls += 1
+        return PaginatedGovernanceRows(items=[], total=0, limit=limit, offset=offset)
+
+    monkeypatch.setattr(
+        "app.agents.governance.services.governance_service._execute_dependency_paginated_page",
+        _fake_execute,
+    )
+
+    session = AsyncMock()
+    first = await list_governance_dependencies_page(session, user, limit=6, offset=0)
+    second = await list_governance_dependencies_page(session, user, limit=6, offset=0)
+
+    assert calls == 1
+    assert first.db_executes == 1
+    assert second.db_executes == 0
+    _invalidate_dependencies_list_cache()
+
+
+@pytest.mark.asyncio
+async def test_list_governance_dependencies_page_skips_cache_for_non_default_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _invalidate_dependencies_list_cache()

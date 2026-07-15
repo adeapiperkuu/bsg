@@ -329,10 +329,39 @@ class GovernanceSummaryStatus(StrEnum):
     APPROVED = "approved"
 
 
+class GovernanceJobStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    RETRY_SCHEDULED = "retry_scheduled"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLATION_REQUESTED = "cancellation_requested"
+    CANCELLED = "cancelled"
+
+
 class GovernanceCharterStatus(StrEnum):
     DRAFT = "draft"
     APPROVED = "approved"
     ARCHIVED = "archived"
+
+
+class GovernanceCharterPublicationStatus(StrEnum):
+    NOT_PUBLISHED = "not_published"
+    PUBLISHING = "publishing"
+    PUBLISHED = "published"
+    FAILED = "failed"
+    SUPERSEDED = "superseded"
+
+
+class GovernanceCharterPublicationEventType(StrEnum):
+    CHARTER_PUBLISHED = "charter_published"
+    KNOWLEDGE_VERSION_CREATED = "knowledge_version_created"
+    KNOWLEDGE_PUBLICATION_FAILED = "knowledge_publication_failed"
+    KNOWLEDGE_REPUBLISHED = "knowledge_republished"
+    KNOWLEDGE_PUBLICATION_RETRIED = "knowledge_publication_retried"
+    KNOWLEDGE_VERSION_SUPERSEDED = "knowledge_version_superseded"
+    ALREADY_PUBLISHED = "already_published"
+    KNOWLEDGE_UNPUBLISHED = "knowledge_unpublished"
 
 
 class GovernanceEvidenceSourceType(StrEnum):
@@ -348,6 +377,149 @@ class GovernanceEvidenceSourceType(StrEnum):
 class GovernanceEscalationSourceType(StrEnum):
     DELIVERY_RISK = "delivery_risk"
     KNOWLEDGE_DOCUMENT = "knowledge_document"
+    QUALITY_RISK = "quality_risk"
+
+
+class GovernanceAIRecommendationScope(StrEnum):
+    PROJECT = "project"
+    PORTFOLIO = "portfolio"
+
+
+class GovernanceAIRecommendationType(StrEnum):
+    DEPENDENCY_MITIGATION = "dependency_mitigation"
+    ESCALATION_REQUIRED = "escalation_required"
+    ACTION_FOLLOW_UP = "action_follow_up"
+    SCOPE_CONTROL = "scope_control"
+    DELIVERY_RISK = "delivery_risk"
+    MILESTONE_RISK = "milestone_risk"
+    OWNERSHIP_ALIGNMENT = "ownership_alignment"
+    GOVERNANCE_CADENCE = "governance_cadence"
+    PORTFOLIO_PATTERN = "portfolio_pattern"
+    RESOURCE_OR_TEAM_SIGNAL = "resource_or_team_signal"
+    GENERAL_GOVERNANCE = "general_governance"
+
+
+class GovernanceAIRecommendationPriority(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class GovernanceAIRecommendationStatus(StrEnum):
+    ACTIVE = "active"
+    DISMISSED = "dismissed"
+    SUPERSEDED = "superseded"
+    GENERATION_FAILED = "generation_failed"
+    STALE = "stale"
+    SNOOZED = "snoozed"
+
+
+class GovernanceEscalationTriggerType(StrEnum):
+    OVERDUE_BLOCKING_DEPENDENCY = "overdue_blocking_dependency"
+    REPEATED_OVERDUE_DEPENDENCY = "repeated_overdue_dependency"
+    MULTIPLE_BLOCKING_DEPENDENCIES = "multiple_blocking_dependencies"
+    CRITICAL_DELIVERY_RISK = "critical_delivery_risk"
+    DECLINING_DELIVERY_CONFIDENCE = "declining_delivery_confidence"
+    UNRESOLVED_SCOPE_RISK = "unresolved_scope_risk"
+    OVERDUE_CRITICAL_ACTION = "overdue_critical_action"
+    REPEATED_MITIGATION_FAILURE = "repeated_mitigation_failure"
+    MILESTONE_AT_RISK = "milestone_at_risk"
+    COMBINED_GOVERNANCE_RISK = "combined_governance_risk"
+
+
+class GovernanceRecommendationAcceptanceStatus(StrEnum):
+    NOT_ACCEPTED = "not_accepted"
+    PARTIALLY_ACCEPTED = "partially_accepted"
+    ACCEPTED_AS_ACTION = "accepted_as_action"
+    ACCEPTED_AS_ESCALATION = "accepted_as_escalation"
+
+
+class GovernanceFalsePositiveStatus(StrEnum):
+    CONFIRMED_FALSE_POSITIVE = "confirmed_false_positive"
+    LIKELY_FALSE_POSITIVE = "likely_false_positive"
+    NOT_FALSE_POSITIVE = "not_false_positive"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+
+
+class GovernanceRecommendationLifecycleEventType(StrEnum):
+    CREATED = "created"
+    ACCEPTED = "accepted"
+    DISMISSED = "dismissed"
+    SNOOZED = "snoozed"
+    CONVERTED = "converted"
+    RESOLVED = "resolved"
+    REOPENED = "reopened"
+    RESOLUTION_CANCELLED = "resolution_cancelled"
+    CONVERSION_TARGET_CHANGED = "conversion_target_changed"
+    FEEDBACK_SUBMITTED = "feedback_submitted"
+    FALSE_POSITIVE_CONFIRMED = "false_positive_confirmed"
+
+
+class GovernanceLearningRuleStatus(StrEnum):
+    DRAFT = "draft"
+    PENDING_APPROVAL = "pending_approval"
+    APPROVED = "approved"
+    SHADOW = "shadow"
+    ACTIVE = "active"
+    REVERTED = "reverted"
+    REJECTED = "rejected"
+    DISABLED = "disabled"
+
+
+class GovernanceRecommendationShadowStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class GovernanceRecommendationEvaluationPeriod(StrEnum):
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
+    QUARTERLY = "quarterly"
+
+
+class GovernanceRecommendationDriftSeverity(StrEnum):
+    INFO = "info"
+    WARNING = "warning"
+    CRITICAL = "critical"
+
+
+class GovernanceRecommendationConversionTarget(StrEnum):
+    ACTION = "action"
+    ESCALATION = "escalation"
+
+
+class GovernanceRecordTargetType(StrEnum):
+    ACTION = "action"
+    ESCALATION = "escalation"
+
+
+class GovernanceRecordEvidenceSourceType(StrEnum):
+    AI_RECOMMENDATION = "ai_recommendation"
+    PROJECT = "project"
+    DEPENDENCY = "dependency"
+    ESCALATION = "escalation"
+    ACTION = "action"
+    SCOPE_STATE = "scope_state"
+    DELIVERY_SIGNAL = "delivery_signal"
+    MILESTONE = "milestone"
+    TREND = "trend"
+    GOVERNANCE_METRIC = "governance_metric"
+    RECENT_ACTIVITY = "recent_activity"
+
+
+class GovernanceRecordLinkType(StrEnum):
+    AI_RECOMMENDATION_SOURCE = "ai_recommendation_source"
+    SUPPORTING_EVIDENCE = "supporting_evidence"
+    CONVERTED_FROM = "converted_from"
+    RELATED_DEPENDENCY = "related_dependency"
+    RELATED_ESCALATION = "related_escalation"
+    RELATED_ACTION = "related_action"
+    RELATED_SCOPE_STATE = "related_scope_state"
+    RELATED_DELIVERY_SIGNAL = "related_delivery_signal"
 
 
 app_role = Enum(AppRole, name="app_role", values_callable=lambda x: [e.value for e in x])
@@ -464,9 +636,25 @@ governance_summary_status = Enum(
     name="governance_summary_status",
     values_callable=lambda x: [e.value for e in x],
 )
+governance_job_status = Enum(
+    GovernanceJobStatus,
+    name="governance_job_status",
+    values_callable=lambda x: [e.value for e in x],
+    native_enum=False,
+)
 governance_charter_status = Enum(
     GovernanceCharterStatus,
     name="governance_charter_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_charter_publication_status = Enum(
+    GovernanceCharterPublicationStatus,
+    name="governance_charter_publication_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_charter_publication_event_type = Enum(
+    GovernanceCharterPublicationEventType,
+    name="governance_charter_publication_event_type",
     values_callable=lambda x: [e.value for e in x],
 )
 governance_evidence_source_type = Enum(
@@ -477,6 +665,86 @@ governance_evidence_source_type = Enum(
 governance_escalation_source_type = Enum(
     GovernanceEscalationSourceType,
     name="governance_escalation_source_type",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_ai_recommendation_scope = Enum(
+    GovernanceAIRecommendationScope,
+    name="governance_ai_recommendation_scope",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_ai_recommendation_type = Enum(
+    GovernanceAIRecommendationType,
+    name="governance_ai_recommendation_type",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_ai_recommendation_priority = Enum(
+    GovernanceAIRecommendationPriority,
+    name="governance_ai_recommendation_priority",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_ai_recommendation_status = Enum(
+    GovernanceAIRecommendationStatus,
+    name="governance_ai_recommendation_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_escalation_trigger_type = Enum(
+    GovernanceEscalationTriggerType,
+    name="governance_escalation_trigger_type",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_recommendation_acceptance_status = Enum(
+    GovernanceRecommendationAcceptanceStatus,
+    name="governance_recommendation_acceptance_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_recommendation_conversion_target = Enum(
+    GovernanceRecommendationConversionTarget,
+    name="governance_recommendation_conversion_target",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_false_positive_status = Enum(
+    GovernanceFalsePositiveStatus,
+    name="governance_false_positive_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_recommendation_lifecycle_event_type = Enum(
+    GovernanceRecommendationLifecycleEventType,
+    name="governance_recommendation_lifecycle_event_type",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_learning_rule_status = Enum(
+    GovernanceLearningRuleStatus,
+    name="governance_learning_rule_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_recommendation_shadow_status = Enum(
+    GovernanceRecommendationShadowStatus,
+    name="governance_recommendation_shadow_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_recommendation_evaluation_period = Enum(
+    GovernanceRecommendationEvaluationPeriod,
+    name="governance_recommendation_evaluation_period",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_recommendation_drift_severity = Enum(
+    GovernanceRecommendationDriftSeverity,
+    name="governance_recommendation_drift_severity",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_record_target_type = Enum(
+    GovernanceRecordTargetType,
+    name="governance_record_target_type",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_record_evidence_source_type = Enum(
+    GovernanceRecordEvidenceSourceType,
+    name="governance_record_evidence_source_type",
+    values_callable=lambda x: [e.value for e in x],
+)
+governance_record_link_type = Enum(
+    GovernanceRecordLinkType,
+    name="governance_record_link_type",
     values_callable=lambda x: [e.value for e in x],
 )
 
@@ -1694,6 +1962,12 @@ class GovernanceEscalation(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelet
         governance_escalation_source_type
     )
     source_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    client_summary: Mapped[str | None] = mapped_column(Text)
+    client_visible: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    client_published_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    client_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class GovernanceAction(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
@@ -1770,6 +2044,81 @@ class GovernanceWeeklySummary(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class GovernanceJob(Base, UuidPrimaryKey, UpdatedAt):
+    __tablename__ = "governance_jobs"
+    __table_args__ = (
+        Index(
+            "governance_jobs_active_idempotency_uidx",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('queued', 'running', 'retry_scheduled', 'cancellation_requested')"
+            ),
+        ),
+        Index("governance_jobs_org_requested_idx", "org_id", "requested_at"),
+        Index("governance_jobs_project_requested_idx", "project_id", "requested_at"),
+        Index("governance_jobs_requester_requested_idx", "requested_by", "requested_at"),
+        Index("governance_jobs_queue_idx", "status", "next_attempt_at", "requested_at"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE")
+    )
+    job_type: Mapped[str] = mapped_column(Text)
+    status: Mapped[GovernanceJobStatus] = mapped_column(
+        governance_job_status,
+        default=GovernanceJobStatus.QUEUED,
+        server_default="queued",
+    )
+    requested_by: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    progress_stage: Mapped[str] = mapped_column(Text, default="queued", server_default="queued")
+    progress_percent: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3, server_default="3")
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str] = mapped_column(Text)
+    request_payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}"
+    )
+    result_record_type: Mapped[str | None] = mapped_column(Text)
+    result_record_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    result_data: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    worker_id: Mapped[str | None] = mapped_column(Text)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    queue_wait_ms: Mapped[int | None] = mapped_column(BigInteger)
+    processing_ms: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class GovernanceJobEvent(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "governance_job_events"
+    __table_args__ = (
+        Index("governance_job_events_job_created_idx", "job_id", "created_at"),
+        Index("governance_job_events_org_created_idx", "org_id", "created_at"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE")
+    )
+    job_id: Mapped[UUID] = mapped_column(ForeignKey("governance_jobs.id", ondelete="CASCADE"))
+    event_type: Mapped[str] = mapped_column(Text)
+    actor_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    event_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}"
+    )
+
+
 class GovernanceEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
     __tablename__ = "governance_evidence_links"
     __table_args__ = (
@@ -1812,9 +2161,570 @@ class ProjectCharter(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     knowledge_document_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("knowledge_documents.id", ondelete="SET NULL")
     )
+    knowledge_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_document_versions.id", ondelete="SET NULL")
+    )
     visibility: Mapped[KnowledgeVisibility] = mapped_column(
         knowledge_visibility,
         default=KnowledgeVisibility.INTERNAL_ONLY,
     )
     approved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    publication_status: Mapped[GovernanceCharterPublicationStatus] = mapped_column(
+        governance_charter_publication_status,
+        default=GovernanceCharterPublicationStatus.NOT_PUBLISHED,
+        server_default="not_published",
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    published_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    publication_error: Mapped[str | None] = mapped_column(Text)
+    publication_attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    last_publication_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class GovernanceCharterPublicationEvent(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "governance_charter_publication_events"
+    __table_args__ = (
+        Index(
+            "governance_charter_publication_events_charter_idx",
+            "charter_id",
+            "created_at",
+        ),
+        Index(
+            "governance_charter_publication_events_org_type_idx",
+            "org_id",
+            "event_type",
+            "created_at",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    charter_id: Mapped[UUID] = mapped_column(
+        ForeignKey("project_charters.id", ondelete="CASCADE")
+    )
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    event_type: Mapped[GovernanceCharterPublicationEventType] = mapped_column(
+        governance_charter_publication_event_type
+    )
+    actor_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    knowledge_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="SET NULL")
+    )
+    knowledge_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_document_versions.id", ondelete="SET NULL")
+    )
+    previous_knowledge_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_document_versions.id", ondelete="SET NULL")
+    )
+    charter_version: Mapped[str | None] = mapped_column(Text)
+    reason: Mapped[str | None] = mapped_column(Text)
+    event_metadata: Mapped[dict] = mapped_column(
+        "event_metadata", JSONB, default=dict, server_default="{}"
+    )
+
+
+class GovernanceCharterPublicationAudit(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "governance_charter_publication_audits"
+    __table_args__ = (
+        Index(
+            "governance_charter_publication_audits_charter_idx",
+            "charter_id",
+            "created_at",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    charter_id: Mapped[UUID] = mapped_column(
+        ForeignKey("project_charters.id", ondelete="CASCADE")
+    )
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    actor_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    action: Mapped[str] = mapped_column(Text)
+    knowledge_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="SET NULL")
+    )
+    knowledge_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_document_versions.id", ondelete="SET NULL")
+    )
+    previous_knowledge_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_document_versions.id", ondelete="SET NULL")
+    )
+    charter_version: Mapped[str | None] = mapped_column(Text)
+    reason: Mapped[str | None] = mapped_column(Text)
+    audit_metadata: Mapped[dict] = mapped_column(
+        "audit_metadata", JSONB, default=dict, server_default="{}"
+    )
+
+
+class GovernanceAIRecommendation(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "governance_ai_recommendations"
+    __table_args__ = (
+        Index(
+            "governance_ai_recommendations_org_status_generated_idx",
+            "org_id",
+            "status",
+            "generated_at",
+        ),
+        Index(
+            "governance_ai_recommendations_org_project_status_idx",
+            "org_id",
+            "project_id",
+            "status",
+        ),
+        Index("governance_ai_recommendations_evidence_hash_idx", "org_id", "evidence_hash"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    scope: Mapped[GovernanceAIRecommendationScope] = mapped_column(
+        governance_ai_recommendation_scope
+    )
+    recommendation_type: Mapped[GovernanceAIRecommendationType] = mapped_column(
+        governance_ai_recommendation_type
+    )
+    title: Mapped[str] = mapped_column(Text)
+    narrative: Mapped[str] = mapped_column(Text)
+    rationale: Mapped[str] = mapped_column(Text)
+    priority: Mapped[GovernanceAIRecommendationPriority] = mapped_column(
+        governance_ai_recommendation_priority,
+        default=GovernanceAIRecommendationPriority.MEDIUM,
+    )
+    confidence: Mapped[float] = mapped_column(Numeric(4, 3))
+    status: Mapped[GovernanceAIRecommendationStatus] = mapped_column(
+        governance_ai_recommendation_status,
+        default=GovernanceAIRecommendationStatus.ACTIVE,
+    )
+    suggested_actions: Mapped[list] = mapped_column(JSONB, default=list)
+    evidence_refs: Mapped[list] = mapped_column(JSONB, default=list)
+    evidence_hash: Mapped[str] = mapped_column(Text)
+    fingerprint: Mapped[str] = mapped_column(Text)
+    source_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict)
+    model_name: Mapped[str | None] = mapped_column(Text)
+    model_version: Mapped[str | None] = mapped_column(Text)
+    prompt_version: Mapped[str] = mapped_column(Text)
+    generation_request_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    generated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    dismissed_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    dismiss_reason: Mapped[str | None] = mapped_column(Text)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    acceptance_status: Mapped[GovernanceRecommendationAcceptanceStatus] = mapped_column(
+        governance_recommendation_acceptance_status,
+        default=GovernanceRecommendationAcceptanceStatus.NOT_ACCEPTED,
+        server_default="not_accepted",
+    )
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    accepted_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    converted_action_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("governance_actions.id", ondelete="SET NULL")
+    )
+    converted_escalation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("governance_escalations.id", ondelete="SET NULL")
+    )
+    accepted_suggested_action_index: Mapped[int | None] = mapped_column(Integer)
+    acceptance_note: Mapped[str | None] = mapped_column(Text)
+    auto_detected: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    trigger_type: Mapped[GovernanceEscalationTriggerType | None] = mapped_column(
+        governance_escalation_trigger_type
+    )
+    trigger_entity_type: Mapped[str | None] = mapped_column(Text)
+    trigger_entity_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    trigger_fingerprint: Mapped[str | None] = mapped_column(Text)
+    severity_score: Mapped[float | None] = mapped_column(Numeric(6, 3))
+    detected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    snoozed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    snooze_reason: Mapped[str | None] = mapped_column(Text)
+    false_positive_status: Mapped[GovernanceFalsePositiveStatus | None] = mapped_column(
+        governance_false_positive_status
+    )
+    false_positive_reason: Mapped[str | None] = mapped_column(Text)
+    false_positive_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    false_positive_confirmed_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    reopened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    quality_score: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    quality_band: Mapped[str | None] = mapped_column(Text)
+    quality_score_version: Mapped[str | None] = mapped_column(Text)
+    quality_components: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    quality_provisional: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    calibrated_confidence: Mapped[float | None] = mapped_column(Numeric(4, 3))
+    confidence_band: Mapped[str | None] = mapped_column(Text)
+    calibration_version: Mapped[str | None] = mapped_column(Text)
+    calibration_gap: Mapped[float | None] = mapped_column(Numeric(6, 4))
+    observed_success_rate: Mapped[float | None] = mapped_column(Numeric(5, 4))
+    expected_calibration_error: Mapped[float | None] = mapped_column(Numeric(6, 4))
+    brier_score: Mapped[float | None] = mapped_column(Numeric(6, 4))
+    explanation_version: Mapped[str] = mapped_column(Text, default="v1", server_default="v1")
+    recurrence_after_acceptance_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    recurrence_after_dismissal_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    strategy_version: Mapped[str] = mapped_column(Text, default="v1", server_default="v1")
+    confidence_version: Mapped[str] = mapped_column(Text, default="v1", server_default="v1")
+    learning_rule_version: Mapped[str | None] = mapped_column(Text)
+    resolution_cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolution_note: Mapped[str | None] = mapped_column(Text)
+
+
+class GovernanceAIRecommendationConversion(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "governance_ai_recommendation_conversions"
+    __table_args__ = (
+        UniqueConstraint(
+            "recommendation_id",
+            "suggested_action_index",
+            name="governance_ai_recommendation_conversions_suggestion_key",
+        ),
+        UniqueConstraint(
+            "org_id",
+            "idempotency_key",
+            name="governance_ai_recommendation_conversions_idempotency_key",
+        ),
+        Index(
+            "governance_ai_recommendation_conversions_recommendation_idx",
+            "recommendation_id",
+        ),
+        Index("governance_ai_recommendation_conversions_org_idx", "org_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    recommendation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("governance_ai_recommendations.id", ondelete="CASCADE")
+    )
+    suggested_action_index: Mapped[int] = mapped_column(Integer)
+    conversion_target: Mapped[GovernanceRecommendationConversionTarget] = mapped_column(
+        governance_recommendation_conversion_target
+    )
+    created_action_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("governance_actions.id", ondelete="SET NULL")
+    )
+    created_escalation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("governance_escalations.id", ondelete="SET NULL")
+    )
+    created_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    request_fingerprint: Mapped[str] = mapped_column(Text)
+    idempotency_key: Mapped[str | None] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)
+
+
+class GovernanceAIRecommendationFeedback(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "governance_ai_recommendation_feedback"
+    __table_args__ = (
+        UniqueConstraint(
+            "recommendation_id",
+            "user_id",
+            name="governance_ai_recommendation_feedback_user_key",
+        ),
+        Index(
+            "governance_ai_recommendation_feedback_recommendation_idx",
+            "recommendation_id",
+        ),
+        Index("governance_ai_recommendation_feedback_org_idx", "org_id"),
+    )
+
+    recommendation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("governance_ai_recommendations.id", ondelete="CASCADE")
+    )
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    helpful: Mapped[bool] = mapped_column(Boolean)
+    reason: Mapped[str | None] = mapped_column(Text)
+    accurate: Mapped[bool | None] = mapped_column(Boolean)
+    useful: Mapped[bool | None] = mapped_column(Boolean)
+    actionable: Mapped[bool | None] = mapped_column(Boolean)
+    clear: Mapped[bool | None] = mapped_column(Boolean)
+    missing_evidence: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    duplicate: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    already_handled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    rating: Mapped[int | None] = mapped_column(Integer)
+    comment: Mapped[str | None] = mapped_column(Text)
+    feedback_version: Mapped[str] = mapped_column(Text, default="v1", server_default="v1")
+
+
+class GovernanceRecommendationLifecycleEvent(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "governance_recommendation_lifecycle_events"
+    __table_args__ = (
+        Index(
+            "governance_recommendation_lifecycle_events_rec_idx",
+            "recommendation_id",
+            "created_at",
+        ),
+        Index(
+            "governance_recommendation_lifecycle_events_org_type_idx",
+            "org_id",
+            "event_type",
+            "created_at",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    recommendation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("governance_ai_recommendations.id", ondelete="CASCADE")
+    )
+    event_type: Mapped[GovernanceRecommendationLifecycleEventType] = mapped_column(
+        governance_recommendation_lifecycle_event_type
+    )
+    actor_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    conversion_target: Mapped[str | None] = mapped_column(Text)
+    conversion_target_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    event_metadata: Mapped[dict] = mapped_column("metadata", JSONB, default=dict, server_default="{}")
+
+
+class GovernanceRecommendationLearningRule(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "governance_recommendation_learning_rules"
+    __table_args__ = (
+        Index(
+            "governance_recommendation_learning_rules_org_status_idx",
+            "org_id",
+            "status",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    rule_type: Mapped[str] = mapped_column(Text)
+    rule_payload: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    status: Mapped[GovernanceLearningRuleStatus] = mapped_column(
+        governance_learning_rule_status,
+        default=GovernanceLearningRuleStatus.DRAFT,
+        server_default="draft",
+    )
+    created_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    approved_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reverted_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    reverted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    supersedes_rule_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("governance_recommendation_learning_rules.id", ondelete="SET NULL")
+    )
+    change_summary: Mapped[str | None] = mapped_column(Text)
+    evaluation_mode: Mapped[str] = mapped_column(Text, default="none", server_default="none")
+    shadow_evaluation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("governance_recommendation_shadow_evaluations.id", ondelete="SET NULL")
+    )
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    activated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    disabled_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    config_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    previous_config_snapshot: Mapped[dict | None] = mapped_column(JSONB)
+    performance_before: Mapped[dict | None] = mapped_column(JSONB)
+    performance_after: Mapped[dict | None] = mapped_column(JSONB)
+    allowed_effects: Mapped[list] = mapped_column(
+        ARRAY(Text),
+        default=list,
+        server_default="{}",
+    )
+
+
+class GovernanceRecommendationStrategyVersion(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "governance_recommendation_strategy_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "strategy_version",
+            name="governance_recommendation_strategy_versions_org_version_key",
+        ),
+        Index(
+            "governance_recommendation_strategy_versions_org_active_idx",
+            "org_id",
+            "is_active",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    strategy_version: Mapped[str] = mapped_column(Text)
+    confidence_version: Mapped[str] = mapped_column(Text, default="v1", server_default="v1")
+    quality_version: Mapped[str] = mapped_column(Text, default="v1", server_default="v1")
+    explanation_version: Mapped[str] = mapped_column(Text, default="v1", server_default="v1")
+    learning_rule_version: Mapped[str | None] = mapped_column(Text)
+    change_summary: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    activated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    config_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    created_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+class GovernanceRecommendationShadowEvaluation(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "governance_recommendation_shadow_evaluations"
+    __table_args__ = (
+        Index(
+            "governance_recommendation_shadow_evaluations_org_status_idx",
+            "org_id",
+            "status",
+            "created_at",
+        ),
+        Index(
+            "governance_recommendation_shadow_evaluations_rule_idx",
+            "learning_rule_id",
+            "created_at",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    learning_rule_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("governance_recommendation_learning_rules.id", ondelete="SET NULL")
+    )
+    strategy_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("governance_recommendation_strategy_versions.id", ondelete="SET NULL")
+    )
+    status: Mapped[GovernanceRecommendationShadowStatus] = mapped_column(
+        governance_recommendation_shadow_status,
+        default=GovernanceRecommendationShadowStatus.PENDING,
+        server_default="pending",
+    )
+    sample_size: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    baseline_metrics: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    shadow_metrics: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    comparison_summary: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    expected_impact: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    error_message: Mapped[str | None] = mapped_column(Text)
+
+
+class GovernanceRecommendationDriftAlert(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "governance_recommendation_drift_alerts"
+    __table_args__ = (
+        Index(
+            "governance_recommendation_drift_alerts_org_created_idx",
+            "org_id",
+            "created_at",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    alert_type: Mapped[str] = mapped_column(Text)
+    severity: Mapped[GovernanceRecommendationDriftSeverity] = mapped_column(
+        governance_recommendation_drift_severity,
+        default=GovernanceRecommendationDriftSeverity.WARNING,
+        server_default="warning",
+    )
+    metric_name: Mapped[str] = mapped_column(Text)
+    baseline_value: Mapped[float | None] = mapped_column(Numeric(12, 4))
+    current_value: Mapped[float | None] = mapped_column(Numeric(12, 4))
+    threshold_value: Mapped[float | None] = mapped_column(Numeric(12, 4))
+    message: Mapped[str] = mapped_column(Text)
+    details: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    strategy_version: Mapped[str | None] = mapped_column(Text)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    acknowledged_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+class GovernanceRecommendationEvaluationReport(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "governance_recommendation_evaluation_reports"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "period",
+            "period_start",
+            "period_end",
+            name="governance_recommendation_evaluation_reports_period_key",
+        ),
+        Index(
+            "governance_recommendation_evaluation_reports_org_period_idx",
+            "org_id",
+            "period",
+            "generated_at",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    period: Mapped[GovernanceRecommendationEvaluationPeriod] = mapped_column(
+        governance_recommendation_evaluation_period
+    )
+    period_start: Mapped[date] = mapped_column(Date)
+    period_end: Mapped[date] = mapped_column(Date)
+    strategy_version: Mapped[str | None] = mapped_column(Text)
+    report_payload: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    generated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class GovernanceRecordEvidenceLink(Base, UuidPrimaryKey, CreatedAt, SoftDelete):
+    __tablename__ = "governance_record_evidence_links"
+    __table_args__ = (
+        Index(
+            "governance_record_evidence_links_target_idx",
+            "org_id",
+            "target_type",
+            "target_id",
+        ),
+        Index(
+            "governance_record_evidence_links_recommendation_idx",
+            "org_id",
+            "recommendation_id",
+        ),
+        Index(
+            "governance_record_evidence_links_source_idx",
+            "source_type",
+            "source_id",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    target_type: Mapped[GovernanceRecordTargetType] = mapped_column(governance_record_target_type)
+    target_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
+    source_type: Mapped[GovernanceRecordEvidenceSourceType] = mapped_column(
+        governance_record_evidence_source_type
+    )
+    source_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    recommendation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("governance_ai_recommendations.id", ondelete="SET NULL")
+    )
+    conversion_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("governance_ai_recommendation_conversions.id", ondelete="SET NULL")
+    )
+    evidence_id: Mapped[str | None] = mapped_column(Text)
+    link_type: Mapped[GovernanceRecordLinkType] = mapped_column(governance_record_link_type)
+    title: Mapped[str | None] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    status_snapshot: Mapped[str | None] = mapped_column(Text)
+    severity_snapshot: Mapped[str | None] = mapped_column(Text)
+    project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"))
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    created_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )

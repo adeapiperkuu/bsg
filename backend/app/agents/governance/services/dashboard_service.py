@@ -16,7 +16,7 @@ from app.agents.governance.services.governance_service import (
     _apply_org_filter,
     assert_can_read_governance,
 )
-from app.agents.governance.timing import governance_db_timed
+from app.agents.governance.timing import get_governance_timer, governance_db_timed
 from app.core.security import CurrentUser
 from app.db.models import (
     AppRole,
@@ -41,6 +41,17 @@ _bootstrap_kpi_cache: dict[tuple[UUID | None, str, UUID], tuple[datetime, Govern
 def _bootstrap_cache_key(current_user: CurrentUser) -> tuple[UUID | None, str, UUID]:
     org_id = None if current_user.role == AppRole.SUPER_ADMIN else current_user.org_id
     return (org_id, current_user.role.value, current_user.id)
+
+
+def clear_governance_bootstrap_cache(*, org_id: UUID | None) -> int:
+    """Clear cached bootstrap KPI reads affected by a committed governance write."""
+    if org_id is None:
+        keys_to_remove = list(_bootstrap_kpi_cache)
+    else:
+        keys_to_remove = [key for key in _bootstrap_kpi_cache if key[0] in {org_id, None}]
+    for key in keys_to_remove:
+        _bootstrap_kpi_cache.pop(key, None)
+    return len(keys_to_remove)
 
 
 def _open_action_filter(today: date):
@@ -148,6 +159,7 @@ def _escalation_kpi_subquery(
     current_user: CurrentUser,
     *,
     project_ids: Select | None = None,
+    client_visible_only: bool = False,
 ):
     stmt = (
         select(
@@ -174,6 +186,8 @@ def _escalation_kpi_subquery(
     stmt = _apply_org_filter(stmt, GovernanceEscalation.org_id, current_user)
     if project_ids is not None:
         stmt = stmt.where(GovernanceEscalation.project_id.in_(project_ids))
+    if client_visible_only:
+        stmt = stmt.where(GovernanceEscalation.client_visible.is_(True))
     return stmt.subquery("bootstrap_escalation_kpis")
 
 
@@ -215,6 +229,7 @@ async def _fetch_bootstrap_kpis_bundle(
         escalation_kpis = _escalation_kpi_subquery(
             current_user,
             project_ids=_client_assignment_ids_select(current_user),
+            client_visible_only=True,
         )
         stmt = select(
             escalation_kpis.c.open_escalations,
@@ -292,12 +307,17 @@ async def get_governance_bootstrap(
     cache_key = _bootstrap_cache_key(current_user)
     cached = _bootstrap_kpi_cache.get(cache_key)
     now = datetime.now(UTC)
+    timer = get_governance_timer()
     if cached and now - cached[0] < BOOTSTRAP_CACHE_TTL:
+        if timer is not None:
+            timer.record_meta(execute_count=0, cache_hit=True)
         return GovernanceBootstrapRead(kpis=cached[1])
 
     started = perf_counter()
     kpis = await compute_governance_kpis(session, current_user)
     elapsed_ms = round((perf_counter() - started) * 1000, 1)
+    if timer is not None:
+        timer.record_meta(execute_count=1, cache_hit=False)
     if elapsed_ms >= 150:
         logger.info(
             "governance_bootstrap_profile total_ms=%s db_executes=1 role=%s org_id=%s",

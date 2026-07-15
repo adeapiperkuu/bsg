@@ -20,6 +20,8 @@ MIGRATIONS = [
     REPO_ROOT / "supabase/migrations/20260701100000_knowledge_agent_performance_indexes.sql",
     REPO_ROOT / "supabase/migrations/20260702120000_knowledge_extraction_metadata.sql",
     REPO_ROOT / "supabase/migrations/20260702140000_knowledge_conversations.sql",
+    REPO_ROOT / "supabase/migrations/20260715100000_governance_background_jobs_phase_f.sql",
+    REPO_ROOT / "supabase/migrations/20260715113000_governance_project_charter_latency_indexes.sql",
 ]
 
 
@@ -64,11 +66,17 @@ async def main() -> int:
     if not database_url:
         print("DATABASE_URL not set", file=sys.stderr)
         return 1
+    if database_url.startswith("postgresql+asyncpg://"):
+        database_url = database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
 
-    conn = await asyncpg.connect(database_url)
+    conn = await asyncpg.connect(database_url, statement_cache_size=0)
     try:
         requested = sys.argv[1:]
-        migrations = [REPO_ROOT / "supabase/migrations" / name for name in requested] if requested else MIGRATIONS
+        migrations = (
+            [REPO_ROOT / "supabase/migrations" / name for name in requested]
+            if requested
+            else MIGRATIONS
+        )
         for path in migrations:
             if not path.exists():
                 print(f"Missing migration: {path}", file=sys.stderr)

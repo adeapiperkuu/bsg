@@ -25,8 +25,15 @@ from app.db.models import AppRole, Bottleneck, Milestone, MilestoneStatus, Proje
 GOVERNANCE_THROUGHPUT_LIMIT = 7
 _OPEN_STATUS_LITERALS = ", ".join(f"'{status.value}'" for status in OPEN_STATUSES)
 
-GOVERNANCE_SIGNAL_BUNDLE_SQL = text(
-    f"""
+def governance_signal_bundle_select_sql(project_id_predicate: str) -> str:
+    """Shared delivery-signal UNION body.
+
+    ``project_id_predicate`` is interpolated into each branch as the full
+    boolean expression after ``WHERE`` / ``AND`` for the project id column
+    alias used in that branch (for example ``ts.project_id = ANY(:project_ids)``
+    or ``ts.project_id IN (SELECT id FROM visible_projects)``).
+    """
+    return f"""
     SELECT kind, project_id, payload
     FROM (
         SELECT 'throughput'::text AS kind,
@@ -47,7 +54,7 @@ GOVERNANCE_SIGNAL_BUNDLE_SQL = text(
                        PARTITION BY ts.project_id ORDER BY ts.snapshot_date DESC
                    ) AS rn
             FROM throughput_snapshots ts
-            WHERE ts.project_id = ANY(:project_ids)
+            WHERE {project_id_predicate.format(alias="ts")}
         ) tr
         WHERE tr.rn <= :throughput_limit
 
@@ -67,7 +74,7 @@ GOVERNANCE_SIGNAL_BUNDLE_SQL = text(
                        PARTITION BY q.project_id ORDER BY q.created_at DESC
                    ) AS rn
             FROM quality_snapshots q
-            WHERE q.project_id = ANY(:project_ids)
+            WHERE {project_id_predicate.format(alias="q")}
         ) qr
         WHERE qr.rn = 1
 
@@ -85,7 +92,7 @@ GOVERNANCE_SIGNAL_BUNDLE_SQL = text(
                    'status', m.status
                )
         FROM milestones m
-        WHERE m.project_id = ANY(:project_ids)
+        WHERE {project_id_predicate.format(alias="m")}
           AND m.deleted_at IS NULL
           AND m.actual_date IS NULL
           AND m.status != 'completed'
@@ -99,7 +106,7 @@ GOVERNANCE_SIGNAL_BUNDLE_SQL = text(
                    'risk_tier', r.risk_tier
                )
         FROM risk_alerts r
-        WHERE r.project_id = ANY(:project_ids)
+        WHERE {project_id_predicate.format(alias="r")}
           AND r.deleted_at IS NULL
           AND r.status IN ({_OPEN_STATUS_LITERALS})
 
@@ -109,12 +116,17 @@ GOVERNANCE_SIGNAL_BUNDLE_SQL = text(
                b.project_id,
                jsonb_build_object('open_count', count(*)::int)
         FROM bottlenecks b
-        WHERE b.project_id = ANY(:project_ids)
+        WHERE {project_id_predicate.format(alias="b")}
           AND b.deleted_at IS NULL
           AND b.status IN ({_OPEN_STATUS_LITERALS})
         GROUP BY b.project_id
     ) bundle
     """
+
+
+# Standalone bundle: project ids supplied as a bound UUID array (detail / legacy).
+GOVERNANCE_SIGNAL_BUNDLE_SQL = text(
+    governance_signal_bundle_select_sql("{alias}.project_id = ANY(:project_ids)")
 ).bindparams(
     bindparam("project_ids", type_=ARRAY(PG_UUID())),
     bindparam("throughput_limit"),

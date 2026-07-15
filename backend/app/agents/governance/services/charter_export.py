@@ -419,7 +419,3 @@ def generate_charter_pdf(document: CharterExportDocument) -> bytes:
     buffer.write(trailer.encode())
     return buffer.getvalue()
 
-
-def generate_simple_docx(title: str, body: str) -> bytes:
-    """Backward-compatible wrapper for existing imports."""
-    return generate_charter_docx(CharterExportDocument(title=title, metadata=[], markdown=body))

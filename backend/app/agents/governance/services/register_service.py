@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
+from uuid import UUID
 
-from sqlalchemy import and_, func, literal, or_, select, String
+from sqlalchemy import String, and_, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.governance.constants import (
+    CACHE_SHAPE_FIRST_PAINT_UNFILTERED,
+    CACHE_SHAPE_LEGACY_FIRST_PAGE,
+    CACHE_SHAPE_UNCACHED_FILTERED,
+    CACHE_SHAPE_UNCACHED_LIMIT,
+    CACHE_SHAPE_UNCACHED_OFFSET,
+    GOVERNANCE_FIRST_PAINT_LIMIT,
+    GOVERNANCE_FIRST_PAINT_OFFSET,
+    REGISTER_CACHEABLE_LIMITS,
+)
 from app.agents.governance.schemas.governance import GovernanceRegisterRowRead
 from app.agents.governance.services.governance_service import (
     PaginatedGovernanceRows,
@@ -14,12 +26,10 @@ from app.agents.governance.services.governance_service import (
     _execute_paginated_rows,
     can_read_internal_governance,
 )
-from app.agents.governance.services.project_governance_summary_service import (
-    ensure_org_time_sensitive_summary_counts,
-)
-from app.agents.governance.timing import governance_db_timed
+from app.agents.governance.timing import get_governance_timer, governance_db_timed
 from app.core.security import CurrentUser
 from app.db.models import (
+    AppRole,
     GovernanceScopeStatus,
     Project,
     ProjectGovernanceSummary,
@@ -31,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 REGISTER_LIST_CACHE_TTL = timedelta(seconds=60)
 _register_list_cache: dict[
-    tuple[str, str | None, str | None, str | None, int, int],
+    tuple[UUID | None, str, UUID, int, int],
     tuple[datetime, PaginatedGovernanceRows],
 ] = {}
 
@@ -41,18 +51,30 @@ def _register_cache_key(
     *,
     limit: int,
     offset: int,
-    project_id,
-    status,
-    search,
-) -> tuple[str, str | None, str | None, str | None, int, int]:
-    return (
-        str(current_user.id),
-        str(project_id) if project_id is not None else None,
-        status,
-        search,
-        limit,
-        offset,
-    )
+) -> tuple[UUID | None, str, UUID, int, int]:
+    """Isolate by org, role, and user.
+
+    DM/leadership share org-wide project visibility; clients are assignment-scoped via
+    scoped_project_query, so user_id is required. Super admin uses org_id=None.
+    """
+    org_id = None if current_user.role == AppRole.SUPER_ADMIN else current_user.org_id
+    return (org_id, current_user.role.value, current_user.id, limit, offset)
+
+
+def _register_has_filters(*, project_id, status, search) -> bool:
+    return project_id is not None or status is not None or search is not None
+
+
+def _register_cache_shape(*, limit: int, offset: int, project_id, status, search) -> str:
+    if offset != GOVERNANCE_FIRST_PAINT_OFFSET:
+        return CACHE_SHAPE_UNCACHED_OFFSET
+    if _register_has_filters(project_id=project_id, status=status, search=search):
+        return CACHE_SHAPE_UNCACHED_FILTERED
+    if limit == GOVERNANCE_FIRST_PAINT_LIMIT:
+        return CACHE_SHAPE_FIRST_PAINT_UNFILTERED
+    if limit in {25, 50}:
+        return CACHE_SHAPE_LEGACY_FIRST_PAGE
+    return CACHE_SHAPE_UNCACHED_LIMIT
 
 
 def _is_default_register_cacheable(
@@ -64,16 +86,22 @@ def _is_default_register_cacheable(
     search,
 ) -> bool:
     return (
-        offset == 0
-        and project_id is None
-        and status is None
-        and search is None
-        and limit in {25, 50}
+        offset == GOVERNANCE_FIRST_PAINT_OFFSET
+        and not _register_has_filters(project_id=project_id, status=status, search=search)
+        and limit in REGISTER_CACHEABLE_LIMITS
     )
 
 
-def invalidate_register_list_cache() -> None:
-    _register_list_cache.clear()
+def invalidate_register_list_cache(*, org_id: UUID | None = None) -> int:
+    """Clear one organization plus super-admin aggregates, or every entry when unspecified."""
+    keys = (
+        list(_register_list_cache)
+        if org_id is None
+        else [key for key in _register_list_cache if key[0] in {org_id, None}]
+    )
+    for key in keys:
+        _register_list_cache.pop(key, None)
+    return len(keys)
 
 
 def _compute_register_health(
@@ -101,7 +129,6 @@ async def list_governance_register_page(
     **raw_filters,
 ) -> PaginatedGovernanceRows:
     filters = _bounded_list_filters(**raw_filters)
-    today = datetime.now(UTC).date()
     can_internal = can_read_internal_governance(current_user)
     cacheable = _is_default_register_cacheable(
         limit=filters.limit,
@@ -114,29 +141,50 @@ async def list_governance_register_page(
         current_user,
         limit=filters.limit,
         offset=filters.offset,
+    )
+    cache_shape = _register_cache_shape(
+        limit=filters.limit,
+        offset=filters.offset,
         project_id=filters.project_id,
         status=filters.status,
         search=filters.search,
     )
     now = datetime.now(UTC)
+    timer = get_governance_timer()
+    if timer is not None:
+        timer.record_meta(
+            limit=filters.limit,
+            offset=filters.offset,
+            cache_eligible=cacheable,
+            cache_shape=cache_shape,
+            filtered=_register_has_filters(
+                project_id=filters.project_id,
+                status=filters.status,
+                search=filters.search,
+            ),
+            summary_refresh_required=False,
+            summary_refresh_performed=False,
+            summary_refresh_ms=0.0,
+            summary_rows_refreshed=0,
+        )
     if cacheable:
         cached = _register_list_cache.get(cache_key)
         if cached and now - cached[0] < REGISTER_LIST_CACHE_TTL:
-            return cached[1]
+            if timer is not None:
+                timer.record_meta(
+                    execute_count=0,
+                    cache_hit=True,
+                    cache_scope="user_access",
+                    register_row_count=len(cached[1].items),
+                )
+            return replace(cached[1], db_executes=0)
 
     started = perf_counter()
-    db_executes = 0
-    if current_user.org_id is not None:
-        db_executes += await ensure_org_time_sensitive_summary_counts(
-            session, current_user.org_id, today=today
-        )
 
     visible_projects = scoped_project_query(current_user).subquery()
     summary = ProjectGovernanceSummary
 
-    open_deps = (
-        func.coalesce(summary.open_dependencies_count, 0) if can_internal else literal(0)
-    )
+    open_deps = func.coalesce(summary.open_dependencies_count, 0) if can_internal else literal(0)
     blocking_deps = (
         func.coalesce(summary.blocked_dependencies_count, 0) if can_internal else literal(0)
     )
@@ -230,7 +278,7 @@ async def list_governance_register_page(
         offset=filters.offset,
         count_stmt=count_stmt,
     )
-    db_executes += page.db_executes
+    db_executes = page.db_executes
 
     items = [
         GovernanceRegisterRowRead(
@@ -263,17 +311,26 @@ async def list_governance_register_page(
     if cacheable:
         _register_list_cache[cache_key] = (now, result)
 
+    if timer is not None:
+        timer.record_meta(
+            execute_count=db_executes,
+            cache_hit=False,
+            cache_scope="user_access",
+            register_row_count=len(items),
+        )
+
     elapsed_ms = round((perf_counter() - started) * 1000, 1)
     if elapsed_ms >= 200:
         logger.info(
             "governance_register_list_profile total_ms=%s db_executes=%s row_count=%s "
-            "limit=%s offset=%s cached=%s",
+            "limit=%s offset=%s cached=%s cache_shape=%s",
             elapsed_ms,
             db_executes,
             len(items),
             filters.limit,
             filters.offset,
             False,
+            cache_shape,
         )
 
     return result

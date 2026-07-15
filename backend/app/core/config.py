@@ -23,7 +23,9 @@ class Settings(BaseSettings):
     supabase_service_role_key: str
     secret_key: str
     environment: Literal["dev", "staging", "prod"] = "dev"
-    allowed_origins: str = "http://localhost:5173,http://localhost:3000,http://localhost:8080,http://localhost:8081"
+    allowed_origins: str = (
+        "http://localhost:5173,http://localhost:3000,http://localhost:8080,http://localhost:8081"
+    )
     supabase_jwt_secret: str | None = None
     auth_cookie_secure: bool = False
     auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
@@ -68,6 +70,48 @@ class Settings(BaseSettings):
     # the Supabase MFA REST API shape this integration relies on hasn't been
     # verified against a live sandbox yet (see docs/13. Security & Compliance.md §3).
     mfa_required_roles: str = ""
+    # Governance AI recommendations (Phase 6) — disabled by default for safe rollout.
+    governance_ai_recommendations_enabled: bool = False
+    governance_ai_recommendation_model: str | None = None
+    governance_ai_recommendation_max_items: int = 5
+    governance_ai_recommendation_cooldown_seconds: int = 600
+    governance_ai_recommendation_max_evidence_items: int = 20
+    governance_ai_recommendation_timeout_seconds: float = 45.0
+    governance_ai_recommendation_prompt_version: str = "v1"
+    # Phase D — UTC daily register summary rollover refresh (hourly catch-up, once/day idempotent).
+    governance_register_daily_refresh_enabled: bool = True
+    # Phase F — durable Governance background jobs.
+    governance_job_poll_interval_seconds: int = 5
+    governance_job_poll_batch_size: int = 3
+    governance_job_stale_seconds: int = 180
+    governance_job_heartbeat_seconds: int = 30
+    governance_job_worker_id: str = ""
+    governance_job_export_dir: str = str(BACKEND_ROOT / "data" / "governance-exports")
+    # Quality BR-06 — promote unresolved quality drift into governance_escalations.
+    governance_quality_auto_escalation_enabled: bool = True
+    # Optional outbound delivery for critical governance notifications (no-op when unset).
+    governance_outbound_notifications_enabled: bool = False
+    slack_webhook_url: str | None = None
+    # Phase 12 — recommendation effectiveness & learning (read-only analytics + bounded rules).
+    governance_recommendation_effectiveness_enabled: bool = True
+    governance_recommendation_effectiveness_cache_seconds: int = 180
+    governance_recommendation_effectiveness_min_sample: int = 5
+    governance_recommendation_calibration_min_sample: int = 10
+    governance_recommendation_quality_score_version: str = "v1"
+    governance_recommendation_calibration_version: str = "v1"
+    governance_recommendation_learning_rules_enabled: bool = False
+    governance_recommendation_explanation_version: str = "v2"
+    governance_recommendation_optimization_enabled: bool = True
+    governance_recommendation_optimization_cache_seconds: int = 180
+    governance_recommendation_strategy_version: str = "v1"
+    governance_recommendation_confidence_version: str = "v1"
+    governance_recommendation_drift_acceptance_drop_pp: float = 15.0
+    governance_recommendation_drift_fp_rise_pp: float = 10.0
+    governance_recommendation_drift_volume_ratio: float = 2.0
+    governance_recommendation_shadow_sample_limit: int = 200
+    # Phase 14 — publish approved Project Charters into Operational Knowledge.
+    governance_charter_knowledge_publish_enabled: bool = True
+    auto_publish_approved_charters: bool = True
 
     model_config = SettingsConfigDict(
         env_file=(
@@ -84,12 +128,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_security_settings(self) -> Self:
-        if self.environment in {"staging", "prod"}:
-            if not self.supabase_jwt_secret or not self.supabase_jwt_secret.strip():
-                msg = (
-                    "SUPABASE_JWT_SECRET must be set when ENVIRONMENT is staging or production."
-                )
-                raise ValueError(msg)
+        if self.environment in {"staging", "prod"} and (
+            not self.supabase_jwt_secret or not self.supabase_jwt_secret.strip()
+        ):
+            msg = "SUPABASE_JWT_SECRET must be set when ENVIRONMENT is staging or production."
+            raise ValueError(msg)
 
         if self.environment == "prod":
             if not self.auth_cookie_secure:
@@ -116,7 +159,9 @@ class Settings(BaseSettings):
 
     @property
     def jwt_secret(self) -> str:
-        if self.supabase_jwt_secret and not self.supabase_jwt_secret.startswith(("http://", "https://")):
+        if self.supabase_jwt_secret and not self.supabase_jwt_secret.startswith(
+            ("http://", "https://")
+        ):
             return self.supabase_jwt_secret
         if self.environment == "dev":
             return self.secret_key
@@ -125,7 +170,10 @@ class Settings(BaseSettings):
 
     @property
     def jwt_uses_jwks(self) -> bool:
-        return bool(self.supabase_jwt_secret and self.supabase_jwt_secret.startswith(("http://", "https://")))
+        return bool(
+            self.supabase_jwt_secret
+            and self.supabase_jwt_secret.startswith(("http://", "https://"))
+        )
 
     @property
     def async_database_url(self) -> str:
