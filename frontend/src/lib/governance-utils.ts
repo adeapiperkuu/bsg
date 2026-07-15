@@ -250,9 +250,18 @@ export function overdueActions(actions: GovernanceAction[]): GovernanceAction[] 
   return actions.filter((action) => isOverdueAction(action));
 }
 
+export function isCriticalPathDependency(
+  dep: Pick<ProjectDependency, "status" | "overdue_days">,
+): boolean {
+  return dep.status === "blocking" && dep.overdue_days > 0;
+}
+
 export function dependencyRowClass(
   dep: Pick<ProjectDependency, "status" | "overdue_days">,
 ): string {
+  if (isCriticalPathDependency(dep)) {
+    return "bg-[color:var(--danger)]/10 ring-1 ring-inset ring-[color:var(--danger)]/25";
+  }
   if (dep.status === "blocking" || dep.overdue_days > 0) {
     return "bg-[color:var(--danger)]/5";
   }

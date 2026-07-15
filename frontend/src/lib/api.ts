@@ -32,7 +32,6 @@ import type {
   KnowledgeLibraryHealthApi,
   KnowledgeRelatedKnowledgeApi,
   KnowledgeRetrievalSettingsApi,
-  KnowledgeSuggestionApi,
   KnowledgeVersionCompareApi,
 } from "@/types/knowledge";
 import type {
@@ -1577,36 +1576,6 @@ export async function submitKnowledgeFeedback(
       feedback_reason: payload.feedback_reason ?? null,
     }),
   });
-  return body.data;
-}
-
-export async function listKnowledgeSuggestions(status?: string): Promise<KnowledgeSuggestionApi[]> {
-  const params = status ? `?status=${encodeURIComponent(status)}` : "";
-  const body = await apiFetch<{ data: KnowledgeSuggestionApi[] }>(`/knowledge/suggestions${params}`);
-  return body.data;
-}
-
-export async function generateKnowledgeSuggestions(documentId?: string): Promise<KnowledgeSuggestionApi[]> {
-  const params = documentId ? `?document_id=${encodeURIComponent(documentId)}` : "";
-  const body = await apiFetch<{ data: KnowledgeSuggestionApi[] }>(`/knowledge/suggestions/generate${params}`, {
-    method: "POST",
-  });
-  return body.data;
-}
-
-export async function applyKnowledgeSuggestion(suggestionId: string): Promise<KnowledgeSuggestionApi> {
-  const body = await apiFetch<{ data: KnowledgeSuggestionApi }>(
-    `/knowledge/suggestions/${suggestionId}/apply`,
-    { method: "POST" },
-  );
-  return body.data;
-}
-
-export async function dismissKnowledgeSuggestion(suggestionId: string): Promise<KnowledgeSuggestionApi> {
-  const body = await apiFetch<{ data: KnowledgeSuggestionApi }>(
-    `/knowledge/suggestions/${suggestionId}/dismiss`,
-    { method: "POST" },
-  );
   return body.data;
 }
 

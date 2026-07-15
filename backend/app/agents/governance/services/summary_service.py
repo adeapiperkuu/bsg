@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.delivery.services.dashboard_service import get_portfolio_data
@@ -33,6 +33,7 @@ from app.core.config import get_settings
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
 from app.db.models import (
+    AppRole,
     GovernanceActionStatus,
     GovernanceDependencyStatus,
     GovernanceEscalationSeverity,
@@ -50,6 +51,21 @@ DEFAULT_LLM_TIMEOUT_SECONDS = 30.0
 INSUFFICIENT_EVIDENCE_MESSAGE = (
     "Not enough governance evidence is available to generate a weekly summary."
 )
+LATEST_WEEKLY_SUMMARY_READ_CACHE_TTL = timedelta(seconds=60)
+
+
+@dataclass(frozen=True)
+class WeeklySummaryReadCacheResult:
+    read: object | None
+    cache_hit: bool
+    execute_count: int
+    detail_fetch_ms: float = 0.0
+    enrichment_ms: float = 0.0
+
+
+_latest_weekly_summary_read_cache: dict[
+    tuple[UUID | None, str, UUID], tuple[datetime, object | None]
+] = {}
 
 OPEN_DEPENDENCY_STATUSES = {
     GovernanceDependencyStatus.OPEN,
@@ -533,9 +549,9 @@ async def generate_weekly_governance_summary(
     *,
     summary_week: date | None = None,
 ) -> GovernanceWeeklySummary:
-    from app.agents.governance.services.governance_service import assert_can_write_governance
+    from app.agents.governance.services.governance_service import assert_can_manage_weekly_summary
 
-    assert_can_write_governance(current_user)
+    assert_can_manage_weekly_summary(current_user)
     week = summary_week or monday_of_week()
 
     evidence_items, context = await collect_weekly_summary_evidence(
@@ -544,6 +560,8 @@ async def generate_weekly_governance_summary(
     if not has_sufficient_evidence(evidence_items):
         raise ApiError(422, "INSUFFICIENT_EVIDENCE", INSUFFICIENT_EVIDENCE_MESSAGE)
 
+    # End the evidence-read transaction before the external model call.
+    await session.commit()
     summary_text = await _call_llm_summary(context)
     if not summary_text:
         summary_text = build_template_summary(context, evidence_items)
@@ -571,6 +589,7 @@ async def generate_weekly_governance_summary(
 
     await session.commit()
     await session.refresh(summary)
+    invalidate_latest_weekly_summary_read_cache(org_id=summary.org_id)
     return summary
 
 
@@ -736,14 +755,114 @@ async def build_weekly_summary_read(
             "evidence_links": [
                 GovernanceEvidenceLinkRead.model_validate(row) for row in enriched
             ],
+            "evidence_link_count": len(enriched),
             "approved_by_name": approved_by_name,
         }
     )
 
 
+def _latest_weekly_summary_cache_key(current_user: CurrentUser) -> tuple[UUID | None, str, UUID]:
+    org_id = None if current_user.role == AppRole.SUPER_ADMIN else current_user.org_id
+    return (org_id, current_user.role.value, current_user.id)
+
+
+def invalidate_latest_weekly_summary_read_cache(org_id: UUID | None = None) -> int:
+    if org_id is None:
+        count = len(_latest_weekly_summary_read_cache)
+        _latest_weekly_summary_read_cache.clear()
+        return count
+    removed = 0
+    for key in list(_latest_weekly_summary_read_cache):
+        cache_org_id = key[0]
+        if cache_org_id is None or cache_org_id == org_id:
+            _latest_weekly_summary_read_cache.pop(key, None)
+            removed += 1
+    return removed
+
+
+async def get_latest_weekly_summary_read_cached(
+    session: AsyncSession,
+    current_user: CurrentUser,
+) -> WeeklySummaryReadCacheResult:
+    from app.agents.governance.services.governance_service import get_latest_weekly_summary
+
+    key = _latest_weekly_summary_cache_key(current_user)
+    now = datetime.now(timezone.utc)
+    cached = _latest_weekly_summary_read_cache.get(key)
+    if cached and now - cached[0] < LATEST_WEEKLY_SUMMARY_READ_CACHE_TTL:
+        read = cached[1]
+        return WeeklySummaryReadCacheResult(
+            read=read.model_copy(deep=True) if read is not None else None,
+            cache_hit=True,
+            execute_count=0,
+        )
+    if cached:
+        _latest_weekly_summary_read_cache.pop(key, None)
+
+    detail_started = datetime.now(timezone.utc)
+    summary = await get_latest_weekly_summary(session, current_user)
+    detail_fetch_ms = (datetime.now(timezone.utc) - detail_started).total_seconds() * 1000
+    if summary is None:
+        _latest_weekly_summary_read_cache[key] = (now, None)
+        return WeeklySummaryReadCacheResult(
+            read=None,
+            cache_hit=False,
+            execute_count=1,
+            detail_fetch_ms=round(detail_fetch_ms, 1),
+        )
+
+    enrichment_started = datetime.now(timezone.utc)
+    read = await build_weekly_summary_read(session, summary)
+    enrichment_ms = (datetime.now(timezone.utc) - enrichment_started).total_seconds() * 1000
+    _latest_weekly_summary_read_cache[key] = (now, read.model_copy(deep=True))
+    return WeeklySummaryReadCacheResult(
+        read=read,
+        cache_hit=False,
+        execute_count=2 + len(read.evidence_links) + (1 if read.approved_by else 0),
+        detail_fetch_ms=round(detail_fetch_ms, 1),
+        enrichment_ms=round(enrichment_ms, 1),
+    )
+
+
+async def build_weekly_summary_list_reads(
+    session: AsyncSession,
+    summaries: list[GovernanceWeeklySummary],
+):
+    from app.agents.governance.schemas.governance import GovernanceWeeklySummaryListRead
+    from app.agents.governance.services.governance_service import load_user_names
+
+    if not summaries:
+        return []
+
+    summary_ids = [summary.id for summary in summaries]
+    count_rows = (
+        await session.execute(
+            select(GovernanceEvidenceLink.summary_id, func.count(GovernanceEvidenceLink.id))
+            .where(GovernanceEvidenceLink.summary_id.in_(summary_ids))
+            .group_by(GovernanceEvidenceLink.summary_id)
+        )
+    ).all()
+    evidence_counts = {row[0]: int(row[1]) for row in count_rows}
+    approved_by_ids = {summary.approved_by for summary in summaries if summary.approved_by}
+    approved_by_names = await load_user_names(session, approved_by_ids)
+
+    return [
+        GovernanceWeeklySummaryListRead.model_validate(summary, from_attributes=True).model_copy(
+            update={
+                "evidence_link_count": evidence_counts.get(summary.id, 0),
+                "approved_by_name": approved_by_names.get(summary.approved_by)
+                if summary.approved_by
+                else None,
+            }
+        )
+        for summary in summaries
+    ]
+
+
 _SUMMARY_DB_TIMED = (
     "generate_weekly_governance_summary",
     "build_weekly_summary_read",
+    "build_weekly_summary_list_reads",
 )
 for _name in _SUMMARY_DB_TIMED:
     globals()[_name] = governance_db_timed(globals()[_name])

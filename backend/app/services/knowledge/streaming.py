@@ -399,7 +399,10 @@ async def prepare_stream_knowledge_ask(
         ], None
 
     structured_context = ""
-    if _needs_structured_operational_context(query_text, explicit_project=project):
+    # Skip heavy structured project lookups on fast-path answers (strong retrieval score).
+    if top_score < FAST_PATH_THRESHOLD and _needs_structured_operational_context(
+        query_text, explicit_project=project
+    ):
         import app.services.knowledge as knowledge_services
 
         structured_context = await knowledge_services._build_structured_operational_context(

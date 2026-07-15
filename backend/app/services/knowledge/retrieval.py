@@ -119,6 +119,7 @@ from app.services.knowledge.ingestion import (
 )
 from app.services.knowledge.permissions import (
     can_access_visibility,
+    visibility_values_for_role,
 )
 from app.services.knowledge.ranking import (
     _diversify_ranked_candidates,
@@ -134,6 +135,7 @@ from app.services.knowledge.utils import (
     NEIGHBOR_CHUNK_WINDOW,
     RERANK_CANDIDATE_LIMIT,
     RetrievalResult,
+    STRONG_RELEVANCE_THRESHOLD,
     TERM_FALLBACK_CHUNK_LIMIT,
     _AskTimings,
     _FOLLOW_UP_PRONOUN_RE,
@@ -271,9 +273,68 @@ async def _retrieve_knowledge_context(
         KnowledgeDocument.status == KnowledgeDocumentStatus.APPROVED,
         KnowledgeDocument.indexing_status == KnowledgeIndexingStatus.INDEXED,
         KnowledgeDocument.processing_status == KnowledgeProcessingStatus.READY,
+        KnowledgeDocument.owner_approver.is_not(None),
+        KnowledgeDocument.owner_approver != "",
+        KnowledgeDocument.effective_date.is_not(None),
     ]
+    if client_safe_mode:
+        doc_filters.append(KnowledgeDocument.visibility == KnowledgeVisibility.CLIENT_SAFE)
+    else:
+        role_visibility = visibility_values_for_role(current_user.role)
+        if role_visibility is not None:
+            # Empty list => role has no knowledge visibility; force zero rows.
+            doc_filters.append(
+                KnowledgeDocument.visibility.in_(role_visibility)
+                if role_visibility
+                else KnowledgeDocument.id.is_(None)
+            )
+
+    folder_scope = {folder_id} if folder_id is not None else set(folder_ids or [])
+    if folder_scope:
+        doc_filters.append(KnowledgeDocument.folder_id.in_(folder_scope))
+    source_scope = [source_type] if source_type else list(source_types or [])
+    if source_scope:
+        source_values = {item.strip().lower() for item in source_scope if item and item.strip()}
+        allowed_source_types = [
+            item for item in KnowledgeSourceType if item.value.lower() in source_values
+        ]
+        if allowed_source_types:
+            doc_filters.append(KnowledgeDocument.source_type.in_(allowed_source_types))
+    if project:
+        doc_filters.append(func.lower(KnowledgeDocument.project) == project.strip().lower())
+    if department:
+        doc_filters.append(func.lower(KnowledgeDocument.department) == department.strip().lower())
+    if effective_date_from:
+        doc_filters.append(KnowledgeDocument.effective_date >= effective_date_from)
+    if effective_date_to:
+        doc_filters.append(KnowledgeDocument.effective_date <= effective_date_to)
+
+    retrieval_load_options = load_only(
+        KnowledgeDocument.id,
+        KnowledgeDocument.org_id,
+        KnowledgeDocument.folder_id,
+        KnowledgeDocument.title,
+        KnowledgeDocument.source_type,
+        KnowledgeDocument.version,
+        KnowledgeDocument.visibility,
+        KnowledgeDocument.status,
+        KnowledgeDocument.owner_approver,
+        KnowledgeDocument.effective_date,
+        KnowledgeDocument.expiry_date,
+        KnowledgeDocument.project,
+        KnowledgeDocument.department,
+        KnowledgeDocument.indexing_status,
+        KnowledgeDocument.processing_status,
+        KnowledgeDocument.approved_at,
+        KnowledgeDocument.indexed_at,
+        KnowledgeDocument.updated_at,
+        KnowledgeDocument.created_at,
+        KnowledgeDocument.active_version_id,
+    )
     docs_result, folders_result = await asyncio.gather(
-        session.execute(select(KnowledgeDocument).where(*doc_filters)),
+        session.execute(
+            select(KnowledgeDocument).options(retrieval_load_options).where(*doc_filters)
+        ),
         session.execute(
             select(KnowledgeFolder).where(
                 KnowledgeFolder.org_id == current_user.org_id,
@@ -285,11 +346,9 @@ async def _retrieve_knowledge_context(
         timings.mark("document_lookup_ms")
     docs = list(docs_result.scalars())
     folders_map: dict[UUID, KnowledgeFolder] = {row.id: row for row in folders_result.scalars()}
-    eligible_docs = [doc for doc in docs if can_access_visibility(current_user.role, doc.visibility)]
-    if client_safe_mode:
-        eligible_docs = [
-            doc for doc in eligible_docs if doc.visibility == KnowledgeVisibility.CLIENT_SAFE
-        ]
+    eligible_docs = [
+        doc for doc in docs if can_access_visibility(current_user.role, doc.visibility)
+    ]
     if not eligible_docs:
         return RetrievalResult(
             matches=[],
@@ -314,53 +373,63 @@ async def _retrieve_knowledge_context(
         eligible_docs = [
             doc
             for doc in eligible_docs
-            if folders_map.get(doc.folder_id) and folders_map[doc.folder_id].folder_kind != KnowledgeFolderKind.HISTORIES
+            if folders_map.get(doc.folder_id)
+            and folders_map[doc.folder_id].folder_kind != KnowledgeFolderKind.HISTORIES
         ]
-    strict_eligible_docs = list(eligible_docs)
-    folder_scope = {folder_id} if folder_id is not None else set(folder_ids or [])
-    if folder_scope:
-        eligible_docs = [doc for doc in eligible_docs if doc.folder_id in folder_scope]
-    source_scope = [source_type] if source_type else list(source_types or [])
-    if source_scope:
-        source_values = {item.strip().lower() for item in source_scope if item and item.strip()}
-        eligible_docs = [
-            doc for doc in eligible_docs if doc.source_type.value.lower() in source_values
-        ]
-    if project:
-        project_query = project.strip().lower()
-        eligible_docs = [doc for doc in eligible_docs if (doc.project or "").lower() == project_query]
-    if department:
-        department_query = department.strip().lower()
-        eligible_docs = [doc for doc in eligible_docs if (doc.department or "").lower() == department_query]
-    if effective_date_from:
-        eligible_docs = [
-            doc for doc in eligible_docs if doc.effective_date and doc.effective_date >= effective_date_from
-        ]
-    if effective_date_to:
-        eligible_docs = [
-            doc for doc in eligible_docs if doc.effective_date and doc.effective_date <= effective_date_to
-        ]
+    fallback_level = 0
     eligible_docs = _filter_retrieval_ready_docs(eligible_docs, current_user.org_id)
     eligible_docs, version_conflicts = _filter_latest_valid_versions(eligible_docs)
     if version_conflicts:
         rejected_reasons["_version_conflicts"] = version_conflicts
-    fallback_level = 0
     if not eligible_docs and (folder_scope or source_scope):
         fallback_level = 1
-        relaxed_docs = list(strict_eligible_docs)
+        # Re-query without optional folder/source filters but keep project/department/date scope.
+        relaxed_filters = [
+            KnowledgeDocument.org_id == current_user.org_id,
+            KnowledgeDocument.deleted_at.is_(None),
+            KnowledgeDocument.status == KnowledgeDocumentStatus.APPROVED,
+            KnowledgeDocument.indexing_status == KnowledgeIndexingStatus.INDEXED,
+            KnowledgeDocument.processing_status == KnowledgeProcessingStatus.READY,
+            KnowledgeDocument.owner_approver.is_not(None),
+            KnowledgeDocument.owner_approver != "",
+            KnowledgeDocument.effective_date.is_not(None),
+        ]
+        if client_safe_mode:
+            relaxed_filters.append(KnowledgeDocument.visibility == KnowledgeVisibility.CLIENT_SAFE)
+        else:
+            role_visibility = visibility_values_for_role(current_user.role)
+            if role_visibility:
+                relaxed_filters.append(KnowledgeDocument.visibility.in_(role_visibility))
+            elif role_visibility is not None:
+                relaxed_filters.append(KnowledgeDocument.id.is_(None))
         if project:
-            project_query = project.strip().lower()
-            relaxed_docs = [doc for doc in relaxed_docs if (doc.project or "").lower() == project_query]
+            relaxed_filters.append(func.lower(KnowledgeDocument.project) == project.strip().lower())
         if department:
-            department_query = department.strip().lower()
-            relaxed_docs = [doc for doc in relaxed_docs if (doc.department or "").lower() == department_query]
+            relaxed_filters.append(
+                func.lower(KnowledgeDocument.department) == department.strip().lower()
+            )
         if effective_date_from:
-            relaxed_docs = [
-                doc for doc in relaxed_docs if doc.effective_date and doc.effective_date >= effective_date_from
-            ]
+            relaxed_filters.append(KnowledgeDocument.effective_date >= effective_date_from)
         if effective_date_to:
+            relaxed_filters.append(KnowledgeDocument.effective_date <= effective_date_to)
+        relaxed_docs = list(
+            (
+                await session.execute(
+                    select(KnowledgeDocument)
+                    .options(retrieval_load_options)
+                    .where(*relaxed_filters)
+                )
+            ).scalars()
+        )
+        relaxed_docs = [
+            doc for doc in relaxed_docs if can_access_visibility(current_user.role, doc.visibility)
+        ]
+        if not include_histories:
             relaxed_docs = [
-                doc for doc in relaxed_docs if doc.effective_date and doc.effective_date <= effective_date_to
+                doc
+                for doc in relaxed_docs
+                if folders_map.get(doc.folder_id)
+                and folders_map[doc.folder_id].folder_kind != KnowledgeFolderKind.HISTORIES
             ]
         eligible_docs = _filter_retrieval_ready_docs(relaxed_docs, current_user.org_id)
         eligible_docs, version_conflicts = _filter_latest_valid_versions(eligible_docs)
@@ -453,7 +522,12 @@ async def _retrieve_knowledge_context(
         chunk_filters.append(KnowledgeDocumentChunk.version_id.in_(active_version_ids))
     keyword_scores: dict[UUID, float] = {}
     keyword_by_id: dict[UUID, KnowledgeDocumentChunk] = {}
-    if not has_embeddings or len(vector_by_id) < max_sources:
+    strong_vector_hits = sum(
+        1 for score in vector_scores.values() if score >= STRONG_RELEVANCE_THRESHOLD
+    )
+    # Skip the expensive 500-chunk keyword scan when vector already returned enough strong hits.
+    needs_keyword_fallback = (not has_embeddings) or strong_vector_hits < max_sources
+    if needs_keyword_fallback:
         keyword_pool = list(
             (
                 await session.execute(
@@ -496,13 +570,21 @@ async def _retrieve_knowledge_context(
         max_sources=max_sources,
         rejected_reasons=rejected_reasons,
     )
-    matches = await _expand_neighbor_matches(
-        session,
-        matches,
-        query_type=query_type,
-        max_sources=max_sources,
-        score_breakdowns=score_breakdowns,
+    # Neighbor expansion is expensive; skip when vector evidence is already strong.
+    top_vector = max(vector_scores.values()) if vector_scores else 0.0
+    expand_neighbors = (
+        query_type in {"procedural", "troubleshooting"}
+        and len(matches) < max_sources
+        and top_vector < STRONG_RELEVANCE_THRESHOLD
     )
+    if expand_neighbors:
+        matches = await _expand_neighbor_matches(
+            session,
+            matches,
+            query_type=query_type,
+            max_sources=max_sources,
+            score_breakdowns=score_breakdowns,
+        )
     if timings:
         timings.mark("reranking_ms")
 
@@ -530,6 +612,7 @@ async def _retrieve_knowledge_context(
         candidates_after_deduplication=len(thresholded),
         score_breakdowns=score_breakdowns,
         rejected_reasons=rejected_reasons,
+        rewrite_diagnostics=rewrite_diagnostics,
     )
 
 def _needs_llm_query_rewrite(query_text: str, conversation_history: list[KnowledgeConversationTurn]) -> bool:

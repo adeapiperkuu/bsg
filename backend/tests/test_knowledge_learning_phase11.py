@@ -1,38 +1,25 @@
-"""Phase 11 continuous learning tests — AI services mocked, no real API calls."""
+"""Knowledge helpers retained after Continuous Learning removal."""
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date
 from uuid import uuid4
 
 from app.db.models.entities import (
-    AgentQuery,
     KnowledgeDocument,
     KnowledgeDocumentStatus,
-    KnowledgeEvidenceLink,
-    KnowledgeFeedbackRating,
-    KnowledgeFolder,
-    KnowledgeFolderKind,
     KnowledgeIndexingStatus,
     KnowledgeProcessingStatus,
-    KnowledgeQueryFeedback,
     KnowledgeSourceType,
     KnowledgeVisibility,
 )
 from app.schemas.domain import KnowledgeLibraryHealthCountsRead
 from app.services.knowledge.evaluation import build_evaluation_report, run_static_golden_evaluation
 from app.services.knowledge.learning import (
-    analyze_retrieval_quality,
-    build_content_suggestions_for_document,
-    build_gap_resolution_suggestions,
-    compare_documents_for_duplicates,
     compute_knowledge_health_score,
-    find_duplicate_matches,
     generate_document_summary_payload,
     suggest_related_knowledge,
 )
-from app.services.knowledge.utils import KNOWLEDGE_AGENT_NAME, NO_APPROVED_ANSWER
-from app.services.knowledge_intelligence import detect_document_duplicates
 
 
 def _doc(
@@ -95,128 +82,16 @@ def test_knowledge_health_score_penalizes_failures() -> None:
     assert unhealthy.recommendations
 
 
-def test_content_suggestions_are_deterministic() -> None:
-    folder = KnowledgeFolder(
-        id=uuid4(),
-        org_id=uuid4(),
-        name="SOPs",
-        folder_kind=KnowledgeFolderKind.SOPS,
-        display_order=0,
-    )
-    guides = KnowledgeFolder(
-        id=uuid4(),
-        org_id=folder.org_id,
-        name="Guides",
-        folder_kind=KnowledgeFolderKind.GUIDES,
-        display_order=1,
-    )
-    doc = _doc(
-        title="Untitled document",
-        owner_approver="",
-        effective_date=None,
-        text=(
-            "# Escalation Guide\n\n"
-            "1. Notify delivery manager.\n"
-            "Warning: Do not skip approval.\n"
-            "Project Alpha requires QA sign-off."
-        ),
-        source_type=KnowledgeSourceType.SOP,
-    )
-    doc.folder_id = folder.id
-    first = build_content_suggestions_for_document(
-        doc,
-        folder=folder,
-        folders_by_kind={KnowledgeFolderKind.SOPS: folder, KnowledgeFolderKind.GUIDES: guides},
-        text=doc.extracted_text or "",
-    )
-    second = build_content_suggestions_for_document(
-        doc,
-        folder=folder,
-        folders_by_kind={KnowledgeFolderKind.SOPS: folder, KnowledgeFolderKind.GUIDES: guides},
-        text=doc.extracted_text or "",
-    )
-    assert first
-    assert [item["suggestion_type"] for item in first] == [item["suggestion_type"] for item in second]
-    types = {item["suggestion_type"] for item in first}
-    assert "missing_metadata" in types
-    assert "better_title" in types or "suggested_source_type" in types
-
-
-def test_gap_suggestions_never_auto_resolve() -> None:
-    docs = [
-        _doc(
-            title="Escalation SOP",
-            text="Escalation path for blocked delivery milestone with delivery manager ownership.",
-        ),
-        _doc(
-            title="Incident Lesson",
-            source_type=KnowledgeSourceType.LESSON_LEARNED,
-            text="Lesson learned about blocked delivery milestone escalation delays.",
-        ),
-    ]
-    suggestion = build_gap_resolution_suggestions(
-        gap_query="blocked delivery milestone escalation",
-        occurrence_count=3,
-        documents=docs,
-        historical_questions=[
-            "blocked delivery milestone escalation",
-            "how do we escalate blocked milestones",
-            "unrelated payroll question",
-        ],
-    )
-    assert suggestion.auto_resolved is False
-    assert suggestion.occurrence_count == 3
-    assert suggestion.existing_documents_that_may_resolve or suggestion.related_lessons_learned
-
-
-def test_duplicate_detection_semantic_near_duplicate() -> None:
-    left = "Escalation workflow for Project Alpha with approval and QA checklist steps."
-    right = "Escalation workflow for Project Alpha with approval and QA checklist procedure."
-    warnings = detect_document_duplicates(
-        org_id=str(uuid4()),
-        document_id=str(uuid4()),
-        title="Escalation SOP",
-        version="v2.0",
-        file_name="escalation-v2.md",
-        checksum_sha256="one",
-        cleaned_text=left,
-        candidates=[
-            {
-                "id": str(uuid4()),
-                "title": "Escalation SOP Copy",
-                "version": "v1.0",
-                "file_name": "escalation.md",
-                "checksum_sha256": "two",
-                "extracted_text": right,
-                "status": "approved",
-            }
-        ],
-    )
-    assert warnings
-    assert warnings[0]["kind"] in {"near_duplicate", "overlapping_procedure", "semantic_near_duplicate"}
-
-
-def test_duplicate_compare_never_merges() -> None:
-    left = _doc(title="SOP A", text="1. Open tracker\n2. Notify manager\n3. Close ticket")
-    right = _doc(title="SOP A", text="1. Open tracker\n2. Notify manager\n3. Close ticket", version="v0.9")
-    right.status = KnowledgeDocumentStatus.EXPIRED
-    comparison = compare_documents_for_duplicates(left, right)
-    assert comparison.can_merge is False
-    assert comparison.similarity >= 0.9
-    matches = find_duplicate_matches(left, [left, right])
-    assert matches
-
-
-def test_related_knowledge_recommendations() -> None:
+def test_related_knowledge_scoring() -> None:
     primary = _doc(
         title="Escalation SOP",
-        text="Escalation procedure for delivery blockers and milestone risk.",
+        text="Escalate delivery blockers to the delivery manager.",
         project="Alpha",
     )
     related = _doc(
-        title="Escalation Guide",
+        title="Delivery Escalation Guide",
         source_type=KnowledgeSourceType.GUIDE,
-        text="Guide covering delivery blockers and milestone escalation steps.",
+        text="Guide for escalating delivery blockers and milestone risk.",
         project="Alpha",
     )
     lesson = _doc(
@@ -271,7 +146,7 @@ def test_document_summary_generation_with_mocked_ai() -> None:
 
 def test_evaluation_report_tracks_metrics_and_regressions() -> None:
     current = run_static_golden_evaluation()
-    assert current["total"] >= 6
+    assert current["total"] >= 8
     assert current["pass_rate"] == 1.0
     assert "answer_quality" in current
     assert "confidence_accuracy" in current
@@ -280,68 +155,3 @@ def test_evaluation_report_tracks_metrics_and_regressions() -> None:
     assert "report_text" in report
     assert report["regressions"]
     assert "answer_quality" in report["regressions"][0]
-
-
-def test_retrieval_quality_analysis() -> None:
-    org_id = uuid4()
-    doc = _doc(title="Selected SOP", text="selected content")
-    ignored = _doc(title="Ignored Guide", source_type=KnowledgeSourceType.GUIDE, text="ignored")
-    q1 = AgentQuery(
-        id=uuid4(),
-        user_id=uuid4(),
-        org_id=org_id,
-        agent_name=KNOWLEDGE_AGENT_NAME,
-        query_text="escalation path",
-        answer_text="Use the SOP",
-        retrieval_params={"confidence_score": 0.3},
-    )
-    q2 = AgentQuery(
-        id=uuid4(),
-        user_id=uuid4(),
-        org_id=org_id,
-        agent_name=KNOWLEDGE_AGENT_NAME,
-        query_text="missing topic",
-        answer_text=NO_APPROVED_ANSWER,
-        retrieval_params={"confidence_score": 0.1},
-    )
-    evidence = [
-        KnowledgeEvidenceLink(
-            id=uuid4(),
-            org_id=org_id,
-            agent_query_id=q1.id,
-            document_id=doc.id,
-            citation_label="Selected SOP",
-            relevance_score=0.9,
-        ),
-        KnowledgeEvidenceLink(
-            id=uuid4(),
-            org_id=org_id,
-            agent_query_id=q1.id,
-            document_id=ignored.id,
-            citation_label="Ignored Guide",
-            relevance_score=0.2,
-        ),
-    ]
-    feedback = [
-        KnowledgeQueryFeedback(
-            id=uuid4(),
-            org_id=org_id,
-            agent_query_id=q1.id,
-            user_id=uuid4(),
-            rating=KnowledgeFeedbackRating.UP,
-            selected_source_ids=[str(doc.id)],
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
-        )
-    ]
-    analysis = analyze_retrieval_quality(
-        queries=[q1, q2],
-        evidence_links=evidence,
-        feedback=feedback,
-        documents_by_id={doc.id: doc, ignored.id: ignored},
-    )
-    assert analysis.repeated_retrieval_failures >= 1
-    assert analysis.low_confidence_trend_count >= 1
-    assert analysis.weak_citations
-    assert analysis.frequently_selected_documents
-    assert analysis.recommendations

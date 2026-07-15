@@ -1,9 +1,7 @@
+import inspect
 from uuid import uuid4
 
 import pytest
-
-import inspect
-
 from httpx import AsyncClient
 
 from app.agents.governance.schemas.governance import (
@@ -27,7 +25,7 @@ from app.agents.governance.timing import (
 from app.core.security import CurrentUser
 from app.db.models import AppRole
 from app.schemas.common import DataResponse, ListResponse, Pagination
-from tests.conftest import delivery_manager, override_user
+from tests.conftest import override_user
 
 
 def _user(role: AppRole = AppRole.DELIVERY_MANAGER) -> CurrentUser:
@@ -104,6 +102,47 @@ async def test_instrument_governance_endpoint_logs_structured_fields(
 
 
 @pytest.mark.asyncio
+async def test_instrument_governance_endpoint_records_optional_meta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logged: list[dict[str, object]] = []
+
+    def _capture(msg: str, *args: object, extra: dict[str, object]) -> None:
+        logged.append(extra)
+
+    monkeypatch.setattr("app.agents.governance.timing.logger.info", _capture)
+
+    @instrument_governance_endpoint("GET /governance/dependencies")
+    async def handler(
+        current_user: CurrentUser,
+        limit: int = 6,
+        offset: int = 0,
+    ) -> ListResponse[int]:
+        from app.agents.governance.timing import get_governance_timer
+
+        timer = get_governance_timer()
+        assert timer is not None
+        timer.record_meta(
+            execute_count=1,
+            cache_hit=False,
+            activity_row_count=8,
+            project_row_count=12,
+        )
+        return ListResponse(data=[1], pagination=Pagination(limit=limit, offset=offset))
+
+    result = await handler(current_user=_user(), limit=6, offset=0)
+
+    assert len(result.data) == 1
+    entry = logged[0]
+    assert entry["limit"] == 6
+    assert entry["offset"] == 0
+    assert entry["execute_count"] == 1
+    assert entry["cache_hit"] is False
+    assert entry["activity_row_count"] == 8
+    assert entry["project_row_count"] == 12
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("path", "endpoint"),
     [
@@ -139,7 +178,13 @@ async def test_governance_baseline_endpoints_emit_timing_logs(
             )
         )
 
-    async def _analytics(_session: object, _user: CurrentUser, *, days: int) -> GovernanceAnalyticsRead:
+    async def _analytics(
+        _session: object,
+        _user: CurrentUser,
+        *,
+        days: int,
+        **_kwargs: object,
+    ) -> GovernanceAnalyticsRead:
         return GovernanceAnalyticsRead(
             generated_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
             date_range_days=days,
@@ -147,7 +192,6 @@ async def test_governance_baseline_endpoints_emit_timing_logs(
             portfolio_risk_ranking=[],
             insights=[],
             recommendations=[],
-            trends=[],
             charts={},
             recent_activity=[],
             export_sections=[],
@@ -190,15 +234,15 @@ async def test_governance_baseline_endpoints_emit_timing_logs(
         _bootstrap,
     )
     monkeypatch.setattr(
-        "app.agents.governance.routes.governance.get_governance_analytics",
+        "app.agents.governance.routes.analytics.get_governance_analytics",
         _analytics,
     )
     monkeypatch.setattr(
-        "app.agents.governance.routes.governance.list_governance_dependencies_page",
+        "app.agents.governance.routes.dependencies.list_governance_dependencies_page",
         _dependencies_page,
     )
     monkeypatch.setattr(
-        "app.agents.governance.routes.governance.list_governance_register_page",
+        "app.agents.governance.routes.register.list_governance_register_page",
         _register_page,
     )
 

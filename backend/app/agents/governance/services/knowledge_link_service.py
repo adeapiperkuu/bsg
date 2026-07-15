@@ -72,6 +72,7 @@ async def list_approved_governance_document_refs(
             document_id=doc.id,
             title=doc.title,
             project=doc.project,
+            department=doc.department,
             version=doc.version,
             status=doc.status.value,
             visibility=doc.visibility.value,

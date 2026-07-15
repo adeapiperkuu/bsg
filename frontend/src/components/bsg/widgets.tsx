@@ -130,6 +130,8 @@ export function StatusPill({ status }: { status: string }) {
       "bg-[color:var(--success)]/15 text-[color:var(--success)] border-[color:var(--success)]/30",
     Approved:
       "bg-[color:var(--success)]/15 text-[color:var(--success)] border-[color:var(--success)]/30",
+    Healthy:
+      "bg-[color:var(--success)]/15 text-[color:var(--success)] border-[color:var(--success)]/30",
     "At Risk":
       "bg-[color:var(--warning)]/15 text-[color:var(--warning)] border-[color:var(--warning)]/30",
     Amber:
@@ -144,6 +146,8 @@ export function StatusPill({ status }: { status: string }) {
       "bg-[color:var(--warning)]/15 text-[color:var(--warning)] border-[color:var(--warning)]/30",
     Ramping:
       "bg-[color:var(--warning)]/15 text-[color:var(--warning)] border-[color:var(--warning)]/30",
+    "Moderate Risk":
+      "bg-[color:var(--warning)]/15 text-[color:var(--warning)] border-[color:var(--warning)]/30",
     "In Progress":
       "bg-[color:var(--info)]/15 text-[color:var(--info)] border-[color:var(--info)]/30",
     Info: "bg-[color:var(--info)]/15 text-[color:var(--info)] border-[color:var(--info)]/30",
@@ -154,6 +158,8 @@ export function StatusPill({ status }: { status: string }) {
     Critical:
       "bg-[color:var(--danger)]/15 text-[color:var(--danger)] border-[color:var(--danger)]/30",
     High: "bg-[color:var(--danger)]/15 text-[color:var(--danger)] border-[color:var(--danger)]/30",
+    "High Risk":
+      "bg-[color:var(--danger)]/15 text-[color:var(--danger)] border-[color:var(--danger)]/30",
     Red: "bg-[color:var(--danger)]/15 text-[color:var(--danger)] border-[color:var(--danger)]/30",
     Blocking:
       "bg-[color:var(--danger)]/15 text-[color:var(--danger)] border-[color:var(--danger)]/30",

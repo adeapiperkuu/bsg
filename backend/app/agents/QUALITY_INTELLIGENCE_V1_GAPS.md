@@ -43,7 +43,7 @@ This document tracks **remaining** gaps after Phase 1.5 (Connected Agent), Phase
 | `skill_gap` emit + consume | **Done** | `signals.py` → `skill_gap_consumer.py` (Workforce) |
 | Weekly quality JSON (§8.4) | **Done** | `generate_quality_summary()` + communications route |
 | Lesson write-back (BR-08) | **Done** | `oka_client.py`, `lesson_log.py` |
-| Governance auto-escalation | **Deferred** | `check_quality_escalations` exists but not scheduled |
+| Governance auto-escalation | **Done** | Scheduled Mon 02:30 via `check_quality_escalations` → `governance_escalations` (`source_type=quality_risk`); gated by `GOVERNANCE_QUALITY_AUTO_ESCALATION_ENABLED` |
 
 ### Data inputs
 | Table | Status |

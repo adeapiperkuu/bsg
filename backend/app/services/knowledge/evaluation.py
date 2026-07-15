@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from statistics import mean
 from typing import Any
 
@@ -79,6 +79,22 @@ GOLDEN_QA_CASES: tuple[GoldenQACase, ...] = (
         expected_source_ids=("onboarding-guide",),
         expected_citation_ids=("onboarding-guide#1",),
         min_confidence=0.6,
+    ),
+    GoldenQACase(
+        id="duplicate_sop_awareness",
+        question="How should near-duplicate SOP copies be handled before merging?",
+        required_concepts=("compare", "review", "never merge automatically"),
+        expected_source_ids=("duplicate-policy",),
+        expected_citation_ids=("duplicate-policy#1",),
+        min_confidence=0.65,
+    ),
+    GoldenQACase(
+        id="gap_resolution_review",
+        question="What should happen when the same knowledge gap is triggered repeatedly?",
+        required_concepts=("suggest documents", "human review", "do not auto-resolve"),
+        expected_source_ids=("gap-policy",),
+        expected_citation_ids=("gap-policy#1",),
+        min_confidence=0.65,
     ),
 )
 
@@ -177,6 +193,22 @@ def static_answer_fixtures() -> dict[str, dict[str, Any]]:
             "expected_confidence": 0.72,
             "retrieval_ranks": [1],
         },
+        "duplicate_sop_awareness": {
+            "concepts": ["compare", "review", "never merge automatically"],
+            "source_ids": ["duplicate-policy"],
+            "citation_ids": ["duplicate-policy#1"],
+            "confidence_score": 0.8,
+            "expected_confidence": 0.78,
+            "retrieval_ranks": [1],
+        },
+        "gap_resolution_review": {
+            "concepts": ["suggest documents", "human review", "do not auto-resolve"],
+            "source_ids": ["gap-policy"],
+            "citation_ids": ["gap-policy#1"],
+            "confidence_score": 0.81,
+            "expected_confidence": 0.78,
+            "retrieval_ranks": [1],
+        },
     }
 
 
@@ -241,7 +273,7 @@ def build_evaluation_report(
             after = float(current.get(metric, 1.0) or 1.0)
             if after + 1e-9 < before:
                 regressions.append(f"{metric}: {before:.3f} → {after:.3f}")
-    generated_at = datetime.now(timezone.utc).isoformat()
+    generated_at = datetime.now(UTC).isoformat()
     lines = [
         f"Knowledge golden evaluation report ({generated_at})",
         f"Cases: {current.get('passed', 0)}/{current.get('total', 0)} passed ({float(current.get('pass_rate', 0)):.1%})",

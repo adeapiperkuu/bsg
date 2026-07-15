@@ -24,6 +24,9 @@ export type KnowledgeDocumentTabPanelsProps = {
   compareLeftId: string;
   compareRightId: string;
   relatedKnowledge?: KnowledgeRelatedKnowledgeApi | null;
+  canGenerateSummary?: boolean;
+  summaryPending?: boolean;
+  onGenerateSummary?: () => void;
   onCompareLeftChange: (value: string) => void;
   onCompareRightChange: (value: string) => void;
   onRunVersionCompare: () => void;
@@ -93,7 +96,18 @@ export function KnowledgeDocumentMetadataTab({
   selectedDoc,
   loadingDetail,
   relatedKnowledge = null,
-}: Pick<KnowledgeDocumentTabPanelsProps, "selectedDoc" | "loadingDetail" | "relatedKnowledge">) {
+  canGenerateSummary = false,
+  summaryPending = false,
+  onGenerateSummary,
+}: Pick<
+  KnowledgeDocumentTabPanelsProps,
+  | "selectedDoc"
+  | "loadingDetail"
+  | "relatedKnowledge"
+  | "canGenerateSummary"
+  | "summaryPending"
+  | "onGenerateSummary"
+>) {
   if (loadingDetail && selectedDoc.chunkCount === 0 && !selectedDoc.qualityScore) {
     return (
       <div>
@@ -183,13 +197,33 @@ export function KnowledgeDocumentMetadataTab({
       )}
       {(selectedDoc.executiveSummary ||
         selectedDoc.keyProcedures.length > 0 ||
-        selectedDoc.importantWarnings.length > 0) && (
+        selectedDoc.importantWarnings.length > 0 ||
+        canGenerateSummary) && (
         <div className="mt-4 rounded-md border border-border/70 bg-card/60 p-3">
-          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            AI document summary
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              AI document summary
+            </div>
+            {canGenerateSummary && onGenerateSummary ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-6 px-2 text-[10px] shadow-none"
+                disabled={summaryPending || selectedDoc.status !== "Approved"}
+                onClick={onGenerateSummary}
+              >
+                {summaryPending ? "Generating…" : selectedDoc.executiveSummary ? "Regenerate" : "Generate summary"}
+              </Button>
+            ) : null}
           </div>
           {selectedDoc.executiveSummary && (
             <p className="mb-3 text-xs leading-5 text-foreground">{selectedDoc.executiveSummary}</p>
+          )}
+          {!selectedDoc.executiveSummary && (
+            <p className="mb-3 text-xs text-muted-foreground">
+              No summary yet. Generate one for approved documents to improve browsing and retrieval.
+            </p>
           )}
           <div className="grid gap-2 sm:grid-cols-2">
             {selectedDoc.affectedDepartments.length > 0 && (
@@ -486,6 +520,9 @@ export function KnowledgeDocumentTabPanels(props: KnowledgeDocumentTabPanelsProp
           selectedDoc={props.selectedDoc}
           loadingDetail={props.loadingDetail}
           relatedKnowledge={props.relatedKnowledge}
+          canGenerateSummary={props.canGenerateSummary}
+          summaryPending={props.summaryPending}
+          onGenerateSummary={props.onGenerateSummary}
         />
       )}
       {activeTab === "chunks" && (

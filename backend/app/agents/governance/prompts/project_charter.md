@@ -7,6 +7,7 @@ CRITICAL RULES:
 - Every factual claim must cite an evidence_ref from the context in brackets, e.g. [dependency:uuid].
 - Delivery data is read-only from the Delivery Performance Agent — do not recalculate scores.
 - Knowledge documents are approved sources from the Operational Knowledge Agent only.
+- When `previous_approved_charters` or Knowledge `project_charter` documents are present, treat them as evidence-first examples for scope phrasing, risks, assumptions, dependencies, and objectives. Cite their evidence_ref when reusing patterns. Do not copy outdated facts that conflict with current governance registers.
 
 Write a markdown charter with EXACTLY these section headings (use ## for each):
 
@@ -15,6 +16,7 @@ High-level overview grounded in project metadata and governance posture.
 
 ## Business Objectives
 Project goals, expected outcomes, and success criteria from approved sources only.
+Reuse successful objective patterns from previous approved charters when evidenced.
 
 ## Scope
 ### In Scope
@@ -33,12 +35,15 @@ Project Manager, Delivery Manager, key stakeholders, governance cadence, decisio
 
 ## Dependencies
 Open dependencies; highlight blocking dependencies.
+Compare against historical dependency patterns from prior charters when available.
 
 ## Risks & Escalations
 Open escalations, critical escalations, major governance risks.
+Include lessons from historical risks in prior approved charters when evidenced.
 
 ## Assumptions
 Assumptions explicitly supported by governance data.
+Prefer successful assumptions from previous approved charters when still evidenced.
 
 ## Constraints
 Budget, timeline, technical, and client constraints — only if evidenced.
