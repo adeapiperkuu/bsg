@@ -1983,7 +1983,7 @@ class RiskTrendRead(BaseModel):
     data: list[dict[str, Any]] = []
 
 
-class QualityTrendPoint(BaseModel):
+class OperationalTowerQualityTrendPoint(BaseModel):
     week: str
     goldAccuracy: float | None = None
     iaa: float | None = None
@@ -2026,7 +2026,7 @@ class OperationalTowerRead(BaseModel):
     kpis: OperationalTowerKpis
     healthDistribution: list[HealthDistributionEntry] = []
     riskTrend: RiskTrendRead
-    qualityTrend: list[QualityTrendPoint] = []
+    qualityTrend: list[OperationalTowerQualityTrendPoint] = []
     utilization: list[UtilizationEntry] = []
     alerts: list[CriticalAlertRead] = []
     recommendations: list[RecommendationRead] = []
