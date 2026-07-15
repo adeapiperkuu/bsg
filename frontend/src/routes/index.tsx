@@ -10,8 +10,6 @@ export const Route = createFileRoute("/")({
 function IndexRedirect() {
   const user = useAuthStore((s) => s.user);
 
-  // AuthProvider gates this route: it only renders once the session is
-  // confirmed, so there is no unauthenticated case to redirect for here.
   if (!user) return null;
   return <Navigate to={defaultRouteForRole(user.role)} replace />;
 }

@@ -470,11 +470,7 @@ function DeliveryPage() {
                                 : "Insufficient data"}
                           </td>
                           <td className="py-2.5 pr-3">
-                            {dashboard ? (
-                              <StatusPill status={riskLabel(dashboard.traffic_light, tier)} />
-                            ) : (
-                              "—"
-                            )}
+                            {dashboard ? <StatusPill status={riskLabel(tier)} /> : "—"}
                           </td>
                           <td className="py-2.5 pr-3 text-muted-foreground">
                             {formatTimestamp(project.updated_at)}

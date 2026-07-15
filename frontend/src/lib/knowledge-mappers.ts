@@ -35,6 +35,10 @@ export type DocumentStatus =
 export type WorkflowState = "Needs review" | "Approved" | "Expired" | "Needs re-index" | "Archived";
 export type RetrievalReadinessReason = KnowledgeRetrievalReadinessReasonApi | string;
 export type RetrievalAction = KnowledgeRetrievalActionApi;
+/** Display name of a knowledge folder: the three seeded folders have fixed
+ * names, custom folders carry whatever the user typed. `string & {}` keeps the
+ * seeded names as autocomplete hints instead of letting the union widen away. */
+export type FolderName = "SOPs" | "Guides" | "Histories" | (string & {});
 
 export type KnowledgeChunk = {
   id: string;

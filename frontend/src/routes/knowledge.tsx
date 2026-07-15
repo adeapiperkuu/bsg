@@ -362,11 +362,9 @@ function loadKnowledgeChatSession(userId: string): KnowledgeChatSession | null {
       .map(normalizeChatMessage)
       .filter((message): message is ChatMessage => message !== null);
     if (messages.length !== parsed.messages.length) return null;
+    const rawConversationId = (parsed as KnowledgeChatSession).conversationId;
     const conversationId =
-      typeof (parsed as KnowledgeChatSession).conversationId === "string" &&
-      isUuid((parsed as KnowledgeChatSession).conversationId)
-        ? (parsed as KnowledgeChatSession).conversationId
-        : null;
+      typeof rawConversationId === "string" && isUuid(rawConversationId) ? rawConversationId : null;
     return { messages, conversationId };
   } catch {
     return null;
