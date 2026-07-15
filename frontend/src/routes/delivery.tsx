@@ -18,6 +18,7 @@ import {
   useProjectDeliveryConfidenceQuery,
   useProjectsQuery,
 } from "@/lib/queries/delivery";
+import { flushNavPrefetch } from "@/lib/queries/nav-prefetch";
 import { MitigationRecommendationsPanel } from "@/features/mitigation-recommendations/components/MitigationRecommendationsPanel";
 import { DeliveryChat } from "@/components/delivery";
 
@@ -25,6 +26,17 @@ export const Route = createFileRoute("/delivery")({
   validateSearch: (search: Record<string, unknown>) => ({
     projectId: typeof search.projectId === "string" ? search.projectId : undefined,
   }),
+  // Warm the cache but do NOT await — each section renders from its own query and
+  // shows a placeholder until that query lands.
+  //
+  // Client-only: the API authenticates by cookie, which SSR has no jar for, so a
+  // server-side warm would 401 and be discarded. nav-prefetch also keeps its
+  // single-flight state in module globals, which on the server would be shared
+  // across concurrent requests.
+  loader: ({ context: { queryClient } }) => {
+    if (typeof window === "undefined") return;
+    flushNavPrefetch(queryClient, "/delivery");
+  },
   component: DeliveryPage,
 });
 
@@ -199,15 +211,22 @@ function DeliveryPage() {
   );
 
   const selectedProject = projects.find((project) => project.id === resolvedProjectId);
-  const selectedDashboard =
-    selectedDashboardFromPortfolio ?? selectedDashboardFallbackQuery.data;
+  const selectedDashboard = selectedDashboardFromPortfolio ?? selectedDashboardFallbackQuery.data;
   const portfolioMilestones = useMemo(
     () => portfolioQuery.data?.milestones ?? [],
     [portfolioQuery.data?.milestones],
   );
 
-  const loading =
-    projectsQuery.isLoading || organisationsQuery.isLoading || portfolioQuery.isLoading;
+  // Each section waits only on the queries it reads. The nav prefetch resolves these
+  // sequentially (projects → organisations → portfolio), so a single combined flag held
+  // the already-cached project list hostage to the portfolio payload, which for a
+  // delivery_manager spans every project in the org.
+  const projectsLoading = projectsQuery.isLoading;
+  const orgsLoading = organisationsQuery.isLoading;
+  const portfolioLoading = portfolioQuery.isLoading;
+  const dashboardLoading = portfolioLoading || selectedDashboardFallbackQuery.isLoading;
+  const confidenceLoading = projectsLoading || confidenceQuery.isLoading;
+
   const errorMessage =
     (projectsQuery.error instanceof Error ? projectsQuery.error.message : null) ??
     (organisationsQuery.error instanceof Error ? organisationsQuery.error.message : null) ??
@@ -268,7 +287,7 @@ function DeliveryPage() {
     );
   }
 
-  if (!loading && projects.length === 0) {
+  if (!projectsLoading && projects.length === 0) {
     return (
       <Card>
         <SectionHeader title="Delivery Performance" sub="No projects available" />
@@ -287,7 +306,7 @@ function DeliveryPage() {
           <select
             value={resolvedProjectId ?? ""}
             onChange={(event) => selectProject(event.target.value)}
-            disabled={loading || projects.length === 0}
+            disabled={projectsLoading || projects.length === 0}
             className="rounded border border-border bg-card px-2.5 py-1.5 text-xs outline-none"
           >
             {projects.map((project) => (
@@ -301,25 +320,25 @@ function DeliveryPage() {
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           <KpiCard
             label="Throughput (7-day avg)"
-            value={loading ? "—" : `${formatNumber(portfolioKpis.totalThroughput)}/d`}
+            value={portfolioLoading ? "—" : `${formatNumber(portfolioKpis.totalThroughput)}/d`}
             delta={portfolioKpis.throughputDelta}
             tone="success"
           />
           <KpiCard
             label="Schedule Confidence"
-            value={loading ? "—" : `${portfolioKpis.avgConfidence}%`}
+            value={portfolioLoading ? "—" : `${portfolioKpis.avgConfidence}%`}
             delta={portfolioKpis.confidenceDelta}
             tone="warning"
           />
           <KpiCard
             label="At-Risk Projects"
-            value={loading ? "—" : portfolioKpis.atRiskProjects}
+            value={portfolioLoading ? "—" : portfolioKpis.atRiskProjects}
             tone="danger"
           />
           <KpiCard
             label="Milestone Hit Rate"
             value={
-              loading || portfolioKpis.milestoneHitRate === null
+              portfolioLoading || portfolioKpis.milestoneHitRate === null
                 ? "—"
                 : `${portfolioKpis.milestoneHitRate}%`
             }
@@ -345,7 +364,7 @@ function DeliveryPage() {
               )
             }
           />
-          {loading ? (
+          {dashboardLoading ? (
             <div className="h-2 overflow-hidden rounded bg-elevated">
               <div className="h-full w-1/3 animate-pulse rounded bg-[color:var(--brand)]" />
             </div>
@@ -390,7 +409,7 @@ function DeliveryPage() {
             title="Confidence Trend & 4-Week Forecast"
             sub="Schedule confidence · historical + forecast"
           />
-          {loading ? (
+          {confidenceLoading ? (
             <div className="h-[240px] animate-pulse rounded bg-elevated" />
           ) : confidenceChart.length > 0 ? (
             <ResponsiveContainer width="100%" height={240}>
@@ -439,7 +458,7 @@ function DeliveryPage() {
                 </tr>
               </thead>
               <tbody>
-                {loading
+                {projectsLoading
                   ? Array.from({ length: 3 }).map((_, index) => (
                       <tr key={index} className="border-b border-border/50">
                         <td colSpan={7} className="py-2.5">
@@ -457,10 +476,12 @@ function DeliveryPage() {
                         <tr key={project.id} className="border-b border-border/50">
                           <td className="py-2.5 pr-3 font-medium">{project.name}</td>
                           <td className="py-2.5 pr-3 text-muted-foreground">
-                            {orgById.get(project.org_id) ?? project.vertical}
+                            {orgsLoading ? "—" : (orgById.get(project.org_id) ?? project.vertical)}
                           </td>
                           <td className="py-2.5 pr-3">
-                            {formatNumber(avgDailyThroughputUnits(dashboard))}/d
+                            {dashboard
+                              ? `${formatNumber(avgDailyThroughputUnits(dashboard))}/d`
+                              : "—"}
                           </td>
                           <td className="py-2.5 pr-3">
                             {!dashboard
