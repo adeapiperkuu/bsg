@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Building2, Loader2, Pencil, Plus, RefreshCw, Search } from "lucide-react";
 
 import { Card } from "@/components/bsg/widgets";
+import { TablePagination } from "@/components/bsg/TablePagination";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -24,7 +25,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { editControlClass, toolbarIconButtonClass, USERS_PER_PAGE, visiblePages } from "@/lib/admin-shared";
+import { usePagination } from "@/hooks/usePagination";
+import { editControlClass, toolbarIconButtonClass } from "@/lib/admin-shared";
 import { createOrganisation, updateOrganisation } from "@/lib/api";
 import { organisationsQueryOptions } from "@/lib/queries/delivery";
 import { useAuthStore } from "@/stores/useAuthStore";
@@ -53,7 +55,6 @@ function AdminOrganisationsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editingOrg, setEditingOrg] = useState<OrganisationRead | null>(null);
-  const [page, setPage] = useState(1);
   const [form, setForm] = useState({
     name: "",
     slug: "",
@@ -77,7 +78,6 @@ function AdminOrganisationsPage() {
 
   const orgs = useMemo(() => orgsQuery.data ?? [], [orgsQuery.data]);
 
-  /** The table shell always renders; fetches only ever show the small inline indicator. */
   const isRefreshing = orgsQuery.isFetching;
   const isFirstLoad = isRefreshing && orgs.length === 0;
   const bannerError = error ?? (orgsQuery.error ? orgsQuery.error.message : null);
@@ -101,25 +101,21 @@ function AdminOrganisationsPage() {
     return [...filtered].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
   }, [orgs, search, statusFilter]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredOrgs.length / USERS_PER_PAGE));
-  const currentPage = Math.min(page, totalPages);
-  const pageStart = (currentPage - 1) * USERS_PER_PAGE;
-  const pageOrgs = filteredOrgs.slice(pageStart, pageStart + USERS_PER_PAGE);
-
-  useEffect(() => {
-    setPage(1);
-  }, [search, statusFilter]);
-
-  useEffect(() => {
-    if (page > totalPages) setPage(totalPages);
-  }, [page, totalPages]);
+  const {
+    currentPage,
+    totalPages,
+    setPage,
+    pageItems: pageOrgs,
+    rangeStart,
+    rangeEnd,
+    total,
+  } = usePagination(filteredOrgs, `${search}|${statusFilter}`);
 
   const clearFilters = () => {
     setSearch("");
     setStatusFilter("all");
   };
 
-  /** Fold a mutation result into the cached list so the table stays accurate without a reload. */
   const upsertCachedOrg = (saved: OrganisationRead) => {
     queryClient.setQueryData<OrganisationRead[]>(organisationsQueryOptions.queryKey, (current) => {
       if (!current) return current;
@@ -225,7 +221,7 @@ function AdminOrganisationsPage() {
                 )}
               </div>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                {`Showing ${pageOrgs.length ? pageStart + 1 : 0}-${Math.min(pageStart + pageOrgs.length, filteredOrgs.length)} of ${filteredOrgs.length} organisations`}
+                {`Showing ${rangeStart}-${rangeEnd} of ${total} organisations`}
               </p>
             </div>
             <div className="flex w-full items-center gap-2 sm:w-auto">
@@ -329,47 +325,11 @@ function AdminOrganisationsPage() {
           </TableBody>
         </Table>
 
-        <div className="flex flex-col gap-3 border-t border-border p-4 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-center text-xs text-muted-foreground sm:text-left">
-            Page {currentPage} of {totalPages}
-          </p>
-          <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-end">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={currentPage === 1}
-              onClick={() => setPage((value) => Math.max(1, value - 1))}
-            >
-              Previous
-            </Button>
-            {visiblePages(currentPage, totalPages).map((pageNumber, index, pages) => (
-              <div key={pageNumber} className="flex items-center gap-2">
-                {index > 0 && pageNumber - pages[index - 1] > 1 && (
-                  <span className="px-1 text-xs text-muted-foreground">...</span>
-                )}
-                <Button
-                  type="button"
-                  variant={pageNumber === currentPage ? "default" : "outline"}
-                  size="sm"
-                  className="min-w-8 px-2"
-                  onClick={() => setPage(pageNumber)}
-                >
-                  {pageNumber}
-                </Button>
-              </div>
-            ))}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={currentPage === totalPages}
-              onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
+        <TablePagination
+          currentPage={currentPage}
+          totalPages={totalPages}
+          onPageChange={setPage}
+        />
       </Card>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>

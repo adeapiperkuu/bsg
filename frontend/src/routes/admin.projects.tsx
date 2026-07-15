@@ -4,10 +4,12 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, FolderKanban, PauseCircle, RefreshCw, Search } from "lucide-react";
 
 import { Card } from "@/components/bsg/widgets";
+import { TablePagination } from "@/components/bsg/TablePagination";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { editControlClass, USERS_PER_PAGE, visiblePages } from "@/lib/admin-shared";
+import { usePagination } from "@/hooks/usePagination";
+import { editControlClass } from "@/lib/admin-shared";
 import { adminProjectsQueryOptions } from "@/lib/queries/delivery";
 import { cn } from "@/lib/utils";
 
@@ -49,7 +51,6 @@ function AdminProjectsPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [organisationFilter, setOrganisationFilter] = useState<string>("all");
-  const [page, setPage] = useState(1);
 
   /** Options come from the loaded projects, so the list never offers an org with no rows. */
   const organisations = useMemo(() => {
@@ -79,18 +80,15 @@ function AdminProjectsPage() {
     [projects],
   );
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / USERS_PER_PAGE));
-  const currentPage = Math.min(page, totalPages);
-  const pageStart = (currentPage - 1) * USERS_PER_PAGE;
-  const pageRows = filtered.slice(pageStart, pageStart + USERS_PER_PAGE);
-
-  useEffect(() => {
-    setPage(1);
-  }, [search, statusFilter, organisationFilter]);
-
-  useEffect(() => {
-    if (page > totalPages) setPage(totalPages);
-  }, [page, totalPages]);
+  const {
+    currentPage,
+    totalPages,
+    setPage,
+    pageItems: pageRows,
+    rangeStart,
+    rangeEnd,
+    total,
+  } = usePagination(filtered, `${search}|${statusFilter}|${organisationFilter}`);
 
   return (
     <div className="space-y-5">
@@ -147,7 +145,7 @@ function AdminProjectsPage() {
           <div className="min-w-0">
             <h3 className="text-sm font-semibold tracking-tight text-foreground">All Projects</h3>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              {`Showing ${pageRows.length ? pageStart + 1 : 0}-${Math.min(pageStart + pageRows.length, filtered.length)} of ${filtered.length} projects`}
+              {`Showing ${rangeStart}-${rangeEnd} of ${total} projects`}
             </p>
           </div>
           <div className="flex flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center">
@@ -276,47 +274,11 @@ function AdminProjectsPage() {
         </Table>
 
         {totalPages > 1 && (
-          <div className="flex flex-col gap-3 border-t border-border p-4 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-center text-xs text-muted-foreground sm:text-left">
-              Page {currentPage} of {totalPages}
-            </p>
-            <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-end">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={currentPage === 1}
-                onClick={() => setPage((value) => Math.max(1, value - 1))}
-              >
-                Previous
-              </Button>
-              {visiblePages(currentPage, totalPages).map((p, i, arr) => (
-                <div key={p} className="flex items-center gap-2">
-                  {i > 0 && arr[i - 1] !== p - 1 && (
-                    <span className="px-1 text-xs text-muted-foreground">…</span>
-                  )}
-                  <Button
-                    type="button"
-                    variant={p === currentPage ? "default" : "outline"}
-                    size="sm"
-                    className="min-w-8 px-2"
-                    onClick={() => setPage(p)}
-                  >
-                    {p}
-                  </Button>
-                </div>
-              ))}
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={currentPage === totalPages}
-                onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
-              >
-                Next
-              </Button>
-            </div>
-          </div>
+          <TablePagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            onPageChange={setPage}
+          />
         )}
       </Card>
     </div>
