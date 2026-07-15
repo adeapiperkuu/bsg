@@ -1,9 +1,9 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState, useCallback } from "react";
-import { Mail, Pencil, Plus, RefreshCw, Search } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Loader2, Mail, Pencil, Plus, RefreshCw, Search } from "lucide-react";
 
 import { Card } from "@/components/bsg/widgets";
-import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -33,9 +33,12 @@ import {
   USERS_PER_PAGE,
   visiblePages,
 } from "@/lib/admin-shared";
-import { ApiError, createUser, listOrganisations, listUsers, updateUser } from "@/lib/api";
+import { ApiError, createUser, updateUser } from "@/lib/api";
+import { organisationsQueryOptions } from "@/lib/queries/delivery";
+import { USERS_GC_TIME_MS } from "@/lib/queries/keys";
+import { usersQueryOptions } from "@/lib/queries/users";
 import { useAuthStore } from "@/stores/useAuthStore";
-import type { AppRole, OrganisationRead, UserRead } from "@/types/auth";
+import type { AppRole, UserRead } from "@/types/auth";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/admin/users")({ component: AdminUsersPage });
@@ -45,10 +48,7 @@ type RoleFilter = "all" | AppRole;
 
 function AdminUsersPage() {
   const user = useAuthStore((s) => s.user);
-  const [users, setUsers] = useState<UserRead[]>([]);
-  const [orgs, setOrgs] = useState<OrganisationRead[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [creating, setCreating] = useState(false);
+  const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [userSearch, setUserSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState<RoleFilter>("all");
@@ -57,7 +57,6 @@ function AdminUsersPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<UserRead | null>(null);
-  const [savingEdit, setSavingEdit] = useState(false);
   const [page, setPage] = useState(1);
   const [form, setForm] = useState({
     email: "",
@@ -75,6 +74,30 @@ function AdminUsersPage() {
   });
 
   const canManageUsers = user?.permissions.can_manage_users ?? false;
+
+  const usersQuery = useQuery({ ...usersQueryOptions, enabled: canManageUsers });
+  const orgsQuery = useQuery({
+    ...organisationsQueryOptions,
+    enabled: canManageUsers,
+    // Org names label every row, so keep them resident as long as the users list.
+    gcTime: USERS_GC_TIME_MS,
+  });
+
+  const users = useMemo(() => usersQuery.data ?? [], [usersQuery.data]);
+  const orgs = useMemo(() => orgsQuery.data ?? [], [orgsQuery.data]);
+
+  /** The table shell always renders; fetches only ever show the small inline indicator. */
+  const isRefreshing = usersQuery.isFetching || orgsQuery.isFetching;
+  const isFirstLoad = isRefreshing && users.length === 0;
+  const loadError = usersQuery.error ?? orgsQuery.error;
+  const bannerError = error ?? (loadError ? loadError.message : null);
+
+  const refresh = () => {
+    setError(null);
+    void usersQuery.refetch();
+    void orgsQuery.refetch();
+  };
+
   const filteredUsers = useMemo(() => {
     const query = userSearch.trim().toLowerCase();
     const filtered = users.filter((row) => {
@@ -101,25 +124,10 @@ function AdminUsersPage() {
   const pageStart = (currentPage - 1) * USERS_PER_PAGE;
   const pageUsers = filteredUsers.slice(pageStart, pageStart + USERS_PER_PAGE);
 
-  const load = useCallback(async () => {
-    if (!canManageUsers) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const [userRows, orgRows] = await Promise.all([listUsers(), listOrganisations()]);
-      setUsers(userRows);
-      setOrgs(orgRows);
-      if (orgRows[0]) setForm((f) => (f.org_id ? f : { ...f, org_id: orgRows[0].id }));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load users.");
-    } finally {
-      setLoading(false);
-    }
-  }, [canManageUsers]);
-
   useEffect(() => {
-    void load();
-  }, [load]);
+    const firstOrg = orgs[0];
+    if (firstOrg) setForm((f) => (f.org_id ? f : { ...f, org_id: firstOrg.id }));
+  }, [orgs]);
 
   useEffect(() => {
     setPage(1);
@@ -136,32 +144,68 @@ function AdminUsersPage() {
     if (page > totalPages) setPage(totalPages);
   }, [page, totalPages]);
 
-  const onCreateUser = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setError(null);
-    setCreating(true);
-    try {
-      await createUser({
-        email: form.email,
-        password: form.password,
-        full_name: form.full_name || undefined,
-        role: form.role,
-        org_id: form.org_id,
-      });
+  /** Fold a mutation result into the cached list so the table stays accurate without a reload. */
+  const upsertCachedUser = (saved: UserRead) => {
+    queryClient.setQueryData<UserRead[]>(usersQueryOptions.queryKey, (current) => {
+      if (!current) return current;
+      const index = current.findIndex((row) => row.id === saved.id);
+      if (index === -1) return [...current, saved];
+      const next = [...current];
+      next[index] = saved;
+      return next;
+    });
+  };
+
+  const createMutation = useMutation({
+    mutationFn: createUser,
+    onSuccess: (saved) => {
+      upsertCachedUser(saved);
       setForm((f) => ({ ...f, email: "", password: "", full_name: "" }));
       setCreateOpen(false);
-      await load();
-    } catch (err) {
+    },
+    onError: (err) => {
       if (err instanceof ApiError && err.code === "EMAIL_ALREADY_EXISTS") {
+        // The account exists but is missing from our snapshot; surface it.
         setUserSearch(form.email);
         setPage(1);
         setCreateOpen(false);
-        await load();
       }
       setError(err instanceof Error ? err.message : "Failed to create user.");
-    } finally {
-      setCreating(false);
-    }
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: usersQueryOptions.queryKey });
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: (vars: { id: string; payload: Parameters<typeof updateUser>[1] }) =>
+      updateUser(vars.id, vars.payload),
+    onSuccess: (saved) => {
+      upsertCachedUser(saved);
+      setEditOpen(false);
+      setEditingUser(null);
+    },
+    onError: (err) => {
+      setError(err instanceof Error ? err.message : "Failed to update user.");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: usersQueryOptions.queryKey });
+    },
+  });
+
+  const creating = createMutation.isPending;
+  const savingEdit = updateMutation.isPending;
+
+  const onCreateUser = (event: React.FormEvent) => {
+    event.preventDefault();
+    setError(null);
+    createMutation.mutate({
+      email: form.email,
+      password: form.password,
+      full_name: form.full_name || undefined,
+      role: form.role,
+      org_id: form.org_id,
+    });
   };
 
   const openEditUser = (target: UserRead) => {
@@ -176,27 +220,20 @@ function AdminUsersPage() {
     setEditOpen(true);
   };
 
-  const onUpdateUser = async (event: React.FormEvent) => {
+  const onUpdateUser = (event: React.FormEvent) => {
     event.preventDefault();
     if (!editingUser) return;
     setError(null);
-    setSavingEdit(true);
-    try {
-      await updateUser(editingUser.id, {
+    updateMutation.mutate({
+      id: editingUser.id,
+      payload: {
         full_name: editForm.full_name || null,
         role: editForm.role,
         org_id: editForm.org_id,
         is_active: editForm.is_active,
         ...(editForm.password ? { password: editForm.password } : {}),
-      });
-      setEditOpen(false);
-      setEditingUser(null);
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update user.");
-    } finally {
-      setSavingEdit(false);
-    }
+      },
+    });
   };
 
   return (
@@ -208,20 +245,29 @@ function AdminUsersPage() {
         </Button>
       </div>
 
-      {error && !loading && (
+      {bannerError && (
         <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
+          {bannerError}
         </div>
       )}
 
-      {loading ? (
-        <PageLoadingScreen />
-      ) : (
       <Card className="overflow-hidden p-0">
         <div className="space-y-4 border-b border-border p-4 sm:p-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold tracking-tight text-foreground">All Users</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold tracking-tight text-foreground">All Users</h3>
+                {isRefreshing && (
+                  <span
+                    className="inline-flex items-center gap-1 text-xs text-muted-foreground"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Refreshing
+                  </span>
+                )}
+              </div>
               <p className="mt-0.5 text-xs text-muted-foreground">
                 {`Showing ${pageUsers.length ? pageStart + 1 : 0}-${Math.min(pageStart + pageUsers.length, filteredUsers.length)} of ${filteredUsers.length} users`}
               </p>
@@ -231,12 +277,12 @@ function AdminUsersPage() {
                 variant="outline"
                 size="icon"
                 className={cn(toolbarIconButtonClass, "shrink-0")}
-                onClick={() => void load()}
-                disabled={loading}
+                onClick={refresh}
+                disabled={isRefreshing}
                 aria-label="Refresh users"
                 title="Refresh users"
               >
-                <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+                <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
               </Button>
             </div>
           </div>
@@ -357,7 +403,7 @@ function AdminUsersPage() {
             {pageUsers.length === 0 && (
               <TableRow>
                 <TableCell colSpan={6} className="h-28 text-center text-muted-foreground">
-                  No users match this search.
+                  {isFirstLoad ? "Loading users…" : "No users match this search."}
                 </TableCell>
               </TableRow>
             )}
@@ -406,7 +452,6 @@ function AdminUsersPage() {
           </div>
         </div>
       </Card>
-      )}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="max-h-[calc(100svh-1rem)] w-[calc(100vw-1rem)] max-w-2xl gap-0 overflow-hidden p-0 sm:w-full">
