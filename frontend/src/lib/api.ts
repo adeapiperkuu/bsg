@@ -1,3 +1,4 @@
+import { currentAuthGeneration, notifySessionInvalidated } from "@/lib/auth-session";
 import type {
   AppRole,
   AuthSession,
@@ -95,22 +96,14 @@ function clearSessionHintCookie() {
   document.cookie = "csrf_token=; Max-Age=0; path=/; SameSite=Lax";
 }
 
-function clearClientAuthState() {
-  if (typeof window === "undefined") return;
-  void import("@/stores/useAuthStore").then(({ useAuthStore }) => {
-    useAuthStore.setState({ user: null, isAuthenticated: false, isLoading: false });
-  });
-}
-
-/** Clear stale browser session hints after auth failure (invalid/expired session or wrong API). */
-export function resetAuthSession() {
+export function resetAuthSession(generation: number = currentAuthGeneration()) {
   clearSessionHintCookie();
-  clearClientAuthState();
+  notifySessionInvalidated(generation);
 }
 
 let refreshPromise: Promise<boolean> | null = null;
 
-async function refreshAuthSession(): Promise<boolean> {
+async function refreshAuthSession(generation: number): Promise<boolean> {
   refreshPromise ??= (async () => {
     const refreshHeaders = new Headers();
     const csrf = getCsrfToken();
@@ -125,7 +118,7 @@ async function refreshAuthSession(): Promise<boolean> {
     if (refreshed.ok) return true;
 
     if (refreshed.status === 401 || refreshed.status === 403) {
-      resetAuthSession();
+      resetAuthSession(generation);
     }
     return false;
   })().finally(() => {
@@ -171,6 +164,7 @@ export async function apiFetch<T>(
     if (csrf) headers.set("X-CSRF-Token", csrf);
   }
 
+  const generation = currentAuthGeneration();
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers,
@@ -180,10 +174,10 @@ export async function apiFetch<T>(
   if (response.status === 401 && !path.startsWith("/auth/") && !retried) {
     const error = await parseApiError(response);
     if (!getCsrfToken()) {
-      resetAuthSession();
+      resetAuthSession(generation);
       throw error;
     }
-    if (await refreshAuthSession()) {
+    if (await refreshAuthSession(generation)) {
       return apiFetch<T>(path, init, true);
     }
     throw error;
@@ -198,6 +192,7 @@ export async function apiFetchBlob(
   retried = false,
 ): Promise<Blob> {
   const headers = new Headers(init.headers);
+  const generation = currentAuthGeneration();
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers,
@@ -207,10 +202,10 @@ export async function apiFetchBlob(
   if (response.status === 401 && !path.startsWith("/auth/") && !retried) {
     const error = await parseApiError(response);
     if (!getCsrfToken()) {
-      resetAuthSession();
+      resetAuthSession(generation);
       throw error;
     }
-    if (await refreshAuthSession()) {
+    if (await refreshAuthSession(generation)) {
       return apiFetchBlob(path, init, true);
     }
     throw error;

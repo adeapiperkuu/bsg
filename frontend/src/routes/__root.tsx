@@ -16,6 +16,7 @@ import { Shell } from "../components/bsg/Shell";
 import { AuthProvider } from "../components/AuthProvider";
 import { Toaster } from "../components/ui/sonner";
 import { PageTransition } from "../components/PageTransition";
+import { useRenderedPathname } from "../lib/use-rendered-pathname";
 
 const PUBLIC_PATHS = ["/login", "/unauthorized"];
 const FAVICON_HREF =
@@ -122,7 +123,7 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const pathname = useRenderedPathname();
   const isPublic = PUBLIC_PATHS.includes(pathname);
 
   return (
