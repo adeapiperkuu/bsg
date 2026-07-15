@@ -10,15 +10,25 @@ import {
 } from "recharts";
 import { useEffect, useMemo, useRef } from "react";
 import { Card, SectionHeader, KpiCard, AiBadge, StatusPill } from "@/components/bsg/widgets";
+import { TablePagination } from "@/components/bsg/TablePagination";
+import { usePagination } from "@/hooks/usePagination";
 import { type DeliveryDashboardResponse } from "@/lib/api";
 import {
-  useDeliveryDashboardQuery,
   useDeliveryPortfolioQuery,
   useOrganisationsQuery,
   useProjectDeliveryConfidenceQuery,
-  useProjectsQuery,
 } from "@/lib/queries/delivery";
+import {
+  avgDailyThroughputUnits,
+  computePortfolioKpis,
+  hasSufficientData,
+  resolveDefaultProjectId,
+  riskTier,
+  sortByPriority,
+  toPortfolioEntries,
+} from "@/features/delivery/portfolio";
 import { flushNavPrefetch } from "@/lib/queries/nav-prefetch";
+import { cn } from "@/lib/utils";
 import { MitigationRecommendationsPanel } from "@/features/mitigation-recommendations/components/MitigationRecommendationsPanel";
 import { DeliveryChat } from "@/components/delivery";
 
@@ -88,21 +98,14 @@ function riskLabel(tier?: string): string {
   if (tier === "high") return "High";
   if (tier === "medium") return "Medium";
   if (tier === "low") return "Low";
-  return "Medium";
+  // An absent tier means the score never computed, which is not the same as a medium
+  // risk. StatusPill renders unmapped labels in neutral grey, so this reads as unknown
+  // rather than as a real amber assessment.
+  return "Unknown";
 }
 
-function hasSufficientData(dashboard: DeliveryDashboardResponse | undefined): boolean {
-  const overview = asRecord(dashboard?.overview);
-  return overview?.has_sufficient_data !== false;
-}
-
-function avgDailyThroughputUnits(dashboard: DeliveryDashboardResponse | undefined): number {
-  const overview = asRecord(dashboard?.overview);
-  const latest = asRecord(overview?.latest_throughput);
-  return typeof latest?.rolling_7day_units === "number"
-    ? Math.round(latest.rolling_7day_units / 7)
-    : 0;
-}
+/** Rows per page for the Project Performance table. */
+const PROJECTS_PER_PAGE = 25;
 
 function buildRootCauses(dashboard: DeliveryDashboardResponse) {
   const overview = asRecord(dashboard.overview);
@@ -148,34 +151,31 @@ function buildConfidenceChart(
   return chart;
 }
 
-function computeMilestoneHitRate(milestones: Array<Record<string, unknown>>): number | null {
-  const closed = milestones.filter(
-    (milestone) => milestone.status === "completed" || milestone.status === "missed",
-  );
-  if (closed.length === 0) return null;
-  const hit = closed.filter((milestone) => milestone.status === "completed").length;
-  return Math.round((hit / closed.length) * 100);
-}
-
 function DeliveryPage() {
   const navigate = useNavigate({ from: "/delivery" });
   const { projectId: urlProjectId } = Route.useSearch();
   const syncedProjectIdRef = useRef<string | null>(null);
 
-  const projectsQuery = useProjectsQuery();
   const organisationsQuery = useOrganisationsQuery();
   const portfolioQuery = useDeliveryPortfolioQuery();
 
-  const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
   const organisations = useMemo(() => organisationsQuery.data ?? [], [organisationsQuery.data]);
 
-  const resolvedProjectId = useMemo(() => {
-    if (projects.length === 0) return null;
-    if (urlProjectId && projects.some((project) => project.id === urlProjectId)) {
-      return urlProjectId;
-    }
-    return projects[0]?.id ?? null;
-  }, [projects, urlProjectId]);
+  // One payload defines the whole page: table rows, selector options and KPIs. Rows used
+  // to come from /projects (capped at 100) while KPIs came from the portfolio (up to
+  // 200), so above 100 projects the KPIs counted projects the table never listed.
+  const entries = useMemo(() => toPortfolioEntries(portfolioQuery.data), [portfolioQuery.data]);
+  const rankedEntries = useMemo(() => sortByPriority(entries), [entries]);
+  const projects = useMemo(() => rankedEntries.map((entry) => entry.project), [rankedEntries]);
+
+  // total_count counts what the caller may see; entries is what the limit let through.
+  const totalVisibleProjects = portfolioQuery.data?.total_count ?? entries.length;
+  const truncatedCount = Math.max(0, totalVisibleProjects - entries.length);
+
+  const resolvedProjectId = useMemo(
+    () => resolveDefaultProjectId(rankedEntries, urlProjectId),
+    [rankedEntries, urlProjectId],
+  );
 
   useEffect(() => {
     if (!resolvedProjectId || resolvedProjectId === urlProjectId) return;
@@ -191,79 +191,42 @@ function DeliveryPage() {
     [organisations],
   );
 
-  const portfolioDashboards = useMemo(() => {
-    if (!portfolioQuery.data) return {};
-    return Object.fromEntries(
-      portfolioQuery.data.projects.map((entry) => [entry.project_id, entry.dashboard]),
-    );
-  }, [portfolioQuery.data]);
-
-  const selectedDashboardFromPortfolio = resolvedProjectId
-    ? portfolioDashboards[resolvedProjectId]
-    : undefined;
-  const needsDashboardFallback =
-    Boolean(resolvedProjectId) &&
-    portfolioQuery.isSuccess &&
-    selectedDashboardFromPortfolio === undefined;
-  const selectedDashboardFallbackQuery = useDeliveryDashboardQuery(
-    resolvedProjectId,
-    needsDashboardFallback,
-  );
-
-  const selectedProject = projects.find((project) => project.id === resolvedProjectId);
-  const selectedDashboard = selectedDashboardFromPortfolio ?? selectedDashboardFallbackQuery.data;
+  const selectedEntry = rankedEntries.find((entry) => entry.project.id === resolvedProjectId);
+  const selectedProject = selectedEntry?.project;
+  const selectedDashboard = selectedEntry?.dashboard;
   const portfolioMilestones = useMemo(
     () => portfolioQuery.data?.milestones ?? [],
     [portfolioQuery.data?.milestones],
   );
 
-  // Each section waits only on the queries it reads. The nav prefetch resolves these
-  // sequentially (projects → organisations → portfolio), so a single combined flag held
-  // the already-cached project list hostage to the portfolio payload, which for a
-  // delivery_manager spans every project in the org.
-  const projectsLoading = projectsQuery.isLoading;
+  // The per-project /delivery/dashboard fallback is gone: it existed only to cover a
+  // resolvedProjectId that the portfolio did not contain, which was possible when the
+  // id came from the separately-limited /projects list. Selection is now drawn from the
+  // portfolio itself, so that case cannot arise.
+  //
+  // Sections still wait only on the queries they read, but the project universe now
+  // comes from the portfolio, so the table and selector wait on it rather than on the
+  // faster /projects call.
   const orgsLoading = organisationsQuery.isLoading;
   const portfolioLoading = portfolioQuery.isLoading;
-  const dashboardLoading = portfolioLoading || selectedDashboardFallbackQuery.isLoading;
-  const confidenceLoading = projectsLoading || confidenceQuery.isLoading;
+  const dashboardLoading = portfolioLoading;
+  const confidenceLoading = portfolioLoading || confidenceQuery.isLoading;
 
   const errorMessage =
-    (projectsQuery.error instanceof Error ? projectsQuery.error.message : null) ??
     (organisationsQuery.error instanceof Error ? organisationsQuery.error.message : null) ??
     (portfolioQuery.error instanceof Error ? portfolioQuery.error.message : null);
 
-  const portfolioKpis = useMemo(() => {
-    const dashboardList = Object.values(portfolioDashboards);
-    const scoredDashboards = dashboardList.filter((dashboard) => hasSufficientData(dashboard));
-    const totalThroughput = dashboardList.reduce(
-      (sum, dashboard) => sum + avgDailyThroughputUnits(dashboard),
-      0,
-    );
-    const avgConfidence =
-      scoredDashboards.length > 0
-        ? scoredDashboards.reduce((sum, dashboard) => sum + dashboard.confidence, 0) /
-          scoredDashboards.length
-        : 0;
-    const atRiskProjects = scoredDashboards.filter(
-      (dashboard) => dashboard.traffic_light !== "green",
-    ).length;
-    const milestoneHitRate = computeMilestoneHitRate(portfolioMilestones);
-
-    const confidenceValues = scoredDashboards.map((dashboard) => dashboard.confidence);
-    const confidenceDelta =
-      confidenceValues.length >= 2
-        ? `${(confidenceValues[confidenceValues.length - 1] - confidenceValues[0]).toFixed(1)} pts`
-        : undefined;
-
-    return {
-      totalThroughput,
-      avgConfidence: Math.round(avgConfidence),
-      atRiskProjects,
-      milestoneHitRate,
-      throughputDelta: undefined,
-      confidenceDelta,
-    };
-  }, [portfolioDashboards, portfolioMilestones]);
+  // Computed from the full entry list, never the current page: pagination is a view
+  // window over the same universe the KPIs summarise, so paging must not move them.
+  //
+  // No delta is shown for either KPI: the portfolio payload carries only current values,
+  // so there is no prior period to compare against. `confidenceDelta` used to report
+  // (last project - first project) over a name-ordered list, which KpiCard renders as a
+  // change-over-time indicator. That compared two unrelated projects.
+  const portfolioKpis = useMemo(
+    () => computePortfolioKpis(entries, portfolioMilestones),
+    [entries, portfolioMilestones],
+  );
 
   const rootCauses = selectedDashboard ? buildRootCauses(selectedDashboard) : [];
   const confidenceChart = buildConfidenceChart(confidenceQuery.data ?? []);
@@ -278,6 +241,10 @@ function DeliveryPage() {
     navigate({ search: { projectId } });
   };
 
+  // Paginate the ranked list so the highest-priority projects occupy page 1. Reset to
+  // page 1 only when the portfolio itself changes, not when the focused project does.
+  const pagination = usePagination(rankedEntries, portfolioQuery.data, PROJECTS_PER_PAGE);
+
   if (errorMessage) {
     return (
       <Card>
@@ -287,7 +254,7 @@ function DeliveryPage() {
     );
   }
 
-  if (!projectsLoading && projects.length === 0) {
+  if (!portfolioLoading && projects.length === 0) {
     return (
       <Card>
         <SectionHeader title="Delivery Performance" sub="No projects available" />
@@ -306,7 +273,7 @@ function DeliveryPage() {
           <select
             value={resolvedProjectId ?? ""}
             onChange={(event) => selectProject(event.target.value)}
-            disabled={projectsLoading || projects.length === 0}
+            disabled={portfolioLoading || projects.length === 0}
             className="rounded border border-border bg-card px-2.5 py-1.5 text-xs outline-none"
           >
             {projects.map((project) => (
@@ -318,16 +285,16 @@ function DeliveryPage() {
         </div>
 
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          {/* No delta on either card: the portfolio payload carries only current values,
+              so there is no prior period to compare against. */}
           <KpiCard
             label="Throughput (7-day avg)"
             value={portfolioLoading ? "—" : `${formatNumber(portfolioKpis.totalThroughput)}/d`}
-            delta={portfolioKpis.throughputDelta}
             tone="success"
           />
           <KpiCard
             label="Schedule Confidence"
             value={portfolioLoading ? "—" : `${portfolioKpis.avgConfidence}%`}
-            delta={portfolioKpis.confidenceDelta}
             tone="warning"
           />
           <KpiCard
@@ -379,7 +346,10 @@ function DeliveryPage() {
                   <div className="h-2 overflow-hidden rounded bg-elevated">
                     <div
                       className="h-full rounded bg-[color:var(--brand)]"
-                      style={{ width: `${cause.impact * 2}%` }}
+                      // buildRootCauses already normalises impact to percent-of-total,
+                      // so the bar is drawn 1:1 with the number in the label. Doubling
+                      // it made any cause at/above 50% saturate the track identically.
+                      style={{ width: `${cause.impact}%` }}
                     />
                   </div>
                 </div>
@@ -416,7 +386,9 @@ function DeliveryPage() {
               <LineChart data={confidenceChart}>
                 <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" />
                 <XAxis dataKey="week" {...axis} />
-                <YAxis {...axis} domain={[50, 100]} />
+                {/* Full 0-100: a domain floored at 50 clipped the low-confidence
+                    projects that most need looking at straight off the chart. */}
+                <YAxis {...axis} domain={[0, 100]} />
                 <Tooltip contentStyle={tip} />
                 <Line
                   dataKey="confidence"
@@ -443,7 +415,20 @@ function DeliveryPage() {
         </Card>
 
         <Card>
-          <SectionHeader title="Project Performance" />
+          <SectionHeader
+            title="Project Performance"
+            sub={
+              portfolioLoading
+                ? undefined
+                : `Ordered by attention needed · showing ${pagination.rangeStart}-${pagination.rangeEnd} of ${pagination.total}`
+            }
+          />
+          {truncatedCount > 0 && (
+            <p className="mb-3 rounded border border-[color:var(--warning)]/30 bg-[color:var(--warning)]/10 px-3 py-2 text-xs text-[color:var(--warning)]">
+              Showing {entries.length} of {totalVisibleProjects} projects. The KPIs above cover only
+              these {entries.length}; {truncatedCount} more are not included.
+            </p>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead className="text-left text-muted-foreground">
@@ -458,7 +443,7 @@ function DeliveryPage() {
                 </tr>
               </thead>
               <tbody>
-                {projectsLoading
+                {portfolioLoading
                   ? Array.from({ length: 3 }).map((_, index) => (
                       <tr key={index} className="border-b border-border/50">
                         <td colSpan={7} className="py-2.5">
@@ -466,50 +451,52 @@ function DeliveryPage() {
                         </td>
                       </tr>
                     ))
-                  : projects.map((project) => {
-                      const dashboard = portfolioDashboards[project.id];
-                      const overview = asRecord(dashboard?.overview);
-                      const calculatedRisk = asRecord(overview?.calculated_risk);
-                      const tier =
-                        typeof calculatedRisk?.tier === "string" ? calculatedRisk.tier : undefined;
-                      return (
-                        <tr key={project.id} className="border-b border-border/50">
-                          <td className="py-2.5 pr-3 font-medium">{project.name}</td>
-                          <td className="py-2.5 pr-3 text-muted-foreground">
-                            {orgsLoading ? "—" : (orgById.get(project.org_id) ?? project.vertical)}
-                          </td>
-                          <td className="py-2.5 pr-3">
-                            {dashboard
-                              ? `${formatNumber(avgDailyThroughputUnits(dashboard))}/d`
-                              : "—"}
-                          </td>
-                          <td className="py-2.5 pr-3">
-                            {!dashboard
-                              ? "—"
-                              : hasSufficientData(dashboard)
-                                ? `${Math.round(dashboard.confidence)}%`
-                                : "Insufficient data"}
-                          </td>
-                          <td className="py-2.5 pr-3">
-                            {dashboard ? <StatusPill status={riskLabel(tier)} /> : "—"}
-                          </td>
-                          <td className="py-2.5 pr-3 text-muted-foreground">
-                            {formatTimestamp(project.updated_at)}
-                          </td>
-                          <td className="py-2.5 pr-3">
-                            <button
-                              onClick={() => selectProject(project.id)}
-                              className="rounded border border-border px-2 py-0.5 text-[11px]"
-                            >
-                              Open
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
+                  : pagination.pageItems.map(({ project, dashboard }) => (
+                      <tr
+                        key={project.id}
+                        className={cn(
+                          "border-b border-border/50",
+                          project.id === resolvedProjectId && "bg-elevated",
+                        )}
+                      >
+                        <td className="py-2.5 pr-3 font-medium">{project.name}</td>
+                        <td className="py-2.5 pr-3 text-muted-foreground">
+                          {orgsLoading ? "—" : (orgById.get(project.org_id) ?? project.vertical)}
+                        </td>
+                        <td className="py-2.5 pr-3">
+                          {`${formatNumber(avgDailyThroughputUnits(dashboard))}/d`}
+                        </td>
+                        <td className="py-2.5 pr-3">
+                          {hasSufficientData(dashboard)
+                            ? `${Math.round(dashboard.confidence)}%`
+                            : "Insufficient data"}
+                        </td>
+                        <td className="py-2.5 pr-3">
+                          <StatusPill status={riskLabel(riskTier(dashboard))} />
+                        </td>
+                        <td className="py-2.5 pr-3 text-muted-foreground">
+                          {project.updated_at ? formatTimestamp(project.updated_at) : "—"}
+                        </td>
+                        <td className="py-2.5 pr-3">
+                          <button
+                            onClick={() => selectProject(project.id)}
+                            className="rounded border border-border px-2 py-0.5 text-[11px]"
+                          >
+                            Open
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
               </tbody>
             </table>
           </div>
+          {!portfolioLoading && pagination.totalPages > 1 && (
+            <TablePagination
+              currentPage={pagination.currentPage}
+              totalPages={pagination.totalPages}
+              onPageChange={pagination.setPage}
+            />
+          )}
         </Card>
       </div>
 

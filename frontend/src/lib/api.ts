@@ -419,6 +419,12 @@ export type DeliveryPortfolioResponse = {
     dashboard: DeliveryDashboardResponse;
   }>;
   milestones: Array<Record<string, unknown>>;
+  /**
+   * Projects visible to the caller, which exceeds `projects.length` when the backend's
+   * PORTFOLIO_PROJECT_LIMIT truncates. Surface the shortfall; never present a truncated
+   * portfolio as complete.
+   */
+  total_count: number;
 };
 
 export async function fetchDeliveryPortfolio(): Promise<DeliveryPortfolioResponse> {
