@@ -24,7 +24,11 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { DeliveryMarkdown } from "@/components/delivery";
+// Import the markdown pieces directly rather than through the components/delivery barrel:
+// the barrel re-exports DeliveryChat and its dependency tree (chat input, history popover,
+// alert-dialog, popover, use-delivery-chat), none of which the dashboard renders, and a
+// barrel import pulls all of it into this route's chunk.
+import { DeliveryMarkdown } from "@/components/delivery/delivery-markdown";
 import { sanitizeDeliveryMarkdown } from "@/components/delivery/delivery-markdown-utils";
 import {
   executiveSummaryQueryOptions,

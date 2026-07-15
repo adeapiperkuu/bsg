@@ -9,11 +9,11 @@ regenerates — an LLM call during load.
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.delivery.services.dashboard_service import get_portfolio_data
@@ -183,7 +183,12 @@ async def _risk_trend(
     if not project_ids:
         return empty
 
-    since = date.today() - timedelta(weeks=RISK_TREND_WEEKS)
+    # Compare the raw timestamp rather than wrapping it in date(): a function call on the
+    # column is not sargable, so Postgres cannot use the (project_id, created_at) index and
+    # falls back to filtering every score row for these projects.
+    since = datetime.combine(
+        date.today() - timedelta(weeks=RISK_TREND_WEEKS), time.min, tzinfo=timezone.utc
+    )
     rows = (
         await session.execute(
             select(
@@ -193,7 +198,7 @@ async def _risk_trend(
             )
             .where(
                 DeliveryConfidenceScore.project_id.in_(project_ids),
-                func.date(DeliveryConfidenceScore.created_at) >= since,
+                DeliveryConfidenceScore.created_at >= since,
             )
             .order_by(DeliveryConfidenceScore.created_at.asc())
         )
@@ -241,6 +246,19 @@ async def _quality_trend_and_avg(
     if not project_ids:
         return [], None
 
+    # Only the newest QUALITY_TREND_WEEKS buckets are ever rendered, so resolve which weeks
+    # those are first and fetch only their rows. Filtering on project_id alone pulled every
+    # snapshot ever written for the portfolio and discarded all but the tail in Python,
+    # which grew without bound as history accumulated. Selecting the weeks from the data
+    # (rather than cutting at today - 12 weeks) keeps the existing behaviour: the chart
+    # shows the last 12 weeks that have data, even if the newest snapshot is older.
+    recent_weeks = (
+        select(QualitySnapshot.iso_year, QualitySnapshot.iso_week)
+        .where(QualitySnapshot.project_id.in_(project_ids))
+        .distinct()
+        .order_by(QualitySnapshot.iso_year.desc(), QualitySnapshot.iso_week.desc())
+        .limit(QUALITY_TREND_WEEKS)
+    )
     rows = (
         await session.execute(
             select(
@@ -250,7 +268,10 @@ async def _quality_trend_and_avg(
                 QualitySnapshot.iaa_krippendorff_alpha,
                 QualitySnapshot.evaluated_item_count,
             )
-            .where(QualitySnapshot.project_id.in_(project_ids))
+            .where(
+                QualitySnapshot.project_id.in_(project_ids),
+                tuple_(QualitySnapshot.iso_year, QualitySnapshot.iso_week).in_(recent_weeks),
+            )
             .order_by(QualitySnapshot.iso_year.asc(), QualitySnapshot.iso_week.asc())
         )
     ).all()

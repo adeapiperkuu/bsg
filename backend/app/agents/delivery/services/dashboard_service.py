@@ -235,12 +235,6 @@ async def _fetch_open_risks_by_project(
     project_ids: list[UUID],
 ) -> dict[UUID, list[dict[str, Any]]]:
     """Load open delivery risks for many projects in one query."""
-    # TODO(perf): risk_alerts only has an index on project_id (see
-    # 20260622090000_initial_backend_schema.sql). This query (and the equivalent one in
-    # _fetch_orm_open_risks / sync_recommendations_for_project) filters on
-    # (project_id, status, deleted_at) — a composite index on those columns would avoid a
-    # filter scan once row counts grow. Not added here: requires a new migration and
-    # verification against production row counts, which is out of scope for this pass.
     if not project_ids:
         return {}
 
