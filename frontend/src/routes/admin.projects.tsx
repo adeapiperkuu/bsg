@@ -48,16 +48,27 @@ function AdminProjectsPage() {
     : null;
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [organisationFilter, setOrganisationFilter] = useState<string>("all");
   const [page, setPage] = useState(1);
+
+  /** Options come from the loaded projects, so the list never offers an org with no rows. */
+  const organisations = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const p of projects) byId.set(p.org_id, p.org_name);
+    return [...byId].
+      map(([id, name]) => ({ id, name })).
+      sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  }, [projects]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return projects.filter((p) => {
       if (q && ![p.name, p.org_name, p.vertical].some((v) => v.toLowerCase().includes(q))) return false;
       if (statusFilter !== "all" && p.status !== statusFilter) return false;
+      if (organisationFilter !== "all" && p.org_id !== organisationFilter) return false;
       return true;
     });
-  }, [projects, search, statusFilter]);
+  }, [projects, search, statusFilter, organisationFilter]);
 
   const { activeCount, rampingPaused, withDrift } = useMemo(
     () => ({
@@ -75,7 +86,7 @@ function AdminProjectsPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [search, statusFilter]);
+  }, [search, statusFilter, organisationFilter]);
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -162,6 +173,19 @@ function AdminProjectsPage() {
               <option value="paused">Paused</option>
               <option value="completed">Completed</option>
               <option value="cancelled">Cancelled</option>
+            </select>
+            <select
+              aria-label="Filter by organisation"
+              className={cn(editControlClass, "w-full lg:w-auto lg:min-w-[180px]")}
+              value={organisationFilter}
+              onChange={(e) => setOrganisationFilter(e.target.value)}
+            >
+              <option value="all">All Organisations</option>
+              {organisations.map((org) => (
+                <option key={org.id} value={org.id}>
+                  {org.name}
+                </option>
+              ))}
             </select>
           </div>
         </div>
