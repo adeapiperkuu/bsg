@@ -801,24 +801,36 @@ export async function postAgentQuery(payload: {
   return body.data;
 }
 
-export type OperationalTowerKpis = {
-  activeProjects: number;
-  scheduleConfidence: number | null;
-  openEscalations: number;
-  avgQualityScore: number | null;
-  totalProjects: number;
-};
+/**
+ * The Operational Tower is fetched as independent sections, not one payload, so each paints
+ * as soon as its data lands instead of the whole page waiting on the slowest part. The
+ * grouping mirrors the backend's, which is by measured cost — see
+ * backend/app/services/operational_tower.py.
+ */
 
-export type OperationalTower = {
-  kpis: OperationalTowerKpis;
-  healthDistribution: Array<{ name: string; value: number; color: string }>;
+export type TowerPulse = {
+  activeProjects: number;
+  totalProjects: number;
+  avgQualityScore: number | null;
+  qualityTrend: Array<{ week: string; goldAccuracy: number | null; iaa: number | null }>;
   riskTrend: {
     series: Array<{ name: string; color: string }>;
     data: Array<Record<string, string | number>>;
   };
-  qualityTrend: Array<{ week: string; goldAccuracy: number | null; iaa: number | null }>;
-  utilization: Array<{ team: string; value: number }>;
   alerts: Array<{ sev: string; project: string; desc: string; ts: string }>;
+};
+
+export type TowerEscalations = {
+  openEscalations: number;
+  criticalEscalations: number;
+};
+
+export type TowerHealth = {
+  scheduleConfidence: number | null;
+  healthDistribution: Array<{ name: string; value: number; color: string }>;
+};
+
+export type TowerWork = {
   recommendations: Array<{
     title: string;
     confidence: number;
@@ -832,8 +844,11 @@ export type OperationalTower = {
     confidence: number | null;
     status: string;
   }>;
+};
+
+export type TowerActivity = {
+  utilization: Array<{ team: string; value: number }>;
   activity: Array<{ ts: string; actor: string; text: string }>;
-  criticalEscalations: number;
 };
 
 export type ExecutiveSummary = {
@@ -845,10 +860,16 @@ export type ExecutiveSummary = {
   updated_at: string | null;
 };
 
-export async function fetchOperationalTower(): Promise<OperationalTower> {
-  const body = await apiFetch<{ data: OperationalTower }>("/dashboard/operational-tower");
+async function fetchTowerSection<T>(section: string): Promise<T> {
+  const body = await apiFetch<{ data: T }>(`/dashboard/operational-tower/${section}`);
   return body.data;
 }
+
+export const fetchTowerPulse = () => fetchTowerSection<TowerPulse>("pulse");
+export const fetchTowerEscalations = () => fetchTowerSection<TowerEscalations>("escalations");
+export const fetchTowerHealth = () => fetchTowerSection<TowerHealth>("health");
+export const fetchTowerWork = () => fetchTowerSection<TowerWork>("work");
+export const fetchTowerActivity = () => fetchTowerSection<TowerActivity>("activity");
 
 export async function fetchExecutiveSummary(): Promise<ExecutiveSummary | null> {
   const body = await apiFetch<{ data: ExecutiveSummary | null }>("/dashboard/executive-summary");

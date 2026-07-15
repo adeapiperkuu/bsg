@@ -7,7 +7,7 @@ except ImportError:
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, Numeric, Text, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, Numeric, Text, UniqueConstraint, desc, func, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import UserDefinedType
@@ -1084,6 +1084,12 @@ class QualitySnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
         Index("quality_snapshots_project_id_idx", "project_id"),
         Index("quality_snapshots_org_id_idx", "org_id"),
         Index("quality_snapshots_week_idx", "iso_year", "iso_week"),
+        Index(
+            "quality_snapshots_project_week_idx",
+            "project_id",
+            desc("iso_year"),
+            desc("iso_week"),
+        ),
     )
 
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
@@ -1128,6 +1134,12 @@ class RiskAlert(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
             "risk_alerts_project_type_status_deleted_idx",
             "project_id",
             "alert_type",
+            "status",
+            "deleted_at",
+        ),
+        Index(
+            "risk_alerts_project_status_deleted_idx",
+            "project_id",
             "status",
             "deleted_at",
         ),
@@ -1315,6 +1327,18 @@ class MetricConfiguration(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete
 
 class DeliveryConfidenceScore(Base, UuidPrimaryKey, CreatedAt):
     __tablename__ = "delivery_confidence_scores"
+    __table_args__ = (
+        Index(
+            "delivery_confidence_scores_project_created_idx",
+            "project_id",
+            desc("created_at"),
+        ),
+        Index(
+            "delivery_confidence_scores_milestone_created_idx",
+            "milestone_id",
+            desc("created_at"),
+        ),
+    )
 
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     milestone_id: Mapped[UUID] = mapped_column(ForeignKey("milestones.id", ondelete="CASCADE"), index=True)

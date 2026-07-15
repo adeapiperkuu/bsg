@@ -1,19 +1,31 @@
-"""Aggregated data provider for the Operational Tower dashboard.
+"""Data providers for the Operational Tower dashboard.
 
-Assembles every deterministic section of the dashboard in a single request using
-batched, index-friendly queries (no N+1 fan-out). The AI-authored executive summary
-is served separately (get_executive_summary) so the dashboard never blocks on — or
-regenerates — an LLM call during load.
+The dashboard is served as independent *sections* rather than one aggregate payload, so the
+browser can request them in parallel and paint each as it lands. This is deliberate: the
+sections' costs are wildly uneven (measured against a real 28-project portfolio — scoring
+~1550ms, escalation counts ~856ms, but risk trend ~185ms and alerts ~178ms), so a single
+payload made the whole page wait on its slowest part. Grouping below is by cost, not by
+theme, and the groups are sized so no one request dominates.
+
+Every section scopes to the caller via `scoped_project_query` (a PM/leadership user sees
+only their own organisation; a client sees only assigned projects) and re-derives that scope
+itself — each is an independent request and cannot share the others' state. Risk-oriented
+sections are further limited to in-flight projects so completed work never contributes to
+active risk.
+
+The AI-authored executive summary is served separately (get_executive_summary) so the
+dashboard never blocks on — or regenerates — an LLM call during load.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, timedelta
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.delivery.services.dashboard_service import get_portfolio_data
@@ -91,54 +103,117 @@ def select_inflight_projects(projects: list[Project]) -> list[Project]:
     return [p for p in projects if p.status in _INFLIGHT_STATUSES]
 
 
-async def get_operational_tower(
+@dataclass(frozen=True, slots=True)
+class _TowerScope:
+    """The caller's visible project universe, resolved once per section request."""
+
+    projects: list[Project]
+    inflight: list[Project]
+    inflight_ids: list[UUID]
+    project_names: dict[UUID, str]
+
+
+async def _load_scope(session: AsyncSession, current_user: CurrentUser) -> _TowerScope:
+    """Resolve the caller's project scope (~195ms; every section but activity needs it)."""
+    projects = list((await session.execute(scoped_project_query(current_user))).scalars())
+    inflight = select_inflight_projects(projects)
+    return _TowerScope(
+        projects=projects,
+        inflight=inflight,
+        inflight_ids=[p.id for p in inflight],
+        project_names={p.id: p.name for p in projects},
+    )
+
+
+async def get_tower_pulse(
     session: AsyncSession,
     current_user: CurrentUser,
 ) -> dict[str, Any]:
-    """Return every deterministic Operational Tower section in one payload.
+    """Cheapest section (~760ms): the counts and charts that need no scoring.
 
-    Every section is scoped to the projects visible to `current_user` via
-    `scoped_project_query` (a PM/leadership user sees only their own organisation;
-    a client sees only assigned projects). Risk-oriented sections are further limited
-    to in-flight projects so completed work never contributes to active risk.
+    Grouped together because each of these is a single index-backed query, so they land far
+    sooner than the rest of the page and give the dashboard something real to paint first.
     """
-    projects = list((await session.execute(scoped_project_query(current_user))).scalars())
-    project_names = {p.id: p.name for p in projects}
+    scope = await _load_scope(session, current_user)
 
-    inflight_projects = select_inflight_projects(projects)
-    inflight_ids = [p.id for p in inflight_projects]
-
-    portfolio = await get_portfolio_data(
-        session=session, current_user=current_user, projects=inflight_projects
-    )
-
-    kpis, health = _summarize_portfolio(projects, portfolio)
-
-    quality_trend, avg_quality = await _quality_trend_and_avg(session, inflight_ids)
-    kpis["avgQualityScore"] = avg_quality
-
-    open_escalations, critical_escalations = await _escalation_counts(session, inflight_ids)
-    kpis["openEscalations"] = open_escalations
+    quality_trend, avg_quality = await _quality_trend_and_avg(session, scope.inflight_ids)
 
     return {
-        "kpis": kpis,
-        "healthDistribution": health,
-        "riskTrend": await _risk_trend(session, inflight_ids, project_names),
+        "activeProjects": sum(1 for p in scope.projects if p.status == ProjectStatus.ACTIVE),
+        # Equivalent to the scored-portfolio total this KPI was previously derived from:
+        # _summarize_portfolio counted one bucket per scored project (green/yellow/red or
+        # insufficient), which is exactly the in-flight set. Computing it from the scope
+        # keeps the number identical while freeing it from the ~1550ms scoring pipeline.
+        "totalProjects": len(scope.inflight),
+        "avgQualityScore": avg_quality,
         "qualityTrend": quality_trend,
-        "utilization": await _utilization(session, inflight_ids),
-        "alerts": await _critical_alerts(session, inflight_ids, project_names),
-        "recommendations": await _recommendations(session, inflight_ids),
-        "milestones": await _upcoming_milestones(session, inflight_ids, project_names),
-        "activity": await _recent_activity(session, current_user),
+        "riskTrend": await _risk_trend(session, scope.inflight_ids, scope.project_names),
+        "alerts": await _critical_alerts(session, scope.inflight_ids, scope.project_names),
+    }
+
+
+async def get_tower_escalations(
+    session: AsyncSession,
+    current_user: CurrentUser,
+) -> dict[str, Any]:
+    """Escalation counts (~1050ms). Its own section: the two aggregate counts are slow
+    enough to hold back the cheap KPIs if bundled with them."""
+    scope = await _load_scope(session, current_user)
+    open_escalations, critical_escalations = await _escalation_counts(session, scope.inflight_ids)
+    return {
+        "openEscalations": open_escalations,
         "criticalEscalations": critical_escalations,
     }
 
 
-def _summarize_portfolio(
-    projects: list[Project], portfolio: dict[str, Any]
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    active = sum(1 for p in projects if p.status == ProjectStatus.ACTIVE)
+async def get_tower_health(
+    session: AsyncSession,
+    current_user: CurrentUser,
+) -> dict[str, Any]:
+    """Portfolio health + schedule confidence (~1750ms) — the slowest section.
 
+    Isolated because it runs the full scoring pipeline over every in-flight project. Nothing
+    else on the dashboard should wait on it.
+    """
+    scope = await _load_scope(session, current_user)
+    portfolio = await get_portfolio_data(
+        session=session, current_user=current_user, projects=scope.inflight
+    )
+    return _summarize_health(portfolio)
+
+
+async def get_tower_work(
+    session: AsyncSession,
+    current_user: CurrentUser,
+) -> dict[str, Any]:
+    """Recommendations + upcoming milestones (~1270ms)."""
+    scope = await _load_scope(session, current_user)
+    return {
+        "recommendations": await _recommendations(session, scope.inflight_ids),
+        "milestones": await _upcoming_milestones(
+            session, scope.inflight_ids, scope.project_names
+        ),
+    }
+
+
+async def get_tower_activity(
+    session: AsyncSession,
+    current_user: CurrentUser,
+) -> dict[str, Any]:
+    """Utilization + recent activity (~1060ms).
+
+    Activity is user-scoped rather than project-scoped, so it is the one section that needs
+    no project query; utilization rides along to keep the section count down.
+    """
+    scope = await _load_scope(session, current_user)
+    return {
+        "utilization": await _utilization(session, scope.inflight_ids),
+        "activity": await _recent_activity(session, current_user),
+    }
+
+
+def _summarize_health(portfolio: dict[str, Any]) -> dict[str, Any]:
+    """Reduce the scored portfolio to the health donut + schedule-confidence KPI."""
     confidences: list[float] = []
     counts: dict[str, int] = {"green": 0, "yellow": 0, "red": 0}
     insufficient = 0
@@ -152,7 +227,6 @@ def _summarize_portfolio(
         confidences.append(float(dashboard.get("confidence", 0)))
 
     schedule_confidence = round(sum(confidences) / len(confidences)) if confidences else None
-    total = sum(counts.values()) + insufficient
 
     health = [
         {"name": _HEALTH_META[key][0], "value": counts[key], "color": _HEALTH_META[key][1]}
@@ -162,15 +236,10 @@ def _summarize_portfolio(
         health.append(
             {"name": _INSUFFICIENT_META[0], "value": insufficient, "color": _INSUFFICIENT_META[1]}
         )
-    kpis = {
-        "activeProjects": active,
+    return {
         "scheduleConfidence": schedule_confidence,
-        "totalProjects": total,
-        # openEscalations / avgQualityScore are filled in by the caller.
-        "openEscalations": 0,
-        "avgQualityScore": None,
+        "healthDistribution": health,
     }
-    return kpis, health
 
 
 async def _risk_trend(
@@ -183,7 +252,12 @@ async def _risk_trend(
     if not project_ids:
         return empty
 
-    since = date.today() - timedelta(weeks=RISK_TREND_WEEKS)
+    # Compare the raw timestamp rather than wrapping it in date(): a function call on the
+    # column is not sargable, so Postgres cannot use the (project_id, created_at) index and
+    # falls back to filtering every score row for these projects.
+    since = datetime.combine(
+        date.today() - timedelta(weeks=RISK_TREND_WEEKS), time.min, tzinfo=timezone.utc
+    )
     rows = (
         await session.execute(
             select(
@@ -193,7 +267,7 @@ async def _risk_trend(
             )
             .where(
                 DeliveryConfidenceScore.project_id.in_(project_ids),
-                func.date(DeliveryConfidenceScore.created_at) >= since,
+                DeliveryConfidenceScore.created_at >= since,
             )
             .order_by(DeliveryConfidenceScore.created_at.asc())
         )
@@ -241,6 +315,19 @@ async def _quality_trend_and_avg(
     if not project_ids:
         return [], None
 
+    # Only the newest QUALITY_TREND_WEEKS buckets are ever rendered, so resolve which weeks
+    # those are first and fetch only their rows. Filtering on project_id alone pulled every
+    # snapshot ever written for the portfolio and discarded all but the tail in Python,
+    # which grew without bound as history accumulated. Selecting the weeks from the data
+    # (rather than cutting at today - 12 weeks) keeps the existing behaviour: the chart
+    # shows the last 12 weeks that have data, even if the newest snapshot is older.
+    recent_weeks = (
+        select(QualitySnapshot.iso_year, QualitySnapshot.iso_week)
+        .where(QualitySnapshot.project_id.in_(project_ids))
+        .distinct()
+        .order_by(QualitySnapshot.iso_year.desc(), QualitySnapshot.iso_week.desc())
+        .limit(QUALITY_TREND_WEEKS)
+    )
     rows = (
         await session.execute(
             select(
@@ -250,7 +337,10 @@ async def _quality_trend_and_avg(
                 QualitySnapshot.iaa_krippendorff_alpha,
                 QualitySnapshot.evaluated_item_count,
             )
-            .where(QualitySnapshot.project_id.in_(project_ids))
+            .where(
+                QualitySnapshot.project_id.in_(project_ids),
+                tuple_(QualitySnapshot.iso_year, QualitySnapshot.iso_week).in_(recent_weeks),
+            )
             .order_by(QualitySnapshot.iso_year.asc(), QualitySnapshot.iso_week.asc())
         )
     ).all()

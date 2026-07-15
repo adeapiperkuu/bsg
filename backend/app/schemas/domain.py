@@ -2022,17 +2022,42 @@ class ActivityEntry(BaseModel):
     text: str
 
 
-class OperationalTowerRead(BaseModel):
-    kpis: OperationalTowerKpis
-    healthDistribution: list[HealthDistributionEntry] = []
-    riskTrend: RiskTrendRead
+# The Operational Tower is served as independent sections so the dashboard can request them
+# in parallel and paint each as it arrives, rather than waiting on the slowest. Grouping is
+# by measured cost — see app/services/operational_tower.py.
+
+
+class TowerPulseRead(BaseModel):
+    """Cheapest section: counts and charts needing no scoring pipeline."""
+
+    activeProjects: int
+    totalProjects: int
+    avgQualityScore: float | None = None
     qualityTrend: list[OperationalTowerQualityTrendPoint] = []
-    utilization: list[UtilizationEntry] = []
+    riskTrend: RiskTrendRead
     alerts: list[CriticalAlertRead] = []
+
+
+class TowerEscalationsRead(BaseModel):
+    openEscalations: int
+    criticalEscalations: int = 0
+
+
+class TowerHealthRead(BaseModel):
+    """Slowest section: requires scoring every in-flight project."""
+
+    scheduleConfidence: int | None = None
+    healthDistribution: list[HealthDistributionEntry] = []
+
+
+class TowerWorkRead(BaseModel):
     recommendations: list[RecommendationRead] = []
     milestones: list[UpcomingMilestoneRead] = []
+
+
+class TowerActivityRead(BaseModel):
+    utilization: list[UtilizationEntry] = []
     activity: list[ActivityEntry] = []
-    criticalEscalations: int = 0
 
 
 class ExecutiveSummaryRead(BaseModel):

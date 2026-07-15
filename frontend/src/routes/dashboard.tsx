@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -24,29 +24,31 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { DeliveryMarkdown } from "@/components/delivery";
+// Import the markdown pieces directly rather than through the components/delivery barrel:
+// the barrel re-exports DeliveryChat and its dependency tree (chat input, history popover,
+// alert-dialog, popover, use-delivery-chat), none of which the dashboard renders, and a
+// barrel import pulls all of it into this route's chunk.
+import { DeliveryMarkdown } from "@/components/delivery/delivery-markdown";
 import { sanitizeDeliveryMarkdown } from "@/components/delivery/delivery-markdown-utils";
 import {
   executiveSummaryQueryOptions,
-  operationalTowerQueryOptions,
-  useOperationalTowerQuery,
+  prefetchTowerSections,
+  useTowerActivityQuery,
+  useTowerEscalationsQuery,
+  useTowerHealthQuery,
+  useTowerPulseQuery,
+  useTowerWorkQuery,
 } from "@/lib/queries/dashboard";
 
-// Charts pull in `recharts` (~300 KB); load them in a separate chunk so the KPI
-// cards paint first and the heavy dependency stays out of the critical path.
 const DashboardCharts = lazy(() => import("@/features/dashboard/DashboardCharts"));
 
 export const Route = createFileRoute("/dashboard")({
   component: Dashboard,
   loader: ({ context: { queryClient } }) => {
-    // Warm the cache but do NOT await — the route must render immediately so the
-    // KPI cards and shell are interactive while the payload is still in flight.
-    // The component reads the query with graceful placeholders until data lands.
-    void queryClient.prefetchQuery(operationalTowerQueryOptions);
+    prefetchTowerSections(queryClient);
   },
 });
 
-// How many rows each secondary list shows before "View all".
 const RECS_PREVIEW = 3;
 const MILESTONES_PREVIEW = 5;
 const ACTIVITY_PREVIEW = 3;
@@ -81,7 +83,6 @@ const EVIDENCE_TYPES = "dependency|action|escalation|scope_state|delivery_signal
 const INLINE_EVIDENCE_RE = new RegExp(`\\s*\\((?:${EVIDENCE_TYPES}):[0-9a-fA-F-]{8,}\\)`, "g");
 const BOLD_EVIDENCE_RE = new RegExp(`\\*\\*(${EVIDENCE_TYPES}):[0-9a-fA-F-]{8,}\\*\\*`, "g");
 
-/** Strip the redundant top-level H1 and noisy raw evidence UUID tokens for readable display. */
 function prepareSummary(text: string): string {
   return sanitizeDeliveryMarkdown(text)
     .replace(/^#\s+.+\n+/, "")
@@ -91,7 +92,6 @@ function prepareSummary(text: string): string {
 
 const ALL = "all";
 
-/** Compact dropdown filter used in section headers. Values are humanised for display. */
 function FilterDropdown({
   value,
   onChange,
@@ -124,7 +124,6 @@ function FilterDropdown({
   );
 }
 
-/** Placeholder that reserves the charts' layout height while the chunk loads. */
 function ChartsSkeleton() {
   return (
     <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-3">
@@ -147,7 +146,6 @@ function ViewAllButton({ onClick, label }: { onClick: () => void; label: string 
   );
 }
 
-/** "View Weekly Summary" — exposes the stored executive summary behind an action (lazy-loaded). */
 function WeeklySummaryDialog() {
   const [open, setOpen] = useState(false);
   const { data: summary, isLoading } = useQuery({
@@ -190,22 +188,70 @@ function WeeklySummaryDialog() {
   );
 }
 
+function FreshnessStamp({
+  updatedAt,
+  isFetching,
+  hasData,
+}: {
+  updatedAt: number;
+  isFetching: boolean;
+  hasData: boolean;
+}) {
+  const [, forceTick] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => forceTick((n) => n + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (!hasData) {
+    return (
+      <span className="text-xs text-muted-foreground">
+        {isFetching ? "Loading portfolio…" : null}
+      </span>
+    );
+  }
+
+  return (
+    <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <span
+        className={`size-1.5 rounded-full ${
+          isFetching ? "animate-pulse bg-amber-500" : "bg-transparent"
+        }`}
+        aria-hidden="true"
+      />
+      <span>Updated {formatRelative(new Date(updatedAt).toISOString())}</span>
+      <span className="sr-only">{isFetching ? " — refreshing now" : ""}</span>
+    </span>
+  );
+}
+
 function Dashboard() {
-  const { data } = useOperationalTowerQuery();
+  const pulse = useTowerPulseQuery();
+  const escalations = useTowerEscalationsQuery();
+  const health = useTowerHealthQuery();
+  const work = useTowerWorkQuery();
+  const activityQuery = useTowerActivityQuery();
 
-  const kpis = data?.kpis;
-  const healthDistribution = data?.healthDistribution ?? [];
-  const riskTrend = data?.riskTrend ?? { series: [], data: [] };
-  const qualityTrend = data?.qualityTrend ?? [];
-  const utilization = data?.utilization ?? [];
-  const alerts = data?.alerts ?? [];
-  const recommendations = data?.recommendations ?? [];
-  const milestones = data?.milestones ?? [];
-  const activity = data?.activity ?? [];
+  const healthDistribution = health.data?.healthDistribution ?? [];
+  const riskTrend = pulse.data?.riskTrend ?? { series: [], data: [] };
+  const qualityTrend = pulse.data?.qualityTrend ?? [];
+  const utilization = activityQuery.data?.utilization ?? [];
+  const alerts = pulse.data?.alerts ?? [];
+  const recommendations = work.data?.recommendations ?? [];
+  const milestones = work.data?.milestones ?? [];
+  const activity = activityQuery.data?.activity ?? [];
 
-  const totalProjects = kpis?.totalProjects ?? 0;
+  const totalProjects = pulse.data?.totalProjects ?? 0;
   const atRiskCount = healthDistribution.find((d) => d.name === "At Risk")?.value ?? 0;
-  const criticalEscalations = data?.criticalEscalations ?? 0;
+  const criticalEscalations = escalations.data?.criticalEscalations ?? 0;
+
+  const sections = [pulse, escalations, health, work, activityQuery];
+  const loadedSections = sections.filter((s) => s.data !== undefined);
+  const dataUpdatedAt = loadedSections.length
+    ? Math.min(...loadedSections.map((s) => s.dataUpdatedAt))
+    : 0;
+  const isFetching = sections.some((s) => s.isFetching);
   const iaaTrendingDown =
     qualityTrend.length >= 2 &&
     (qualityTrend.at(-1)?.iaa ?? 0) < (qualityTrend.at(-2)?.iaa ?? 0);
@@ -219,7 +265,6 @@ function Dashboard() {
   const [showAllMilestones, setShowAllMilestones] = useState(false);
   const [showAllActivity, setShowAllActivity] = useState(false);
 
-  // Dropdown filters for the three list/table sections.
   const [alertSev, setAlertSev] = useState(ALL);
   const [recPriority, setRecPriority] = useState(ALL);
   const [milestoneStatus, setMilestoneStatus] = useState(ALL);
@@ -257,7 +302,12 @@ function Dashboard() {
   return (
     <div className="space-y-5">
       {/* Action bar — the full weekly report lives behind an action, not on the page. */}
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-end gap-3">
+        <FreshnessStamp
+          updatedAt={dataUpdatedAt}
+          isFetching={isFetching}
+          hasData={loadedSections.length > 0}
+        />
         <WeeklySummaryDialog />
       </div>
 
@@ -265,25 +315,27 @@ function Dashboard() {
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard
           label="Active Projects"
-          value={kpis?.activeProjects ?? "—"}
+          value={pulse.data?.activeProjects ?? "—"}
           delta={totalProjects ? `${totalProjects} total in portfolio` : undefined}
           tone="success"
         />
         <KpiCard
           label="Schedule Confidence"
-          value={kpis?.scheduleConfidence != null ? `${kpis.scheduleConfidence}%` : "—"}
-          tone={confidenceTone(kpis?.scheduleConfidence ?? null)}
+          value={
+            health.data?.scheduleConfidence != null ? `${health.data.scheduleConfidence}%` : "—"
+          }
+          tone={confidenceTone(health.data?.scheduleConfidence ?? null)}
         />
         <KpiCard
           label="Open Escalations"
-          value={kpis?.openEscalations ?? "—"}
+          value={escalations.data?.openEscalations ?? "—"}
           delta={criticalEscalations ? `${criticalEscalations} critical` : undefined}
           tone={criticalEscalations ? "danger" : "default"}
         />
         <KpiCard
           label="Avg Quality Score"
-          value={kpis?.avgQualityScore != null ? kpis.avgQualityScore : "—"}
-          tone={confidenceTone(kpis?.avgQualityScore ?? null)}
+          value={pulse.data?.avgQualityScore != null ? pulse.data.avgQualityScore : "—"}
+          tone={confidenceTone(pulse.data?.avgQualityScore ?? null)}
         />
       </div>
 

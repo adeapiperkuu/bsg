@@ -1,6 +1,6 @@
 import logging
 
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
 
 from app.db import session as db_session
 
@@ -24,12 +24,16 @@ def test_database_url_classification_for_supabase_poolers_and_direct_postgres() 
     )
 
 
-def test_transaction_pooler_disables_prepared_statement_caches() -> None:
+def test_transaction_pooler_uses_client_pool_and_disables_prepared_statement_caches() -> None:
     kwargs = db_session._engine_kwargs(
         "postgresql+asyncpg://postgres:secret@aws-0-eu.pooler.supabase.com:6543/postgres"
     )
 
-    assert kwargs["poolclass"] is NullPool
+    assert kwargs["poolclass"] is AsyncAdaptedQueuePool
+    assert kwargs["pool_size"] == 10
+    assert kwargs["max_overflow"] == 10
+    assert kwargs["pool_recycle"] == 900
+    assert kwargs["pool_pre_ping"] is True
     assert kwargs["connect_args"]["statement_cache_size"] == 0
     assert kwargs["connect_args"]["prepared_statement_cache_size"] == 0
     assert "prepared_statement_name_func" in kwargs["connect_args"]
