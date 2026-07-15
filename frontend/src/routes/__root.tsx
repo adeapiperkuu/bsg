@@ -17,6 +17,7 @@ import { AuthProvider } from "../components/AuthProvider";
 import { Toaster } from "../components/ui/sonner";
 import { PageTransition } from "../components/PageTransition";
 import { useRenderedPathname } from "../lib/use-rendered-pathname";
+import { QueryPersistence } from "../lib/queries/persist";
 
 const PUBLIC_PATHS = ["/login", "/unauthorized"];
 const FAVICON_HREF =
@@ -130,16 +131,20 @@ function RootComponent() {
     <QueryClientProvider client={queryClient}>
       <RoleProvider>
         <AuthProvider>
-          <Toaster richColors position="top-right" />
-          {isPublic ? (
-            <PageTransition>
-              <Outlet />
-            </PageTransition>
-          ) : (
-            <Shell>
-              <Outlet />
-            </Shell>
-          )}
+          {/* Inside AuthProvider: it gates children until the session resolves, so the
+              signed-in user id is known and the cache can be keyed to it. */}
+          <QueryPersistence>
+            <Toaster richColors position="top-right" />
+            {isPublic ? (
+              <PageTransition>
+                <Outlet />
+              </PageTransition>
+            ) : (
+              <Shell>
+                <Outlet />
+              </Shell>
+            )}
+          </QueryPersistence>
         </AuthProvider>
       </RoleProvider>
     </QueryClientProvider>

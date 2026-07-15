@@ -8,6 +8,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.agents.delivery.analytics.milestones import select_current_milestone
 from app.agents.delivery.services.scoring_service import build_dashboard_response
@@ -463,6 +464,33 @@ async def load_project_scoring_inputs(
 # Public API
 # ---------------------------------------------------------------------------
 
+def _score_projects(
+    projects: list[Project],
+    inputs: dict[str, Any],
+    effective_date: date,
+) -> list[dict[str, Any]]:
+    """Run the scoring pipeline for each project. Pure CPU; no I/O, no session access.
+
+    Runs in a worker thread. It only reads already-loaded column attributes off `projects`
+    and plain dicts out of `inputs`, so it triggers no lazy load — which matters, because a
+    lazy load here would try to emit async I/O from a non-async thread and fail outright.
+    Keep it that way: no relationship access, no session use.
+    """
+    scored: list[dict[str, Any]] = []
+    for project in projects:
+        raw_data = _build_raw_data(
+            project,
+            as_of_date=effective_date,
+            milestones=inputs["milestones"].get(project.id, []),
+            throughput_snapshots=inputs["throughput_snapshots"].get(project.id, []),
+            risks=inputs["risks"].get(project.id, []),
+            bottlenecks=inputs["bottlenecks"].get(project.id, []),
+            quality_snapshot=inputs["quality_snapshots"].get(project.id),
+        )
+        scored.append({"project_id": project.id, "dashboard": build_dashboard_response(raw_data)})
+    return scored
+
+
 async def get_dashboard_data(
     *,
     session: AsyncSession,
@@ -531,20 +559,13 @@ async def get_portfolio_data(
     project_ids = [project.id for project in projects]
     inputs = await _fetch_delivery_inputs_by_project(session, project_ids)
 
-    portfolio_projects: list[dict[str, Any]] = []
-
-    for project in projects:
-        raw_data = _build_raw_data(
-            project,
-            as_of_date=effective_date,
-            milestones=inputs["milestones"].get(project.id, []),
-            throughput_snapshots=inputs["throughput_snapshots"].get(project.id, []),
-            risks=inputs["risks"].get(project.id, []),
-            bottlenecks=inputs["bottlenecks"].get(project.id, []),
-            quality_snapshot=inputs["quality_snapshots"].get(project.id),
-        )
-        dashboard = build_dashboard_response(raw_data)
-        portfolio_projects.append({"project_id": project.id, "dashboard": dashboard})
+    # Scoring is pure CPU over already-fetched rows, and it is not cheap: ~700ms of the
+    # ~1550ms this function takes for a 28-project portfolio. Run it off the event loop so
+    # it cannot stall the dashboard's other section requests, which are issued in parallel
+    # and would otherwise block behind it despite needing none of its work.
+    portfolio_projects = await run_in_threadpool(
+        _score_projects, projects, inputs, effective_date
+    )
 
     # DeliveryPortfolioResponse declares a portfolio-wide `milestones` list, but this
     # function never populated it, so it always serialized as its default [] and the

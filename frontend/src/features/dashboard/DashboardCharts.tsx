@@ -16,7 +16,7 @@ import {
 } from "recharts";
 
 import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
-import type { OperationalTower } from "@/lib/api";
+import type { TowerActivity, TowerHealth, TowerPulse } from "@/lib/api";
 
 const axisProps = {
   tick: { fill: "#8b92a5", fontSize: 11 },
@@ -32,10 +32,10 @@ const tooltipStyle = {
 };
 
 export interface DashboardChartsProps {
-  riskTrend: OperationalTower["riskTrend"];
-  qualityTrend: OperationalTower["qualityTrend"];
-  utilization: OperationalTower["utilization"];
-  healthDistribution: OperationalTower["healthDistribution"];
+  riskTrend: TowerPulse["riskTrend"];
+  qualityTrend: TowerPulse["qualityTrend"];
+  utilization: TowerActivity["utilization"];
+  healthDistribution: TowerHealth["healthDistribution"];
   totalProjects: number;
   atRiskCount: number;
   iaaTrendingDown: boolean;

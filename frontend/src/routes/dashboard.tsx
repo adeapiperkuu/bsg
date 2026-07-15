@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -32,8 +32,12 @@ import { DeliveryMarkdown } from "@/components/delivery/delivery-markdown";
 import { sanitizeDeliveryMarkdown } from "@/components/delivery/delivery-markdown-utils";
 import {
   executiveSummaryQueryOptions,
-  operationalTowerQueryOptions,
-  useOperationalTowerQuery,
+  prefetchTowerSections,
+  useTowerActivityQuery,
+  useTowerEscalationsQuery,
+  useTowerHealthQuery,
+  useTowerPulseQuery,
+  useTowerWorkQuery,
 } from "@/lib/queries/dashboard";
 
 // Charts pull in `recharts` (~300 KB); load them in a separate chunk so the KPI
@@ -43,10 +47,10 @@ const DashboardCharts = lazy(() => import("@/features/dashboard/DashboardCharts"
 export const Route = createFileRoute("/dashboard")({
   component: Dashboard,
   loader: ({ context: { queryClient } }) => {
-    // Warm the cache but do NOT await — the route must render immediately so the
-    // KPI cards and shell are interactive while the payload is still in flight.
-    // The component reads the query with graceful placeholders until data lands.
-    void queryClient.prefetchQuery(operationalTowerQueryOptions);
+    // Kick off every section at once and do NOT await — the route must render immediately
+    // so the shell is interactive while the payloads are in flight, and each section paints
+    // independently as its own request lands.
+    prefetchTowerSections(queryClient);
   },
 });
 
@@ -194,22 +198,87 @@ function WeeklySummaryDialog() {
   );
 }
 
+/**
+ * States when this dashboard's data was captured.
+ *
+ * The cache is persisted across reloads, so the page can paint a full portfolio instantly
+ * from data read minutes or hours ago while the refresh is still in flight. Without this
+ * stamp, "0 critical escalations" from the last session is indistinguishable from a live
+ * zero — the reader cannot tell they are looking at history. Always rendered when data is
+ * on screen, never collapsed to a bare spinner.
+ */
+function FreshnessStamp({
+  updatedAt,
+  isFetching,
+  hasData,
+}: {
+  updatedAt: number;
+  isFetching: boolean;
+  hasData: boolean;
+}) {
+  const [, forceTick] = useState(0);
+
+  // The label is relative ("4m ago"), so re-render periodically or a left-open tab keeps
+  // claiming the data is as fresh as it was on mount.
+  useEffect(() => {
+    const id = setInterval(() => forceTick((n) => n + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (!hasData) {
+    return (
+      <span className="text-xs text-muted-foreground">
+        {isFetching ? "Loading portfolio…" : null}
+      </span>
+    );
+  }
+
+  return (
+    <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      {isFetching && (
+        <span
+          className="size-1.5 animate-pulse rounded-full bg-amber-500"
+          aria-hidden="true"
+        />
+      )}
+      <span>
+        {isFetching ? "Refreshing · showing data from " : "Updated "}
+        {formatRelative(new Date(updatedAt).toISOString())}
+      </span>
+    </span>
+  );
+}
+
 function Dashboard() {
-  const { data } = useOperationalTowerQuery();
+  // Five independent queries: each section renders the moment its own request lands, rather
+  // than the whole page waiting on the slowest (health, which runs the scoring pipeline).
+  const pulse = useTowerPulseQuery();
+  const escalations = useTowerEscalationsQuery();
+  const health = useTowerHealthQuery();
+  const work = useTowerWorkQuery();
+  const activityQuery = useTowerActivityQuery();
 
-  const kpis = data?.kpis;
-  const healthDistribution = data?.healthDistribution ?? [];
-  const riskTrend = data?.riskTrend ?? { series: [], data: [] };
-  const qualityTrend = data?.qualityTrend ?? [];
-  const utilization = data?.utilization ?? [];
-  const alerts = data?.alerts ?? [];
-  const recommendations = data?.recommendations ?? [];
-  const milestones = data?.milestones ?? [];
-  const activity = data?.activity ?? [];
+  const healthDistribution = health.data?.healthDistribution ?? [];
+  const riskTrend = pulse.data?.riskTrend ?? { series: [], data: [] };
+  const qualityTrend = pulse.data?.qualityTrend ?? [];
+  const utilization = activityQuery.data?.utilization ?? [];
+  const alerts = pulse.data?.alerts ?? [];
+  const recommendations = work.data?.recommendations ?? [];
+  const milestones = work.data?.milestones ?? [];
+  const activity = activityQuery.data?.activity ?? [];
 
-  const totalProjects = kpis?.totalProjects ?? 0;
+  const totalProjects = pulse.data?.totalProjects ?? 0;
   const atRiskCount = healthDistribution.find((d) => d.name === "At Risk")?.value ?? 0;
-  const criticalEscalations = data?.criticalEscalations ?? 0;
+  const criticalEscalations = escalations.data?.criticalEscalations ?? 0;
+
+  // The page is as old as its oldest section; report that rather than the newest, so the
+  // stamp can never overstate freshness.
+  const sections = [pulse, escalations, health, work, activityQuery];
+  const loadedSections = sections.filter((s) => s.data !== undefined);
+  const dataUpdatedAt = loadedSections.length
+    ? Math.min(...loadedSections.map((s) => s.dataUpdatedAt))
+    : 0;
+  const isFetching = sections.some((s) => s.isFetching);
   const iaaTrendingDown =
     qualityTrend.length >= 2 &&
     (qualityTrend.at(-1)?.iaa ?? 0) < (qualityTrend.at(-2)?.iaa ?? 0);
@@ -261,33 +330,44 @@ function Dashboard() {
   return (
     <div className="space-y-5">
       {/* Action bar — the full weekly report lives behind an action, not on the page. */}
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-end gap-3">
+        <FreshnessStamp
+          updatedAt={dataUpdatedAt}
+          isFetching={isFetching}
+          hasData={loadedSections.length > 0}
+        />
         <WeeklySummaryDialog />
       </div>
 
       {/* 1. KPIs — portfolio health at a glance */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        {/* Each card is fed by its own section, so they fill in as their data arrives
+            rather than all four waiting on the slowest. Active Projects and Avg Quality
+            come from the cheap pulse request and land first; Schedule Confidence needs the
+            scoring pipeline and lands last. */}
         <KpiCard
           label="Active Projects"
-          value={kpis?.activeProjects ?? "—"}
+          value={pulse.data?.activeProjects ?? "—"}
           delta={totalProjects ? `${totalProjects} total in portfolio` : undefined}
           tone="success"
         />
         <KpiCard
           label="Schedule Confidence"
-          value={kpis?.scheduleConfidence != null ? `${kpis.scheduleConfidence}%` : "—"}
-          tone={confidenceTone(kpis?.scheduleConfidence ?? null)}
+          value={
+            health.data?.scheduleConfidence != null ? `${health.data.scheduleConfidence}%` : "—"
+          }
+          tone={confidenceTone(health.data?.scheduleConfidence ?? null)}
         />
         <KpiCard
           label="Open Escalations"
-          value={kpis?.openEscalations ?? "—"}
+          value={escalations.data?.openEscalations ?? "—"}
           delta={criticalEscalations ? `${criticalEscalations} critical` : undefined}
           tone={criticalEscalations ? "danger" : "default"}
         />
         <KpiCard
           label="Avg Quality Score"
-          value={kpis?.avgQualityScore != null ? kpis.avgQualityScore : "—"}
-          tone={confidenceTone(kpis?.avgQualityScore ?? null)}
+          value={pulse.data?.avgQualityScore != null ? pulse.data.avgQualityScore : "—"}
+          tone={confidenceTone(pulse.data?.avgQualityScore ?? null)}
         />
       </div>
 

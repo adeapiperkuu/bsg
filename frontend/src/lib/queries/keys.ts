@@ -4,7 +4,14 @@ export const queryKeys = {
   organisations: ["organisations"] as const,
   users: ["users"] as const,
   deliveryPortfolio: ["delivery", "portfolio"] as const,
-  operationalTower: ["dashboard", "operational-tower"] as const,
+  // One key per Operational Tower section: each is fetched independently so it can paint
+  // as soon as it arrives. All share the "dashboard/operational-tower" prefix, which is what
+  // the localStorage persistence allowlist matches on.
+  towerPulse: ["dashboard", "operational-tower", "pulse"] as const,
+  towerEscalations: ["dashboard", "operational-tower", "escalations"] as const,
+  towerHealth: ["dashboard", "operational-tower", "health"] as const,
+  towerWork: ["dashboard", "operational-tower", "work"] as const,
+  towerActivity: ["dashboard", "operational-tower", "activity"] as const,
   executiveSummary: ["dashboard", "executive-summary"] as const,
   deliveryDashboard: (projectId: string) => ["delivery", "dashboard", projectId] as const,
   deliveryConversations: (projectId: string | null) =>
