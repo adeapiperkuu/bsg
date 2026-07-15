@@ -25,6 +25,7 @@ import {
   ChevronDown,
   Menu,
   Bot,
+  Building2,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useRole } from "@/lib/bsg/use-role";
@@ -105,6 +106,7 @@ const adminNav: { section: string; items: NavItem[] }[] = [
     items: [
       { to: "/admin", label: "Admin Console", icon: Settings2 },
       { to: "/admin/users", label: "Users", icon: Users },
+      { to: "/admin/organisations", label: "Organisations", icon: Building2 },
       { to: "/admin/projects", label: "Projects", icon: FolderKanban },
       { to: "/admin/agent-runs", label: "Agent Runs", icon: Bot },
     ],

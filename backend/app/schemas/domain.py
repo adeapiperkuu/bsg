@@ -116,6 +116,44 @@ class AuthSessionRead(BaseModel):
     role: AppRole
 
 
+class MfaRequiredRead(BaseModel):
+    """Returned by POST /auth/login instead of AuthSessionRead when the
+    authenticating user's role requires MFA (DEVELOPMENT_PLAN.md Workstream E)
+    and the session isn't at aal2 yet. No auth cookies are set at this point --
+    `pending_token` is a short-lived bearer token, used only to call the
+    /auth/mfa/* endpoints, never persisted by the frontend as a session."""
+
+    mfa_required: bool = True
+    stage: str  # "enroll" (no verified factor yet) or "challenge" (factor already verified)
+    pending_token: str
+    factor_id: str | None = None  # set when stage == "challenge"
+
+
+class MfaEnrollRead(BaseModel):
+    factor_id: str
+    qr_code: str
+    secret: str
+
+
+class MfaChallengeRead(BaseModel):
+    factor_id: str
+    challenge_id: str
+
+
+class MfaEnrollRequest(BaseModel):
+    friendly_name: str = "Authenticator app"
+
+
+class MfaChallengeRequest(BaseModel):
+    factor_id: str
+
+
+class MfaVerifyRequest(BaseModel):
+    factor_id: str
+    challenge_id: str
+    code: str
+
+
 class MeRead(UserRead):
     organisation: OrganisationSummary | None = None
     permissions: MePermissions = Field(default_factory=MePermissions)
@@ -710,6 +748,7 @@ class GroupedRecommendationRiskRead(BaseModel):
     recommendation_id: UUID
     source_risk_id: UUID | None
     source_risk_title: str | None = None
+    source_risk_type: str | None = None
     description: str | None
     status: str
     confidence_score: Decimal
@@ -743,6 +782,18 @@ class ProjectRecommendationsResponse(BaseModel):
     data: list[GroupedMitigationRecommendationRead]
     assignable_owners: list[OwnerOptionRead]
     pagination: Pagination
+
+
+class ProjectWorkforceDashboardRead(BaseModel):
+    """Bundled Workforce page payload (one round-trip for initial load)."""
+
+    project_id: UUID
+    summary: ProjectWorkforceSummaryRead
+    utilization: list[UtilizationSnapshotRead]
+    skill_matrix: SkillMatrixRead
+    training_gaps: TrainingGapSummaryRead
+    capability_gaps: list[CapabilityGapRead]
+    recommendations: ProjectRecommendationsResponse
 
 
 class AgentQueryCreate(BaseModel):
@@ -1276,58 +1327,6 @@ class InterAgentSignalRead(ORMModel):
 
 class RiskAlertResolve(BaseModel):
     resolution_summary: str | None = None
-
-
-# --- Workforce dashboard schemas ---
-
-
-class SkillGapSignal(BaseModel):
-    id: UUID
-    title: str
-    body: str
-    source_row_id: UUID | None = None
-    created_at: datetime
-    is_read: bool
-
-
-class TeamUtilizationRead(BaseModel):
-    team_id: UUID
-    team_name: str
-    iso_year: int
-    iso_week: int
-    target_hours: Decimal
-    logged_hours: Decimal
-    utilization_pct: Decimal | None = None
-    status: str
-
-
-class SkillMatrixEntry(BaseModel):
-    skill_code: str
-    proficiency_counts: dict[str, int]
-
-
-class WorkforceDashboardKpis(BaseModel):
-    teams_tracked: int
-    avg_utilization_pct: str | None = None
-    sme_certified_count: int
-    skill_records: int
-    open_skill_gaps: int
-
-
-class WorkforceDashboardRead(BaseModel):
-    kpis: WorkforceDashboardKpis
-    team_utilization: list[TeamUtilizationRead] = []
-    skill_matrix: list[SkillMatrixEntry] = []
-    skill_gap_signals: list[SkillGapSignal] = []
-
-
-class SmeAllocationRead(BaseModel):
-    annotator_id: UUID
-    team_id: UUID
-    team_name: str
-    site: str
-    skills: list[str]
-    utilization_pct: Decimal | None = None
 
 
 # --- Knowledge library schemas ---
@@ -1945,3 +1944,101 @@ class SmeAllocationRead(BaseModel):
     site: str
     skills: list[str] = []
     utilization_pct: Decimal | None = None
+
+
+# ---------------------------------------------------------------------------
+# Operational Tower dashboard
+# ---------------------------------------------------------------------------
+
+
+class DashboardSummaryRead(BaseModel):
+    active_projects: int
+    open_risk_alerts: int
+    open_quality_drifts: int
+    pending_communications: int
+    avg_utilization_pct: str | None = None
+
+
+class OperationalTowerKpis(BaseModel):
+    activeProjects: int
+    scheduleConfidence: int | None = None
+    openEscalations: int
+    avgQualityScore: float | None = None
+    totalProjects: int
+
+
+class HealthDistributionEntry(BaseModel):
+    name: str
+    value: int
+    color: str
+
+
+class RiskTrendSeries(BaseModel):
+    name: str
+    color: str
+
+
+class RiskTrendRead(BaseModel):
+    series: list[RiskTrendSeries] = []
+    data: list[dict[str, Any]] = []
+
+
+class OperationalTowerQualityTrendPoint(BaseModel):
+    week: str
+    goldAccuracy: float | None = None
+    iaa: float | None = None
+
+
+class UtilizationEntry(BaseModel):
+    team: str
+    value: int
+
+
+class CriticalAlertRead(BaseModel):
+    sev: str
+    project: str
+    desc: str
+    ts: str
+
+
+class RecommendationRead(BaseModel):
+    title: str
+    confidence: int
+    evidence: int
+    priority: str
+
+
+class UpcomingMilestoneRead(BaseModel):
+    project: str
+    name: str
+    due: str
+    confidence: int | None = None
+    status: str
+
+
+class ActivityEntry(BaseModel):
+    ts: str
+    actor: str
+    text: str
+
+
+class OperationalTowerRead(BaseModel):
+    kpis: OperationalTowerKpis
+    healthDistribution: list[HealthDistributionEntry] = []
+    riskTrend: RiskTrendRead
+    qualityTrend: list[OperationalTowerQualityTrendPoint] = []
+    utilization: list[UtilizationEntry] = []
+    alerts: list[CriticalAlertRead] = []
+    recommendations: list[RecommendationRead] = []
+    milestones: list[UpcomingMilestoneRead] = []
+    activity: list[ActivityEntry] = []
+    criticalEscalations: int = 0
+
+
+class ExecutiveSummaryRead(BaseModel):
+    text: str
+    week: str
+    generated_by_ai: bool
+    status: str
+    approved: bool
+    updated_at: str | None = None

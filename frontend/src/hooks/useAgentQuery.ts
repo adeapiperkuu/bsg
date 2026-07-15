@@ -1,5 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
-import { postAgentQuery, type AgentQueryRead } from "@/lib/api";
+import { postAgentQuery } from "@/lib/api";
+import type { AgentQueryRead } from "@/types/workforce";
 
 export function useAgentQuery(projectId: string | undefined) {
   return useMutation({

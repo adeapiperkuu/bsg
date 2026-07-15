@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, SectionHeader } from "@/components/bsg/widgets";
@@ -14,11 +15,12 @@ import { WorkforceRecommendationsPanel } from "@/components/bsg/WorkforceRecomme
 import { useProjectsQuery } from "@/lib/queries/delivery";
 import {
   UTILIZATION_CAPACITY_THRESHOLD,
+  buildAnnotatorsByTeamFromList,
   buildLatestTeamUtilization,
-  useProjectCapabilityGapsQuery,
-  useProjectSkillMatrixQuery,
-  useProjectTrainingGapsQuery,
-  useProjectUtilizationQuery,
+  buildProjectWorkforceSummary,
+  EMPTY_UTILIZATION,
+  seedWorkforceSectionCaches,
+  useProjectWorkforceDashboardQuery,
   useProjectWorkforceSummary,
 } from "@/lib/queries/workforce";
 import {
@@ -39,6 +41,7 @@ import type {
   TrainingGapRow,
   TrainingGapSummaryRead,
 } from "@/types/workforce";
+import type { ProjectRecommendationsResponse } from "@/features/mitigation-recommendations/types";
 
 export const Route = createFileRoute("/workforce")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -96,6 +99,7 @@ function WorkforcePage() {
   const [expandedTeams, setExpandedTeams] = useState<Set<string>>(() => new Set());
   const [selectedAnnotator, setSelectedAnnotator] = useState<AnnotatorRead | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [agentAsking, setAgentAsking] = useState(false);
 
   const user = useAuthStore((state) => state.user);
   const authLoading = useAuthStore((state) => state.isLoading);
@@ -128,44 +132,78 @@ function WorkforcePage() {
     setDrawerOpen(false);
   }, [resolvedProjectId]);
 
-  const workforceQuery = useProjectWorkforceSummary(resolvedProjectId, canReadInternalWorkforce);
-  const { summary, isLoading: workforceLoading, error: workforceError } = workforceQuery;
-
-  const utilizationQuery = useProjectUtilizationQuery(resolvedProjectId, canReadInternalWorkforce);
-  const teamUtilization = useMemo(
-    () => buildLatestTeamUtilization(utilizationQuery.data ?? [], summary.teams),
-    [utilizationQuery.data, summary.teams],
+  const queryClient = useQueryClient();
+  const dashboardQuery = useProjectWorkforceDashboardQuery(
+    resolvedProjectId,
+    canReadInternalWorkforce,
   );
-  const skillMatrixQuery = useProjectSkillMatrixQuery(resolvedProjectId, canReadInternalWorkforce);
-  const skillMatrixRows = skillMatrixQuery.data?.rows ?? EMPTY_LIST;
-  const skillMatrixLoading = canReadInternalWorkforce && skillMatrixQuery.isLoading;
+  const dashboard = dashboardQuery.data;
+
+  useEffect(() => {
+    if (!resolvedProjectId || !dashboard) return;
+    seedWorkforceSectionCaches(queryClient, resolvedProjectId, dashboard);
+  }, [dashboard, queryClient, resolvedProjectId]);
+
+  // Client / non-internal roles still need teams via the lightweight summary path.
+  const fallbackWorkforceQuery = useProjectWorkforceSummary(
+    canReadInternalWorkforce ? null : resolvedProjectId,
+    false,
+  );
+
+  const summary = useMemo(() => {
+    if (canReadInternalWorkforce && dashboard) {
+      const teams = dashboard.summary.teams;
+      const annotatorsByTeam = buildAnnotatorsByTeamFromList(teams, dashboard.summary.annotators);
+      return buildProjectWorkforceSummary(teams, annotatorsByTeam);
+    }
+    return fallbackWorkforceQuery.summary;
+  }, [canReadInternalWorkforce, dashboard, fallbackWorkforceQuery.summary]);
+
+  const workforceLoading = canReadInternalWorkforce
+    ? dashboardQuery.isLoading
+    : fallbackWorkforceQuery.isLoading;
+  const workforceError = canReadInternalWorkforce
+    ? dashboardQuery.error instanceof Error
+      ? dashboardQuery.error.message
+      : null
+    : fallbackWorkforceQuery.error;
+
+  const utilizationSnapshots = dashboard?.utilization ?? EMPTY_UTILIZATION;
+  const teamUtilization = useMemo(
+    () => buildLatestTeamUtilization(utilizationSnapshots, summary.teams),
+    [utilizationSnapshots, summary.teams],
+  );
+  const skillMatrixRows = dashboard?.skill_matrix.rows ?? EMPTY_LIST;
+  const skillMatrixLoading = canReadInternalWorkforce && dashboardQuery.isLoading;
   const skillMatrixError =
-    skillMatrixQuery.error instanceof Error ? skillMatrixQuery.error.message : null;
+    canReadInternalWorkforce && dashboardQuery.error instanceof Error
+      ? dashboardQuery.error.message
+      : null;
   const skillMatrixConfidencePct = useMemo(
     () => skillMatrixConfidence(skillMatrixRows),
     [skillMatrixRows],
   );
 
-  const trainingGapsQuery = useProjectTrainingGapsQuery(
-    resolvedProjectId,
-    canReadInternalWorkforce,
-  );
-  const trainingGaps = trainingGapsQuery.data;
+  const trainingGaps = dashboard?.training_gaps;
   const trainingGapRows = trainingGaps?.rows ?? EMPTY_LIST;
-  const trainingGapsLoading = canReadInternalWorkforce && trainingGapsQuery.isLoading;
+  const trainingGapsLoading = canReadInternalWorkforce && dashboardQuery.isLoading;
   const trainingGapsError =
-    trainingGapsQuery.error instanceof Error ? trainingGapsQuery.error.message : null;
+    canReadInternalWorkforce && dashboardQuery.error instanceof Error
+      ? dashboardQuery.error.message
+      : null;
 
   const canManageWorkforce = canManageWorkforceRole(user?.role);
 
-  const capabilityGapsQuery = useProjectCapabilityGapsQuery(
-    resolvedProjectId,
-    canReadInternalWorkforce,
-  );
-  const capabilityGaps = capabilityGapsQuery.data ?? EMPTY_LIST;
-  const capabilityGapsLoading = canReadInternalWorkforce && capabilityGapsQuery.isLoading;
+  const capabilityGaps = dashboard?.capability_gaps ?? EMPTY_LIST;
+  const capabilityGapsLoading = canReadInternalWorkforce && dashboardQuery.isLoading;
   const capabilityGapsError =
-    capabilityGapsQuery.error instanceof Error ? capabilityGapsQuery.error.message : null;
+    canReadInternalWorkforce && dashboardQuery.error instanceof Error
+      ? dashboardQuery.error.message
+      : null;
+
+  const bundledRecommendations = (
+    canReadInternalWorkforce ? (dashboard?.recommendations ?? null) : undefined
+  ) as ProjectRecommendationsResponse | null | undefined;
 
   const {
     siteFilter,
@@ -192,7 +230,7 @@ function WorkforcePage() {
     teams: summary.teams,
     skillMatrixRows,
     teamUtilization,
-    utilizationSnapshots: utilizationQuery.data ?? [],
+    utilizationSnapshots,
     trainingGapRows,
     capabilityGaps,
   });
@@ -226,29 +264,38 @@ function WorkforcePage() {
     setDrawerOpen(true);
   };
 
-  const selectedAnnotatorTeam = selectedAnnotator
-    ? summary.teams.find((team) => team.id === selectedAnnotator.team_id)
-    : undefined;
+  const selectedAnnotatorTeam = useMemo(
+    () =>
+      selectedAnnotator
+        ? summary.teams.find((team) => team.id === selectedAnnotator.team_id)
+        : undefined,
+    [selectedAnnotator, summary.teams],
+  );
 
-  const selectedProject = projects.find((project) => project.id === resolvedProjectId);
+  const selectedProject = useMemo(
+    () => projects.find((project) => project.id === resolvedProjectId),
+    [projects, resolvedProjectId],
+  );
 
   const projectsLoading = projectsQuery.isLoading;
-  const utilizationLoading = canReadInternalWorkforce && utilizationQuery.isLoading;
+  const utilizationLoading = canReadInternalWorkforce && dashboardQuery.isLoading;
 
-  const errorMessage =
-    (projectsQuery.error instanceof Error ? projectsQuery.error.message : null) ??
-    workforceError ??
-    (utilizationQuery.error instanceof Error ? utilizationQuery.error.message : null);
+  const projectsError = projectsQuery.error instanceof Error ? projectsQuery.error.message : null;
+  const workforceLoadWarning = workforceError;
+  const utilizationLoadWarning =
+    canReadInternalWorkforce && dashboardQuery.error instanceof Error
+      ? dashboardQuery.error.message
+      : null;
 
   const selectProject = (projectId: string) => {
     navigate({ search: { projectId } });
   };
 
-  if (errorMessage) {
+  if (projectsError) {
     return (
       <Card>
         <SectionHeader title="Workforce & Capability" sub="Unable to load workforce data" />
-        <p className="text-sm text-[color:var(--danger)]">{errorMessage}</p>
+        <p className="text-sm text-[color:var(--danger)]">{projectsError}</p>
       </Card>
     );
   }
@@ -311,6 +358,21 @@ function WorkforcePage() {
 
   return (
     <div className="space-y-5">
+      {(workforceLoadWarning || utilizationLoadWarning) && (
+        <Card className="border-[color:var(--warning)]/30 bg-[color:var(--warning)]/5 p-4">
+          <p className="text-sm text-[color:var(--warning)]">
+            Some workforce data could not be loaded. Sections below may be incomplete until you
+            refresh the page.
+          </p>
+          {workforceLoadWarning ? (
+            <p className="mt-1 text-xs text-muted-foreground">{workforceLoadWarning}</p>
+          ) : null}
+          {utilizationLoadWarning ? (
+            <p className="mt-1 text-xs text-muted-foreground">{utilizationLoadWarning}</p>
+          ) : null}
+        </Card>
+      )}
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="text-xs text-muted-foreground">
           {selectedProject ? (
@@ -366,7 +428,7 @@ function WorkforcePage() {
           <select
             value={resolvedProjectId ?? ""}
             onChange={(event) => selectProject(event.target.value)}
-            disabled={projectsLoading || projects.length === 0}
+            disabled={projectsLoading || projects.length === 0 || agentAsking}
             className="rounded border border-border bg-card px-2.5 py-1.5 text-xs outline-none"
           >
             {projects.map((project) => (
@@ -453,6 +515,9 @@ function WorkforcePage() {
             <WorkforceRecommendationsPanel
               projectId={resolvedProjectId}
               canManage={canManageWorkforce}
+              bundledRecommendations={bundledRecommendations ?? null}
+              bundledLoading={dashboardQuery.isLoading}
+              bundledError={dashboardQuery.isError}
             />
           ) : null}
 
@@ -503,6 +568,7 @@ function WorkforcePage() {
           <WorkforceAgentSection
             canReadInternalWorkforce={canReadInternalWorkforce}
             projectId={resolvedProjectId}
+            onAskingChange={setAgentAsking}
           />
         </div>
       </div>

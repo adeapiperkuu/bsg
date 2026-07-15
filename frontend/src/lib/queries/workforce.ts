@@ -1,9 +1,10 @@
-import { queryOptions, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, queryOptions, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import {
   getProjectSkillMatrix,
   getProjectTrainingGaps,
+  getProjectWorkforceDashboard,
   getProjectWorkforceSummary,
   listAnnotatorCertifications,
   listAnnotatorSkills,
@@ -17,21 +18,31 @@ import {
   listWorkforceSkills,
   listWorkforceTrainingPrograms,
 } from "@/lib/api";
-import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
+import {
+  queryKeys,
+  STALE_TIME_MS,
+  WORKFORCE_CATALOG_STALE_TIME_MS,
+  WORKFORCE_PROJECT_STALE_TIME_MS,
+} from "@/lib/queries/keys";
 import type {
   AnnotatorRead,
   DeliverySite,
   ProjectUtilizationFilters,
+  ProjectWorkforceDashboardRead,
   TeamRead,
   UtilizationSnapshotRead,
 } from "@/types/workforce";
+
+const EMPTY_UTILIZATION: UtilizationSnapshotRead[] = [];
+const EMPTY_DASHBOARD_UTILIZATION_FILTERS: ProjectUtilizationFilters = {};
 
 export function projectTeamsQueryOptions(projectId: string | null) {
   return queryOptions({
     queryKey: queryKeys.projectTeams(projectId ?? ""),
     queryFn: () => listProjectTeams(projectId!),
     enabled: Boolean(projectId),
-    staleTime: STALE_TIME_MS,
+    staleTime: WORKFORCE_PROJECT_STALE_TIME_MS,
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -40,7 +51,7 @@ export function teamAnnotatorsQueryOptions(teamId: string, enabled = true) {
     queryKey: queryKeys.teamAnnotators(teamId),
     queryFn: () => listTeamAnnotators(teamId),
     enabled: Boolean(teamId) && enabled,
-    staleTime: STALE_TIME_MS,
+    staleTime: WORKFORCE_PROJECT_STALE_TIME_MS,
   });
 }
 
@@ -49,8 +60,51 @@ export function projectWorkforceSummaryQueryOptions(projectId: string | null, en
     queryKey: queryKeys.projectWorkforceSummary(projectId ?? ""),
     queryFn: () => getProjectWorkforceSummary(projectId!),
     enabled: Boolean(projectId) && enabled,
-    staleTime: STALE_TIME_MS,
+    staleTime: WORKFORCE_PROJECT_STALE_TIME_MS,
+    placeholderData: keepPreviousData,
   });
+}
+
+export function projectWorkforceDashboardQueryOptions(projectId: string | null, enabled = true) {
+  return queryOptions({
+    queryKey: queryKeys.projectWorkforceDashboard(projectId ?? ""),
+    queryFn: () => getProjectWorkforceDashboard(projectId!),
+    enabled: Boolean(projectId) && enabled,
+    staleTime: WORKFORCE_PROJECT_STALE_TIME_MS,
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useProjectWorkforceDashboardQuery(
+  projectId: string | null,
+  canReadInternalWorkforce: boolean,
+) {
+  return useQuery(projectWorkforceDashboardQueryOptions(projectId, canReadInternalWorkforce));
+}
+
+/** Seed section caches from the bundled dashboard so managers/drawers avoid refetch. */
+export function seedWorkforceSectionCaches(
+  queryClient: {
+    setQueryData: (queryKey: readonly unknown[], data: unknown) => void;
+  },
+  projectId: string,
+  dashboard: ProjectWorkforceDashboardRead,
+) {
+  queryClient.setQueryData(queryKeys.projectWorkforceSummary(projectId), dashboard.summary);
+  queryClient.setQueryData(
+    queryKeys.projectUtilization(projectId, {
+      team_id: EMPTY_DASHBOARD_UTILIZATION_FILTERS.team_id,
+      annotator_id: EMPTY_DASHBOARD_UTILIZATION_FILTERS.annotator_id,
+      from_date: EMPTY_DASHBOARD_UTILIZATION_FILTERS.from_date,
+      to_date: EMPTY_DASHBOARD_UTILIZATION_FILTERS.to_date,
+      limit: EMPTY_DASHBOARD_UTILIZATION_FILTERS.limit,
+    }),
+    dashboard.utilization,
+  );
+  queryClient.setQueryData(queryKeys.projectSkillMatrix(projectId), dashboard.skill_matrix);
+  queryClient.setQueryData(queryKeys.projectTrainingGaps(projectId), dashboard.training_gaps);
+  queryClient.setQueryData(queryKeys.projectCapabilityGaps(projectId), dashboard.capability_gaps);
+  queryClient.setQueryData(queryKeys.projectRecommendations(projectId), dashboard.recommendations);
 }
 
 export function useProjectTeamsQuery(projectId: string | null) {
@@ -116,7 +170,7 @@ export function buildProjectWorkforceSummary(
   };
 }
 
-function buildAnnotatorsByTeamFromList(
+export function buildAnnotatorsByTeamFromList(
   teams: TeamRead[],
   annotators: AnnotatorRead[],
 ): Map<string, AnnotatorRead[]> {
@@ -271,7 +325,8 @@ export function projectUtilizationQueryOptions(
     queryKey: queryKeys.projectUtilization(projectId ?? "", filterKey),
     queryFn: () => listProjectUtilization(projectId!, filters),
     enabled: Boolean(projectId) && enabled,
-    staleTime: STALE_TIME_MS,
+    staleTime: WORKFORCE_PROJECT_STALE_TIME_MS,
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -288,7 +343,7 @@ export function workforceSkillsQueryOptions(enabled: boolean) {
     queryKey: queryKeys.workforceSkills,
     queryFn: () => listWorkforceSkills(),
     enabled,
-    staleTime: STALE_TIME_MS,
+    staleTime: WORKFORCE_CATALOG_STALE_TIME_MS,
   });
 }
 
@@ -297,7 +352,8 @@ export function projectSkillRequirementsQueryOptions(projectId: string | null, e
     queryKey: queryKeys.projectSkillRequirements(projectId ?? ""),
     queryFn: () => listProjectSkillRequirements(projectId!),
     enabled: Boolean(projectId) && enabled,
-    staleTime: STALE_TIME_MS,
+    staleTime: WORKFORCE_PROJECT_STALE_TIME_MS,
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -306,7 +362,8 @@ export function projectSkillMatrixQueryOptions(projectId: string | null, enabled
     queryKey: queryKeys.projectSkillMatrix(projectId ?? ""),
     queryFn: () => getProjectSkillMatrix(projectId!),
     enabled: Boolean(projectId) && enabled,
-    staleTime: STALE_TIME_MS,
+    staleTime: WORKFORCE_PROJECT_STALE_TIME_MS,
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -333,7 +390,8 @@ export function projectTrainingGapsQueryOptions(projectId: string | null, enable
     queryKey: queryKeys.projectTrainingGaps(projectId ?? ""),
     queryFn: () => getProjectTrainingGaps(projectId!),
     enabled: Boolean(projectId) && enabled,
-    staleTime: STALE_TIME_MS,
+    staleTime: WORKFORCE_PROJECT_STALE_TIME_MS,
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -349,7 +407,8 @@ export function projectCapabilityGapsQueryOptions(projectId: string | null, enab
     queryKey: queryKeys.projectCapabilityGaps(projectId ?? ""),
     queryFn: () => listProjectCapabilityGaps(projectId!),
     enabled: Boolean(projectId) && enabled,
-    staleTime: STALE_TIME_MS,
+    staleTime: WORKFORCE_PROJECT_STALE_TIME_MS,
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -365,7 +424,7 @@ export function useWorkforceCertificationsQuery(enabled: boolean) {
     queryKey: queryKeys.workforceCertifications,
     queryFn: () => listWorkforceCertifications(),
     enabled,
-    staleTime: STALE_TIME_MS,
+    staleTime: WORKFORCE_CATALOG_STALE_TIME_MS,
   });
 }
 
@@ -374,7 +433,7 @@ export function useWorkforceTrainingProgramsQuery(enabled: boolean) {
     queryKey: queryKeys.workforceTrainingPrograms,
     queryFn: () => listWorkforceTrainingPrograms(),
     enabled,
-    staleTime: STALE_TIME_MS,
+    staleTime: WORKFORCE_CATALOG_STALE_TIME_MS,
   });
 }
 
@@ -405,4 +464,4 @@ export function useAnnotatorTrainingRecordsQuery(annotatorId: string | null, ena
   });
 }
 
-export { UTILIZATION_CAPACITY_THRESHOLD, UTILIZATION_UNDERUTILIZED_THRESHOLD };
+export { EMPTY_UTILIZATION, UTILIZATION_CAPACITY_THRESHOLD, UTILIZATION_UNDERUTILIZED_THRESHOLD };

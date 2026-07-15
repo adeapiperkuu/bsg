@@ -35,6 +35,7 @@ import { Route as ClientReportsRouteImport } from './routes/client.reports'
 import { Route as ClientAskRouteImport } from './routes/client.ask'
 import { Route as AdminUsersRouteImport } from './routes/admin.users'
 import { Route as AdminProjectsRouteImport } from './routes/admin.projects'
+import { Route as AdminOrganisationsRouteImport } from './routes/admin.organisations'
 import { Route as AdminAgentRunsRouteImport } from './routes/admin.agent-runs'
 
 const WorkforceRoute = WorkforceRouteImport.update({
@@ -167,6 +168,11 @@ const AdminProjectsRoute = AdminProjectsRouteImport.update({
   path: '/projects',
   getParentRoute: () => AdminRoute,
 } as any)
+const AdminOrganisationsRoute = AdminOrganisationsRouteImport.update({
+  id: '/organisations',
+  path: '/organisations',
+  getParentRoute: () => AdminRoute,
+} as any)
 const AdminAgentRunsRoute = AdminAgentRunsRouteImport.update({
   id: '/agent-runs',
   path: '/agent-runs',
@@ -194,6 +200,7 @@ export interface FileRoutesByFullPath {
   '/unauthorized': typeof UnauthorizedRoute
   '/workforce': typeof WorkforceRoute
   '/admin/agent-runs': typeof AdminAgentRunsRoute
+  '/admin/organisations': typeof AdminOrganisationsRoute
   '/admin/projects': typeof AdminProjectsRoute
   '/admin/users': typeof AdminUsersRoute
   '/client/ask': typeof ClientAskRoute
@@ -222,6 +229,7 @@ export interface FileRoutesByTo {
   '/unauthorized': typeof UnauthorizedRoute
   '/workforce': typeof WorkforceRoute
   '/admin/agent-runs': typeof AdminAgentRunsRoute
+  '/admin/organisations': typeof AdminOrganisationsRoute
   '/admin/projects': typeof AdminProjectsRoute
   '/admin/users': typeof AdminUsersRoute
   '/client/ask': typeof ClientAskRoute
@@ -252,6 +260,7 @@ export interface FileRoutesById {
   '/unauthorized': typeof UnauthorizedRoute
   '/workforce': typeof WorkforceRoute
   '/admin/agent-runs': typeof AdminAgentRunsRoute
+  '/admin/organisations': typeof AdminOrganisationsRoute
   '/admin/projects': typeof AdminProjectsRoute
   '/admin/users': typeof AdminUsersRoute
   '/client/ask': typeof ClientAskRoute
@@ -283,6 +292,7 @@ export interface FileRouteTypes {
     | '/unauthorized'
     | '/workforce'
     | '/admin/agent-runs'
+    | '/admin/organisations'
     | '/admin/projects'
     | '/admin/users'
     | '/client/ask'
@@ -311,6 +321,7 @@ export interface FileRouteTypes {
     | '/unauthorized'
     | '/workforce'
     | '/admin/agent-runs'
+    | '/admin/organisations'
     | '/admin/projects'
     | '/admin/users'
     | '/client/ask'
@@ -340,6 +351,7 @@ export interface FileRouteTypes {
     | '/unauthorized'
     | '/workforce'
     | '/admin/agent-runs'
+    | '/admin/organisations'
     | '/admin/projects'
     | '/admin/users'
     | '/client/ask'
@@ -559,6 +571,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminProjectsRouteImport
       parentRoute: typeof AdminRoute
     }
+    '/admin/organisations': {
+      id: '/admin/organisations'
+      path: '/organisations'
+      fullPath: '/admin/organisations'
+      preLoaderRoute: typeof AdminOrganisationsRouteImport
+      parentRoute: typeof AdminRoute
+    }
     '/admin/agent-runs': {
       id: '/admin/agent-runs'
       path: '/agent-runs'
@@ -571,6 +590,7 @@ declare module '@tanstack/react-router' {
 
 interface AdminRouteChildren {
   AdminAgentRunsRoute: typeof AdminAgentRunsRoute
+  AdminOrganisationsRoute: typeof AdminOrganisationsRoute
   AdminProjectsRoute: typeof AdminProjectsRoute
   AdminUsersRoute: typeof AdminUsersRoute
   AdminIndexRoute: typeof AdminIndexRoute
@@ -578,6 +598,7 @@ interface AdminRouteChildren {
 
 const AdminRouteChildren: AdminRouteChildren = {
   AdminAgentRunsRoute: AdminAgentRunsRoute,
+  AdminOrganisationsRoute: AdminOrganisationsRoute,
   AdminProjectsRoute: AdminProjectsRoute,
   AdminUsersRoute: AdminUsersRoute,
   AdminIndexRoute: AdminIndexRoute,

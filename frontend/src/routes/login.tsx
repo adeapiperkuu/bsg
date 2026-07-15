@@ -1,11 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 
+import { MfaStep } from "@/components/auth/MfaStep";
 import { DEV_LOGIN_ACCOUNTS, isDevLoginEnabled } from "@/lib/dev-login";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import type { MfaRequired } from "@/types/auth";
 
 export const Route = createFileRoute("/login")({
   component: LoginPage,
@@ -17,18 +19,30 @@ function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [pendingMfa, setPendingMfa] = useState<MfaRequired | null>(null);
 
   const signIn = async (nextEmail: string, nextPassword: string) => {
     setSubmitting(true);
     setError(null);
     try {
-      await login(nextEmail, nextPassword);
+      const result = await login(nextEmail, nextPassword);
+      if (result.status === "mfa_required") {
+        setPendingMfa(result);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed.");
     } finally {
       setSubmitting(false);
     }
   };
+
+  if (pendingMfa) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background px-4">
+        <MfaStep pending={pendingMfa} onComplete={() => setPendingMfa(null)} />
+      </div>
+    );
+  }
 
   const onSubmit = async (event: React.FormEvent) => {
     event.preventDefault();

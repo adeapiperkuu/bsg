@@ -63,6 +63,44 @@ def compute_coverage_status(
     return SkillCoverageStatus.LOW
 
 
+def _index_annotator_skill_proficiency(
+    annotators: list[Annotator],
+    assignments_by_annotator: dict[UUID, list[AnnotatorSkill]],
+) -> dict[tuple[UUID, UUID], ProficiencyLevel]:
+    """Map (annotator_id, skill_id) -> best proficiency for active annotators."""
+    index: dict[tuple[UUID, UUID], ProficiencyLevel] = {}
+    for annotator in annotators:
+        if not annotator.is_active:
+            continue
+        for assignment in assignments_by_annotator.get(annotator.id, []):
+            key = (annotator.id, assignment.skill_id)
+            existing = index.get(key)
+            if existing is None or PROFICIENCY_RANK[assignment.proficiency_level] > PROFICIENCY_RANK[existing]:
+                index[key] = assignment.proficiency_level
+    return index
+
+
+def _count_matching_annotators(
+    annotators: list[Annotator],
+    proficiency_index: dict[tuple[UUID, UUID], ProficiencyLevel],
+    skill_id: UUID,
+    required_level: ProficiencyLevel,
+    *,
+    site: DeliverySite | None = None,
+    sme_only: bool = False,
+) -> int:
+    count = 0
+    for annotator in annotators:
+        if site is not None and annotator.site != site:
+            continue
+        if sme_only and not annotator.is_sme_certified:
+            continue
+        actual = proficiency_index.get((annotator.id, skill_id))
+        if actual is not None and meets_proficiency(actual, required_level):
+            count += 1
+    return count
+
+
 def skill_visible_to_user(skill: Skill, current_user: CurrentUser) -> bool:
     if not can_read_annotators(current_user):
         return False
@@ -352,32 +390,6 @@ async def soft_delete_project_skill_requirement(
     requirement.deleted_at = datetime.now(timezone.utc)
 
 
-def _count_matching_annotators(
-    annotators: list[Annotator],
-    assignments_by_annotator: dict[UUID, list[AnnotatorSkill]],
-    skill_id: UUID,
-    required_level: ProficiencyLevel,
-    *,
-    site: DeliverySite | None = None,
-    sme_only: bool = False,
-) -> int:
-    count = 0
-    for annotator in annotators:
-        if not annotator.is_active:
-            continue
-        if site is not None and annotator.site != site:
-            continue
-        if sme_only and not annotator.is_sme_certified:
-            continue
-        for assignment in assignments_by_annotator.get(annotator.id, []):
-            if assignment.skill_id != skill_id:
-                continue
-            if meets_proficiency(assignment.proficiency_level, required_level):
-                count += 1
-                break
-    return count
-
-
 async def build_project_skill_matrix(
     session: AsyncSession,
     project: Project,
@@ -442,6 +454,22 @@ async def build_project_skill_matrix(
         for assignment in assignments:
             assignments_by_annotator.setdefault(assignment.annotator_id, []).append(assignment)
 
+    active_annotators = [annotator for annotator in annotators if annotator.is_active]
+    proficiency_index = _index_annotator_skill_proficiency(active_annotators, assignments_by_annotator)
+    active_smes = [annotator for annotator in active_annotators if annotator.is_sme_certified]
+    annotators_by_site: dict[DeliverySite, list[Annotator]] = {
+        DeliverySite.INDIA: [],
+        DeliverySite.KOSOVO: [],
+    }
+    smes_by_site: dict[DeliverySite, list[Annotator]] = {
+        DeliverySite.INDIA: [],
+        DeliverySite.KOSOVO: [],
+    }
+    for annotator in active_annotators:
+        annotators_by_site[annotator.site].append(annotator)
+        if annotator.is_sme_certified:
+            smes_by_site[annotator.site].append(annotator)
+
     rows: list[SkillMatrixRow] = []
     for requirement in requirements:
         skill = skills_by_id.get(requirement.skill_id)
@@ -449,17 +477,16 @@ async def build_project_skill_matrix(
             continue
 
         available_headcount = _count_matching_annotators(
-            annotators,
-            assignments_by_annotator,
+            active_annotators,
+            proficiency_index,
             requirement.skill_id,
             requirement.required_proficiency_level,
         )
         available_sme_count = _count_matching_annotators(
-            annotators,
-            assignments_by_annotator,
+            active_smes,
+            proficiency_index,
             requirement.skill_id,
             requirement.required_proficiency_level,
-            sme_only=True,
         )
         coverage_status = compute_coverage_status(
             available_headcount,
@@ -471,19 +498,16 @@ async def build_project_skill_matrix(
         by_site: list[SkillMatrixSiteSummary] = []
         for site in (DeliverySite.INDIA, DeliverySite.KOSOVO):
             site_headcount = _count_matching_annotators(
-                annotators,
-                assignments_by_annotator,
+                annotators_by_site[site],
+                proficiency_index,
                 requirement.skill_id,
                 requirement.required_proficiency_level,
-                site=site,
             )
             site_sme_count = _count_matching_annotators(
-                annotators,
-                assignments_by_annotator,
+                smes_by_site[site],
+                proficiency_index,
                 requirement.skill_id,
                 requirement.required_proficiency_level,
-                site=site,
-                sme_only=True,
             )
             by_site.append(
                 SkillMatrixSiteSummary(

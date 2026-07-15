@@ -15,7 +15,18 @@ router = APIRouter(tags=["projects"])
 
 @router.get("/projects", response_model=ListResponse[ProjectRead])
 async def list_projects(session: SessionDep, current_user: UserDep, limit: LimitQuery = 50) -> ListResponse[ProjectRead]:
-    rows = (await session.execute(scoped_project_query(current_user).limit(limit))).scalars()
+    # Order by name (matching dashboard_service.get_portfolio_data) so the truncated
+    # `limit` window is deterministic. Without ORDER BY, Postgres may return a different
+    # subset and ordering per request, so callers that render row N or default to the
+    # first row cannot rely on either being stable. Tie-break on id to keep the window
+    # total when two projects share a name.
+    rows = (
+        await session.execute(
+            scoped_project_query(current_user)
+            .order_by(Project.name.asc(), Project.id.asc())
+            .limit(limit)
+        )
+    ).scalars()
     return ListResponse(data=[ProjectRead.model_validate(row) for row in rows], pagination=Pagination(limit=limit))
 
 

@@ -35,7 +35,7 @@ export function WorkforceAgentMessage({ message }: Props) {
 
         {message.role === "agent" && message.answer ? (
           <WorkforceAgentAnswer
-            answerText={message.answer.answer_text}
+            answerText={message.answer.answer_text || message.text}
             evidenceLinks={message.answer.evidence_links ?? []}
             confidenceLevel={message.answer.confidence_level}
             insufficientEvidence={message.answer.insufficient_evidence}

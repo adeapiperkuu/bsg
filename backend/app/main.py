@@ -17,10 +17,12 @@ from app.agents.governance.services.project_governance_summary_service import (
 )
 from app.agents.governance.services.register_service import invalidate_register_list_cache
 from app.api.routes import (
+    admin_audit,
     agents,
     auth,
     communications,
     csat,
+    dashboard,
     delivery,
     knowledge,
     me,
@@ -37,6 +39,7 @@ from app.core.csrf import CsrfMiddleware
 from app.core.exceptions import register_exception_handlers
 from app.core.security_headers import SecurityHeadersMiddleware
 from app.db.models import ScanTrigger
+from app.db.rls import set_service_role_context
 from app.db.session import dispose_engine, session_scope
 from app.services.knowledge_ingestion_jobs import process_ingestion_job_queue
 from app.services.quality import scan_all_projects
@@ -61,6 +64,7 @@ async def _scheduled_quality_scan() -> None:
     """Scheduler wrapper: opens its own DB session (no FastAPI DI)."""
     async with session_scope() as session:
         try:
+            await set_service_role_context(session)
             run = await scan_all_projects(session, trigger=ScanTrigger.SCHEDULER)
             logger.info("Scheduled quality scan complete run_id=%s status=%s", run.id, run.status)
             totals = await dispatch_pending_signals(session)
@@ -192,6 +196,7 @@ def create_app() -> FastAPI:
     app.include_router(organisations.router, prefix=api_prefix)
     app.include_router(users.router, prefix=api_prefix)
     app.include_router(projects.router, prefix=api_prefix)
+    app.include_router(dashboard.router, prefix=api_prefix)
     app.include_router(delivery.router, prefix=api_prefix)
     app.include_router(delivery_dashboard.router, prefix=api_prefix)
     app.include_router(delivery_chat.router, prefix=api_prefix)
@@ -203,6 +208,7 @@ def create_app() -> FastAPI:
     app.include_router(csat.router, prefix=api_prefix)
     app.include_router(knowledge.router, prefix=api_prefix)
     app.include_router(governance_routes.router, prefix=api_prefix)
+    app.include_router(admin_audit.router, prefix=api_prefix)
     return app
 
 

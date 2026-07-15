@@ -351,6 +351,7 @@ def grouped_recommendation_to_read(group: GroupedRecommendation) -> dict[str, An
                 "recommendation_id": member.recommendation.id,
                 "source_risk_id": member.recommendation.source_risk_id,
                 "source_risk_title": member.source_risk_title,
+                "source_risk_type": member.source_risk_type,
                 "description": member.recommendation.description,
                 "status": member.recommendation.status.value,
                 "confidence_score": member.recommendation.confidence_score,

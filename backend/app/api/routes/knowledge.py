@@ -32,48 +32,63 @@ from app.schemas.domain import (
     KnowledgeDocumentRead,
     KnowledgeDocumentUpdate,
     KnowledgeDocumentVersionRead,
+    KnowledgeDuplicateCompareRead,
+    KnowledgeDuplicateMatchRead,
+    KnowledgeEvaluationReportRead,
     KnowledgeFeedbackCreate,
     KnowledgeFeedbackRead,
     KnowledgeFolderCreate,
     KnowledgeFolderRead,
+    KnowledgeGapSuggestionRead,
     KnowledgeDocumentIngestionAcceptedRead,
     KnowledgeHealthScoreRead,
     KnowledgeIngestionProgressRead,
     KnowledgeLibraryHealthRead,
     KnowledgeRelatedKnowledgeRead,
+    KnowledgeRetrievalQualityRead,
     KnowledgeRetrievalSettingsRead,
     KnowledgeRetrievalSettingsUpdate,
+    KnowledgeSuggestionRead,
     KnowledgeVersionCompareRead,
 )
 from app.services.knowledge import (
+    apply_knowledge_suggestion,
     approve_document,
     archive_document,
     ask_knowledge_agent,
     compare_document_versions,
+    compare_duplicate_documents,
     create_document_from_upload,
     create_knowledge_folder_by_name,
     delete_document,
+    dismiss_knowledge_suggestion,
+    generate_content_suggestions,
     generate_document_ai_summary,
     get_document,
     get_document_file_download,
+    get_gap_resolution_suggestions,
     get_knowledge_bootstrap,
     get_knowledge_conversation,
     get_knowledge_health_score,
     get_knowledge_library_health,
     get_knowledge_query_answer,
     get_related_knowledge_for_document,
+    get_retrieval_quality_analysis,
     get_retrieval_settings,
     list_document_approval_history,
+    list_document_duplicates,
     list_document_versions,
     list_documents,
     list_knowledge_conversations,
     list_knowledge_folders,
+    list_knowledge_suggestions,
     record_knowledge_feedback,
     reject_document,
     reindex_document,
     restore_document,
     return_document_to_draft,
     prepare_stream_knowledge_ask,
+    run_knowledge_evaluation_report,
     stream_prepared_knowledge_ask,
     submit_document_for_review,
     update_document,
@@ -645,8 +660,118 @@ async def knowledge_health_score(
         require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
     ),
 ) -> DataResponse[KnowledgeHealthScoreRead]:
-    await set_rls_context(session, current_user.id, current_user.org_id, current_user.role.value)
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
     return DataResponse(data=await get_knowledge_health_score(session, current_user))
+
+
+@router.get("/knowledge/suggestions", response_model=ListResponse[KnowledgeSuggestionRead])
+async def knowledge_list_suggestions(
+    session: SessionDep,
+    status: str | None = Query(default=None),
+    document_id: UUID | None = Query(default=None),
+    current_user: CurrentUser = Depends(
+        require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
+    ),
+) -> ListResponse[KnowledgeSuggestionRead]:
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
+    rows = await list_knowledge_suggestions(session, current_user, status=status, document_id=document_id)
+    return ListResponse(data=rows, pagination=Pagination(total=len(rows), limit=len(rows), offset=0))
+
+
+@router.post("/knowledge/suggestions/generate", response_model=ListResponse[KnowledgeSuggestionRead])
+async def knowledge_generate_suggestions(
+    session: SessionDep,
+    document_id: UUID | None = Query(default=None),
+    current_user: CurrentUser = Depends(
+        require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
+    ),
+) -> ListResponse[KnowledgeSuggestionRead]:
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
+    rows = await generate_content_suggestions(session, current_user, document_id=document_id)
+    await session.commit()
+    return ListResponse(data=rows, pagination=Pagination(total=len(rows), limit=len(rows), offset=0))
+
+
+@router.post("/knowledge/suggestions/{suggestion_id}/apply", response_model=DataResponse[KnowledgeSuggestionRead])
+async def knowledge_apply_suggestion(
+    suggestion_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(
+        require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
+    ),
+) -> DataResponse[KnowledgeSuggestionRead]:
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
+    row = await apply_knowledge_suggestion(session, current_user, suggestion_id)
+    await session.commit()
+    return DataResponse(data=row)
+
+
+@router.post("/knowledge/suggestions/{suggestion_id}/dismiss", response_model=DataResponse[KnowledgeSuggestionRead])
+async def knowledge_dismiss_suggestion(
+    suggestion_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(
+        require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
+    ),
+) -> DataResponse[KnowledgeSuggestionRead]:
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
+    row = await dismiss_knowledge_suggestion(session, current_user, suggestion_id)
+    await session.commit()
+    return DataResponse(data=row)
+
+
+@router.get("/knowledge/gaps/suggestions", response_model=ListResponse[KnowledgeGapSuggestionRead])
+async def knowledge_gap_suggestions(
+    session: SessionDep,
+    min_occurrences: int = Query(default=2, ge=1, le=50),
+    current_user: CurrentUser = Depends(
+        require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
+    ),
+) -> ListResponse[KnowledgeGapSuggestionRead]:
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
+    rows = await get_gap_resolution_suggestions(session, current_user, min_occurrences=min_occurrences)
+    await session.commit()
+    return ListResponse(data=rows, pagination=Pagination(total=len(rows), limit=len(rows), offset=0))
+
+
+@router.get("/knowledge/retrieval-quality", response_model=DataResponse[KnowledgeRetrievalQualityRead])
+async def knowledge_retrieval_quality(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(
+        require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
+    ),
+) -> DataResponse[KnowledgeRetrievalQualityRead]:
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
+    return DataResponse(data=await get_retrieval_quality_analysis(session, current_user))
+
+
+@router.get(
+    "/knowledge/documents/{document_id}/duplicates",
+    response_model=ListResponse[KnowledgeDuplicateMatchRead],
+)
+async def knowledge_document_duplicates(
+    document_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = Depends(
+        require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
+    ),
+) -> ListResponse[KnowledgeDuplicateMatchRead]:
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
+    rows = await list_document_duplicates(session, current_user, document_id)
+    return ListResponse(data=rows, pagination=Pagination(total=len(rows), limit=len(rows), offset=0))
+
+
+@router.get("/knowledge/duplicates/compare", response_model=DataResponse[KnowledgeDuplicateCompareRead])
+async def knowledge_duplicates_compare(
+    session: SessionDep,
+    left_id: UUID = Query(...),
+    right_id: UUID = Query(...),
+    current_user: CurrentUser = Depends(
+        require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
+    ),
+) -> DataResponse[KnowledgeDuplicateCompareRead]:
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
+    return DataResponse(data=await compare_duplicate_documents(session, current_user, left_id, right_id))
 
 
 @router.post(
@@ -660,7 +785,7 @@ async def knowledge_generate_summary(
         require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
     ),
 ) -> DataResponse[KnowledgeDocumentAiSummaryRead]:
-    await set_rls_context(session, current_user.id, current_user.org_id, current_user.role.value)
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
     row = await generate_document_ai_summary(session, current_user, document_id)
     await session.commit()
     return DataResponse(data=row)
@@ -677,5 +802,16 @@ async def knowledge_related_documents(
         require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
     ),
 ) -> DataResponse[KnowledgeRelatedKnowledgeRead]:
-    await set_rls_context(session, current_user.id, current_user.org_id, current_user.role.value)
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
     return DataResponse(data=await get_related_knowledge_for_document(session, current_user, document_id))
+
+
+@router.post("/knowledge/evaluation/run", response_model=DataResponse[KnowledgeEvaluationReportRead])
+async def knowledge_run_evaluation(
+    session: SessionDep,
+    current_user: CurrentUser = Depends(
+        require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
+    ),
+) -> DataResponse[KnowledgeEvaluationReportRead]:
+    await set_rls_context(session, json.dumps({"sub": str(current_user.id)}))
+    return DataResponse(data=await run_knowledge_evaluation_report(session, current_user))

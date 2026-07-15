@@ -135,7 +135,15 @@ class FakeSession:
         self.skills = kwargs.get("skills", [])
         self.utilization = kwargs.get("utilization", [])
         self.risk_alert = kwargs.get("risk_alert")
+        self.risk_alerts = kwargs.get(
+            "risk_alerts",
+            [kwargs["risk_alert"]] if kwargs.get("risk_alert") is not None else [],
+        )
         self.recommendation = kwargs.get("recommendation")
+        self.recommendations = kwargs.get(
+            "recommendations",
+            [kwargs["recommendation"]] if kwargs.get("recommendation") is not None else [],
+        )
         self.filter_org_id = kwargs.get("filter_org_id")
         self.added: list[object] = []
 
@@ -143,6 +151,14 @@ class FakeSession:
         self.added.append(obj)
         if isinstance(obj, CapabilityGap) and obj.id is None:
             obj.id = uuid4()
+        if isinstance(obj, RiskAlert):
+            if obj.id is None:
+                obj.id = uuid4()
+            self.risk_alerts.append(obj)
+        if isinstance(obj, MitigationRecommendation):
+            if obj.id is None:
+                obj.id = uuid4()
+            self.recommendations.append(obj)
 
     async def flush(self) -> None:
         return None
@@ -163,9 +179,13 @@ class FakeSession:
         if "FROM utilization_snapshots" in compiled:
             return FakeResult(None, self.utilization)
         if "FROM risk_alerts" in compiled:
-            return FakeResult(self.risk_alert)
+            if "risk_alerts.title =" in compiled or "risk_alerts.title=" in compiled:
+                return FakeResult(self.risk_alert)
+            return FakeResult(None, self.risk_alerts)
         if "FROM mitigation_recommendations" in compiled:
-            return FakeResult(self.recommendation)
+            if "source_risk_id =" in compiled or "source_risk_id=" in compiled:
+                return FakeResult(self.recommendation)
+            return FakeResult(None, self.recommendations)
         return FakeResult(None, [])
 
 

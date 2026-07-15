@@ -73,6 +73,10 @@ def _project_payload(project: Project) -> dict[str, Any]:
         "target_end_date": project.target_end_date,
         "actual_end_date": project.actual_end_date,
         "daily_target_units": project.daily_target_units,
+        # Additive: lets the Delivery page source its whole project universe from the
+        # portfolio payload alone, instead of joining it against a separately-limited
+        # /projects list that could disagree about which projects exist.
+        "updated_at": project.updated_at,
     }
 
 
@@ -496,16 +500,38 @@ async def get_portfolio_data(
     limit: int = PORTFOLIO_PROJECT_LIMIT,
     projects: list[Project] | None = None,
 ) -> dict[str, Any]:
-    """Return delivery dashboard summaries for every visible project in one payload."""
+    """Return delivery dashboard summaries for every visible project in one payload.
+
+    `total_count` reports how many projects the caller can actually see, which may exceed
+    the `limit` applied here. Clients must compare it against len(projects) and disclose
+    the shortfall rather than presenting a truncated portfolio as the whole picture.
+    """
     if projects is None:
         project_rows = (
             await session.execute(
-                scoped_project_query(current_user).order_by(Project.name.asc()).limit(limit)
+                scoped_project_query(current_user)
+                # Tie-break on id so the truncated window is total, not merely sorted:
+                # two projects sharing a name would otherwise straddle the limit boundary
+                # in an unspecified order and swap between requests.
+                .order_by(Project.name.asc(), Project.id.asc())
+                .limit(limit)
             )
         ).scalars()
         projects = list(project_rows)
+        total_count = int(
+            (
+                await session.execute(
+                    select(func.count()).select_from(scoped_project_query(current_user).subquery())
+                )
+            ).scalar_one()
+        )
+    else:
+        # The caller supplied the universe (e.g. operational_tower's in-flight subset), so
+        # nothing was truncated here and no extra count query is warranted.
+        total_count = len(projects)
+
     if not projects:
-        return {"projects": []}
+        return {"projects": [], "milestones": [], "total_count": total_count}
 
     effective_date = as_of_date or date.today()
     project_ids = [project.id for project in projects]
@@ -526,4 +552,16 @@ async def get_portfolio_data(
         dashboard = build_dashboard_response(raw_data)
         portfolio_projects.append({"project_id": project.id, "dashboard": dashboard})
 
-    return {"projects": portfolio_projects}
+    # DeliveryPortfolioResponse declares a portfolio-wide `milestones` list, but this
+    # function never populated it, so it always serialized as its default [] and the
+    # clients' milestone hit-rate read as "no data". These are already batch-loaded
+    # above, so flattening them here costs no extra query.
+    portfolio_milestones = [
+        milestone for project_id in project_ids for milestone in inputs["milestones"].get(project_id, [])
+    ]
+
+    return {
+        "projects": portfolio_projects,
+        "milestones": portfolio_milestones,
+        "total_count": total_count,
+    }

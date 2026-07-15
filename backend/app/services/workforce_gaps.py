@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.delivery.services.recommendation_service import (
@@ -148,14 +148,43 @@ async def _load_latest_team_utilization(
     session: AsyncSession,
     project_id: UUID,
 ) -> dict[UUID, UtilizationSnapshot]:
+    """Load newest team-level snapshot per team.
+
+    Uses a portable window function to avoid pulling full history, then still
+    resolves latest-in-Python so unit FakeSessions remain correct.
+    """
+    ranked_snapshot_ids = (
+        select(
+            UtilizationSnapshot.id.label("snapshot_id"),
+            func.row_number()
+            .over(
+                partition_by=UtilizationSnapshot.team_id,
+                order_by=(
+                    UtilizationSnapshot.snapshot_date.desc(),
+                    UtilizationSnapshot.created_at.desc(),
+                ),
+            )
+            .label("snapshot_rank"),
+        )
+        .where(
+            UtilizationSnapshot.project_id == project_id,
+            UtilizationSnapshot.deleted_at.is_(None),
+            UtilizationSnapshot.team_id.is_not(None),
+            UtilizationSnapshot.annotator_id.is_(None),
+        )
+        .subquery()
+    )
     snapshots = (
         await session.execute(
-            select(UtilizationSnapshot).where(
-                UtilizationSnapshot.project_id == project_id,
-                UtilizationSnapshot.deleted_at.is_(None),
-                UtilizationSnapshot.team_id.is_not(None),
-                UtilizationSnapshot.annotator_id.is_(None),
-            ).order_by(
+            select(UtilizationSnapshot)
+            .where(
+                UtilizationSnapshot.id.in_(
+                    select(ranked_snapshot_ids.c.snapshot_id).where(
+                        ranked_snapshot_ids.c.snapshot_rank == 1,
+                    ),
+                ),
+            )
+            .order_by(
                 UtilizationSnapshot.team_id,
                 UtilizationSnapshot.snapshot_date.desc(),
                 UtilizationSnapshot.created_at.desc(),
@@ -164,9 +193,59 @@ async def _load_latest_team_utilization(
     ).scalars().all()
     latest: dict[UUID, UtilizationSnapshot] = {}
     for snapshot in snapshots:
-        if snapshot.team_id is not None and snapshot.team_id not in latest:
+        if snapshot.team_id is None:
+            continue
+        existing = latest.get(snapshot.team_id)
+        if existing is None:
+            latest[snapshot.team_id] = snapshot
+            continue
+        if snapshot.snapshot_date > existing.snapshot_date or (
+            snapshot.snapshot_date == existing.snapshot_date
+            and (snapshot.created_at or datetime.min.replace(tzinfo=timezone.utc))
+            > (existing.created_at or datetime.min.replace(tzinfo=timezone.utc))
+        ):
             latest[snapshot.team_id] = snapshot
     return latest
+
+
+async def _load_open_workforce_risks_by_title(
+    session: AsyncSession,
+    project_id: UUID,
+) -> dict[str, RiskAlert]:
+    rows = (
+        await session.execute(
+            select(RiskAlert).where(
+                RiskAlert.project_id == project_id,
+                RiskAlert.deleted_at.is_(None),
+                RiskAlert.alert_type == AlertType.WORKFORCE_IMBALANCE,
+                RiskAlert.status.in_(OPEN_ALERT_STATUSES),
+            ),
+        )
+    ).scalars().all()
+    return {row.title: row for row in rows}
+
+
+async def _load_recommendations_by_source_risk(
+    session: AsyncSession,
+    project_id: UUID,
+    risk_ids: set[UUID],
+) -> dict[UUID, MitigationRecommendation]:
+    if not risk_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(MitigationRecommendation).where(
+                MitigationRecommendation.project_id == project_id,
+                MitigationRecommendation.deleted_at.is_(None),
+                MitigationRecommendation.source_risk_id.in_(risk_ids),
+            ),
+        )
+    ).scalars().all()
+    return {
+        row.source_risk_id: row
+        for row in rows
+        if row.source_risk_id is not None
+    }
 
 
 def _skill_shortage_severity(
@@ -365,36 +444,22 @@ async def _persist_candidates(
     return persisted, created_count
 
 
-async def _find_open_workforce_risk_by_title(
-    session: AsyncSession,
-    project_id: UUID,
-    title: str,
-) -> RiskAlert | None:
-    return (
-        await session.execute(
-            select(RiskAlert).where(
-                RiskAlert.project_id == project_id,
-                RiskAlert.deleted_at.is_(None),
-                RiskAlert.alert_type == AlertType.WORKFORCE_IMBALANCE,
-                RiskAlert.status.in_(OPEN_ALERT_STATUSES),
-                RiskAlert.title == title,
-            ),
-        )
-    ).scalar_one_or_none()
-
-
-async def _create_workforce_risk_and_recommendation(
+async def _ensure_workforce_risk_and_recommendation(
     session: AsyncSession,
     project: Project,
     gap: CapabilityGap,
+    *,
+    risks_by_title: dict[str, RiskAlert],
+    recommendations_by_risk_id: dict[UUID, MitigationRecommendation],
 ) -> tuple[int, int]:
+    """Create risk/recommendation for a high/critical gap using preloaded caches."""
     if gap.severity not in {CapabilityGapSeverity.HIGH, CapabilityGapSeverity.CRITICAL}:
         return 0, 0
 
     risk_alerts_created = 0
     recommendations_created = 0
 
-    existing_risk = await _find_open_workforce_risk_by_title(session, project.id, gap.title)
+    existing_risk = risks_by_title.get(gap.title)
     if existing_risk is None:
         risk = RiskAlert(
             project_id=project.id,
@@ -410,32 +475,24 @@ async def _create_workforce_risk_and_recommendation(
         await session.flush()
         risk_alerts_created = 1
         existing_risk = risk
+        risks_by_title[gap.title] = risk
 
-    existing_recommendation = (
-        await session.execute(
-            select(MitigationRecommendation).where(
-                MitigationRecommendation.project_id == project.id,
-                MitigationRecommendation.deleted_at.is_(None),
-                MitigationRecommendation.source_risk_id == existing_risk.id,
-            ),
-        )
-    ).scalar_one_or_none()
-
+    existing_recommendation = recommendations_by_risk_id.get(existing_risk.id)
     if existing_recommendation is None:
         title, description = generate_mitigation_copy(existing_risk)
-        session.add(
-            MitigationRecommendation(
-                project_id=project.id,
-                org_id=project.org_id,
-                title=title,
-                description=description,
-                severity=_gap_severity_to_recommendation_severity(gap.severity),
-                confidence_score=Decimal("0.750"),
-                status=RecommendationStatus.PENDING,
-                source_risk_id=existing_risk.id,
-            ),
+        recommendation = MitigationRecommendation(
+            project_id=project.id,
+            org_id=project.org_id,
+            title=title,
+            description=description,
+            severity=_gap_severity_to_recommendation_severity(gap.severity),
+            confidence_score=Decimal("0.750"),
+            status=RecommendationStatus.PENDING,
+            source_risk_id=existing_risk.id,
         )
+        session.add(recommendation)
         await session.flush()
+        recommendations_by_risk_id[existing_risk.id] = recommendation
         recommendations_created = 1
 
     return risk_alerts_created, recommendations_created
@@ -517,9 +574,26 @@ async def detect_and_persist_capability_gaps(
     risk_alerts_created = 0
     recommendations_created = 0
     if create_alerts:
-        for gap in gaps:
-            if gap.severity in {CapabilityGapSeverity.HIGH, CapabilityGapSeverity.CRITICAL}:
-                alerts, recs = await _create_workforce_risk_and_recommendation(session, project, gap)
+        high_critical = [
+            gap
+            for gap in gaps
+            if gap.severity in {CapabilityGapSeverity.HIGH, CapabilityGapSeverity.CRITICAL}
+        ]
+        if high_critical:
+            risks_by_title = await _load_open_workforce_risks_by_title(session, project.id)
+            recommendations_by_risk_id = await _load_recommendations_by_source_risk(
+                session,
+                project.id,
+                {risk.id for risk in risks_by_title.values()},
+            )
+            for gap in high_critical:
+                alerts, recs = await _ensure_workforce_risk_and_recommendation(
+                    session,
+                    project,
+                    gap,
+                    risks_by_title=risks_by_title,
+                    recommendations_by_risk_id=recommendations_by_risk_id,
+                )
                 risk_alerts_created += alerts
                 recommendations_created += recs
 
@@ -591,9 +665,22 @@ async def generate_workforce_recommendations(
     ).scalars().all()
 
     created = 0
-    for gap in gaps:
-        _, recs = await _create_workforce_risk_and_recommendation(session, project, gap)
-        created += recs
+    if gaps:
+        risks_by_title = await _load_open_workforce_risks_by_title(session, project.id)
+        recommendations_by_risk_id = await _load_recommendations_by_source_risk(
+            session,
+            project.id,
+            {risk.id for risk in risks_by_title.values()},
+        )
+        for gap in gaps:
+            _, recs = await _ensure_workforce_risk_and_recommendation(
+                session,
+                project,
+                gap,
+                risks_by_title=risks_by_title,
+                recommendations_by_risk_id=recommendations_by_risk_id,
+            )
+            created += recs
 
     await sync_recommendations_for_project(
         session,

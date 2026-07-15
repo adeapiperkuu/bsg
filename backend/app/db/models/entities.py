@@ -879,6 +879,9 @@ class Team(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
 
 class Annotator(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     __tablename__ = "annotators"
+    __table_args__ = (
+        Index("annotators_team_active_deleted_idx", "team_id", "is_active", "deleted_at"),
+    )
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
     team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id", ondelete="RESTRICT"), index=True)
@@ -898,6 +901,14 @@ class UtilizationSnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete
         Index("utilization_snapshots_snapshot_date_idx", "snapshot_date"),
         Index("utilization_snapshots_project_id_date_idx", "project_id", "snapshot_date"),
         Index("utilization_snapshots_team_id_date_idx", "team_id", "snapshot_date"),
+        Index(
+            "utilization_snapshots_project_team_annotator_deleted_date_idx",
+            "project_id",
+            "team_id",
+            "annotator_id",
+            "deleted_at",
+            "snapshot_date",
+        ),
     )
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
@@ -934,6 +945,7 @@ class AnnotatorSkill(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
         Index("annotator_skills_org_id_idx", "org_id"),
         Index("annotator_skills_annotator_id_idx", "annotator_id"),
         Index("annotator_skills_skill_id_idx", "skill_id"),
+        Index("annotator_skills_annotator_skill_deleted_idx", "annotator_id", "skill_id", "deleted_at"),
     )
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
@@ -950,6 +962,7 @@ class ProjectSkillRequirement(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDe
         Index("project_skill_requirements_org_id_idx", "org_id"),
         Index("project_skill_requirements_project_id_idx", "project_id"),
         Index("project_skill_requirements_skill_id_idx", "skill_id"),
+        Index("project_skill_requirements_project_deleted_idx", "project_id", "deleted_at"),
     )
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
@@ -1041,6 +1054,13 @@ class CapabilityGap(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
         Index("capability_gaps_severity_idx", "severity"),
         Index("capability_gaps_status_idx", "status"),
         Index("capability_gaps_detected_at_idx", "detected_at"),
+        Index(
+            "capability_gaps_project_status_severity_deleted_idx",
+            "project_id",
+            "status",
+            "severity",
+            "deleted_at",
+        ),
     )
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
@@ -1103,6 +1123,15 @@ class QualityErrorEntry(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
 
 class RiskAlert(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     __tablename__ = "risk_alerts"
+    __table_args__ = (
+        Index(
+            "risk_alerts_project_type_status_deleted_idx",
+            "project_id",
+            "alert_type",
+            "status",
+            "deleted_at",
+        ),
+    )
 
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
@@ -1127,6 +1156,12 @@ class MitigationRecommendation(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftD
         Index("mitigation_recommendations_org_id_idx", "org_id"),
         Index("mitigation_recommendations_source_risk_id_idx", "source_risk_id"),
         Index("mitigation_recommendations_status_idx", "status"),
+        Index(
+            "mitigation_recommendations_project_source_risk_deleted_idx",
+            "project_id",
+            "source_risk_id",
+            "deleted_at",
+        ),
     )
 
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))

@@ -2,13 +2,17 @@ import type { QueryClient } from "@tanstack/react-query";
 
 import { fetchProjectRecommendations } from "@/features/mitigation-recommendations/api/recommendations";
 import {
+  resolveDefaultProjectId,
+  sortByPriority,
+  toPortfolioEntries,
+} from "@/features/delivery/portfolio";
+import {
   deliveryPortfolioQueryOptions,
   organisationsQueryOptions,
   projectDeliveryConfidenceQueryOptions,
-  projectsQueryOptions,
 } from "@/lib/queries/delivery";
 import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
-import type { ProjectRead } from "@/lib/api";
+import type { DeliveryPortfolioResponse } from "@/lib/api";
 
 function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) {
@@ -18,48 +22,51 @@ function throwIfAborted(signal: AbortSignal): void {
 
 /**
  * Warm Delivery cache sequentially so we do not open many DB sessions at once.
+ *
+ * `/projects` is deliberately absent: the Delivery page derives its entire project
+ * universe from the portfolio payload, so warming a separately-limited project list
+ * would fetch rows the page never reads.
  */
 export async function prefetchDeliveryRouteData(
   queryClient: QueryClient,
   signal: AbortSignal = new AbortController().signal,
 ): Promise<void> {
   throwIfAborted(signal);
-  await queryClient.prefetchQuery(projectsQueryOptions);
-  throwIfAborted(signal);
   await queryClient.prefetchQuery(organisationsQueryOptions);
   throwIfAborted(signal);
   await queryClient.prefetchQuery(deliveryPortfolioQueryOptions);
   throwIfAborted(signal);
 
-  const projects =
-    queryClient.getQueryData<ProjectRead[]>(projectsQueryOptions.queryKey) ??
-    (await queryClient.ensureQueryData(projectsQueryOptions));
-  const firstProjectId = resolvePrefetchProjectId(projects);
-  if (!firstProjectId) return;
+  const portfolio =
+    queryClient.getQueryData<DeliveryPortfolioResponse>(deliveryPortfolioQueryOptions.queryKey) ??
+    (await queryClient.ensureQueryData(deliveryPortfolioQueryOptions));
+  const focusProjectId = resolvePrefetchProjectId(portfolio);
+  if (!focusProjectId) return;
 
   throwIfAborted(signal);
-  await queryClient.prefetchQuery(projectDeliveryConfidenceQueryOptions(firstProjectId));
+  await queryClient.prefetchQuery(projectDeliveryConfidenceQueryOptions(focusProjectId));
   throwIfAborted(signal);
   await queryClient.prefetchQuery({
-    queryKey: queryKeys.projectRecommendations(firstProjectId),
-    queryFn: () => fetchProjectRecommendations(firstProjectId),
+    queryKey: queryKeys.projectRecommendations(focusProjectId),
+    queryFn: () => fetchProjectRecommendations(focusProjectId),
     staleTime: STALE_TIME_MS,
   });
 }
 
-export function prefetchDeliveryNav(
-  queryClient: QueryClient,
-  signal?: AbortSignal,
-): Promise<void> {
+export function prefetchDeliveryNav(queryClient: QueryClient, signal?: AbortSignal): Promise<void> {
   return prefetchDeliveryRouteData(queryClient, signal ?? new AbortController().signal);
 }
 
-function resolvePrefetchProjectId(projects: ProjectRead[]): string | null {
-  if (typeof window !== "undefined") {
-    const fromUrl = new URLSearchParams(window.location.search).get("projectId");
-    if (fromUrl && projects.some((project) => project.id === fromUrl)) {
-      return fromUrl;
-    }
-  }
-  return projects[0]?.id ?? null;
+/**
+ * Warm the project the page will actually focus on. Must mirror the page's own
+ * resolution: URL first, otherwise the highest-priority project. Prefetching an
+ * arbitrary first element would warm a project the page never opens.
+ */
+function resolvePrefetchProjectId(portfolio: DeliveryPortfolioResponse | undefined): string | null {
+  const ranked = sortByPriority(toPortfolioEntries(portfolio));
+  const fromUrl =
+    typeof window !== "undefined"
+      ? (new URLSearchParams(window.location.search).get("projectId") ?? undefined)
+      : undefined;
+  return resolveDefaultProjectId(ranked, fromUrl);
 }

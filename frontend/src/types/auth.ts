@@ -51,3 +51,29 @@ export interface AuthSession {
   full_name: string | null;
   role: AppRole;
 }
+
+/** DEVELOPMENT_PLAN.md Workstream E. Returned by POST /auth/login instead of
+ * AuthSession when the role requires MFA and the session isn't at aal2 yet.
+ * `pending_token` is a short-lived bearer token for the /auth/mfa/* calls
+ * only -- never store it as the persistent session. */
+export interface MfaRequired {
+  mfa_required: true;
+  stage: "enroll" | "challenge";
+  pending_token: string;
+  factor_id: string | null;
+}
+
+export interface MfaEnrollResult {
+  factor_id: string;
+  qr_code: string;
+  secret: string;
+}
+
+export interface MfaChallengeResult {
+  factor_id: string;
+  challenge_id: string;
+}
+
+export type LoginResult =
+  | { status: "success"; session: AuthSession }
+  | ({ status: "mfa_required" } & MfaRequired);
