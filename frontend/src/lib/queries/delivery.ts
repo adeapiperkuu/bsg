@@ -8,7 +8,7 @@ import {
   listProjectDeliveryConfidence,
   listProjects,
 } from "@/lib/api";
-import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
+import { ADMIN_LIST_GC_TIME_MS, queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
 
 export const projectsQueryOptions = queryOptions({
   queryKey: queryKeys.projects,
@@ -26,6 +26,7 @@ export const organisationsQueryOptions = queryOptions({
   queryKey: queryKeys.organisations,
   queryFn: listOrganisations,
   staleTime: STALE_TIME_MS,
+  gcTime: ADMIN_LIST_GC_TIME_MS,
 });
 
 export const deliveryPortfolioQueryOptions = queryOptions({

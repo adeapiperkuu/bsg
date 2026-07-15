@@ -69,8 +69,8 @@ export const queryKeys = {
 };
 
 export const STALE_TIME_MS = 5 * 60 * 1000;
-/** Users list is small and fully client-filtered; keep it resident across navigations. */
-export const USERS_GC_TIME_MS = 30 * 60 * 1000;
+/** Admin lists are small and fully client-filtered; keep them resident across navigations. */
+export const ADMIN_LIST_GC_TIME_MS = 30 * 60 * 1000;
 export const KNOWLEDGE_BOOTSTRAP_STALE_TIME_MS = 10 * 60 * 1000;
 /** Catalog taxonomies change rarely; prefer longer cache on Workforce. */
 export const WORKFORCE_CATALOG_STALE_TIME_MS = 15 * 60 * 1000;

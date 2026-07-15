@@ -35,7 +35,6 @@ import {
 } from "@/lib/admin-shared";
 import { ApiError, createUser, updateUser } from "@/lib/api";
 import { organisationsQueryOptions } from "@/lib/queries/delivery";
-import { USERS_GC_TIME_MS } from "@/lib/queries/keys";
 import { usersQueryOptions } from "@/lib/queries/users";
 import { useAuthStore } from "@/stores/useAuthStore";
 import type { AppRole, UserRead } from "@/types/auth";
@@ -76,12 +75,7 @@ function AdminUsersPage() {
   const canManageUsers = user?.permissions.can_manage_users ?? false;
 
   const usersQuery = useQuery({ ...usersQueryOptions, enabled: canManageUsers });
-  const orgsQuery = useQuery({
-    ...organisationsQueryOptions,
-    enabled: canManageUsers,
-    // Org names label every row, so keep them resident as long as the users list.
-    gcTime: USERS_GC_TIME_MS,
-  });
+  const orgsQuery = useQuery({ ...organisationsQueryOptions, enabled: canManageUsers });
 
   const users = useMemo(() => usersQuery.data ?? [], [usersQuery.data]);
   const orgs = useMemo(() => orgsQuery.data ?? [], [orgsQuery.data]);
