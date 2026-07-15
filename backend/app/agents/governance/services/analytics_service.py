@@ -245,15 +245,6 @@ def _recommendation_is_dismissed(row: GovernanceAIRecommendation) -> bool:
     return row.status == GovernanceAIRecommendationStatus.DISMISSED
 
 
-def _recommendation_is_escalation_suggestion(row: GovernanceAIRecommendation) -> bool:
-    if row.auto_detected:
-        return True
-    return (
-        row.recommendation_type == GovernanceAIRecommendationType.ESCALATION_REQUIRED
-        and row.trigger_type is not None
-    )
-
-
 def _rate_pct(numerator: int, denominator: int) -> float:
     if denominator <= 0:
         return 0.0

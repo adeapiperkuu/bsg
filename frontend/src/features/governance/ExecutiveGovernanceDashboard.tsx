@@ -1,4 +1,3 @@
-import { Download } from "lucide-react";
 import { useState, type RefObject } from "react";
 
 import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
@@ -11,10 +10,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { GovernanceRecommendationsSection } from "@/features/governance/GovernanceRecommendationsSection";
 import { GovernanceKpiStrip } from "@/features/governance/GovernanceKpiStrip";
-import { exportGovernanceAnalytics } from "@/lib/queries/governance";
 import type {
   GovernanceAnalytics,
   GovernanceKpis,
@@ -29,20 +26,6 @@ function scoreStatus(score: number): string {
   return "Critical";
 }
 
-async function exportAnalyticsCsv(filters: {
-  days: number;
-  projectId?: string | null;
-  vertical?: string | null;
-}) {
-  const blob = await exportGovernanceAnalytics(filters, "csv");
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `governance-analytics-${filters.days}d.csv`;
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
 function RiskRanking({
   rows,
   onOpenProject,
@@ -55,7 +38,7 @@ function RiskRanking({
   selectedProjectId?: string | null;
 }) {
   return (
-    <Card className="flex h-[520px] flex-col overflow-hidden">
+    <Card className="flex h-[460px] flex-col overflow-hidden">
       <SectionHeader title="Portfolio Risk Ranking" sub="Sorted by governance priority" />
       {isLoading && rows.length === 0 ? (
         <div className="mt-4 space-y-2">
@@ -64,12 +47,12 @@ function RiskRanking({
           ))}
         </div>
       ) : (
-        <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+        <div className="mt-3 min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
           {rows.slice(0, 8).map((project, index) => (
             <button
               key={project.project_id}
               type="button"
-              className={`flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left text-xs hover:bg-secondary/60 ${
+              className={`flex w-full items-center gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs hover:bg-secondary/60 ${
                 selectedProjectId === project.project_id
                   ? "border-primary bg-secondary/40"
                   : "border-border bg-elevated"
@@ -79,7 +62,7 @@ function RiskRanking({
               <span className="w-5 text-muted-foreground">{index + 1}</span>
               <div className="min-w-0 flex-1">
                 <div className="truncate font-medium">{project.project_name}</div>
-                <div className="mt-1 flex flex-wrap gap-2 text-[10px] text-muted-foreground">
+                <div className="mt-0.5 flex flex-wrap gap-x-1.5 gap-y-0.5 text-[10px] text-muted-foreground">
                   {project.vertical && <span>{project.vertical}</span>}
                   {project.blocking_dependencies > 0 && (
                     <span>{project.blocking_dependencies} blocking dep.</span>
@@ -135,10 +118,9 @@ export function ExecutiveGovernanceDashboard({
   analytics,
   kpis,
   summaryLoading,
-  rangeDays,
-  onRangeChange,
   projectFilter,
   onProjectFilterChange,
+  onProjectFilterOpenChange,
   verticalFilter,
   onVerticalFilterChange,
   projectOptions = [],
@@ -146,14 +128,14 @@ export function ExecutiveGovernanceDashboard({
   onOpenProject,
   detailSectionRef,
   canWrite = false,
+  recommendationsEnabled = false,
 }: {
   analytics: GovernanceAnalytics | null;
   kpis: GovernanceKpis;
   summaryLoading: boolean;
-  rangeDays: number;
-  onRangeChange: (days: number) => void;
   projectFilter?: string | null;
   onProjectFilterChange?: (projectId: string | null) => void;
+  onProjectFilterOpenChange?: (open: boolean) => void;
   verticalFilter?: string | null;
   onVerticalFilterChange?: (vertical: string | null) => void;
   projectOptions?: Array<{ id: string; name: string }>;
@@ -161,6 +143,7 @@ export function ExecutiveGovernanceDashboard({
   onOpenProject: (projectId: string) => void;
   detailSectionRef?: RefObject<HTMLElement | null>;
   canWrite?: boolean;
+  recommendationsEnabled?: boolean;
 }) {
   const ranking = analytics?.portfolio_risk_ranking ?? [];
   const [focusProjectId, setFocusProjectId] = useState<string | null>(
@@ -172,18 +155,14 @@ export function ExecutiveGovernanceDashboard({
   };
 
   const effectiveFocus = focusProjectId ?? ranking[0]?.project_id ?? null;
-
   return (
     <section className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <SectionHeader
-          title="Executive Governance Intelligence"
-          sub="Portfolio health, risks, and evidence-backed recommendations"
-        />
+      <div className="flex flex-wrap items-center justify-end gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <Select
             value={projectFilter ?? "all"}
             onValueChange={(value) => onProjectFilterChange?.(value === "all" ? null : value)}
+            onOpenChange={onProjectFilterOpenChange}
           >
             <SelectTrigger className="h-8 w-[160px] text-xs">
               <SelectValue placeholder="All projects" />
@@ -213,34 +192,6 @@ export function ExecutiveGovernanceDashboard({
               ))}
             </SelectContent>
           </Select>
-          <Tabs value={String(rangeDays)} onValueChange={(value) => onRangeChange(Number(value))}>
-            <TabsList className="h-8">
-              {[7, 30, 90, 365].map((days) => (
-                <TabsTrigger key={days} value={String(days)} className="text-xs">
-                  {days === 365 ? "12M" : `${days}D`}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="shadow-none"
-            disabled={!analytics}
-            onClick={() => {
-              if (analytics) {
-                void exportAnalyticsCsv({
-                  days: analytics.date_range_days,
-                  projectId: projectFilter,
-                  vertical: verticalFilter,
-                });
-              }
-            }}
-          >
-            <Download className="h-4 w-4" />
-            Export
-          </Button>
         </div>
       </div>
 
@@ -256,7 +207,7 @@ export function ExecutiveGovernanceDashboard({
           isLoading={summaryLoading && ranking.length === 0}
           selectedProjectId={effectiveFocus}
         />
-        <GovernanceRecommendationsSection focusProjectId={effectiveFocus} canWrite={canWrite} />
+        <GovernanceRecommendationsSection canWrite={canWrite} enabled={recommendationsEnabled} />
       </div>
     </section>
   );

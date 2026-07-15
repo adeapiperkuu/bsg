@@ -26,9 +26,6 @@ from app.agents.governance.services.governance_service import (
     _execute_paginated_rows,
     can_read_internal_governance,
 )
-from app.agents.governance.services.project_governance_summary_service import (
-    ensure_org_time_sensitive_summary_counts,
-)
 from app.agents.governance.timing import get_governance_timer, governance_db_timed
 from app.core.security import CurrentUser
 from app.db.models import (
@@ -95,10 +92,16 @@ def _is_default_register_cacheable(
     )
 
 
-def invalidate_register_list_cache() -> int:
-    removed = len(_register_list_cache)
-    _register_list_cache.clear()
-    return removed
+def invalidate_register_list_cache(*, org_id: UUID | None = None) -> int:
+    """Clear one organization plus super-admin aggregates, or every entry when unspecified."""
+    keys = (
+        list(_register_list_cache)
+        if org_id is None
+        else [key for key in _register_list_cache if key[0] in {org_id, None}]
+    )
+    for key in keys:
+        _register_list_cache.pop(key, None)
+    return len(keys)
 
 
 def _compute_register_health(
@@ -126,7 +129,6 @@ async def list_governance_register_page(
     **raw_filters,
 ) -> PaginatedGovernanceRows:
     filters = _bounded_list_filters(**raw_filters)
-    today = datetime.now(UTC).date()
     can_internal = can_read_internal_governance(current_user)
     cacheable = _is_default_register_cacheable(
         limit=filters.limit,
@@ -160,6 +162,10 @@ async def list_governance_register_page(
                 status=filters.status,
                 search=filters.search,
             ),
+            summary_refresh_required=False,
+            summary_refresh_performed=False,
+            summary_refresh_ms=0.0,
+            summary_rows_refreshed=0,
         )
     if cacheable:
         cached = _register_list_cache.get(cache_key)
@@ -169,22 +175,16 @@ async def list_governance_register_page(
                     execute_count=0,
                     cache_hit=True,
                     cache_scope="user_access",
+                    register_row_count=len(cached[1].items),
                 )
             return replace(cached[1], db_executes=0)
 
     started = perf_counter()
-    db_executes = 0
-    if current_user.org_id is not None:
-        db_executes += await ensure_org_time_sensitive_summary_counts(
-            session, current_user.org_id, today=today
-        )
 
     visible_projects = scoped_project_query(current_user).subquery()
     summary = ProjectGovernanceSummary
 
-    open_deps = (
-        func.coalesce(summary.open_dependencies_count, 0) if can_internal else literal(0)
-    )
+    open_deps = func.coalesce(summary.open_dependencies_count, 0) if can_internal else literal(0)
     blocking_deps = (
         func.coalesce(summary.blocked_dependencies_count, 0) if can_internal else literal(0)
     )
@@ -278,7 +278,7 @@ async def list_governance_register_page(
         offset=filters.offset,
         count_stmt=count_stmt,
     )
-    db_executes += page.db_executes
+    db_executes = page.db_executes
 
     items = [
         GovernanceRegisterRowRead(
@@ -316,6 +316,7 @@ async def list_governance_register_page(
             execute_count=db_executes,
             cache_hit=False,
             cache_scope="user_access",
+            register_row_count=len(items),
         )
 
     elapsed_ms = round((perf_counter() - started) * 1000, 1)

@@ -425,7 +425,7 @@ async def _process_document_version(
     processing_phase = "extraction"
     try:
         extracted = _extract_text(doc.file_name, file_bytes)
-        cleaned_text = _clean_text(str(extracted["text"]))
+        cleaned_text = clean_extracted_text(str(extracted["text"]))
         if not cleaned_text:
             raise ValueError("No extractable text found after cleaning.")
         cleaned_sections = _clean_sections(extracted["sections"])
@@ -792,7 +792,7 @@ def _extract_csv(file_bytes: bytes) -> dict[str, object]:
         raise ValueError("No extractable text found in CSV.")
     return {"text": text, "sections": _sections_from_text(text)}
 
-def _clean_text(text: str) -> str:
+def clean_extracted_text(text: str) -> str:
     text = text.replace("\x00", " ")
     text = _normalize_compact_document_text(text)
     text = re.sub(r"[ \t]+", " ", text)
@@ -825,6 +825,10 @@ def _clean_text(text: str) -> str:
     if current:
         paragraphs.append(current.strip())
     return "\n".join(paragraphs).strip()
+
+
+# Compatibility export for callers that import the previous private helper.
+_clean_text = clean_extracted_text
 
 def _normalize_compact_document_text(text: str) -> str:
     replacements = [
@@ -878,7 +882,7 @@ def _clean_sections(sections: object) -> list[dict[str, object]]:
     for section in sections:
         if not isinstance(section, dict):
             continue
-        text = _clean_text(str(section.get("text") or ""))
+        text = clean_extracted_text(str(section.get("text") or ""))
         if not text:
             continue
         title = _clean_optional(str(section.get("section_title"))) if section.get("section_title") else None

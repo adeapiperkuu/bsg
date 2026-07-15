@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime, timedelta
+from datetime import date
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -6,10 +6,9 @@ import pytest
 
 from app.agents.governance.services.governance_service import create_dependency
 from app.agents.governance.services.project_governance_summary_service import (
-    _org_summary_day_refreshed,
     compute_project_governance_counts,
-    ensure_org_time_sensitive_summary_counts,
     refresh_project_governance_summary,
+    refresh_stale_governance_summary_counts,
 )
 from app.agents.governance.services.register_service import list_governance_register_page
 from app.core.security import CurrentUser
@@ -80,6 +79,7 @@ async def test_refresh_project_governance_summary_creates_summary_row(
     org_id = uuid4()
     project_id = uuid4()
     session = AsyncMock()
+    session.add = MagicMock()
     session.flush = AsyncMock()
 
     existing = MagicMock()
@@ -222,11 +222,6 @@ async def test_register_query_reads_project_governance_summary(
         "app.agents.governance.services.register_service._execute_paginated_rows",
         capture_statement,
     )
-    monkeypatch.setattr(
-        "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
-        AsyncMock(return_value=0),
-    )
-
     await list_governance_register_page(AsyncMock(), _user(), limit=10, offset=0)
 
     sql = captured["sql"].lower()
@@ -251,11 +246,6 @@ async def test_register_page_still_applies_pagination(
         "app.agents.governance.services.register_service._execute_paginated_rows",
         capture_statement,
     )
-    monkeypatch.setattr(
-        "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
-        AsyncMock(return_value=0),
-    )
-
     page = await list_governance_register_page(AsyncMock(), _user(), limit=5, offset=5)
 
     assert captured["limit"] == 5
@@ -278,11 +268,6 @@ async def test_register_org_isolation_joins_summary_to_project_org(
         "app.agents.governance.services.register_service._execute_paginated_rows",
         capture_statement,
     )
-    monkeypatch.setattr(
-        "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
-        AsyncMock(return_value=0),
-    )
-
     await list_governance_register_page(
         AsyncMock(return_value=0),
         _user(org_id=org_a),
@@ -306,11 +291,6 @@ async def test_register_count_query_omits_summary_join(monkeypatch: pytest.Monke
         "app.agents.governance.services.register_service._execute_paginated_rows",
         capture_statement,
     )
-    monkeypatch.setattr(
-        "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
-        AsyncMock(return_value=0),
-    )
-
     from app.agents.governance.services.register_service import list_governance_register_page
 
     page = await list_governance_register_page(AsyncMock(), _user(), limit=10, offset=0)
@@ -322,55 +302,37 @@ async def test_register_count_query_omits_summary_join(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
-async def test_ensure_org_time_sensitive_summary_counts_updates_stale_rows() -> None:
+async def test_daily_summary_refresh_is_one_locked_update_execute() -> None:
     org_id = uuid4()
     project_id = uuid4()
-    _org_summary_day_refreshed.clear()
-    stale_summary = ProjectGovernanceSummary(
-        org_id=org_id,
-        project_id=project_id,
-        overdue_actions_count=0,
-        blocking_overdue_dependencies_count=0,
-        updated_at=datetime.now(UTC) - timedelta(days=1),
-    )
-
-    exists_lookup = MagicMock()
-    exists_lookup.scalar_one_or_none.return_value = 1
-
-    stale_lookup = MagicMock()
-    stale_lookup.scalars.return_value.all.return_value = [stale_summary]
-
-    combined_lookup = MagicMock()
-    combined_lookup.all.return_value = [
-        MagicMock(project_id=project_id, overdue_actions=2, blocking_overdue=1)
-    ]
-
+    result_rows = MagicMock()
+    result_rows.all.return_value = [MagicMock(org_id=org_id, project_id=project_id)]
     session = AsyncMock()
-    session.execute = AsyncMock(
-        side_effect=[exists_lookup, stale_lookup, combined_lookup]
-    )
-    session.flush = AsyncMock()
+    session.execute = AsyncMock(return_value=result_rows)
 
-    db_executes = await ensure_org_time_sensitive_summary_counts(
-        session, org_id, today=date(2026, 7, 6)
-    )
+    result = await refresh_stale_governance_summary_counts(session, today=date(2026, 7, 6))
 
-    assert stale_summary.overdue_actions_count == 2
-    assert stale_summary.blocking_overdue_dependencies_count == 1
-    assert db_executes == 3
-    session.flush.assert_awaited_once()
+    stmt = session.execute.await_args.args[0]
+    sql = str(stmt.compile(compile_kwargs={"literal_binds": False})).lower()
+    assert session.execute.await_count == 1
+    assert "update project_governance_summary" in sql
+    assert "pg_try_advisory_xact_lock" in sql
+    assert "governance_actions" in sql
+    assert "project_dependencies" in sql
+    assert result.execute_count == 1
+    assert result.rows_refreshed == 1
+    assert result.org_ids == (org_id,)
 
 
 @pytest.mark.asyncio
-async def test_ensure_org_time_sensitive_summary_counts_skips_when_fresh_today() -> None:
-    org_id = uuid4()
+async def test_daily_summary_refresh_no_stale_rows_is_still_one_execute() -> None:
     session = AsyncMock()
-    exists_lookup = MagicMock()
-    exists_lookup.scalar_one_or_none.return_value = None
-    session.execute = AsyncMock(return_value=exists_lookup)
-    _org_summary_day_refreshed.clear()
+    empty = MagicMock()
+    empty.all.return_value = []
+    session.execute = AsyncMock(return_value=empty)
 
-    await ensure_org_time_sensitive_summary_counts(session, org_id, today=date(2026, 7, 6))
-    await ensure_org_time_sensitive_summary_counts(session, org_id, today=date(2026, 7, 6))
+    result = await refresh_stale_governance_summary_counts(session, today=date(2026, 7, 6))
 
     assert session.execute.await_count == 1
+    assert result.rows_refreshed == 0
+    assert result.org_ids == ()

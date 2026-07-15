@@ -31,15 +31,23 @@ from app.agents.governance.services.dashboard_service import (  # noqa: E402
     _bootstrap_kpi_cache,
     get_governance_bootstrap,
 )
+from app.agents.governance.services.charter_service import (  # noqa: E402
+    build_project_charter_read_with_metrics,
+    get_project_charter_or_404,
+    invalidate_project_charter_list_cache,
+    list_project_charters_page,
+)
+from app.agents.governance.services.governance_charter_publish_service import (  # noqa: E402
+    get_publication_versions,
+)
 from app.agents.governance.services.governance_service import (  # noqa: E402
+    _invalidate_actions_list_cache,
     _invalidate_dependencies_list_cache,
+    _invalidate_escalations_list_cache,
     list_governance_actions_page,
     list_governance_dependencies_page,
     list_governance_escalations_page,
     list_governance_scope_states_page,
-)
-from app.agents.governance.services.project_governance_summary_service import (  # noqa: E402
-    _org_summary_day_refreshed,
 )
 from app.agents.governance.services.register_service import (  # noqa: E402
     _register_list_cache,
@@ -57,6 +65,7 @@ from app.db.session import AsyncSessionLocal  # noqa: E402
 # Matches frontend TABLE_PAGE_SIZE / GOVERNANCE_DEFAULT_TABLE_PARAMS.
 DASHBOARD_PAGE_LIMIT = 6
 DASHBOARD_PAGE_OFFSET = 0
+CHARTER_PAGE_LIMIT = 5
 ANALYTICS_DAYS = 30
 
 ORG_ID = UUID("0ac27787-896c-49e4-b90a-616c13a3694e")
@@ -135,8 +144,10 @@ def _clear_all_caches() -> None:
     _analytics_summary_cache.clear()
     _analytics_detail_cache.clear()
     _invalidate_dependencies_list_cache()
+    _invalidate_actions_list_cache()
+    _invalidate_escalations_list_cache()
     _register_list_cache.clear()
-    _org_summary_day_refreshed.clear()
+    invalidate_project_charter_list_cache()
 
 
 async def _warm_pool() -> None:
@@ -245,7 +256,7 @@ async def _measure_actions_inner(
             offset=DASHBOARD_PAGE_OFFSET,
             project_id=project_id,
         )
-    return (page.db_executes, False, len(page.items))
+    return (page.db_executes, page.db_executes == 0, len(page.items))
 
 
 async def _measure_escalations(user: CurrentUser) -> Sample:
@@ -269,7 +280,7 @@ async def _measure_escalations_inner(
             offset=DASHBOARD_PAGE_OFFSET,
             project_id=project_id,
         )
-    return (page.db_executes, False, len(page.items))
+    return (page.db_executes, page.db_executes == 0, len(page.items))
 
 
 async def _measure_register(user: CurrentUser) -> Sample:
@@ -294,6 +305,94 @@ async def _measure_register_inner(
             project_id=project_id,
         )
     return (page.db_executes, page.db_executes == 0, len(page.items))
+
+
+async def _measure_project_charters(user: CurrentUser) -> Sample:
+    return await _measure_with_timer(
+        "GET /governance/project-charters",
+        user,
+        lambda: _measure_project_charters_inner(user),
+    )
+
+
+async def _measure_project_charters_inner(
+    user: CurrentUser,
+    *,
+    project_id: UUID | None = None,
+) -> tuple[int | None, bool, int]:
+    async with AsyncSessionLocal() as session:
+        page = await list_project_charters_page(
+            session,
+            user,
+            project_id=project_id,
+            limit=CHARTER_PAGE_LIMIT,
+            offset=DASHBOARD_PAGE_OFFSET,
+            include_detail=False,
+        )
+    return (page.db_executes, page.cache_hit, len(page.items))
+
+
+async def _first_charter_id(user: CurrentUser) -> UUID | None:
+    async with AsyncSessionLocal() as session:
+        page = await list_project_charters_page(
+            session,
+            user,
+            limit=CHARTER_PAGE_LIMIT,
+            offset=DASHBOARD_PAGE_OFFSET,
+            include_detail=False,
+        )
+    return page.items[0].id if page.items else None
+
+
+async def _measure_project_charter_detail(user: CurrentUser, charter_id: UUID | None) -> Sample:
+    if charter_id is None:
+        return Sample(
+            total_ms=0.0,
+            db_ms=0.0,
+            serialization_ms=0.0,
+            db_executes=0,
+            cache_hit=False,
+            row_count=0,
+        )
+
+    async def _inner() -> tuple[int | None, bool, int]:
+        async with AsyncSessionLocal() as session:
+            charter = await get_project_charter_or_404(session, charter_id, user)
+            _read, enrichment_executes = await build_project_charter_read_with_metrics(
+                session,
+                charter,
+            )
+        base_executes = 2 if user.role == AppRole.CLIENT else 1
+        return (base_executes + enrichment_executes, False, 1)
+
+    return await _measure_with_timer(
+        "GET /governance/project-charters/{charter_id}",
+        user,
+        _inner,
+    )
+
+
+async def _measure_project_charter_versions(user: CurrentUser, charter_id: UUID | None) -> Sample:
+    if charter_id is None:
+        return Sample(
+            total_ms=0.0,
+            db_ms=0.0,
+            serialization_ms=0.0,
+            db_executes=0,
+            cache_hit=False,
+            row_count=0,
+        )
+
+    async def _inner() -> tuple[int | None, bool, int]:
+        async with AsyncSessionLocal() as session:
+            versions = await get_publication_versions(session, user, charter_id)
+        return (None, False, len(versions))
+
+    return await _measure_with_timer(
+        "GET /governance/project-charters/{charter_id}/versions",
+        user,
+        _inner,
+    )
 
 
 async def _measure_scope_states_inner(
@@ -467,6 +566,7 @@ async def _benchmark_endpoint(
 async def main() -> None:
     print("Governance latency baseline (Phase 0)")
     print(f"Dashboard page shape: limit={DASHBOARD_PAGE_LIMIT} offset={DASHBOARD_PAGE_OFFSET}")
+    print(f"Charter page shape: limit={CHARTER_PAGE_LIMIT} offset={DASHBOARD_PAGE_OFFSET}")
     print(f"Analytics days={ANALYTICS_DAYS}")
     print(f"Org={ORG_ID}")
     print("Modes: A cold/cleared cache, B first request, C immediate repeat,")
@@ -476,6 +576,7 @@ async def main() -> None:
     internal = _internal_user()
     client = _client_user()
     project_id = await _first_project_id(internal)
+    charter_id = await _first_charter_id(internal)
 
     print("\n######## INTERNAL USER PATH ########")
 
@@ -502,11 +603,43 @@ async def main() -> None:
     await _benchmark_endpoint(
         "GET /governance/actions?limit=6&offset=0 (actions tab)",
         lambda: _measure_actions(internal),
+        cache_hit_measure=lambda: _measure_actions(internal),
     )
 
     await _benchmark_endpoint(
         "GET /governance/escalations?limit=6&offset=0 (internal escalations tab)",
         lambda: _measure_escalations(internal),
+        cache_hit_measure=lambda: _measure_escalations(internal),
+    )
+
+    await _benchmark_endpoint(
+        "GET /governance/project-charters?limit=5&offset=0&include_detail=false (charters tab)",
+        lambda: _measure_project_charters(internal),
+        cache_hit_measure=lambda: _measure_project_charters(internal),
+    )
+
+    await _benchmark_endpoint(
+        "GET /governance/project-charters?limit=5&offset=0&project_id=...&include_detail=false (charters tab)",
+        lambda: _measure_with_timer(
+            "GET /governance/project-charters",
+            internal,
+            lambda: _measure_project_charters_inner(internal, project_id=project_id),
+        ),
+        cache_hit_measure=lambda: _measure_with_timer(
+            "GET /governance/project-charters",
+            internal,
+            lambda: _measure_project_charters_inner(internal, project_id=project_id),
+        ),
+    )
+
+    await _benchmark_endpoint(
+        "GET /governance/project-charters/{charter_id} (selected detail)",
+        lambda: _measure_project_charter_detail(internal, charter_id),
+    )
+
+    await _benchmark_endpoint(
+        "GET /governance/project-charters/{charter_id}/versions (expanded history)",
+        lambda: _measure_project_charter_versions(internal, charter_id),
     )
 
     await _benchmark_endpoint(
@@ -537,6 +670,7 @@ async def main() -> None:
     await _benchmark_endpoint(
         "GET /governance/escalations?limit=6&offset=0 (client first page)",
         lambda: _measure_escalations(client),
+        cache_hit_measure=lambda: _measure_escalations(client),
     )
 
     print("\nBaseline run complete. Copy summary lines into docs/governance-latency-baseline.md.")

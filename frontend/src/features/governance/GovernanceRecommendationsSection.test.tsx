@@ -10,6 +10,8 @@ const generateMock = vi.fn();
 const dismissMock = vi.fn();
 const feedbackMock = vi.fn();
 const regenerateMock = vi.fn();
+const jobsMock = vi.fn();
+const jobMock = vi.fn();
 
 Object.defineProperty(Element.prototype, "scrollIntoView", {
   configurable: true,
@@ -31,6 +33,14 @@ vi.mock("@/lib/queries/governance", async () => {
       queryKey: ["governance", "ai-recommendations", params],
       queryFn: () => listMock(params),
     }),
+    governanceJobsQueryOptions: (params: Record<string, unknown> = {}) => ({
+      queryKey: ["governance", "jobs", params],
+      queryFn: () => jobsMock(params),
+    }),
+    governanceJobQueryOptions: (jobId: string) => ({
+      queryKey: ["governance", "jobs", jobId],
+      queryFn: () => jobMock(jobId),
+    }),
   };
 });
 
@@ -43,13 +53,13 @@ vi.mock("sonner", () => ({
   },
 }));
 
-function renderSection() {
+function renderSection(enabled = true) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return render(
     <QueryClientProvider client={client}>
-      <GovernanceRecommendationsSection focusProjectId="p1" canWrite />
+      <GovernanceRecommendationsSection canWrite enabled={enabled} />
     </QueryClientProvider>,
   );
 }
@@ -92,6 +102,8 @@ describe("GovernanceRecommendationsSection", () => {
     dismissMock.mockReset();
     feedbackMock.mockReset();
     regenerateMock.mockReset();
+    jobsMock.mockReset();
+    jobMock.mockReset();
     listMock.mockResolvedValue({
       items: [],
       rule_based: [],
@@ -99,6 +111,7 @@ describe("GovernanceRecommendationsSection", () => {
       ai_enabled: true,
       can_generate: true,
     });
+    jobsMock.mockResolvedValue([]);
   });
 
   it("loads AI list without calling generate on mount", async () => {
@@ -107,6 +120,16 @@ describe("GovernanceRecommendationsSection", () => {
     expect(generateMock).not.toHaveBeenCalled();
     expect(screen.queryByText("Operational Recommendations")).not.toBeInTheDocument();
     expect(screen.queryByText("Rule-based")).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "AI Recs" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Escalation Suggestions")).not.toBeInTheDocument();
+  });
+
+  it("does not load recommendation tools before the section is enabled", async () => {
+    renderSection(false);
+
+    await Promise.resolve();
+
+    expect(listMock).not.toHaveBeenCalled();
   });
 
   it("generates on explicit button click and shows AI card", async () => {
@@ -119,72 +142,26 @@ describe("GovernanceRecommendationsSection", () => {
       can_generate: true,
     });
     generateMock.mockResolvedValue({
-      recommendations: [
-        {
-          id: "rec-1",
-          scope: "project",
-          project_id: "p1",
-          project_name: "Project Alpha",
-          recommendation_type: "dependency_mitigation",
-          title: "Prioritize vendor integration dependency",
-          narrative: "Project Alpha has unresolved blocking dependencies.",
-          rationale: "Blocking dependencies increase milestone risk.",
-          priority: "high",
-          confidence: 0.84,
-          suggested_actions: [
-            {
-              label: "Assign owner",
-              description: "Assign one accountable owner.",
-              action_type: "assign_owner",
-              target_entity_type: null,
-              target_entity_id: null,
-            },
-          ],
-          evidence: [
-            {
-              evidence_id: "dependency:1",
-              entity_type: "dependency",
-              entity_id: "1",
-              project_id: "p1",
-              title: "Vendor integration",
-              summary: "blocking",
-              status: "blocking",
-              severity: "high",
-              occurred_at: null,
-            },
-          ],
-          status: "active",
-          generated_at: new Date().toISOString(),
-          expires_at: null,
-          can_regenerate: true,
-          can_dismiss: true,
-          is_ai_generated: true,
-          source_type: "ai",
-          is_stale: false,
-          evidence_hash: "abc",
-        },
-      ],
-      rule_based_fallback: [],
-      reused: false,
-      fallback_used: false,
-      fallback_reason: null,
-      generation_request_id: "g1",
-      evidence_hash: "abc",
-      candidates_returned: 1,
-      candidates_persisted: 1,
-      candidates_rejected_grounding: 0,
-      duplicates_suppressed: 0,
-      duration_ms: 120,
-      projects_attempted: 2,
-      projects_with_recommendations: 2,
-      projects_reused: 0,
-      projects_using_fallback: 0,
-      project_failures: {},
+      job_id: "job-1",
+      job_type: "ai_recommendation_generate",
+      status: "queued",
+      deduplicated: false,
+    });
+    jobMock.mockResolvedValue({
+      id: "job-1",
+      status: "succeeded",
+      progress_stage: "completed",
+      progress_percent: 100,
+      attempt_count: 1,
+      max_attempts: 3,
+      retryable: false,
+      cancellable: false,
+      error_message: null,
     });
 
     renderSection();
     const generateButton = await screen.findByRole("button", {
-      name: /Generate AI recommendations/i,
+      name: /^Generate$/i,
     });
     // After generate, list refetch returns the persisted card.
     listMock.mockResolvedValue({
@@ -227,7 +204,35 @@ describe("GovernanceRecommendationsSection", () => {
     await waitFor(() =>
       expect(screen.getByText("Prioritize vendor integration dependency")).toBeInTheDocument(),
     );
-    expect(screen.getByText(/AI Generated/)).toBeInTheDocument();
+    expect(screen.queryByText(/AI Generated/)).not.toBeInTheDocument();
+  });
+
+  it("disables duplicate generation while the equivalent job is active", async () => {
+    const user = userEvent.setup();
+    generateMock.mockResolvedValue({
+      job_id: "job-active",
+      job_type: "ai_recommendation_generate",
+      status: "queued",
+      deduplicated: false,
+    });
+    jobMock.mockResolvedValue({
+      id: "job-active",
+      status: "running",
+      progress_stage: "generating",
+      progress_percent: 45,
+      attempt_count: 1,
+      max_attempts: 3,
+      retryable: false,
+      cancellable: true,
+      error_message: null,
+    });
+
+    renderSection();
+    const button = await screen.findByRole("button", { name: /^Generate$/i });
+    await user.click(button);
+    await waitFor(() => expect(button).toBeDisabled());
+    await user.click(button);
+    expect(generateMock).toHaveBeenCalledTimes(1);
   });
 
   it("filters project recommendations with a dropdown instead of one long list", async () => {

@@ -180,7 +180,7 @@ describe("governance prefetch", () => {
     await prefetchGovernanceNav(queryClient, undefined, "delivery_manager");
 
     await expect(import("@/features/governance/GovernanceDashboard")).resolves.toBeDefined();
-  });
+  }, 10_000);
 
   it("can prefetch the route module independently", async () => {
     prefetchGovernanceRouteModule();

@@ -329,6 +329,16 @@ class GovernanceSummaryStatus(StrEnum):
     APPROVED = "approved"
 
 
+class GovernanceJobStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    RETRY_SCHEDULED = "retry_scheduled"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLATION_REQUESTED = "cancellation_requested"
+    CANCELLED = "cancelled"
+
+
 class GovernanceCharterStatus(StrEnum):
     DRAFT = "draft"
     APPROVED = "approved"
@@ -625,6 +635,12 @@ governance_summary_status = Enum(
     GovernanceSummaryStatus,
     name="governance_summary_status",
     values_callable=lambda x: [e.value for e in x],
+)
+governance_job_status = Enum(
+    GovernanceJobStatus,
+    name="governance_job_status",
+    values_callable=lambda x: [e.value for e in x],
+    native_enum=False,
 )
 governance_charter_status = Enum(
     GovernanceCharterStatus,
@@ -1969,6 +1985,81 @@ class GovernanceWeeklySummary(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class GovernanceJob(Base, UuidPrimaryKey, UpdatedAt):
+    __tablename__ = "governance_jobs"
+    __table_args__ = (
+        Index(
+            "governance_jobs_active_idempotency_uidx",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('queued', 'running', 'retry_scheduled', 'cancellation_requested')"
+            ),
+        ),
+        Index("governance_jobs_org_requested_idx", "org_id", "requested_at"),
+        Index("governance_jobs_project_requested_idx", "project_id", "requested_at"),
+        Index("governance_jobs_requester_requested_idx", "requested_by", "requested_at"),
+        Index("governance_jobs_queue_idx", "status", "next_attempt_at", "requested_at"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE")
+    )
+    job_type: Mapped[str] = mapped_column(Text)
+    status: Mapped[GovernanceJobStatus] = mapped_column(
+        governance_job_status,
+        default=GovernanceJobStatus.QUEUED,
+        server_default="queued",
+    )
+    requested_by: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    progress_stage: Mapped[str] = mapped_column(Text, default="queued", server_default="queued")
+    progress_percent: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3, server_default="3")
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str] = mapped_column(Text)
+    request_payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}"
+    )
+    result_record_type: Mapped[str | None] = mapped_column(Text)
+    result_record_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    result_data: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    worker_id: Mapped[str | None] = mapped_column(Text)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    queue_wait_ms: Mapped[int | None] = mapped_column(BigInteger)
+    processing_ms: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class GovernanceJobEvent(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "governance_job_events"
+    __table_args__ = (
+        Index("governance_job_events_job_created_idx", "job_id", "created_at"),
+        Index("governance_job_events_org_created_idx", "org_id", "created_at"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE")
+    )
+    job_id: Mapped[UUID] = mapped_column(ForeignKey("governance_jobs.id", ondelete="CASCADE"))
+    event_type: Mapped[str] = mapped_column(Text)
+    actor_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    event_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}"
+    )
+
+
 class GovernanceEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
     __tablename__ = "governance_evidence_links"
     __table_args__ = (
@@ -2530,37 +2621,6 @@ class GovernanceRecommendationEvaluationReport(Base, UuidPrimaryKey, CreatedAt):
     generated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
-
-
-class GovernanceEscalationSuggestionScan(Base, UuidPrimaryKey, CreatedAt):
-    __tablename__ = "governance_escalation_suggestion_scans"
-    __table_args__ = (
-        Index("governance_escalation_suggestion_scans_org_started_idx", "org_id", "started_at"),
-        Index("governance_escalation_suggestion_scans_project_started_idx", "project_id", "started_at"),
-        Index("governance_escalation_suggestion_scans_status_idx", "status"),
-    )
-
-    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
-    project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"))
-    scan_type: Mapped[str] = mapped_column(Text, default="manual", server_default="manual")
-    status: Mapped[ScanStatus] = mapped_column(Text, default=ScanStatus.RUNNING)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    requested_by_user_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL")
-    )
-    projects_checked: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    signals_evaluated: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    suggestions_created: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    suggestions_refreshed: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    suggestions_skipped_by_cooldown: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    suggestions_suppressed_existing_escalation: Mapped[int] = mapped_column(
-        Integer, default=0, server_default="0"
-    )
-    provider_failures: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
-    result_summary: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
-    duration_ms: Mapped[float | None] = mapped_column(Numeric(10, 1))
-    failure_reason: Mapped[str | None] = mapped_column(Text)
 
 
 class GovernanceRecordEvidenceLink(Base, UuidPrimaryKey, CreatedAt, SoftDelete):

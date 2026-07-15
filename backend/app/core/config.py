@@ -23,7 +23,9 @@ class Settings(BaseSettings):
     supabase_service_role_key: str
     secret_key: str
     environment: Literal["dev", "staging", "prod"] = "dev"
-    allowed_origins: str = "http://localhost:5173,http://localhost:3000,http://localhost:8080,http://localhost:8081"
+    allowed_origins: str = (
+        "http://localhost:5173,http://localhost:3000,http://localhost:8080,http://localhost:8081"
+    )
     supabase_jwt_secret: str | None = None
     auth_cookie_secure: bool = False
     auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
@@ -69,33 +71,15 @@ class Settings(BaseSettings):
     governance_ai_recommendation_max_evidence_items: int = 20
     governance_ai_recommendation_timeout_seconds: float = 45.0
     governance_ai_recommendation_prompt_version: str = "v1"
-    # Governance escalation suggestions (Phase 9) — deterministic detection; no auto-create.
-    governance_escalation_suggestions_enabled: bool = False
-    governance_escalation_suggestion_overdue_days: int = 7
-    governance_escalation_suggestion_blocking_count: int = 3
-    governance_escalation_suggestion_confidence_drop: float = 10.0
-    governance_escalation_suggestion_confidence_threshold: float = 65.0
-    governance_escalation_suggestion_action_overdue_days: int = 5
-    governance_escalation_suggestion_cooldown_seconds: int = 300
-    governance_escalation_suggestion_max_per_project: int = 5
-    governance_escalation_suggestion_use_llm_enrichment: bool = False
-    governance_escalation_suggestion_snooze_days: int = 7
-    governance_escalation_suggestion_signal_max_age_days: int = 14
-    governance_escalation_suggestion_confidence_periods: int = 3
-    governance_escalation_suggestion_scope_pending_days: int = 5
-    governance_escalation_suggestion_mitigation_failure_count: int = 2
-    governance_escalation_suggestion_repeated_overdue_count: int = 2
-    governance_escalation_suggestion_overdue_lookback_days: int = 30
-    governance_escalation_suggestion_milestone_risk_threshold: float = 70.0
-    governance_escalation_suggestion_milestone_due_days: int = 14
-    governance_escalation_suggestion_combined_min_categories: int = 2
-    governance_escalation_suggestion_cross_agent_enabled: bool = False
-    governance_escalation_suggestion_quality_weight: float = 10.0
-    governance_escalation_suggestion_workforce_weight: float = 10.0
-    governance_escalation_suggestion_delivery_weight: float = 10.0
-    governance_escalation_suggestion_max_projects_per_scan: int = 25
-    governance_escalation_suggestion_max_created_per_scan: int = 20
-    governance_escalation_suggestion_scheduled_enabled: bool = False
+    # Phase D — UTC daily register summary rollover refresh (hourly catch-up, once/day idempotent).
+    governance_register_daily_refresh_enabled: bool = True
+    # Phase F — durable Governance background jobs.
+    governance_job_poll_interval_seconds: int = 5
+    governance_job_poll_batch_size: int = 3
+    governance_job_stale_seconds: int = 180
+    governance_job_heartbeat_seconds: int = 30
+    governance_job_worker_id: str = ""
+    governance_job_export_dir: str = str(BACKEND_ROOT / "data" / "governance-exports")
     # Quality BR-06 — promote unresolved quality drift into governance_escalations.
     governance_quality_auto_escalation_enabled: bool = True
     # Optional outbound delivery for critical governance notifications (no-op when unset).
@@ -137,12 +121,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_security_settings(self) -> Self:
-        if self.environment in {"staging", "prod"}:
-            if not self.supabase_jwt_secret or not self.supabase_jwt_secret.strip():
-                msg = (
-                    "SUPABASE_JWT_SECRET must be set when ENVIRONMENT is staging or production."
-                )
-                raise ValueError(msg)
+        if self.environment in {"staging", "prod"} and (
+            not self.supabase_jwt_secret or not self.supabase_jwt_secret.strip()
+        ):
+            msg = "SUPABASE_JWT_SECRET must be set when ENVIRONMENT is staging or production."
+            raise ValueError(msg)
 
         if self.environment == "prod":
             if not self.auth_cookie_secure:
@@ -162,7 +145,9 @@ class Settings(BaseSettings):
 
     @property
     def jwt_secret(self) -> str:
-        if self.supabase_jwt_secret and not self.supabase_jwt_secret.startswith(("http://", "https://")):
+        if self.supabase_jwt_secret and not self.supabase_jwt_secret.startswith(
+            ("http://", "https://")
+        ):
             return self.supabase_jwt_secret
         if self.environment == "dev":
             return self.secret_key
@@ -171,7 +156,10 @@ class Settings(BaseSettings):
 
     @property
     def jwt_uses_jwks(self) -> bool:
-        return bool(self.supabase_jwt_secret and self.supabase_jwt_secret.startswith(("http://", "https://")))
+        return bool(
+            self.supabase_jwt_secret
+            and self.supabase_jwt_secret.startswith(("http://", "https://"))
+        )
 
     @property
     def async_database_url(self) -> str:

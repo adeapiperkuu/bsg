@@ -46,7 +46,15 @@ export type GovernanceWeeklySummary = {
   created_at: string;
   updated_at: string;
   evidence_links: GovernanceEvidenceLink[];
+  evidence_link_count?: number;
   approved_by_name?: string | null;
+};
+
+export type GovernanceWeeklySummaryListItem = Omit<
+  GovernanceWeeklySummary,
+  "summary_text" | "evidence_links"
+> & {
+  evidence_link_count: number;
 };
 
 export type GovernanceKpis = {
@@ -257,6 +265,14 @@ export type ProjectCharter = {
   knowledge_url?: string | null;
 };
 
+export type ProjectChartersPanelData = {
+  charters: ProjectCharter[];
+  selected_charter: ProjectCharter | null;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+};
+
 export type CharterPublicationStatus = {
   charter_id: string;
   publication_status: GovernanceCharterPublicationStatus;
@@ -354,6 +370,95 @@ export type GovernanceRegisterRowApi = {
   health: "green" | "amber" | "red";
 };
 
+export type GovernanceProjectSheetSection<T> = {
+  items: T[];
+  total: number;
+  has_more: boolean;
+};
+
+export type GovernanceProjectSheetRisk = {
+  id: string;
+  project_id: string;
+  title: string;
+  detail: string;
+  risk_tier: string;
+  status: string;
+  created_at: string;
+};
+
+export type GovernanceProjectSheet = {
+  project: {
+    id: string;
+    name: string;
+    description: string | null;
+    vertical: string;
+    status: string;
+    start_date: string;
+    target_end_date: string;
+  };
+  summary: {
+    scope_status: GovernanceScopeStatus | null;
+    scope_version: string | null;
+    open_dependencies: number;
+    blocking_dependencies: number;
+    overdue_actions: number;
+    open_actions: number;
+    open_escalations: number;
+    critical_escalations: number;
+    health: "green" | "amber" | "red";
+  };
+  scope: ProjectScopeState | null;
+  dependencies: GovernanceProjectSheetSection<ProjectDependencyListItem>;
+  actions: GovernanceProjectSheetSection<GovernanceActionListItem>;
+  escalations: GovernanceProjectSheetSection<GovernanceEscalationListItem>;
+  delivery_risks: GovernanceProjectSheetSection<GovernanceProjectSheetRisk>;
+  permissions: {
+    can_write: boolean;
+    can_view_internal: boolean;
+    can_view_delivery_risks: boolean;
+  };
+  generated_at: string;
+};
+
+export type GovernanceJobStatus =
+  | "queued"
+  | "running"
+  | "retry_scheduled"
+  | "succeeded"
+  | "failed"
+  | "cancellation_requested"
+  | "cancelled";
+
+export type GovernanceJobStart = {
+  job_id: string;
+  job_type: string;
+  status: GovernanceJobStatus;
+  deduplicated: boolean;
+};
+
+export type GovernanceJob = {
+  id: string;
+  org_id: string;
+  project_id: string | null;
+  job_type: string;
+  status: GovernanceJobStatus;
+  progress_stage: string;
+  progress_percent: number;
+  attempt_count: number;
+  max_attempts: number;
+  requested_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  next_attempt_at: string | null;
+  retryable: boolean;
+  cancellable: boolean;
+  error_code: string | null;
+  error_message: string | null;
+  result_record_type: string | null;
+  result_record_id: string | null;
+  result: Record<string, unknown> | null;
+};
+
 export type GovernanceAnalyticsEvidence = {
   source_type: string;
   source_id: string | null;
@@ -441,43 +546,6 @@ export type GovernanceAIRecommendation = {
   signal_providers?: string[];
   repeated_detection_count?: number | null;
   latest_detected_at?: string | null;
-};
-
-export type EscalationSuggestionScanResult = {
-  suggestions: GovernanceAIRecommendation[];
-  candidates_detected: number;
-  suggestions_created: number;
-  suggestions_reused: number;
-  suggestions_suppressed_existing_escalation: number;
-  projects_scanned: number;
-  duration_ms: number;
-  query_executes: number;
-  llm_enrichment_used: boolean;
-  enabled: boolean;
-  signals_evaluated: number;
-  suggestions_skipped_by_cooldown: number;
-  provider_failures: Record<string, string>;
-  scan_id: string | null;
-};
-
-export type EscalationSuggestionScanHistory = {
-  id: string;
-  org_id: string;
-  project_id: string | null;
-  scan_type: string;
-  status: string;
-  started_at: string;
-  completed_at: string | null;
-  projects_checked: number;
-  signals_evaluated: number;
-  suggestions_created: number;
-  suggestions_refreshed: number;
-  suggestions_skipped_by_cooldown: number;
-  suggestions_suppressed_existing_escalation: number;
-  provider_failures: Record<string, string>;
-  result_summary: Record<string, unknown>;
-  duration_ms: number | null;
-  failure_reason: string | null;
 };
 
 export type GovernanceRecommendationConversion = {

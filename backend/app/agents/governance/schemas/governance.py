@@ -25,9 +25,47 @@ from app.db.models import (
     GovernanceRecordLinkType,
     GovernanceScopeStatus,
     GovernanceSummaryStatus,
+    GovernanceJobStatus,
     KnowledgeVisibility,
 )
 from app.schemas.common import ORMModel
+
+
+class GovernanceJobStartRead(BaseModel):
+    job_id: UUID
+    job_type: str
+    status: GovernanceJobStatus
+    deduplicated: bool = False
+
+
+class GovernanceJobRead(BaseModel):
+    id: UUID
+    org_id: UUID
+    project_id: UUID | None = None
+    job_type: str
+    status: GovernanceJobStatus
+    progress_stage: str
+    progress_percent: int
+    attempt_count: int
+    max_attempts: int
+    requested_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    next_attempt_at: datetime | None = None
+    retryable: bool
+    cancellable: bool
+    error_code: str | None = None
+    error_message: str | None = None
+    result_record_type: str | None = None
+    result_record_id: UUID | None = None
+    result: dict[str, Any] | None = None
+
+
+class GovernanceAnalyticsExportJobRequest(BaseModel):
+    days: int = Field(default=30, ge=1, le=365)
+    project_id: UUID | None = None
+    vertical: str | None = Field(default=None, max_length=120)
+    format: Literal["csv", "pdf"] = "csv"
 
 
 # --- Phase 8 provenance schemas ---
@@ -65,17 +103,6 @@ class GovernanceSourceRecommendationRead(BaseModel):
     source_type: Literal["ai_recommendation"] = "ai_recommendation"
     can_view: bool = True
     source_available: bool = True
-
-
-class GovernanceProvenanceMixin(BaseModel):
-    provenance_source_type: Literal["manual", "ai_recommendation", "delivery_risk", "other"] = (
-        "manual"
-    )
-    source_recommendation_id: UUID | None = None
-    source_recommendation_title: str | None = None
-    source_conversion_id: UUID | None = None
-    evidence_link_count: int = 0
-    has_ai_source: bool = False
 
 
 # --- AI recommendation schemas (Phase 6) ---
@@ -205,54 +232,6 @@ class GovernanceAIRecommendationFeedbackRead(BaseModel):
     helpful: bool
     reason: str | None = None
     created_at: datetime
-
-
-class EscalationSuggestionScanRequest(BaseModel):
-    project_id: UUID | None = None
-    force: bool = False
-
-
-class EscalationSuggestionSnoozeRequest(BaseModel):
-    days: int | None = Field(default=None, ge=1, le=90)
-    snoozed_until: datetime | None = None
-    reason: str | None = Field(default=None, max_length=500)
-
-
-class EscalationSuggestionScanResult(BaseModel):
-    suggestions: list[GovernanceAIRecommendationRead] = Field(default_factory=list)
-    candidates_detected: int = 0
-    suggestions_created: int = 0
-    suggestions_reused: int = 0
-    suggestions_suppressed_existing_escalation: int = 0
-    projects_scanned: int = 0
-    duration_ms: float = 0
-    query_executes: int = 0
-    llm_enrichment_used: bool = False
-    enabled: bool = True
-    signals_evaluated: int = 0
-    suggestions_skipped_by_cooldown: int = 0
-    provider_failures: dict[str, str] = Field(default_factory=dict)
-    scan_id: UUID | None = None
-
-
-class EscalationSuggestionScanHistoryRead(ORMModel):
-    id: UUID
-    org_id: UUID
-    project_id: UUID | None = None
-    scan_type: str
-    status: str
-    started_at: datetime
-    completed_at: datetime | None = None
-    projects_checked: int
-    signals_evaluated: int
-    suggestions_created: int
-    suggestions_refreshed: int
-    suggestions_skipped_by_cooldown: int
-    suggestions_suppressed_existing_escalation: int
-    provider_failures: dict[str, str] = Field(default_factory=dict)
-    result_summary: dict[str, Any] = Field(default_factory=dict)
-    duration_ms: float | None = None
-    failure_reason: str | None = None
 
 
 class ConvertRecommendationToActionRequest(BaseModel):
@@ -543,6 +522,80 @@ class GovernanceActionUpdate(BaseModel):
     linked_knowledge_document_id: UUID | None = None
 
 
+class GovernanceProjectSheetProjectRead(BaseModel):
+    id: UUID
+    name: str
+    description: str | None = None
+    vertical: str
+    status: str
+    start_date: date
+    target_end_date: date
+
+
+class GovernanceProjectSheetSummaryRead(BaseModel):
+    scope_status: GovernanceScopeStatus | None = None
+    scope_version: str | None = None
+    open_dependencies: int = 0
+    blocking_dependencies: int = 0
+    overdue_actions: int = 0
+    open_actions: int = 0
+    open_escalations: int = 0
+    critical_escalations: int = 0
+    health: str = "green"
+
+
+class GovernanceProjectSheetRiskRead(BaseModel):
+    id: UUID
+    project_id: UUID
+    title: str
+    detail: str
+    risk_tier: str
+    status: str
+    created_at: datetime
+
+
+class GovernanceProjectSheetPermissionsRead(BaseModel):
+    can_write: bool = False
+    can_view_internal: bool = False
+    can_view_delivery_risks: bool = False
+
+
+class GovernanceProjectSheetDependencySectionRead(BaseModel):
+    items: list[ProjectDependencyListRead] = Field(default_factory=list)
+    total: int = 0
+    has_more: bool = False
+
+
+class GovernanceProjectSheetActionSectionRead(BaseModel):
+    items: list[GovernanceActionListRead] = Field(default_factory=list)
+    total: int = 0
+    has_more: bool = False
+
+
+class GovernanceProjectSheetEscalationSectionRead(BaseModel):
+    items: list[GovernanceEscalationListRead] = Field(default_factory=list)
+    total: int = 0
+    has_more: bool = False
+
+
+class GovernanceProjectSheetRiskSectionRead(BaseModel):
+    items: list[GovernanceProjectSheetRiskRead] = Field(default_factory=list)
+    total: int = 0
+    has_more: bool = False
+
+
+class GovernanceProjectSheetRead(BaseModel):
+    project: GovernanceProjectSheetProjectRead
+    summary: GovernanceProjectSheetSummaryRead
+    scope: ProjectScopeStateRead | None = None
+    dependencies: GovernanceProjectSheetDependencySectionRead
+    actions: GovernanceProjectSheetActionSectionRead
+    escalations: GovernanceProjectSheetEscalationSectionRead
+    delivery_risks: GovernanceProjectSheetRiskSectionRead
+    permissions: GovernanceProjectSheetPermissionsRead
+    generated_at: datetime
+
+
 class GovernanceRecommendationConversionRead(BaseModel):
     id: UUID
     recommendation_id: UUID
@@ -584,6 +637,21 @@ class GovernanceWeeklySummaryRead(ORMModel):
     created_at: datetime
     updated_at: datetime
     evidence_links: list[GovernanceEvidenceLinkRead] = Field(default_factory=list)
+    evidence_link_count: int = 0
+    approved_by_name: str | None = None
+
+
+class GovernanceWeeklySummaryListRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    summary_week: date
+    status: GovernanceSummaryStatus
+    generated_by_ai: bool
+    approved_by: UUID | None
+    approved_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    evidence_link_count: int = 0
     approved_by_name: str | None = None
 
 
@@ -645,6 +713,14 @@ class ProjectCharterRead(ORMModel):
     published_by_name: str | None = None
     project_name: str | None = None
     knowledge_url: str | None = None
+
+
+class ProjectChartersPanelRead(BaseModel):
+    charters: list[ProjectCharterRead]
+    selected_charter: ProjectCharterRead | None = None
+    limit: int
+    offset: int
+    has_more: bool = False
 
 
 class CharterPublicationActionRequest(BaseModel):

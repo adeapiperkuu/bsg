@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
+from time import perf_counter
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
@@ -22,7 +23,9 @@ from app.db.models import (
     ProjectScopeState,
 )
 
-_org_summary_day_refreshed: dict[UUID, date] = {}
+# PostgreSQL transaction-scoped advisory lock. Every worker uses the same key, so a daily refresh
+# is serialized across processes without introducing distributed infrastructure.
+GOVERNANCE_DAILY_SUMMARY_REFRESH_LOCK_KEY = 4_732_019_884_017
 
 
 def _overdue_action_filter(today: date):
@@ -46,6 +49,15 @@ class ProjectGovernanceCounts:
     open_escalations_count: int
     critical_escalations_count: int
     pending_scope_changes_count: int
+
+
+@dataclass(frozen=True)
+class GovernanceDailySummaryRefreshResult:
+    business_date: date
+    rows_refreshed: int
+    org_ids: tuple[UUID, ...]
+    execute_count: int
+    duration_ms: float
 
 
 def _open_dependency_filter():
@@ -86,11 +98,6 @@ def _open_escalation_filter():
     return GovernanceEscalation.status.in_(
         {GovernanceEscalationStatus.OPEN, GovernanceEscalationStatus.IN_PROGRESS}
     )
-
-
-def invalidate_org_summary_day_cache(org_id: UUID) -> None:
-    """Drop the in-process 'refreshed today' marker after a write-path summary update."""
-    _org_summary_day_refreshed.pop(org_id, None)
 
 
 async def compute_project_governance_counts(
@@ -155,8 +162,7 @@ async def compute_project_governance_counts(
                     func.count().filter(
                         and_(
                             open_esc,
-                            GovernanceEscalation.severity
-                            == GovernanceEscalationSeverity.CRITICAL,
+                            GovernanceEscalation.severity == GovernanceEscalationSeverity.CRITICAL,
                         )
                     )
                 )
@@ -188,9 +194,7 @@ async def refresh_project_governance_summary(
     today: date | None = None,
 ) -> ProjectGovernanceSummary:
     today = today or datetime.now(UTC).date()
-    counts = await compute_project_governance_counts(
-        session, org_id, project_id, today=today
-    )
+    counts = await compute_project_governance_counts(session, org_id, project_id, today=today)
 
     summary = (
         await session.execute(
@@ -225,116 +229,75 @@ async def refresh_project_governance_summary(
         summary.critical_escalations_count = counts.critical_escalations_count
         summary.pending_scope_changes_count = counts.pending_scope_changes_count
 
-    invalidate_org_summary_day_cache(org_id)
     await session.flush()
     return summary
 
 
-async def _fetch_org_time_sensitive_counts(
+async def refresh_stale_governance_summary_counts(
     session: AsyncSession,
-    org_id: UUID,
-    *,
-    today: date,
-) -> dict[UUID, tuple[int, int]]:
-    """Return per-project (overdue_actions, blocking_overdue_deps) in one round trip."""
-    overdue_sq = (
-        select(
-            GovernanceAction.project_id.label("project_id"),
-            func.count().label("overdue_actions"),
-        )
-        .where(
-            GovernanceAction.org_id == org_id,
-            GovernanceAction.deleted_at.is_(None),
-            _overdue_action_filter(today),
-        )
-        .group_by(GovernanceAction.project_id)
-        .subquery("overdue_actions_by_project")
-    )
-    blocking_sq = (
-        select(
-            ProjectDependency.project_id.label("project_id"),
-            func.count().label("blocking_overdue"),
-        )
-        .where(
-            ProjectDependency.org_id == org_id,
-            ProjectDependency.deleted_at.is_(None),
-            _blocking_overdue_dependency_filter(today),
-        )
-        .group_by(ProjectDependency.project_id)
-        .subquery("blocking_overdue_by_project")
-    )
-    rows = (
-        await session.execute(
-            select(
-                func.coalesce(overdue_sq.c.project_id, blocking_sq.c.project_id).label(
-                    "project_id"
-                ),
-                func.coalesce(overdue_sq.c.overdue_actions, 0).label("overdue_actions"),
-                func.coalesce(blocking_sq.c.blocking_overdue, 0).label("blocking_overdue"),
-            ).select_from(
-                overdue_sq.outerjoin(
-                    blocking_sq,
-                    overdue_sq.c.project_id == blocking_sq.c.project_id,
-                    full=True,
-                )
-            )
-        )
-    ).all()
-    return {
-        row.project_id: (int(row.overdue_actions), int(row.blocking_overdue)) for row in rows
-    }
-
-
-async def ensure_org_time_sensitive_summary_counts(
-    session: AsyncSession,
-    org_id: UUID | None,
     *,
     today: date | None = None,
-) -> int:
-    """Refresh date-dependent counts once per org per UTC day. Returns DB execute count."""
-    if org_id is None:
-        return 0
+    refreshed_at: datetime | None = None,
+) -> GovernanceDailySummaryRefreshResult:
+    """Refresh all stale UTC-day counts in one locked PostgreSQL statement.
 
-    today = today or datetime.now(UTC).date()
-    if _org_summary_day_refreshed.get(org_id) == today:
-        return 0
+    The advisory transaction lock prevents duplicate cross-worker refresh work. The update is
+    idempotent: after one successful execution, `updated_at` is within the target UTC day and a
+    retry updates zero rows. The caller owns commit/rollback and post-commit cache invalidation.
+    """
+    business_date = today or datetime.now(UTC).date()
+    now = refreshed_at or datetime.now(UTC)
+    if now.tzinfo is None:
+        raise ValueError("refreshed_at must be timezone-aware")
+    day_start = datetime.combine(business_date, time.min, tzinfo=UTC)
 
-    has_stale = (
-        await session.execute(
-            select(1)
-            .where(
-                ProjectGovernanceSummary.org_id == org_id,
-                func.date(ProjectGovernanceSummary.updated_at) < today,
-            )
-            .limit(1)
+    summary = ProjectGovernanceSummary
+    overdue_actions = (
+        select(func.count(GovernanceAction.id))
+        .where(
+            GovernanceAction.org_id == summary.org_id,
+            GovernanceAction.project_id == summary.project_id,
+            GovernanceAction.deleted_at.is_(None),
+            _overdue_action_filter(business_date),
         )
-    ).scalar_one_or_none()
-    db_executes = 1
-
-    if has_stale is None:
-        _org_summary_day_refreshed[org_id] = today
-        return db_executes
-
-    stale_summaries = (
-        await session.execute(
-            select(ProjectGovernanceSummary).where(
-                ProjectGovernanceSummary.org_id == org_id,
-                func.date(ProjectGovernanceSummary.updated_at) < today,
-            )
+        .correlate(summary)
+        .scalar_subquery()
+    )
+    blocking_overdue = (
+        select(func.count(ProjectDependency.id))
+        .where(
+            ProjectDependency.org_id == summary.org_id,
+            ProjectDependency.project_id == summary.project_id,
+            ProjectDependency.deleted_at.is_(None),
+            _blocking_overdue_dependency_filter(business_date),
         )
-    ).scalars().all()
-    db_executes += 1
+        .correlate(summary)
+        .scalar_subquery()
+    )
 
-    counts_by_project = await _fetch_org_time_sensitive_counts(session, org_id, today=today)
-    db_executes += 1
-    now = datetime.now(UTC)
-
-    for summary in stale_summaries:
-        overdue_actions, blocking_overdue = counts_by_project.get(summary.project_id, (0, 0))
-        summary.overdue_actions_count = overdue_actions
-        summary.blocking_overdue_dependencies_count = blocking_overdue
-        summary.updated_at = now
-
-    await session.flush()
-    _org_summary_day_refreshed[org_id] = today
-    return db_executes
+    lock_acquired = select(
+        func.pg_try_advisory_xact_lock(GOVERNANCE_DAILY_SUMMARY_REFRESH_LOCK_KEY)
+    ).scalar_subquery()
+    stmt = (
+        update(summary)
+        .where(
+            summary.updated_at < day_start,
+            lock_acquired.is_(True),
+        )
+        .values(
+            overdue_actions_count=overdue_actions,
+            blocking_overdue_dependencies_count=blocking_overdue,
+            updated_at=now,
+        )
+        .returning(summary.org_id, summary.project_id)
+    )
+    started = perf_counter()
+    rows = (await session.execute(stmt)).all()
+    duration_ms = round((perf_counter() - started) * 1000, 1)
+    return GovernanceDailySummaryRefreshResult(
+        business_date=business_date,
+        rows_refreshed=len(rows),
+        org_ids=tuple(sorted({row.org_id for row in rows}, key=str)),
+        execute_count=1,
+        duration_ms=duration_ms,
+    )

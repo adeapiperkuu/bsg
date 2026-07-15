@@ -15,22 +15,18 @@ import { toast } from "sonner";
 import { AiBadge, Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
 import { DeliveryMarkdown } from "@/components/delivery/delivery-markdown";
 import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { GovernanceJobProgress } from "@/features/governance/GovernanceJobProgress";
+import { useGovernanceJob } from "@/features/governance/useGovernanceJob";
 import {
   approveGovernanceWeeklySummary,
   exportGovernanceWeeklySummary,
   generateGovernanceWeeklySummary,
   governanceWeeklySummariesQueryOptions,
+  governanceWeeklySummaryDetailQueryOptions,
   governanceWeeklySummaryQueryOptions,
 } from "@/lib/queries/governance";
 import { queryKeys } from "@/lib/queries/keys";
-import type { GovernanceWeeklySummary } from "@/types/governance";
+import type { GovernanceWeeklySummary, GovernanceWeeklySummaryListItem } from "@/types/governance";
 
 function formatTimestamp(value: string | null): string {
   if (!value) return "-";
@@ -64,22 +60,37 @@ function filenameFor(summary: GovernanceWeeklySummary, format: "pdf" | "docx"): 
   return `governance_weekly_summary_${summary.summary_week}.${format}`;
 }
 
+type WeeklySummaryVersion = GovernanceWeeklySummary | GovernanceWeeklySummaryListItem;
+
+function evidenceCount(summary: WeeklySummaryVersion): number {
+  return "evidence_links" in summary ? summary.evidence_links.length : summary.evidence_link_count;
+}
+
 export function GovernanceWeeklySummaryPanel({ canManage }: { canManage: boolean }) {
   const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<"pdf" | "docx" | null>(null);
+  const [historyRequested, setHistoryRequested] = useState(false);
 
   const latestQuery = useQuery(governanceWeeklySummaryQueryOptions);
-  const historyQuery = useQuery(governanceWeeklySummariesQueryOptions);
+  const historyQuery = useQuery({
+    ...governanceWeeklySummariesQueryOptions,
+    enabled: historyRequested,
+  });
   const versions = useMemo(() => {
-    if (historyQuery.data?.length) {
-      return historyQuery.data.map((summary) =>
-        summary.id === latestQuery.data?.id ? latestQuery.data : summary,
-      );
+    const latest = latestQuery.data;
+    const history = historyQuery.data ?? [];
+    if (history.length) {
+      const byId = new Map<string, WeeklySummaryVersion>();
+      for (const summary of history) byId.set(summary.id, summary);
+      if (latest) byId.set(latest.id, latest);
+      const ordered = history.map((summary) => byId.get(summary.id) ?? summary);
+      if (latest && !history.some((summary) => summary.id === latest.id)) ordered.unshift(latest);
+      return ordered;
     }
-    return latestQuery.data ? [latestQuery.data] : [];
+    return latest ? [latest] : [];
   }, [historyQuery.data, latestQuery.data]);
-  const selected = useMemo(
+  const selectedVersion = useMemo(
     () =>
       versions.find((summary) => summary.id === selectedId) ??
       latestQuery.data ??
@@ -87,17 +98,51 @@ export function GovernanceWeeklySummaryPanel({ canManage }: { canManage: boolean
       null,
     [latestQuery.data, selectedId, versions],
   );
+  const selectedDetailId =
+    selectedVersion?.id && selectedVersion.id !== latestQuery.data?.id ? selectedVersion.id : null;
+  const selectedDetailQuery = useQuery({
+    ...governanceWeeklySummaryDetailQueryOptions(selectedDetailId ?? "__none__"),
+    enabled: Boolean(selectedDetailId),
+  });
+  const selected =
+    selectedDetailId != null ? (selectedDetailQuery.data ?? null) : (latestQuery.data ?? null);
+  const selectedMeta = selected ?? selectedVersion ?? latestQuery.data ?? null;
+  const selectedDetailLoading = Boolean(selectedDetailId) && selectedDetailQuery.isLoading;
+  const selectedDetailError = Boolean(selectedDetailId) && selectedDetailQuery.isError;
 
   const refreshSummaryCache = async (summary: GovernanceWeeklySummary) => {
-    queryClient.setQueryData(queryKeys.governanceWeeklySummary, summary);
     setSelectedId(summary.id);
-    await queryClient.invalidateQueries({ queryKey: queryKeys.governanceWeeklySummaries });
+    queryClient.setQueryData(queryKeys.governanceWeeklySummaryDetail(summary.id), summary);
+    if (latestQuery.data?.id === summary.id) {
+      queryClient.setQueryData(queryKeys.governanceWeeklySummary, summary);
+    }
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.governanceWeeklySummary }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.governanceWeeklySummaries }),
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.governanceWeeklySummaryDetail(summary.id),
+      }),
+    ]);
   };
+  const generationJob = useGovernanceJob({
+    jobType: "weekly_summary_generate",
+    enabled: canManage,
+    onSucceeded: async (job) => {
+      if (job.result_record_id) setSelectedId(job.result_record_id);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.governanceWeeklySummary });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.governanceWeeklySummaries });
+      toast.success("Weekly governance summary generated for review.");
+    },
+  });
   const generateMutation = useMutation({
     mutationFn: generateGovernanceWeeklySummary,
-    onSuccess: async (summary) => {
-      await refreshSummaryCache(summary);
-      toast.success("Weekly governance summary generated for review.");
+    onSuccess: (started) => {
+      generationJob.track(started);
+      toast.message(
+        started.deduplicated
+          ? "Weekly summary job already active."
+          : "Weekly summary generation queued.",
+      );
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "Generation failed."),
   });
@@ -109,7 +154,7 @@ export function GovernanceWeeklySummaryPanel({ canManage }: { canManage: boolean
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "Approval failed."),
   });
-  const busy = generateMutation.isPending || approveMutation.isPending;
+  const busy = generationJob.active || generateMutation.isPending || approveMutation.isPending;
 
   const download = async (summary: GovernanceWeeklySummary, format: "pdf" | "docx") => {
     setDownloading(format);
@@ -131,36 +176,56 @@ export function GovernanceWeeklySummaryPanel({ canManage }: { canManage: boolean
         title="Governance This Week"
         sub="AI-generated drafts, approval workflow, version history, and exports"
         right={
-          <Select
-            value={selected?.id ?? ""}
-            onValueChange={setSelectedId}
-            disabled={versions.length === 0 || historyQuery.isLoading}
+          <select
+            aria-label="Weekly summary version history"
+            className="h-8 w-56 rounded-md border border-input bg-transparent px-3 py-1 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            value={selectedMeta?.id ?? ""}
+            onFocus={() => setHistoryRequested(true)}
+            onMouseDown={() => setHistoryRequested(true)}
+            onChange={(event) => {
+              setSelectedId(event.target.value);
+              setHistoryRequested(true);
+            }}
+            disabled={latestQuery.isLoading || (versions.length === 0 && historyQuery.isLoading)}
           >
-            <SelectTrigger className="h-8 w-56 text-xs">
-              <SelectValue placeholder="Version history" />
-            </SelectTrigger>
-            <SelectContent data-governance-select-content>
-              {versions.map((summary, index) => (
-                <SelectItem key={summary.id} value={summary.id}>
-                  v{versions.length - index} - {formatWeek(summary.summary_week)} -{" "}
-                  {summary.status === "approved" ? "Approved" : "Draft"}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            {versions.length === 0 && <option value="">Version history</option>}
+            {versions.map((summary, index) => (
+              <option key={summary.id} value={summary.id}>
+                v{versions.length - index} - {formatWeek(summary.summary_week)} -{" "}
+                {summary.status === "approved" ? "Approved" : "Draft"}
+              </option>
+            ))}
+            {historyQuery.isLoading && (
+              <option value="__loading_weekly_history__" disabled>
+                Loading history...
+              </option>
+            )}
+            {historyRequested && !historyQuery.isLoading && versions.length === 0 && (
+              <option value="__empty_weekly_history__" disabled>
+                No history available
+              </option>
+            )}
+          </select>
         }
       />
 
       <div className="flex min-h-0 flex-1 flex-col">
+        <div className="mb-3">
+          <GovernanceJobProgress
+            job={generationJob.job}
+            onCancel={generationJob.cancel}
+            onRetry={generationJob.retry}
+            busy={generationJob.controlBusy}
+          />
+        </div>
         <div className="flex min-h-0 flex-1 flex-col rounded-md border border-border bg-elevated p-3">
-          {latestQuery.isLoading || historyQuery.isLoading ? (
+          {latestQuery.isLoading ? (
             <div
               role="status"
               aria-label="Loading weekly governance summary"
-              className="flex flex-1 items-center gap-2 text-sm text-muted-foreground"
+              className="flex flex-1 items-center justify-center text-muted-foreground"
             >
               <Loader2 className="h-4 w-4 animate-spin" />
-              Loading weekly summaries...
             </div>
           ) : latestQuery.isError ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
@@ -175,28 +240,57 @@ export function GovernanceWeeklySummaryPanel({ canManage }: { canManage: boolean
                 Retry
               </Button>
             </div>
-          ) : selected ? (
+          ) : selectedMeta ? (
             <div className="flex min-h-0 flex-1 flex-col">
               <div className="mb-3 flex flex-wrap items-center gap-2">
-                <StatusPill status={selected.status === "approved" ? "Approved" : "Draft"} />
-                {selected.generated_by_ai && <AiBadge label="AI Generated" />}
+                <StatusPill status={selectedMeta.status === "approved" ? "Approved" : "Draft"} />
+                {selectedMeta.generated_by_ai && <AiBadge label="AI Generated" />}
                 <span className="text-[10px] text-muted-foreground">
-                  {formatWeek(selected.summary_week)} generated{" "}
-                  {formatTimestamp(selected.created_at)}
+                  {formatWeek(selectedMeta.summary_week)} generated{" "}
+                  {formatTimestamp(selectedMeta.created_at)}
                 </span>
                 <span className="text-[10px] text-muted-foreground">
-                  {selected.evidence_links.length} evidence item
-                  {selected.evidence_links.length === 1 ? "" : "s"}
+                  {evidenceCount(selectedMeta)} evidence item
+                  {evidenceCount(selectedMeta) === 1 ? "" : "s"}
                 </span>
+                {historyQuery.isFetching && historyRequested && (
+                  <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Loading history
+                  </span>
+                )}
               </div>
-              {selected.approved_at && (
+              {selectedMeta.approved_at && (
                 <p className="mb-2 text-[10px] text-muted-foreground">
-                  Approved {formatTimestamp(selected.approved_at)}
-                  {selected.approved_by_name ? ` by ${selected.approved_by_name}` : ""}
+                  Approved {formatTimestamp(selectedMeta.approved_at)}
+                  {selectedMeta.approved_by_name ? ` by ${selectedMeta.approved_by_name}` : ""}
                 </p>
               )}
               <div className="min-h-0 flex-1 overflow-y-auto rounded border border-border bg-background/60 p-3">
-                <DeliveryMarkdown content={selected.summary_text} />
+                {selectedDetailLoading ? (
+                  <div
+                    role="status"
+                    aria-label="Loading selected weekly governance summary"
+                    className="flex h-full items-center justify-center text-muted-foreground"
+                  >
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  </div>
+                ) : selectedDetailError ? (
+                  <div className="space-y-2 text-sm text-muted-foreground">
+                    <p>Could not load the selected weekly summary.</p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-[11px]"
+                      onClick={() => void selectedDetailQuery.refetch()}
+                    >
+                      Retry
+                    </Button>
+                  </div>
+                ) : selected ? (
+                  <DeliveryMarkdown content={selected.summary_text} />
+                ) : null}
               </div>
               <div className="mt-3 flex shrink-0 flex-wrap items-center gap-2">
                 <Button
@@ -204,8 +298,8 @@ export function GovernanceWeeklySummaryPanel({ canManage }: { canManage: boolean
                   size="sm"
                   variant="outline"
                   className="h-7 text-[11px]"
-                  disabled={downloading === "pdf"}
-                  onClick={() => void download(selected, "pdf")}
+                  disabled={!selected || downloading === "pdf"}
+                  onClick={() => selected && void download(selected, "pdf")}
                 >
                   {downloading === "pdf" ? (
                     <Loader2 className="mr-1 h-3 w-3 animate-spin" />
@@ -219,8 +313,8 @@ export function GovernanceWeeklySummaryPanel({ canManage }: { canManage: boolean
                   size="sm"
                   variant="outline"
                   className="h-7 text-[11px]"
-                  disabled={downloading === "docx"}
-                  onClick={() => void download(selected, "docx")}
+                  disabled={!selected || downloading === "docx"}
+                  onClick={() => selected && void download(selected, "docx")}
                 >
                   {downloading === "docx" ? (
                     <Loader2 className="mr-1 h-3 w-3 animate-spin" />
@@ -231,7 +325,7 @@ export function GovernanceWeeklySummaryPanel({ canManage }: { canManage: boolean
                 </Button>
                 <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
                   <ShieldCheck className="h-3.5 w-3.5" />
-                  {selected.status === "approved"
+                  {selectedMeta.status === "approved"
                     ? "Official governance summary"
                     : "Human approval required before this summary becomes official"}
                 </span>
@@ -257,22 +351,22 @@ export function GovernanceWeeklySummaryPanel({ canManage }: { canManage: boolean
                 disabled={busy}
                 onClick={() => generateMutation.mutate()}
               >
-                {generateMutation.isPending ? (
+                {generateMutation.isPending || generationJob.active ? (
                   <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                ) : selected ? (
+                ) : selectedMeta ? (
                   <RefreshCw className="mr-1 h-3.5 w-3.5" />
                 ) : (
                   <Sparkles className="mr-1 h-3.5 w-3.5" />
                 )}
-                {selected ? "Generate new version" : "Generate summary"}
+                {selectedMeta ? "Generate new version" : "Generate summary"}
               </Button>
             )}
-            {canManage && selected?.status === "draft" && (
+            {canManage && selectedMeta?.status === "draft" && (
               <Button
                 type="button"
                 size="sm"
                 disabled={busy}
-                onClick={() => approveMutation.mutate(selected.id)}
+                onClick={() => approveMutation.mutate(selectedMeta.id)}
               >
                 {approveMutation.isPending ? (
                   <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />

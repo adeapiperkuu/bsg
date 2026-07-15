@@ -1,4 +1,4 @@
-import { queryOptions } from "@tanstack/react-query";
+import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import { apiFetch, apiFetchBlob } from "@/lib/api";
 import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
 import type {
@@ -7,7 +7,6 @@ import type {
   GovernanceActionListItem,
   GovernanceActionUpdatePayload,
   GovernanceAIRecommendation,
-  GovernanceAIRecommendationGenerationResult,
   GovernanceAIRecommendationList,
   GovernanceRecommendationConversion,
   GovernanceAnalytics,
@@ -28,9 +27,13 @@ import type {
   GovernanceWeeklySummary,
   GovernanceOptimizationCompare,
   GovernanceOptimizationSummary,
+  GovernanceProjectSheet,
+  GovernanceJob,
+  GovernanceJobStart,
   GovernanceRegisterRowApi,
   GovernanceRecordEvidenceLink,
   GovernanceSourceRecommendation,
+  GovernanceWeeklySummaryListItem,
   PaginatedGovernanceList,
   ProjectCharter,
   ProjectCharterGeneratePayload,
@@ -43,9 +46,68 @@ import type {
   ProjectScopeStateUpdatePayload,
   ConvertRecommendationToActionPayload,
   ConvertRecommendationToEscalationPayload,
-  EscalationSuggestionScanResult,
-  EscalationSuggestionScanHistory,
 } from "@/types/governance";
+
+export type GovernanceJobListParams = {
+  job_type?: string;
+  project_id?: string;
+  active_only?: boolean;
+  limit?: number;
+};
+
+export async function getGovernanceJob(jobId: string): Promise<GovernanceJob> {
+  const body = await apiFetch<{ data: GovernanceJob }>(`/governance/jobs/${jobId}`);
+  return body.data;
+}
+
+export async function listGovernanceJobs(
+  params: GovernanceJobListParams = {},
+): Promise<GovernanceJob[]> {
+  const qs = new URLSearchParams();
+  if (params.job_type) qs.set("job_type", params.job_type);
+  if (params.project_id) qs.set("project_id", params.project_id);
+  if (params.active_only != null) qs.set("active_only", String(params.active_only));
+  if (params.limit != null) qs.set("limit", String(params.limit));
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  const body = await apiFetch<{ data: GovernanceJob[] }>(`/governance/jobs${suffix}`);
+  return body.data;
+}
+
+export function governanceJobQueryOptions(jobId: string) {
+  return queryOptions({
+    queryKey: queryKeys.governanceJob(jobId),
+    queryFn: () => getGovernanceJob(jobId),
+    staleTime: 0,
+  });
+}
+
+export function governanceJobsQueryOptions(params: GovernanceJobListParams = {}) {
+  return queryOptions({
+    queryKey: queryKeys.governanceJobs(params),
+    queryFn: () => listGovernanceJobs(params),
+    staleTime: 0,
+  });
+}
+
+export async function cancelGovernanceJob(jobId: string): Promise<GovernanceJob> {
+  const body = await apiFetch<{ data: GovernanceJob }>(`/governance/jobs/${jobId}/cancel`, {
+    method: "POST",
+    headers: { "X-BSG-User-Action": "true" },
+  });
+  return body.data;
+}
+
+export async function retryGovernanceJob(jobId: string): Promise<GovernanceJob> {
+  const body = await apiFetch<{ data: GovernanceJob }>(`/governance/jobs/${jobId}/retry`, {
+    method: "POST",
+    headers: { "X-BSG-User-Action": "true" },
+  });
+  return body.data;
+}
+
+export async function downloadGovernanceJob(jobId: string): Promise<Blob> {
+  return apiFetchBlob(`/governance/jobs/${jobId}/download`);
+}
 
 export async function getGovernanceWeeklySummary(): Promise<GovernanceWeeklySummary | null> {
   const body = await apiFetch<{ data: GovernanceWeeklySummary | null }>(
@@ -54,24 +116,34 @@ export async function getGovernanceWeeklySummary(): Promise<GovernanceWeeklySumm
   return body.data;
 }
 
-export async function listGovernanceWeeklySummaries(
-  limit = 12,
-): Promise<GovernanceWeeklySummary[]> {
-  const body = await apiFetch<{ data: GovernanceWeeklySummary[] }>(
-    `/governance/weekly-summaries?limit=${limit}`,
+export async function getGovernanceWeeklySummaryById(
+  summaryId: string,
+): Promise<GovernanceWeeklySummary> {
+  const body = await apiFetch<{ data: GovernanceWeeklySummary }>(
+    `/governance/weekly-summary/${summaryId}`,
   );
   return body.data;
 }
 
-export async function generateGovernanceWeeklySummary(): Promise<GovernanceWeeklySummary> {
-  const body = await apiFetch<{ data: GovernanceWeeklySummary }>(
-    "/governance/weekly-summary/generate",
-    {
-      method: "POST",
-      headers: { "X-BSG-User-Action": "true" },
-      body: JSON.stringify({}),
-    },
+export async function listGovernanceWeeklySummaries(
+  limit = 12,
+): Promise<GovernanceWeeklySummaryListItem[]> {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    include_detail: "false",
+  });
+  const body = await apiFetch<{ data: GovernanceWeeklySummaryListItem[] }>(
+    `/governance/weekly-summaries?${params.toString()}`,
   );
+  return body.data;
+}
+
+export async function generateGovernanceWeeklySummary(): Promise<GovernanceJobStart> {
+  const body = await apiFetch<{ data: GovernanceJobStart }>("/governance/weekly-summary/generate", {
+    method: "POST",
+    headers: { "X-BSG-User-Action": "true" },
+    body: JSON.stringify({}),
+  });
   return body.data;
 }
 
@@ -95,14 +167,31 @@ export async function exportGovernanceWeeklySummary(
 export const governanceWeeklySummaryQueryOptions = queryOptions({
   queryKey: queryKeys.governanceWeeklySummary,
   queryFn: getGovernanceWeeklySummary,
-  staleTime: STALE_TIME_MS,
+  staleTime: Math.max(STALE_TIME_MS, 10 * 60 * 1000),
+  refetchOnMount: false,
+  refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
 });
 
 export const governanceWeeklySummariesQueryOptions = queryOptions({
   queryKey: queryKeys.governanceWeeklySummaries,
   queryFn: () => listGovernanceWeeklySummaries(),
-  staleTime: STALE_TIME_MS,
+  staleTime: Math.max(STALE_TIME_MS, 10 * 60 * 1000),
+  refetchOnMount: false,
+  refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
 });
+
+export function governanceWeeklySummaryDetailQueryOptions(summaryId: string) {
+  return queryOptions({
+    queryKey: queryKeys.governanceWeeklySummaryDetail(summaryId),
+    queryFn: () => getGovernanceWeeklySummaryById(summaryId),
+    staleTime: Math.max(STALE_TIME_MS, 10 * 60 * 1000),
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+}
 
 function governanceListQueryString(params?: GovernanceListParams): string {
   if (!params) return "";
@@ -168,20 +257,73 @@ export async function publishClientEscalationSummary(
   return body.data;
 }
 
-export async function listProjectCharters(projectId?: string): Promise<ProjectCharter[]> {
-  const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
-  const body = await apiFetch<{ data: ProjectCharter[] }>(`/governance/project-charters${qs}`);
+export type ProjectCharterListParams = {
+  projectId?: string;
+  selectedCharterId?: string | null;
+  limit?: number;
+  offset?: number;
+  includeDetail?: boolean;
+};
+
+export async function listProjectCharters(
+  projectIdOrParams?: string | ProjectCharterListParams,
+): Promise<ProjectCharter[]> {
+  const params =
+    typeof projectIdOrParams === "string" ? { projectId: projectIdOrParams } : projectIdOrParams;
+  const qs = new URLSearchParams();
+  if (params?.projectId) qs.set("project_id", params.projectId);
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  if (params?.offset != null) qs.set("offset", String(params.offset));
+  if (params?.includeDetail != null) qs.set("include_detail", String(params.includeDetail));
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  const body = await apiFetch<{ data: ProjectCharter[] }>(`/governance/project-charters${suffix}`);
+  return body.data;
+}
+
+export async function getProjectChartersPanel(
+  params: ProjectCharterListParams,
+): Promise<import("@/types/governance").ProjectChartersPanelData> {
+  const qs = new URLSearchParams();
+  if (params.projectId) qs.set("project_id", params.projectId);
+  if (params.selectedCharterId) qs.set("selected_charter_id", params.selectedCharterId);
+  if (params.limit != null) qs.set("limit", String(params.limit));
+  if (params.offset != null) qs.set("offset", String(params.offset));
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  const body = await apiFetch<{ data: import("@/types/governance").ProjectChartersPanelData }>(
+    `/governance/project-charters/panel${suffix}`,
+  );
+  return body.data;
+}
+
+export function governanceProjectChartersPanelQueryOptions(params: ProjectCharterListParams) {
+  return queryOptions({
+    queryKey: queryKeys.governanceProjectChartersPanel(params),
+    queryFn: () => getProjectChartersPanel(params),
+    staleTime: Math.max(STALE_TIME_MS, 10 * 60 * 1000),
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+}
+
+export async function getProjectCharter(charterId: string): Promise<ProjectCharter> {
+  const body = await apiFetch<{ data: ProjectCharter }>(
+    `/governance/project-charters/${charterId}`,
+  );
   return body.data;
 }
 
 export async function generateProjectCharter(
   payload: ProjectCharterGeneratePayload,
-): Promise<ProjectCharter> {
-  const body = await apiFetch<{ data: ProjectCharter }>("/governance/project-charters/generate", {
-    method: "POST",
-    headers: { "X-BSG-User-Action": "true" },
-    body: JSON.stringify(payload),
-  });
+): Promise<GovernanceJobStart> {
+  const body = await apiFetch<{ data: GovernanceJobStart }>(
+    "/governance/project-charters/generate",
+    {
+      method: "POST",
+      headers: { "X-BSG-User-Action": "true" },
+      body: JSON.stringify(payload),
+    },
+  );
   return body.data;
 }
 
@@ -258,6 +400,21 @@ export async function retryProjectCharterPublication(
 ): Promise<ProjectCharter> {
   const body = await apiFetch<{ data: ProjectCharter }>(
     `/governance/project-charters/${charterId}/retry-publication`,
+    {
+      method: "POST",
+      headers: { "X-BSG-User-Action": "true" },
+      body: JSON.stringify({ reason: reason ?? null }),
+    },
+  );
+  return body.data;
+}
+
+export async function unpublishProjectCharter(
+  charterId: string,
+  reason?: string,
+): Promise<ProjectCharter> {
+  const body = await apiFetch<{ data: ProjectCharter }>(
+    `/governance/project-charters/${charterId}/unpublish`,
     {
       method: "POST",
       headers: { "X-BSG-User-Action": "true" },
@@ -365,11 +522,21 @@ export function mergeGovernanceAnalytics(
 
 export async function exportGovernanceAnalytics(
   filters: GovernanceAnalyticsFilters | number,
-  format: "csv" | "pdf",
-): Promise<Blob> {
+  format: "csv",
+): Promise<GovernanceJobStart> {
   const normalized: GovernanceAnalyticsFilters =
     typeof filters === "number" ? { days: filters } : filters;
-  return apiFetchBlob(`/governance/analytics/export.${format}?${analyticsQueryString(normalized)}`);
+  const body = await apiFetch<{ data: GovernanceJobStart }>("/governance/analytics/exports", {
+    method: "POST",
+    headers: { "X-BSG-User-Action": "true" },
+    body: JSON.stringify({
+      days: normalized.days,
+      project_id: normalized.projectId ?? null,
+      vertical: normalized.vertical ?? null,
+      format,
+    }),
+  });
+  return body.data;
 }
 
 export const governanceBootstrapQueryOptions = queryOptions({
@@ -585,6 +752,15 @@ export async function getGovernanceRegister(
   return toPaginatedGovernanceList(body);
 }
 
+export async function getGovernanceProjectSheet(
+  projectId: string,
+): Promise<GovernanceProjectSheet> {
+  const body = await apiFetch<{ data: GovernanceProjectSheet }>(
+    `/governance/project-sheet/${projectId}`,
+  );
+  return body.data;
+}
+
 const governanceLazyQueryDefaults = {
   staleTime: Math.max(STALE_TIME_MS, 10 * 60 * 1000),
   refetchOnMount: false,
@@ -629,6 +805,23 @@ export function governanceRegisterQueryOptions(params?: GovernanceListParams) {
     queryKey: queryKeys.governanceRegister(params),
     queryFn: () => getGovernanceRegister(params),
     ...governanceLazyQueryDefaults,
+  });
+}
+
+export function governanceProjectSheetQueryOptions(projectId: string) {
+  return queryOptions({
+    queryKey: queryKeys.governanceProjectSheet(projectId),
+    queryFn: () => getGovernanceProjectSheet(projectId),
+    ...governanceLazyQueryDefaults,
+  });
+}
+
+export function invalidateGovernanceProjectSheet(
+  queryClient: QueryClient,
+  projectId: string,
+): Promise<void> {
+  return queryClient.invalidateQueries({
+    queryKey: queryKeys.governanceProjectSheet(projectId),
   });
 }
 
@@ -707,8 +900,8 @@ export async function generateGovernanceAIRecommendations(payload: {
   project_id?: string;
   scope?: "project" | "portfolio";
   force?: boolean;
-}): Promise<GovernanceAIRecommendationGenerationResult> {
-  const body = await apiFetch<{ data: GovernanceAIRecommendationGenerationResult }>(
+}): Promise<GovernanceJobStart> {
+  const body = await apiFetch<{ data: GovernanceJobStart }>(
     "/governance/ai-recommendations/generate",
     {
       method: "POST",
@@ -725,8 +918,8 @@ export async function generateGovernanceAIRecommendations(payload: {
 
 export async function regenerateGovernanceAIRecommendation(
   recommendationId: string,
-): Promise<GovernanceAIRecommendationGenerationResult> {
-  const body = await apiFetch<{ data: GovernanceAIRecommendationGenerationResult }>(
+): Promise<GovernanceJobStart> {
+  const body = await apiFetch<{ data: GovernanceJobStart }>(
     `/governance/ai-recommendations/${recommendationId}/regenerate`,
     {
       method: "POST",
@@ -787,104 +980,6 @@ export async function convertGovernanceAIRecommendationToEscalation(
 ): Promise<GovernanceRecommendationConversion> {
   const body = await apiFetch<{ data: GovernanceRecommendationConversion }>(
     `/governance/ai-recommendations/${recommendationId}/convert/escalation`,
-    {
-      method: "POST",
-      headers: { "X-BSG-User-Action": "true" },
-      body: JSON.stringify(payload),
-    },
-  );
-  return body.data;
-}
-
-export async function listEscalationSuggestions(
-  params: {
-    project_id?: string;
-    status?: string;
-    trigger_type?: string;
-    limit?: number;
-    offset?: number;
-  } = {},
-): Promise<GovernanceAIRecommendation[]> {
-  const qs = new URLSearchParams();
-  if (params.project_id) qs.set("project_id", params.project_id);
-  if (params.status) qs.set("status", params.status);
-  if (params.trigger_type) qs.set("trigger_type", params.trigger_type);
-  if (params.limit != null) qs.set("limit", String(params.limit));
-  if (params.offset != null) qs.set("offset", String(params.offset));
-  const suffix = qs.toString() ? `?${qs.toString()}` : "";
-  const body = await apiFetch<{ data: GovernanceAIRecommendation[] }>(
-    `/governance/escalation-suggestions${suffix}`,
-  );
-  return body.data;
-}
-
-export function escalationSuggestionsQueryOptions(
-  params: {
-    project_id?: string;
-    status?: string;
-    limit?: number;
-  } = {},
-) {
-  return queryOptions({
-    queryKey: ["governance", "escalation-suggestions", params],
-    queryFn: () => listEscalationSuggestions(params),
-    staleTime: STALE_TIME_MS,
-  });
-}
-
-export async function listEscalationSuggestionScans(
-  params: {
-    project_id?: string;
-    limit?: number;
-  } = {},
-): Promise<EscalationSuggestionScanHistory[]> {
-  const qs = new URLSearchParams();
-  if (params.project_id) qs.set("project_id", params.project_id);
-  if (params.limit != null) qs.set("limit", String(params.limit));
-  const suffix = qs.toString() ? `?${qs.toString()}` : "";
-  const body = await apiFetch<{ data: EscalationSuggestionScanHistory[] }>(
-    `/governance/escalation-suggestions/scans${suffix}`,
-  );
-  return body.data;
-}
-
-export function escalationSuggestionScansQueryOptions(
-  params: {
-    project_id?: string;
-    limit?: number;
-  } = {},
-) {
-  return queryOptions({
-    queryKey: ["governance", "escalation-suggestion-scans", params],
-    queryFn: () => listEscalationSuggestionScans(params),
-    staleTime: STALE_TIME_MS,
-  });
-}
-
-export async function scanEscalationSuggestions(payload: {
-  project_id?: string;
-  force?: boolean;
-}): Promise<EscalationSuggestionScanResult> {
-  const body = await apiFetch<{ data: EscalationSuggestionScanResult }>(
-    "/governance/escalation-suggestions/scan",
-    {
-      method: "POST",
-      headers: { "X-BSG-User-Action": "true" },
-      body: JSON.stringify({
-        project_id: payload.project_id ?? null,
-        force: payload.force ?? false,
-      }),
-    },
-  );
-  return body.data;
-}
-
-export async function snoozeEscalationSuggestion(
-  suggestionId: string,
-  payload: { days?: number; reason?: string } = {},
-): Promise<GovernanceAIRecommendation> {
-  const body = await apiFetch<{ data: GovernanceAIRecommendation }>(
-    `/governance/escalation-suggestions/${suggestionId}/snooze`,
     {
       method: "POST",
       headers: { "X-BSG-User-Action": "true" },

@@ -65,16 +65,10 @@ def test_dependencies_filtered_and_offset_are_not_cacheable() -> None:
         )
         is False
     )
+    assert _is_default_dependencies_cacheable(_bounded_list_filters(limit=6, offset=6)) is False
+    assert _is_default_dependencies_cacheable(_bounded_list_filters(limit=25, offset=0)) is False
     assert (
-        _is_default_dependencies_cacheable(_bounded_list_filters(limit=6, offset=6)) is False
-    )
-    assert (
-        _is_default_dependencies_cacheable(_bounded_list_filters(limit=25, offset=0)) is False
-    )
-    assert (
-        _is_default_dependencies_cacheable(
-            _bounded_list_filters(limit=6, offset=0, status="open")
-        )
+        _is_default_dependencies_cacheable(_bounded_list_filters(limit=6, offset=0, status="open"))
         is False
     )
 
@@ -248,9 +242,7 @@ async def test_dependencies_write_invalidation_clears_limit_6(
 
 def test_register_limit_6_is_cacheable() -> None:
     assert (
-        _is_default_register_cacheable(
-            limit=6, offset=0, project_id=None, status=None, search=None
-        )
+        _is_default_register_cacheable(limit=6, offset=0, project_id=None, status=None, search=None)
         is True
     )
     assert (
@@ -272,9 +264,7 @@ def test_register_limit_6_is_cacheable() -> None:
         is False
     )
     assert (
-        _is_default_register_cacheable(
-            limit=6, offset=6, project_id=None, status=None, search=None
-        )
+        _is_default_register_cacheable(limit=6, offset=6, project_id=None, status=None, search=None)
         is False
     )
 
@@ -310,11 +300,6 @@ async def test_register_limit_6_second_request_is_cache_hit(
         "app.agents.governance.services.register_service._execute_paginated_rows",
         _paginate,
     )
-    monkeypatch.setattr(
-        "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
-        AsyncMock(return_value=0),
-    )
-
     session = AsyncMock()
     first = await list_governance_register_page(session, user, limit=6, offset=0)
     second = await list_governance_register_page(session, user, limit=6, offset=0)
@@ -343,11 +328,6 @@ async def test_register_cache_isolates_orgs(
         "app.agents.governance.services.register_service._execute_paginated_rows",
         _paginate,
     )
-    monkeypatch.setattr(
-        "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
-        AsyncMock(return_value=0),
-    )
-
     session = AsyncMock()
     await list_governance_register_page(session, _user(), limit=6, offset=0)
     await list_governance_register_page(session, _user(), limit=6, offset=0)
@@ -372,11 +352,6 @@ async def test_register_write_invalidation_clears_limit_6(
         "app.agents.governance.services.register_service._execute_paginated_rows",
         _paginate,
     )
-    monkeypatch.setattr(
-        "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
-        AsyncMock(return_value=0),
-    )
-
     session = AsyncMock()
     await list_governance_register_page(session, user, limit=6, offset=0)
     assert len(_register_list_cache) == 1

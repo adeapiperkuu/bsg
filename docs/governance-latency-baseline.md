@@ -943,3 +943,505 @@ a separate style cleanup.
 ## Historical profiling notes
 
 Earlier sections (dependencies paginate-then-join, bootstrap KPI merge, analytics summary bundling, register summary table) remain useful engineering history. Those measurements often used `limit=50` / register `limit=25`. Prefer the Phase 0 tables above for dashboard first-page comparisons going forward; use the Phase 1 table for cache-hit comparisons.
+
+## Phase A1: Frontend request hygiene
+
+Implemented **2026-07-14**. This phase changes only frontend query enablement and request timing; it
+does not change API contracts, backend query shapes, cache policy, or the latency values measured in
+the earlier backend phases.
+
+### First-paint request lifecycle
+
+| Audience / moment | Before A1 (code-confirmed enablement) | After A1 (automated request-harness observation) |
+|-------------------|---------------------------------------|--------------------------------------------------|
+| Internal first paint | Bootstrap, dependencies, register, projects, and AI recommendations could start from mounted dashboard sections | Bootstrap and dependencies (`limit=6`) start together; register, projects, and AI recommendations are absent |
+| Internal progressive analytics | Summary deferred by the existing timer; detail deferred by visibility | Unchanged: summary remains deferred and detail remains visibility-gated |
+| Client first paint | Bootstrap plus the standard client escalations list | Unchanged: bootstrap plus standard client escalations |
+| Register tab | Data could already be in flight before selection | Register and portfolio queries enable when the user selects Register; React Query reuses the cached result on later visits |
+| Project-dependent workflows | Full project list could load because executive analytics was mounted | Project list enables only for an open project filter/dialog or another workflow that needs project metadata |
+| AI recommendations | List could load as soon as the recommendations section mounted | List enables only after the recommendations area becomes visible; generation/regeneration remain explicit actions |
+
+The post-A1 first-paint budget is therefore **2 critical internal requests** (bootstrap and
+dependencies) or **2 critical client requests** (bootstrap and standard client escalations).
+Analytics summary/detail remain progressive work outside that initial budget.
+
+### Validation boundary
+
+Measured in the Vitest request harness on 2026-07-14: deferred endpoints are absent on initial
+render, register/project queries start after their interactions, cached register data is reused, and
+the standard client escalation request is not suppressed. These observations verify frontend query
+enablement and ordering, not real-network duration.
+
+A production build and the focused A1 test results are recorded in the implementation handoff. A
+fresh backend benchmark was completed with the existing script; its values are backend service
+measurements, not browser first-paint timings. Browser DevTools
+waterfall timing remains a manual production-like validation step because the automated harness does
+not emulate deployment RTT or an authenticated browser session.
+
+### A1-day backend benchmark snapshot
+
+Measured **2026-07-14** against the configured remote Supabase database with the existing benchmark
+script. These cold-cache/warm-pool values exclude each endpoint's first warm-up sample. They provide
+current request-cost context only; A1 did not modify these backend paths.
+
+| Endpoint | Service p50 | Service p95 | Miss executes |
+|----------|-------------|-------------|---------------|
+| Bootstrap, internal | 1183.1 ms | 1255.5 ms | 1 |
+| Dependencies first page | 1154.1 ms | 1206.2 ms | 1 |
+| Register first page | 1887.2 ms | 2099.0 ms | 4 |
+| Analytics summary | 1267.8 ms | 1335.5 ms | 1 |
+| Analytics detail | 2237.0 ms | 2702.5 ms | 3 |
+| Bootstrap, client | 1224.2 ms | 1808.5 ms | 1 |
+| Escalations first page, client | 935.2 ms | 939.8 ms | 1 |
+
+The detail execute count was **3** in this run, above the Phase 6 documented ceiling of 2. That is a
+backend follow-up signal and is not attributed to the A1 frontend-only changes.
+
+## Phase B: Actions and escalations first-page read caches
+
+Implemented and measured **2026-07-14**. Phase B adds bounded, process-local caching to the two
+remaining default first-page Governance list reads. It does not change cold database RTT, frontend
+request gating, response schemas, sorting, or arbitrary filtered request behavior.
+
+### Eligibility and TTL
+
+Only `limit=6`, `offset=0`, unfiltered requests are eligible. Any non-default `project_id`,
+`status`, `severity`, `dependency_type`, `owner_id`, `assigned_to`, `search`, `date_from`, or
+`date_to` bypasses the cache. Other limits and non-zero offsets also bypass it. Whitespace-only
+search is normalized to the existing unfiltered meaning.
+
+Both caches use a **60-second TTL**. Empty successful pages are cacheable. Expired entries are
+removed on lookup, and exceptions are never stored.
+
+### Key and authorization scope
+
+Both keys use:
+
+```text
+(effective_org_id, role, user_id, limit, offset)
+```
+
+`effective_org_id` is `None` for super-admin aggregate visibility and the concrete organization for
+all other users. `user_id` is intentionally retained even where current internal visibility is
+organization-wide. This conservative scope prevents entries from crossing users, roles, tenants,
+or client assignment sets.
+
+For clients, project assignment and `client_visible=true` remain database predicates in the same
+paginated escalation query. The previous separate assignment lookup was replaced by a correlated
+`EXISTS`, so an eligible assigned-client miss remains one execute. The cache stores only the final
+authorization-filtered page and returns a copied item list on hits.
+
+### Post-commit invalidation
+
+Actions and escalations are cleared through `invalidate_governance_read_caches_after_commit`, after
+successful commits. Direct create/update/status/publish/archive flows, recommendation conversions,
+delivery integration, and quality-triggered escalation creation already converge on this helper.
+Failed commits do not clear or replace a valid entry.
+
+Invalidation is **organization-scoped** for the two Phase B caches and also clears super-admin
+aggregate entries because those may contain rows from the mutated organization. Other organization
+entries remain warm. The older dependencies and register invalidators retain their existing broader
+behavior.
+
+### Measured benchmark
+
+Remote Supabase service benchmark, cold cache with warm pool; the first warm-up sample is excluded.
+Warm-hit rows are a separately primed in-process series using the same request shape.
+
+| Endpoint / audience | Request shape | Cold miss p50 | Cold miss p95 | Warm hit p50 | Warm hit p95 | Miss executes | Hit executes |
+|---------------------|---------------|--------------:|--------------:|-------------:|-------------:|--------------:|-------------:|
+| Actions, internal | `limit=6&offset=0`, unfiltered | 1170.2 ms | 1180.2 ms | 0.1 ms | 0.2 ms | 1 | 0 |
+| Escalations, internal | `limit=6&offset=0`, unfiltered | 1195.2 ms | 1224.4 ms | 0.2 ms | 0.3 ms | 1 | 0 |
+| Escalations, client | `limit=6&offset=0`, unfiltered | 1226.2 ms | 1252.7 ms | 0.1 ms | 0.2 ms | 1 | 0 |
+
+The benchmark client identity had no visible escalation rows; assigned-client authorization and
+cross-client isolation are covered separately by the Phase B SQL-predicate and cache-isolation
+tests. The measurements show a repeat-read cache benefit, not infrastructure colocation or a cold
+RTT improvement.
+
+### Validation and operating limits
+
+- Focused Phase B tests: **17 passed**.
+- Governance regression selection: **247 passed**, 506 deselected; one pre-existing AsyncMock
+  resource warning remains in the project-summary test.
+- Cache/security/pagination regression group: **62 passed**.
+- Ruff check and format check pass for the changed Python files.
+- Caches are per backend process. They are not shared across workers and provide no distributed
+  single-flight behavior.
+- Concurrent misses may duplicate the database read, but only complete page values are published;
+  dictionary lookup/write work is small and synchronous.
+- Direct database edits to project assignments outside application mutation paths can leave a
+  user-specific client entry valid until its 60-second TTL expires. There is currently no
+  application assignment-write endpoint to attach to the post-commit invalidator.
+
+## Phase D: Register day-rollover optimization
+
+Implemented and measured **2026-07-14**. Phase D moves UTC-day summary maintenance out of
+`GET /governance/register` and into the repository's existing APScheduler lifecycle. No schema,
+response, sorting, authorization, pagination, or frontend-gating changes were made.
+
+### Previous request flow
+
+After a register-cache miss, the GET path called
+`ensure_org_time_sensitive_summary_counts` before reading the page:
+
+1. Check for summary rows whose `updated_at` date was before the current UTC date.
+2. If stale rows existed, load those summary rows.
+3. Aggregate overdue actions and blocking overdue dependencies by project.
+4. Flush updated summary rows.
+5. Load the register page and pagination total.
+
+The service-level counter reported **4 executes** for the stale path because it counted the three
+explicit refresh reads plus the register page. The ORM flush could also emit an update statement
+that was not represented in that manual counter. More importantly, the GET service did not own a
+commit: the process-local "refreshed today" marker could advance while the session later rolled the
+summary updates back. That coupled correctness to one process and made cold/restarted paths repeat
+the remote work.
+
+If the in-process day marker was already warm, GET skipped refresh work; if the marker was cold but
+no rows were stale, it still paid a staleness-check execute before the page query.
+
+### Selected strategy and new flow
+
+The application already uses APScheduler, so Phase D uses a scheduled daily-refresh strategy:
+
+- An hourly catch-up trigger runs at minute 5 with `timezone=UTC`. The SQL predicate makes each
+  summary row eligible at most once per UTC day, so healthy operation performs daily work while an
+  hourly trigger provides retry after a missed start or transient failure.
+- One PostgreSQL `UPDATE ... RETURNING` statement refreshes all stale summary rows. Correlated
+  aggregate subqueries calculate the two date-sensitive fields.
+- `pg_try_advisory_xact_lock` is part of the same statement. It serializes refresh attempts across
+  processes; the `updated_at < UTC day start` predicate makes retries idempotent.
+- The scheduler commits before invalidating register cache entries. A failure rolls back, logs a
+  structured exception, preserves the previous committed summaries, and invalidates nothing.
+- A manual operator command uses the identical transaction and invalidation sequence:
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe scripts\refresh_governance_register_summaries.py
+```
+
+The normal GET flow is now simply: authorization and cache lookup, one existing paginated register
+query on a miss, then cache the final page. It performs no stale check, recomputation, or write.
+
+### Day semantics and cache behavior
+
+The business day is explicitly **UTC**. The refresh compares timezone-aware `updated_at` values to
+`00:00:00+00:00` for the target date. Server local time and daylight-saving transitions do not
+change the business date. The current product has no organization-timezone setting, so no local
+organization rollover is inferred.
+
+The existing 60-second first-page cache remains. Its key still includes effective organization,
+role, user, limit, and offset. Register invalidation is now organization-scoped and also removes
+super-admin aggregate entries. Central Governance mutations and scheduled refreshes invalidate only
+after commit.
+
+GET timing metadata now includes `summary_refresh_required=false`,
+`summary_refresh_performed=false`, `summary_refresh_ms=0`, `summary_rows_refreshed=0`, and
+`register_row_count`, alongside the existing cache and execute fields. The scheduled operation logs
+its UTC business date, refreshed rows, organization count, execute count, refresh duration, and
+post-commit cache removals.
+
+### Measured results
+
+The backend ran locally without Docker and connected to the configured remote Supabase session
+pooler. The rollover simulation marked rows stale and performed the refresh inside a transaction
+that was rolled back after every sample; it persisted no benchmark changes. The simulated first
+and second reads reused that transaction/connection, so their latency is not directly comparable to
+a new production HTTP connection.
+
+| Scenario | Historical before executes | Phase D executes | Phase D p50 | Phase D p95 |
+|----------|---------------------------:|-----------------:|------------:|------------:|
+| Same-day cold miss | 4 measured on the prior stale/cold path | 1 | 1199.4 ms | 1262.4 ms |
+| Warm hit | 0 measured | 0 | 0.179 ms | 0.359 ms |
+| Scheduled rollover refresh | 3 refresh reads plus an uncounted flush write | 1 | 354.2 ms | 360.5 ms |
+| First read after simulated rollover | 4 inferred from the previous blocking refresh path | 1 | 231.0 ms | 248.3 ms |
+| Second read after simulated rollover | 0 with a retained warm page | 0 | 0.101 ms | 0.321 ms |
+
+The historical before values come from the documented pre-Phase-D service flow and earlier remote
+register benchmark. Only the Phase D columns were measured by the new rolled-back benchmark. Cold
+RTT remains a deployment-topology cost; Phase D removes round trips rather than claiming database
+colocation.
+
+The full Governance baseline script also completed after Phase D and independently measured the
+register at **1155.2 ms p50**, **1208.7 ms p95**, **1 execute** on a miss, and **0 executes** on a
+hit (0.4 ms p50 in that series).
+
+### Validation and failure boundaries
+
+- Focused Phase D tests: **8 passed**.
+- Combined focused register/cache/timing tests: **61 passed**.
+- Governance-selected regression suite: **255 passed**, 506 deselected.
+- Full backend suite: **761 passed**.
+- The refresh is an update-only operation and relies on the existing unique organization/project
+  summary index; it cannot create duplicate daily rows.
+- Multiple workers may all trigger the job, but the transaction-scoped database lock and freshness
+  predicate prevent duplicate refresh work.
+- Register caches remain process-local. The worker that commits invalidates its affected entries;
+  another worker can retain its previous page for at most the remaining 60-second cache TTL because
+  this phase does not add cross-worker invalidation infrastructure.
+- Persistent scheduler/database failure can leave previous-day counts visible beyond one hour. The
+  failure is logged and retried at the next hourly minute-5 trigger; the previous committed summary
+  remains readable.
+- Missing summary rows are not created by the daily update, matching the previous day-refresh
+  behavior. Normal Governance mutations continue to create/refresh a project's summary.
+
+## Phase E: Project-sheet composite API
+
+Implemented and measured **2026-07-14**. Phase E replaces the project drawer's remote request
+fan-out with `GET /governance/project-sheet/{project_id}`. Existing list endpoints remain available
+for full tables, filters, pagination, exports, deep links, and mutations.
+
+### Confirmed previous request inventory
+
+This inventory comes from the mounted `GovernanceDashboard` and `ProjectGovernanceSheet` query
+conditions, not from all project-related APIs in the repository.
+
+| Request on sheet open | Purpose | Required initially | Previous executes |
+|-----------------------|---------|-------------------:|------------------:|
+| `/governance/dependencies?project_id=...` | First dependency rows | Internal only | 1 |
+| `/governance/actions?project_id=...` | First action rows | Internal only | 1 |
+| `/governance/escalations?project_id=...` | First authorized escalation rows | Yes | 1 |
+| `/governance/scope-states?project_id=...&limit=1` | Scope notes/state | Internal only | 1 |
+| `/projects/{project_id}/risk-alerts` | Delivery risks available for promotion | Delivery manager/super-admin only | 2 (project authorization plus list) |
+
+Thus the measured internal comparison is **5 HTTP requests / 6 executes**, not the plan's broader
+historical estimate of 5-8 for every role. A client sheet previously started only the standard
+client-visible escalation request; dependencies, actions, scope notes, and risk promotion were
+already role-gated. Register and delivery-portfolio reads belong to the selected Register tab, not
+the drawer-open event. Charters, AI recommendations, escalation-suggestion scans, analytics detail,
+audit history, exports, and activity feeds are interaction-gated and are not part of the composite.
+
+### Composite contract and bounds
+
+The response contains project identity/basic dates, a concise governance summary, internal scope
+details where authorized, dependency/action/escalation sections, concise delivery risks, permission
+flags, and `generated_at`. Each list section has `items`, `total`, and `has_more`; all four lists are
+bounded to **6** rows. No large charter text, recommendation explanations, evidence histories,
+binary/document metadata, or audit timelines are embedded.
+
+The successful path is one PostgreSQL statement. Its authorized-project CTE applies organization,
+role, and active client-assignment visibility before section data is joined. Internal-only sections
+remain empty for clients. Client escalations retain `client_visible=true`, replace the description
+with the published client summary, and remove source/assignee fields just as the individual endpoint
+does. Scope status/version remain visible because the existing register exposes them to authorized
+clients; scope notes and linked document metadata remain internal. Delivery risks remain restricted
+to delivery managers and super-admins, matching the previous sheet control.
+
+An authorized success executes once. If the authorized CTE returns no row, one bounded existence
+check preserves the existing 404-for-missing versus 403-for-forbidden behavior; failure paths can
+therefore execute twice. No composite cache was added.
+
+### Frontend integration and invalidation
+
+The drawer enables one stable React Query key,
+`["governance", "project-sheet", project_id]`, only while an identified sheet is open. It has one
+loading/error state. The old project-filtered dependencies, actions, escalations, scope, and risk
+queries no longer enable on initial sheet open. Selecting **View all** closes the drawer, applies the
+project filter, selects the relevant full table, and only then enables its individual list request.
+
+Successful dependency, action, escalation, scope, delivery-risk promotion, and client-publication
+mutations invalidate the exact affected project-sheet key after the mutation resolves. The existing
+individual-list/bootstrap updates remain. An unrelated project's key is not invalidated. Failed
+mutations do not run the success invalidation path.
+
+### Measured results
+
+The backend ran locally without Docker against the configured remote Supabase session pooler. The
+connection pool was warm, five samples were taken, and the same internal project was used for both
+shapes. These are development service timings, not production browser latency.
+
+| Scenario | Before HTTP | After HTTP | Before executes | After executes | p50 before / after | p95 before / after |
+|----------|------------:|-----------:|----------------:|---------------:|-------------------:|-------------------:|
+| Internal project sheet | 5 measured | 1 measured by harness | 6 measured | 1 measured | 5948.8 / 1137.8 ms | 6229.1 / 1173.0 ms |
+| Client project sheet | 1 code-confirmed | 1 harness-confirmed | 1 target/code-confirmed | 1 target/code-confirmed | Not measured | Not measured |
+
+The configured dataset had no active client assignment, so no honest remote client benchmark could
+be produced. The client authorization/query shape is covered by focused tests and the frontend
+client gating remains unchanged.
+
+The composite response was **2,450 bytes uncompressed**, **938 bytes gzipped**, and took an average
+of **0.11 ms** to serialize in the benchmark. The fragmented before payload was 1,724 bytes / 704
+bytes gzipped; the bounded composite is larger because it now coordinates project metadata,
+summary, counts, permissions, and section metadata in the same response.
+
+### Validation boundary
+
+The frontend request harness observes exactly one project-sheet GET and no dependency/action/
+escalation/scope/risk requests on drawer open. It also verifies that **View all** starts the matching
+project-filtered individual endpoint. The in-app browser bridge could not initialize, so this is
+query-ordering evidence rather than a real Network-panel waterfall or browser-latency measurement.
+
+Structured endpoint timing now records endpoint, project, organization, role, cache status,
+execute count, total/database/serialization time, response bytes, and returned section counts. On a
+successful composite read authorization is folded into the same SQL statement, so
+`authorization_ms=0` denotes no separate authorization round trip; authorization cost is included
+in `db_ms`.
+
+Verification completed on 2026-07-14:
+
+- Focused Phase E backend: **6 passed**.
+- Governance-selected backend regression: **261 passed**, 506 deselected.
+- Full backend: **767 passed**.
+- Focused Phase E/A1 frontend: **15 passed**.
+- Full frontend: **111 passed** across 22 files.
+- Frontend production client/SSR build: passed.
+- ESLint and Prettier checks: passed for all changed frontend files.
+- Ruff lint and format: passed for the new service, benchmark, tests, and changed timing module.
+
+## Phase F: background AI and long-running jobs
+
+Implemented **2026-07-15**. Generation and large-export endpoints now commit a durable job and
+return `202`; model calls, validation/persistence, and file rendering execute in the worker. Product
+records commit before job success.
+
+The local architecture harness used 20 samples, excluded HTTP/database transport, and mocked a
+50 ms provider delay. This proves request/worker separation; it is not production latency:
+
+| Harness path | p50 | p95 |
+|---|---:|---:|
+| 202 acceptance path | 0.014 ms | 0.040 ms |
+| Background processing | 63.264 ms | 66.602 ms |
+| Previous synchronous wait | 62.734 ms | 66.452 ms |
+
+Real acceptance includes authorization, advisory locking, active-job lookup, insert/event writes,
+and commit. Production queue-wait and processing distributions are emitted as structured metrics.
+
+Final verification after removing the Escalation Suggestions surface completed with **769 backend
+tests** and **111 frontend tests** passing. The active Phase F lifecycle/API suite contains 19
+tests. The production client and SSR build passed. Ruff,
+Prettier, and targeted ESLint checks passed for the Phase F files. Repository-wide Ruff and ESLint
+remain blocked by pre-existing lint, formatting, and line-ending debt outside the Phase F change
+set.
+
+See `docs/governance-background-jobs.md` for architecture, APIs, worker commands,
+retry/cancellation, recovery, authorization, environment variables, and troubleshooting.
+
+## Phase G: project-charter latency pass
+
+Implemented **2026-07-15**. This phase does not redesign the already warm dashboard hot path:
+bootstrap, dependencies, analytics summary, actions/escalations first-page caches, and register
+maintenance behavior remain intact. The change focuses on the charter tab and database/pooler
+verification.
+
+### Database and pooler verification
+
+`backend/scripts/verify_governance_schema.py` now inspects the live database for required
+governance tables, columns, and indexes without printing `DATABASE_URL`.
+
+Run on 2026-07-15 against the configured Supabase transaction pooler:
+
+- `supabase_migrations.schema_migrations` was not available, so applied migration filenames could
+  not be verified from the database.
+- Required governance tables were present.
+- Required governance columns were present.
+- `project_charters_org_project_status_created_idx` was missing from the live database.
+
+An idempotent follow-up migration was added:
+
+- `supabase/migrations/20260715113000_governance_project_charter_latency_indexes.sql`
+
+This migration ensures `project_charters_org_project_status_created_idx` and adds
+`project_charters_org_created_idx` for unfiltered org charter-list reads. It was added to
+`backend/scripts/apply_migrations.py`, but it was not applied by this benchmark run.
+
+The configured connection classified as `supabase_transaction_pooler`. App configuration recognizes
+Supabase port `6543` as the preferred transaction-pooler mode, keeps direct Postgres URLs valid, and
+continues warning for constrained Supabase session-pooler URLs on port `5432`. Raw `asyncpg`
+maintenance scripts now disable statement caching for PgBouncer compatibility.
+
+### Root cause and design
+
+Before this pass, `GET /governance/project-charters` loaded charter rows and then called
+`build_project_charter_read()` once per row. Each charter could independently load evidence links,
+evidence records, user names, project names, and Knowledge publication metadata. That made SQL
+execute count grow with returned rows and evidence links.
+
+The list route now uses a batch page path:
+
+- Load `limit + 1` charters once, preserving existing auth/tenant filters.
+- Load all charter evidence links in one query.
+- Load evidence records in bounded per-source-type batches.
+- Load project names and user display names once per result set.
+- Preserve response schema and original charter ordering.
+- Keep the single-charter builder for detail/mutation responses by delegating to the batch builder.
+
+### Cache policy
+
+Project charters now reuse the process-local first-page cache pattern. Eligible requests are:
+
+- `offset == 0`
+- `limit in {5, 10}`
+- default ordering
+- optional supported `project_id` filter
+
+TTL is **60 seconds**. Cache entries store fully serialized Pydantic response models, not ORM
+instances, and hits return defensive deep copies.
+
+Cache key dimensions:
+
+- Organization scope (`None` for super-admin/global scope)
+- Role
+- User ID
+- Project filter
+- Limit
+- Offset
+
+Invalidation is explicit after charter generation, draft update, approval, archive, publish,
+republish, retry-publication failure/success paths, and unpublish. Invalidation is scoped to the
+affected org plus unfiltered and affected-project cache variants; unrelated org entries are left in
+place.
+
+### Frontend behavior
+
+The charter panel now requests an explicit first page of **5** charters and can load older versions
+in increments of 5. It keeps the existing long stale time and disables unnecessary remount/reconnect
+refetches.
+
+Publication version history is no longer fetched during initial panel render. The versions query is
+enabled only after the user opens **Show version history**, has its own stale time, and is invalidated
+after publish/republish/retry publication mutations.
+
+Charters are still not included in the default governance dashboard bootstrap or first paint.
+
+### Benchmark results
+
+Measured locally against the configured remote Supabase dev database through the transaction pooler
+(`6543`). The charter latency index migration above had not been applied yet, so cold misses still
+reflect the current live DB index state and remote RTT.
+
+Charter-only benchmark:
+
+| Scenario | Total | DB time | Executes | Cache | Rows |
+|----------|------:|--------:|---------:|-------|-----:|
+| Charter list cold 1 | 4050.2 ms | 3927.0 ms | 11 | miss | 4 |
+| Charter list cold 2 | 4766.8 ms | 4633.6 ms | 11 | miss | 4 |
+| Charter list cold 3 | 4783.6 ms | 4661.2 ms | 11 | miss | 4 |
+| Charter list cache hit 1 | 2.7 ms | 2.5 ms | 0 | hit | 4 |
+| Charter list cache hit 2 | 2.2 ms | 2.0 ms | 0 | hit | 4 |
+| Charter list cache hit 3 | 1.6 ms | 1.4 ms | 0 | hit | 4 |
+| Project-filtered charter miss | 5048.7 ms | 4932.2 ms | 12 | miss | 2 |
+| Project-filtered charter hit | 1.2 ms | 1.0 ms | 0 | hit | 2 |
+| Expanded version history | 1298.1 ms | 904.6 ms | 2 | miss | 2 |
+
+Full benchmark script completed successfully after adding charter coverage. Existing dashboard cache
+hits remained near-zero SQL; for example bootstrap/dependencies/register/actions/escalations cache
+hits were around **0.1-0.6 ms** in the same run. Project-sheet composite reads remain uncached and
+are still dominated by remote round trips.
+
+No honest pre-change charter latency was captured before implementation in this run. The previous
+shape was verified from code as N+1; this phase’s benchmark establishes the new post-change baseline
+and bounded query shape.
+
+### Validation
+
+Completed on 2026-07-15:
+
+- Focused backend charter/pooler/publication tests: **18 passed**.
+- Backend governance-selected regression: **266 passed**, 509 deselected.
+- Frontend governance tests: **58 passed** across 13 files.
+- Backend modified-file compile check: passed.
+- IDE diagnostics for changed backend/frontend files: no reported errors.
+
+`python -m ruff check ...` could not run from the global environment because the installed Python
+wrapper points at a missing `ruff.exe`. No project `backend/.venv/Scripts/ruff.exe` was present.

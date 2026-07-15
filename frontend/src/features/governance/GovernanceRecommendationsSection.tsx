@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
+import { Plus, ThumbsDown, ThumbsUp } from "lucide-react";
 import { toast } from "sonner";
 
-import { AiBadge, Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
+import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -22,9 +23,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { GovernanceEscalationSuggestionsSection } from "@/features/governance/GovernanceEscalationSuggestionsSection";
+import { useGovernanceJob } from "@/features/governance/useGovernanceJob";
 import {
   convertGovernanceAIRecommendationToAction,
   convertGovernanceAIRecommendationToEscalation,
@@ -48,10 +48,6 @@ function formatPriority(priority: string): string {
   if (priority === "medium") return "Medium";
   if (priority === "low") return "Low";
   return priority;
-}
-
-function formatConfidence(value: number): number {
-  return Math.round(Math.max(0, Math.min(1, value)) * 100);
 }
 
 type ConversionDraft =
@@ -115,14 +111,10 @@ function AIRecommendationCard({
   const convertedLabel = conversionStatusLabel(recommendation.acceptance_status);
   const convertedIndex = recommendation.accepted_suggested_action_index;
   return (
-    <div className="rounded-md border border-border bg-elevated p-3">
+    <div className="rounded-md border border-border bg-elevated p-2.5">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="mb-1 flex flex-wrap items-center gap-2">
-            <AiBadge
-              label="AI Generated"
-              confidence={formatConfidence(recommendation.confidence)}
-            />
             {recommendation.is_stale ? <StatusPill status="Stale" /> : null}
             {convertedLabel ? <StatusPill status={convertedLabel} /> : null}
             {recommendation.project_name ? (
@@ -134,17 +126,19 @@ function AIRecommendationCard({
             )}
           </div>
           <p className="text-sm font-medium">{recommendation.title}</p>
-          <p className="mt-1 text-xs text-muted-foreground">{recommendation.narrative}</p>
-          <p className="mt-2 text-[11px] text-muted-foreground">
+          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+            {recommendation.narrative}
+          </p>
+          <p className="mt-1.5 line-clamp-2 text-[11px] text-muted-foreground">
             <span className="font-medium text-foreground">Rationale:</span>{" "}
             {recommendation.rationale}
           </p>
           {recommendation.suggested_actions.length > 0 ? (
-            <ul className="mt-2 space-y-1 text-[11px] text-muted-foreground">
+            <ul className="mt-1.5 space-y-0.5 text-[11px] text-muted-foreground">
               {recommendation.suggested_actions.map((action, index) => (
                 <li key={`${action.action_type}-${action.label}`}>
                   <span className="font-medium text-foreground">{action.label}:</span>{" "}
-                  {action.description}
+                  <span className="line-clamp-1">{action.description}</span>
                   {convertedIndex === index ? (
                     <span className="ml-2 text-foreground">
                       Converted
@@ -159,7 +153,7 @@ function AIRecommendationCard({
               ))}
             </ul>
           ) : null}
-          <p className="mt-2 text-[10px] text-muted-foreground">
+          <p className="mt-1.5 text-[10px] text-muted-foreground">
             Generated {new Date(recommendation.generated_at).toLocaleString()}
           </p>
         </div>
@@ -177,12 +171,12 @@ function AIRecommendationCard({
         </ul>
       ) : null}
 
-      <div className="mt-3 flex flex-wrap gap-2">
+      <div className="mt-2.5 flex flex-wrap gap-1.5">
         <Button
           type="button"
           size="sm"
           variant="outline"
-          className="shadow-none"
+          className="h-7 px-2 text-[10px] shadow-none"
           disabled={busy}
           onClick={() => setShowEvidence((value) => !value)}
         >
@@ -193,7 +187,7 @@ function AIRecommendationCard({
             type="button"
             size="sm"
             variant="outline"
-            className="shadow-none"
+            className="h-7 px-2 text-[10px] shadow-none"
             disabled={busy}
             onClick={() => onRegenerate(recommendation.id)}
           >
@@ -205,7 +199,7 @@ function AIRecommendationCard({
             type="button"
             size="sm"
             variant="outline"
-            className="shadow-none"
+            className="h-7 px-2 text-[10px] shadow-none"
             disabled={busy}
             onClick={() => onDismiss(recommendation.id)}
           >
@@ -222,8 +216,7 @@ function AIRecommendationCard({
                     <Button
                       type="button"
                       size="sm"
-                      variant="outline"
-                      className="shadow-none"
+                      className="h-7 gap-1 px-2 text-[10px] shadow-none"
                       disabled={busy || alreadyConverted}
                       onClick={() =>
                         onConvert({
@@ -234,6 +227,7 @@ function AIRecommendationCard({
                         })
                       }
                     >
+                      <Plus className="h-3.5 w-3.5" />
                       Create action
                     </Button>
                   ) : null}
@@ -242,7 +236,7 @@ function AIRecommendationCard({
                       type="button"
                       size="sm"
                       variant="outline"
-                      className="shadow-none"
+                      className="h-8 gap-1.5 px-2.5 text-xs shadow-none"
                       disabled={busy || alreadyConverted}
                       onClick={() =>
                         onConvert({
@@ -253,6 +247,7 @@ function AIRecommendationCard({
                         })
                       }
                     >
+                      <Plus className="h-3.5 w-3.5" />
                       Create escalation
                     </Button>
                   ) : null}
@@ -260,26 +255,32 @@ function AIRecommendationCard({
               );
             })
           : null}
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          className="shadow-none"
-          disabled={busy}
-          onClick={() => onFeedback(recommendation.id, true)}
-        >
-          Helpful
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          className="shadow-none"
-          disabled={busy}
-          onClick={() => onFeedback(recommendation.id, false)}
-        >
-          Not helpful
-        </Button>
+        <span className="flex items-center gap-0.5">
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="h-7 w-7 rounded-md p-0 text-muted-foreground shadow-none hover:bg-transparent hover:text-foreground"
+            aria-label="Helpful"
+            title="Helpful"
+            disabled={busy}
+            onClick={() => onFeedback(recommendation.id, true)}
+          >
+            <ThumbsUp className="h-4 w-4" />
+          </Button>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="h-7 w-7 rounded-md p-0 text-muted-foreground shadow-none hover:bg-transparent hover:text-foreground"
+            aria-label="Not helpful"
+            title="Not helpful"
+            disabled={busy}
+            onClick={() => onFeedback(recommendation.id, false)}
+          >
+            <ThumbsDown className="h-4 w-4" />
+          </Button>
+        </span>
       </div>
     </div>
   );
@@ -345,7 +346,7 @@ function AIRecommendationsByProject({
           <SelectTrigger
             id="recommendation-project"
             aria-label="Recommendation project"
-            className="h-9 w-full sm:w-[320px]"
+            className="h-8 w-full text-xs sm:w-[280px]"
           >
             <SelectValue placeholder="Select a project" />
           </SelectTrigger>
@@ -414,7 +415,7 @@ function ConversionDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="governance-no-shadow max-w-2xl rounded-xl border-border/80 shadow-none">
         <DialogHeader>
           <DialogTitle>
             {draft?.target === "escalation"
@@ -427,7 +428,7 @@ function ConversionDialog({
         </DialogHeader>
         {draft ? (
           <div className="space-y-4">
-            <div className="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+            <div className="rounded-lg border border-border bg-muted/20 p-3 text-xs text-muted-foreground">
               <p className="font-medium text-foreground">{draft.recommendation.title}</p>
               <p className="mt-1">{draft.action.description}</p>
             </div>
@@ -560,11 +561,11 @@ function ConversionDialog({
 }
 
 export function GovernanceRecommendationsSection({
-  focusProjectId,
   canWrite,
+  enabled = true,
 }: {
-  focusProjectId?: string | null;
   canWrite: boolean;
+  enabled?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [conversionDraft, setConversionDraft] = useState<ConversionDraft | null>(null);
@@ -575,12 +576,21 @@ export function GovernanceRecommendationsSection({
   const aiQuery = useQuery({
     ...governanceAIRecommendationsQueryOptions(listParams),
     // List only — never generate on mount.
-    enabled: true,
+    enabled,
   });
 
   const invalidate = async () => {
     await queryClient.invalidateQueries({ queryKey: ["governance", "ai-recommendations"] });
   };
+
+  const generationJob = useGovernanceJob({
+    jobType: "ai_recommendation_generate",
+    enabled: canWrite && enabled,
+    onSucceeded: async () => {
+      toast.success("AI recommendations generated for review.");
+      await invalidate();
+    },
+  });
 
   const generateMutation = useMutation({
     mutationFn: () =>
@@ -588,26 +598,13 @@ export function GovernanceRecommendationsSection({
         scope: "project",
         force: false,
       }),
-    onSuccess: async (result) => {
-      const generatedSummary = `${result.projects_with_recommendations} of ${result.projects_attempted} projects`;
-      if (Object.keys(result.project_failures).length > 0) {
-        toast.warning(
-          `Recommendations completed for ${generatedSummary}; ${Object.keys(result.project_failures).length} project(s) failed.`,
-        );
-      } else if (result.fallback_used) {
-        toast.message(
-          result.fallback_reason
-            ? `Processed all ${result.projects_attempted} projects; some used rule-based fallback (${result.fallback_reason}).`
-            : `Processed all ${result.projects_attempted} projects; some used rule-based fallback.`,
-        );
-      } else if (result.reused) {
-        toast.success(
-          `Existing AI recommendations reused for all ${result.projects_attempted} projects.`,
-        );
-      } else {
-        toast.success(`AI recommendations generated for ${generatedSummary}.`);
-      }
-      await invalidate();
+    onSuccess: (started) => {
+      generationJob.track(started);
+      toast.message(
+        started.deduplicated
+          ? "Recommendation job already active."
+          : "Recommendation generation queued.",
+      );
     },
     onError: (err) => {
       toast.error(err instanceof Error ? err.message : "Failed to generate recommendations.");
@@ -616,9 +613,11 @@ export function GovernanceRecommendationsSection({
 
   const regenerateMutation = useMutation({
     mutationFn: (id: string) => regenerateGovernanceAIRecommendation(id),
-    onSuccess: async () => {
-      toast.success("Recommendation regenerated.");
-      await invalidate();
+    onSuccess: (started) => {
+      generationJob.track(started);
+      toast.message(
+        started.deduplicated ? "Regeneration job already active." : "Regeneration queued.",
+      );
     },
     onError: (err) => {
       toast.error(err instanceof Error ? err.message : "Failed to regenerate.");
@@ -694,6 +693,7 @@ export function GovernanceRecommendationsSection({
   const aiEnabled = aiQuery.data?.ai_enabled ?? false;
   const canGenerate = Boolean(canWrite && aiQuery.data?.can_generate);
   const busy =
+    generationJob.active ||
     generateMutation.isPending ||
     regenerateMutation.isPending ||
     dismissMutation.isPending ||
@@ -701,8 +701,8 @@ export function GovernanceRecommendationsSection({
     conversionMutation.isPending;
 
   return (
-    <Card className="flex h-[520px] flex-col overflow-hidden">
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+    <Card className="flex h-[460px] flex-col overflow-hidden">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
         <SectionHeader
           title="Recommendations"
           sub="AI-generated analysis with deterministic operational fallback"
@@ -715,7 +715,7 @@ export function GovernanceRecommendationsSection({
             disabled={busy}
             onClick={() => generateMutation.mutate()}
           >
-            {generateMutation.isPending ? "Generating…" : "Generate AI recommendations"}
+            {generateMutation.isPending || generationJob.active ? "Generating…" : "Generate"}
           </Button>
         ) : null}
       </div>
@@ -760,58 +760,31 @@ export function GovernanceRecommendationsSection({
         </p>
       ) : null}
 
-      <Tabs defaultValue="ai-recommendations" className="flex min-h-0 flex-1 flex-col">
-        <TabsList className="w-fit">
-          <TabsTrigger value="ai-recommendations" className="text-xs">
-            AI Recs
-          </TabsTrigger>
-          <TabsTrigger value="escalation-suggestions" className="text-xs">
-            Escalation Suggestions
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent
-          value="ai-recommendations"
-          className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1"
-        >
-          <div className="space-y-3">
-            <SectionHeader title="AI Recommendations" sub="Persisted, evidence-grounded guidance" />
-            {aiQuery.isLoading && aiItems.length === 0 ? (
-              <div className="space-y-2">
-                {[0, 1].map((row) => (
-                  <Skeleton key={row} className="h-20 w-full" />
-                ))}
-              </div>
-            ) : aiItems.length === 0 ? (
-              <p className="py-2 text-sm text-muted-foreground">
-                No AI recommendations yet. Generate recommendations for every project when ready -
-                this never runs on page load.
-              </p>
-            ) : (
-              <AIRecommendationsByProject
-                recommendations={aiItems}
-                busy={busy}
-                onDismiss={(id) => dismissMutation.mutate(id)}
-                onRegenerate={(id) => regenerateMutation.mutate(id)}
-                onFeedback={(id, helpful) => feedbackMutation.mutate({ id, helpful })}
-                onConvert={setConversionDraft}
-              />
-            )}
-          </div>
-        </TabsContent>
-
-        <TabsContent
-          value="escalation-suggestions"
-          className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1"
-        >
-          <GovernanceEscalationSuggestionsSection
-            focusProjectId={focusProjectId}
-            canWrite={canWrite}
-            onConvert={setConversionDraft}
-            embedded
-          />
-        </TabsContent>
-      </Tabs>
+      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+        <div className="space-y-3">
+          {!enabled ? null : aiQuery.isLoading && aiItems.length === 0 ? (
+            <div className="space-y-2">
+              {[0, 1].map((row) => (
+                <Skeleton key={row} className="h-20 w-full" />
+              ))}
+            </div>
+          ) : aiItems.length === 0 ? (
+            <p className="py-2 text-sm text-muted-foreground">
+              No AI recommendations yet. Generate recommendations for every project when ready -
+              this never runs on page load.
+            </p>
+          ) : (
+            <AIRecommendationsByProject
+              recommendations={aiItems}
+              busy={busy}
+              onDismiss={(id) => dismissMutation.mutate(id)}
+              onRegenerate={(id) => regenerateMutation.mutate(id)}
+              onFeedback={(id, helpful) => feedbackMutation.mutate({ id, helpful })}
+              onConvert={setConversionDraft}
+            />
+          )}
+        </div>
+      </div>
 
       <ConversionDialog
         draft={conversionDraft}

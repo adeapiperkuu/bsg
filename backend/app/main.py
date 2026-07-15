@@ -1,19 +1,21 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
 
 from app.agents.delivery.routes import chat as delivery_chat
 from app.agents.delivery.routes import dashboard as delivery_dashboard
 from app.agents.governance.escalation import check_quality_escalations
 from app.agents.governance.routes import governance as governance_routes
-from app.agents.governance.services.escalation_suggestion_service import (
-    run_scheduled_escalation_suggestion_scan,
+from app.agents.governance.services.job_service import process_governance_job_queue
+from app.agents.governance.services.project_governance_summary_service import (
+    refresh_stale_governance_summary_counts,
 )
+from app.agents.governance.services.register_service import invalidate_register_list_cache
 from app.api.routes import (
     agents,
     auth,
@@ -32,14 +34,13 @@ from app.api.routes import (
 )
 from app.core.config import get_settings
 from app.core.csrf import CsrfMiddleware
-from app.core.security import CurrentUser
 from app.core.exceptions import register_exception_handlers
 from app.core.security_headers import SecurityHeadersMiddleware
-from app.db.models import AppRole, Organisation, ScanTrigger, User
+from app.db.models import ScanTrigger
 from app.db.session import dispose_engine, session_scope
+from app.services.knowledge_ingestion_jobs import process_ingestion_job_queue
 from app.services.quality import scan_all_projects
 from app.services.quality_thresholds import warm_thresholds_cache
-from app.services.knowledge_ingestion_jobs import process_ingestion_job_queue
 from app.services.signal_dispatcher import dispatch_pending_signals
 
 logger = logging.getLogger(__name__)
@@ -90,53 +91,40 @@ async def _scheduled_ingestion_queue_poll() -> None:
         logger.exception("Knowledge ingestion queue poll failed")
 
 
-async def _scheduled_governance_escalation_scan() -> None:
+async def _scheduled_governance_queue_poll() -> None:
+    try:
+        processed = await process_governance_job_queue()
+        if processed:
+            logger.info("Processed %s Governance background job(s).", processed)
+    except Exception:
+        logger.exception("Governance background job queue poll failed")
+
+
+async def _scheduled_governance_register_summary_refresh() -> None:
+    """Refresh UTC-day register counts outside GET; retry hourly after failures/missed startup."""
     settings = get_settings()
-    if not settings.governance_escalation_suggestion_scheduled_enabled:
+    if not settings.governance_register_daily_refresh_enabled:
         return
     async with session_scope() as session:
         try:
-            orgs = list((await session.execute(select(Organisation))).scalars())
-            for org in orgs[: settings.governance_escalation_suggestion_max_projects_per_scan]:
-                user = (
-                    await session.execute(
-                        select(User)
-                        .where(
-                            User.org_id == org.id,
-                            User.is_active.is_(True),
-                            User.role.in_(
-                                {
-                                    AppRole.DELIVERY_MANAGER,
-                                    AppRole.BSG_LEADERSHIP,
-                                    AppRole.SUPER_ADMIN,
-                                }
-                            ),
-                        )
-                        .limit(1)
-                    )
-                ).scalar_one_or_none()
-                if user is None:
-                    logger.info(
-                        "Skipping scheduled governance escalation scan for org=%s: no internal user",
-                        org.id,
-                    )
-                    continue
-                current_user = CurrentUser(
-                    id=user.id,
-                    org_id=org.id,
-                    email=user.email,
-                    role=user.role,
-                    is_active=user.is_active,
-                )
-                result = await run_scheduled_escalation_suggestion_scan(session, current_user)
-                logger.info(
-                    "Scheduled governance escalation scan org=%s created=%s reused=%s",
-                    org.id,
-                    result.suggestions_created,
-                    result.suggestions_reused,
-                )
+            result = await refresh_stale_governance_summary_counts(session)
+            await session.commit()
         except Exception:
-            logger.exception("Scheduled governance escalation scan failed")
+            await session.rollback()
+            logger.exception("Scheduled Governance register summary refresh failed")
+            return
+
+    removed = sum(invalidate_register_list_cache(org_id=org_id) for org_id in result.org_ids)
+    logger.info(
+        "governance_register_summary_refresh business_date=%s rows_refreshed=%s "
+        "org_count=%s execute_count=%s refresh_ms=%s register_cache_removed=%s timezone=UTC",
+        result.business_date,
+        result.rows_refreshed,
+        len(result.org_ids),
+        result.execute_count,
+        result.duration_ms,
+        removed,
+    )
 
 
 @asynccontextmanager
@@ -146,8 +134,22 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     scheduler.add_job(
         _scheduled_quality_governance_escalation, "cron", day_of_week="mon", hour=2, minute=30
     )
-    scheduler.add_job(_scheduled_governance_escalation_scan, "cron", day_of_week="mon", hour=3)
+    scheduler.add_job(
+        _scheduled_governance_register_summary_refresh,
+        "cron",
+        minute=5,
+        timezone=UTC,
+        coalesce=True,
+        max_instances=1,
+    )
     scheduler.add_job(_scheduled_ingestion_queue_poll, "interval", seconds=30)
+    scheduler.add_job(
+        _scheduled_governance_queue_poll,
+        "interval",
+        seconds=get_settings().governance_job_poll_interval_seconds,
+        coalesce=True,
+        max_instances=1,
+    )
     scheduler.start()
     try:
         await warm_thresholds_cache()

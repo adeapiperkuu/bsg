@@ -87,8 +87,7 @@ async def test_get_governance_analytics_summary_limits_ranking(
     dm = _user()
     session = AsyncMock()
     projects = [
-        Project(id=uuid4(), org_id=dm.org_id, name=f"Project {index}")
-        for index in range(12)
+        Project(id=uuid4(), org_id=dm.org_id, name=f"Project {index}") for index in range(12)
     ]
 
     async def _fake_bundle(_session, _user, *, today):
@@ -309,7 +308,7 @@ async def test_governance_analytics_summary_endpoint_contract(
         )
 
     monkeypatch.setattr(
-        "app.agents.governance.routes.governance.get_governance_analytics_summary",
+        "app.agents.governance.routes.analytics.get_governance_analytics_summary",
         _summary,
     )
 
@@ -342,7 +341,7 @@ async def test_governance_analytics_detail_endpoint_contract(
         )
 
     monkeypatch.setattr(
-        "app.agents.governance.routes.governance.get_governance_analytics_detail",
+        "app.agents.governance.routes.analytics.get_governance_analytics_detail",
         _detail,
     )
 
@@ -378,7 +377,7 @@ async def test_governance_analytics_full_endpoint_still_works(
         )
 
     monkeypatch.setattr(
-        "app.agents.governance.routes.governance.get_governance_analytics",
+        "app.agents.governance.routes.analytics.get_governance_analytics",
         _analytics,
     )
 

@@ -234,15 +234,15 @@ async def test_governance_baseline_endpoints_emit_timing_logs(
         _bootstrap,
     )
     monkeypatch.setattr(
-        "app.agents.governance.routes.governance.get_governance_analytics",
+        "app.agents.governance.routes.analytics.get_governance_analytics",
         _analytics,
     )
     monkeypatch.setattr(
-        "app.agents.governance.routes.governance.list_governance_dependencies_page",
+        "app.agents.governance.routes.dependencies.list_governance_dependencies_page",
         _dependencies_page,
     )
     monkeypatch.setattr(
-        "app.agents.governance.routes.governance.list_governance_register_page",
+        "app.agents.governance.routes.register.list_governance_register_page",
         _register_page,
     )
 

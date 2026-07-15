@@ -34,6 +34,8 @@ export const queryKeys = {
   governanceBootstrap: ["governance", "bootstrap"] as const,
   governanceWeeklySummary: ["governance", "weekly-summary", "latest"] as const,
   governanceWeeklySummaries: ["governance", "weekly-summary", "history"] as const,
+  governanceWeeklySummaryDetail: (summaryId: string | null | undefined) =>
+    ["governance", "weekly-summary", "detail", summaryId ?? "__none__"] as const,
   governanceAnalyticsSummary: (
     days: number,
     filters: { projectId?: string | null; vertical?: string | null } = {},
@@ -89,6 +91,18 @@ export const queryKeys = {
     ["governance", "scope-states", params] as const,
   governanceRegister: (params: Record<string, unknown> = {}) =>
     ["governance", "register", params] as const,
+  governanceProjectSheet: (projectId: string) =>
+    ["governance", "project-sheet", projectId] as const,
+  governanceProjectCharters: (params: Record<string, unknown> = {}) =>
+    ["governance", "project-charters", params] as const,
+  governanceProjectChartersPanel: (params: Record<string, unknown> = {}) =>
+    ["governance", "project-charters-panel", params] as const,
+  governanceProjectCharter: (charterId: string | null | undefined) =>
+    ["governance", "project-charter", charterId ?? "__none__"] as const,
+  governanceProjectCharterVersions: (charterId: string | null | undefined) =>
+    ["governance", "project-charter-versions", charterId ?? "__none__"] as const,
+  governanceJobs: (params: Record<string, unknown> = {}) => ["governance", "jobs", params] as const,
+  governanceJob: (jobId: string) => ["governance", "jobs", jobId] as const,
   governanceAIRecommendations: (params: Record<string, unknown> = {}) =>
     ["governance", "ai-recommendations", params] as const,
   qualityPage: (projectId: string) => ["quality", "page", projectId] as const,

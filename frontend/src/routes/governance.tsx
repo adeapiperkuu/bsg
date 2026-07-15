@@ -1,13 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { lazy, Suspense } from "react";
 
-import { GovernancePageShell } from "@/features/governance/GovernancePageShell";
-
-const GovernanceDashboard = lazy(() =>
-  import("@/features/governance/GovernanceDashboard").then((module) => ({
-    default: module.GovernanceDashboard,
-  })),
-);
+import { GovernanceDashboard } from "@/features/governance/GovernanceDashboard";
 
 export const Route = createFileRoute("/governance")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -25,9 +18,5 @@ export const Route = createFileRoute("/governance")({
 });
 
 function GovernancePage() {
-  return (
-    <Suspense fallback={<GovernancePageShell />}>
-      <GovernanceDashboard />
-    </Suspense>
-  );
+  return <GovernanceDashboard />;
 }

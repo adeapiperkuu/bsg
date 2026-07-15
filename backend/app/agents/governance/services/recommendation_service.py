@@ -68,7 +68,6 @@ from app.db.models import (
     GovernanceAIRecommendationPriority,
     GovernanceAIRecommendationScope,
     GovernanceAIRecommendationStatus,
-    GovernanceAIRecommendationType,
     GovernanceEscalationStatus,
     GovernanceRecommendationAcceptanceStatus,
     GovernanceRecommendationConversionTarget,
@@ -368,7 +367,8 @@ async def _list_active_rows(
     offset: int = 0,
 ) -> list[GovernanceAIRecommendation]:
     stmt = select(GovernanceAIRecommendation).where(
-        GovernanceAIRecommendation.deleted_at.is_(None)
+        GovernanceAIRecommendation.deleted_at.is_(None),
+        GovernanceAIRecommendation.auto_detected.is_(False),
     )
     if org_id is not None:
         stmt = stmt.where(GovernanceAIRecommendation.org_id == org_id)
@@ -458,6 +458,7 @@ async def get_governance_ai_recommendation(
     stmt = select(GovernanceAIRecommendation).where(
         GovernanceAIRecommendation.id == recommendation_id,
         GovernanceAIRecommendation.deleted_at.is_(None),
+        GovernanceAIRecommendation.auto_detected.is_(False),
     )
     if current_user.role != AppRole.SUPER_ADMIN:
         stmt = stmt.where(GovernanceAIRecommendation.org_id == current_user.org_id)
@@ -839,6 +840,8 @@ async def generate_governance_ai_recommendations(
             or settings.llm_model
             or "gpt-4o-mini"
         )
+        # Do not retain the evidence/read transaction while waiting on the model provider.
+        await session.commit()
         candidates, _provider_ms, failure = await _call_llm(
             bundle=bundle,
             prompt_version=prompt_version,
@@ -1138,12 +1141,7 @@ async def dismiss_governance_ai_recommendation(
     await log_governance_event(
         session,
         current_user,
-        event_type=(
-            "escalation_suggestion_dismissed"
-            if row.auto_detected
-            and row.recommendation_type == GovernanceAIRecommendationType.ESCALATION_REQUIRED
-            else "recommendation_dismissed"
-        ),
+        event_type="recommendation_dismissed",
         org_id=row.org_id,
         project_id=row.project_id,
         source_table="governance_ai_recommendations",
@@ -1820,27 +1818,3 @@ async def list_governance_ai_recommendation_conversions(
         )
         for conversion in conversions
     ]
-
-
-async def mark_ai_recommendations_stale_for_project(
-    session: AsyncSession,
-    *,
-    org_id: UUID,
-    project_id: UUID,
-) -> int:
-    """Optional write-path helper: mark active recommendations stale after governance writes."""
-    rows = list(
-        (
-            await session.execute(
-                select(GovernanceAIRecommendation).where(
-                    GovernanceAIRecommendation.org_id == org_id,
-                    GovernanceAIRecommendation.project_id == project_id,
-                    GovernanceAIRecommendation.deleted_at.is_(None),
-                    GovernanceAIRecommendation.status == GovernanceAIRecommendationStatus.ACTIVE,
-                )
-            )
-        ).scalars()
-    )
-    for row in rows:
-        row.status = GovernanceAIRecommendationStatus.STALE
-    return len(rows)

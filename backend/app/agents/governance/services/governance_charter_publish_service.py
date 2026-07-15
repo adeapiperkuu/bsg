@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.governance.services.audit_service import log_governance_event
 from app.agents.governance.services.charter_service import (
     get_project_charter_or_404,
+    invalidate_project_charter_list_cache,
     sanitize_charter_text,
 )
 from app.agents.governance.services.governance_service import (
@@ -359,6 +360,8 @@ async def get_publication_versions(
     current_user: CurrentUser,
     charter_id: UUID,
 ) -> list[dict[str, Any]]:
+    from app.agents.governance.timing import get_governance_timer
+
     charter = await get_project_charter_or_404(session, charter_id, current_user)
     project_charters = list(
         (
@@ -373,17 +376,34 @@ async def get_publication_versions(
     )
     user_ids = {row.published_by for row in project_charters if row.published_by}
     names = await load_user_names(session, user_ids)
-    versions: list[dict[str, Any]] = []
-    for row in project_charters:
-        knowledge_version = None
-        if row.knowledge_version_id:
-            knowledge_version = (
+    knowledge_version_ids = {
+        row.knowledge_version_id for row in project_charters if row.knowledge_version_id
+    }
+    knowledge_versions = {}
+    if knowledge_version_ids:
+        knowledge_versions = {
+            row.id: row
+            for row in (
                 await session.execute(
                     select(KnowledgeDocumentVersion).where(
-                        KnowledgeDocumentVersion.id == row.knowledge_version_id
+                        KnowledgeDocumentVersion.id.in_(knowledge_version_ids)
                     )
                 )
-            ).scalar_one_or_none()
+            )
+            .scalars()
+            .all()
+        }
+    timer = get_governance_timer()
+    if timer is not None:
+        timer.record_meta(
+            execute_count=2 + (1 if user_ids else 0) + (1 if knowledge_version_ids else 0),
+            project_id=str(charter.project_id),
+        )
+    versions: list[dict[str, Any]] = []
+    for row in project_charters:
+        knowledge_version = (
+            knowledge_versions.get(row.knowledge_version_id) if row.knowledge_version_id else None
+        )
         versions.append(
             {
                 "charter_id": row.id,
@@ -671,6 +691,7 @@ async def publish_charter(
         )
         await session.commit()
         await session.refresh(charter)
+        invalidate_project_charter_list_cache(org_id=charter.org_id, project_id=charter.project_id)
         dispatch_knowledge_ingestion_job(session, job.id)
         return charter
     except ApiError as exc:
@@ -709,6 +730,7 @@ async def publish_charter(
         )
         await session.commit()
         await session.refresh(charter)
+        invalidate_project_charter_list_cache(org_id=charter.org_id, project_id=charter.project_id)
         raise
     except Exception as exc:  # noqa: BLE001 — publish must never roll back approval
         logger.exception("Charter knowledge publication failed for %s", charter_id)
@@ -748,6 +770,7 @@ async def publish_charter(
             logger.exception("Failed to audit charter publication failure")
         await session.commit()
         await session.refresh(charter)
+        invalidate_project_charter_list_cache(org_id=charter.org_id, project_id=charter.project_id)
         raise ApiError(
             500,
             "CHARTER_PUBLICATION_FAILED",
@@ -886,6 +909,7 @@ async def republish_charter(
         )
         await session.commit()
         await session.refresh(charter)
+        invalidate_project_charter_list_cache(org_id=charter.org_id, project_id=charter.project_id)
         dispatch_knowledge_ingestion_job(session, job.id)
         return charter
     except Exception as exc:  # noqa: BLE001
@@ -903,6 +927,7 @@ async def republish_charter(
             metadata={"action": "republish"},
         )
         await session.commit()
+        invalidate_project_charter_list_cache(org_id=charter.org_id, project_id=charter.project_id)
         raise ApiError(
             500,
             "CHARTER_REPUBLISH_FAILED",
@@ -961,6 +986,7 @@ async def unpublish_charter(
     )
     await session.commit()
     await session.refresh(charter)
+    invalidate_project_charter_list_cache(org_id=charter.org_id, project_id=charter.project_id)
     return charter
 
 

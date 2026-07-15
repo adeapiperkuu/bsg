@@ -44,6 +44,22 @@ class GovernanceEndpointTimer:
         self.cache_scope: str | None = None
         self.activity_row_count: int | None = None
         self.project_row_count: int | None = None
+        self.summary_refresh_required: bool | None = None
+        self.summary_refresh_performed: bool | None = None
+        self.summary_refresh_ms: float | None = None
+        self.summary_rows_refreshed: int | None = None
+        self.register_row_count: int | None = None
+        self.project_id: str | None = None
+        self.authorization_ms: float | None = None
+        self.response_bytes: int | None = None
+        self.list_row_fetch_ms: float | None = None
+        self.enrichment_ms: float | None = None
+        self.detail_fetch_ms: float | None = None
+        self.returned_row_count: int | None = None
+        self.dependency_count: int | None = None
+        self.action_count: int | None = None
+        self.escalation_count: int | None = None
+        self.risk_count: int | None = None
         self._started = perf_counter()
         self._db_depth = 0
 
@@ -63,6 +79,22 @@ class GovernanceEndpointTimer:
         cache_scope: str | None = None,
         activity_row_count: int | None = None,
         project_row_count: int | None = None,
+        summary_refresh_required: bool | None = None,
+        summary_refresh_performed: bool | None = None,
+        summary_refresh_ms: float | None = None,
+        summary_rows_refreshed: int | None = None,
+        register_row_count: int | None = None,
+        project_id: str | None = None,
+        authorization_ms: float | None = None,
+        response_bytes: int | None = None,
+        list_row_fetch_ms: float | None = None,
+        enrichment_ms: float | None = None,
+        detail_fetch_ms: float | None = None,
+        returned_row_count: int | None = None,
+        dependency_count: int | None = None,
+        action_count: int | None = None,
+        escalation_count: int | None = None,
+        risk_count: int | None = None,
     ) -> None:
         """Attach optional profiling fields without changing response payloads."""
         if execute_count is not None:
@@ -85,6 +117,38 @@ class GovernanceEndpointTimer:
             self.activity_row_count = activity_row_count
         if project_row_count is not None:
             self.project_row_count = project_row_count
+        if summary_refresh_required is not None:
+            self.summary_refresh_required = summary_refresh_required
+        if summary_refresh_performed is not None:
+            self.summary_refresh_performed = summary_refresh_performed
+        if summary_refresh_ms is not None:
+            self.summary_refresh_ms = summary_refresh_ms
+        if summary_rows_refreshed is not None:
+            self.summary_rows_refreshed = summary_rows_refreshed
+        if register_row_count is not None:
+            self.register_row_count = register_row_count
+        if project_id is not None:
+            self.project_id = project_id
+        if authorization_ms is not None:
+            self.authorization_ms = authorization_ms
+        if response_bytes is not None:
+            self.response_bytes = response_bytes
+        if list_row_fetch_ms is not None:
+            self.list_row_fetch_ms = list_row_fetch_ms
+        if enrichment_ms is not None:
+            self.enrichment_ms = enrichment_ms
+        if detail_fetch_ms is not None:
+            self.detail_fetch_ms = detail_fetch_ms
+        if returned_row_count is not None:
+            self.returned_row_count = returned_row_count
+        if dependency_count is not None:
+            self.dependency_count = dependency_count
+        if action_count is not None:
+            self.action_count = action_count
+        if escalation_count is not None:
+            self.escalation_count = escalation_count
+        if risk_count is not None:
+            self.risk_count = risk_count
 
     @property
     def serialization_ms(self) -> float:
@@ -163,6 +227,44 @@ class GovernanceEndpointTimer:
             extra["project_row_count"] = self.project_row_count
             parts.append("project_row_count=%s")
             args.append(self.project_row_count)
+        if self.summary_refresh_required is not None:
+            extra["summary_refresh_required"] = self.summary_refresh_required
+            parts.append("summary_refresh_required=%s")
+            args.append(self.summary_refresh_required)
+        if self.summary_refresh_performed is not None:
+            extra["summary_refresh_performed"] = self.summary_refresh_performed
+            parts.append("summary_refresh_performed=%s")
+            args.append(self.summary_refresh_performed)
+        if self.summary_refresh_ms is not None:
+            extra["summary_refresh_ms"] = self.summary_refresh_ms
+            parts.append("summary_refresh_ms=%s")
+            args.append(self.summary_refresh_ms)
+        if self.summary_rows_refreshed is not None:
+            extra["summary_rows_refreshed"] = self.summary_rows_refreshed
+            parts.append("summary_rows_refreshed=%s")
+            args.append(self.summary_rows_refreshed)
+        if self.register_row_count is not None:
+            extra["register_row_count"] = self.register_row_count
+            parts.append("register_row_count=%s")
+            args.append(self.register_row_count)
+        for field_name in (
+            "project_id",
+            "authorization_ms",
+            "response_bytes",
+            "list_row_fetch_ms",
+            "enrichment_ms",
+            "detail_fetch_ms",
+            "returned_row_count",
+            "dependency_count",
+            "action_count",
+            "escalation_count",
+            "risk_count",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                extra[field_name] = value
+                parts.append(f"{field_name}=%s")
+                args.append(value)
         logger.info(" ".join(parts), *args, extra=extra)
 
 
