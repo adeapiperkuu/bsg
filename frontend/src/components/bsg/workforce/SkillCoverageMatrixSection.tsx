@@ -1,4 +1,4 @@
-import { AiBadge, Card, SectionHeader } from "@/components/bsg/widgets";
+import { Card, SectionHeader } from "@/components/bsg/widgets";
 import { ManageToggleButton } from "@/components/bsg/workforce/ManageToggleButton";
 import { SkillMatrixRowView } from "@/components/bsg/workforce/SkillMatrixRowView";
 import { WorkforcePlaceholder } from "@/components/bsg/workforce/WorkforcePlaceholder";
@@ -40,7 +40,13 @@ export function SkillCoverageMatrixSection({
           canReadInternalWorkforce ? (
             <div className="flex flex-wrap items-center gap-2">
               {skillMatrixRows.length > 0 ? (
-                <AiBadge confidence={skillMatrixConfidencePct} />
+                <span
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+                  title="Share of required skills currently at full (high) coverage"
+                >
+                  <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--success)]" />
+                  {skillMatrixConfidencePct}% fully covered
+                </span>
               ) : null}
               {resolvedProjectId ? (
                 <ManageToggleButton
@@ -70,6 +76,14 @@ export function SkillCoverageMatrixSection({
         <WorkforcePlaceholder
           title="No skill requirements yet"
           reason="Add project skill requirements to populate this matrix."
+          actionLabel={
+            canManageWorkforce && resolvedProjectId && !showSkillRequirementsManager
+              ? "Add skill requirements"
+              : undefined
+          }
+          onAction={
+            canManageWorkforce && resolvedProjectId ? onToggleSkillRequirementsManager : undefined
+          }
         />
       ) : filteredSkillMatrixRows.length === 0 ? (
         <WorkforcePlaceholder

@@ -122,6 +122,12 @@ export function CapabilityGapsSection({
                   ? "Run gap detection to scan skill coverage, training, certifications, and utilization."
                   : "No open capability gaps have been recorded for this project."
               }
+              actionLabel={
+                canManageWorkforce && resolvedProjectId && !detectGapsMutation.isPending
+                  ? "Detect gaps"
+                  : undefined
+              }
+              onAction={canManageWorkforce && resolvedProjectId ? triggerDetectGaps : undefined}
             />
           ) : filteredCapabilityGaps.length === 0 ? (
             <WorkforcePlaceholder
