@@ -32,7 +32,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { GovernanceJobProgress } from "@/features/governance/GovernanceJobProgress";
 import { useGovernanceJob } from "@/features/governance/useGovernanceJob";
 import { formatDate } from "@/lib/governance-utils";
 import { queryKeys } from "@/lib/queries/keys";
@@ -495,14 +494,6 @@ export function ProjectChartersPanel({
         />
 
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className="mb-3">
-            <GovernanceJobProgress
-              job={generationJob.job}
-              onCancel={generationJob.cancel}
-              onRetry={generationJob.retry}
-              busy={generationJob.controlBusy}
-            />
-          </div>
           <div className="flex min-h-0 flex-1 flex-col rounded-md border border-border bg-elevated p-3">
             {panelQuery.isLoading ? (
               <div

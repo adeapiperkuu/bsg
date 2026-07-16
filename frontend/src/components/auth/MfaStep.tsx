@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { AlertCircle, KeyRound, Loader2, ShieldCheck, Smartphone } from "lucide-react";
 
 import { mfaChallenge, mfaEnroll, mfaVerify } from "@/lib/api";
 import { useAuthStore } from "@/stores/useAuthStore";
@@ -74,50 +75,100 @@ export function MfaStep({ pending, onComplete }: { pending: MfaRequired; onCompl
     : null;
 
   return (
-    <form onSubmit={submitCode} className="w-full max-w-sm space-y-4 rounded-lg border border-border bg-card p-6 shadow-sm">
-      <div>
-        <h1 className="text-lg font-semibold text-foreground">Two-factor authentication</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
+    <form
+      onSubmit={submitCode}
+      className="rounded-[1.75rem] border border-white/70 bg-white/90 p-6 shadow-2xl shadow-slate-200/80 backdrop-blur sm:p-8"
+    >
+      <div className="mb-8 inline-flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+        <ShieldCheck className="h-3.5 w-3.5" />
+        Secure sign-in
+      </div>
+
+      <div className="space-y-2">
+        <p className="text-sm font-medium uppercase tracking-[0.18em] text-muted-foreground">
+          Final step
+        </p>
+        <h1 className="text-3xl font-semibold tracking-tight text-foreground">
+          Verify it&apos;s you
+        </h1>
+        <p className="text-sm leading-6 text-muted-foreground">
           {enrolling
-            ? "Scan the QR code with an authenticator app, then enter the 6-digit code it shows."
+            ? "Scan the QR code with your authenticator app, then enter the 6-digit code it shows."
             : "Enter the 6-digit code from your authenticator app."}
         </p>
       </div>
 
       {enrolling && qrSrc && (
-        <div className="space-y-2 rounded-md border border-border bg-muted/30 p-4">
-          <img src={qrSrc} alt="MFA enrollment QR code" className="mx-auto h-40 w-40" />
+        <div className="mt-6 space-y-4 rounded-2xl border border-border bg-muted/40 p-4">
+          <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+            <Smartphone className="h-4 w-4 text-primary" />
+            Set up an authenticator app
+          </div>
+          <div className="rounded-xl bg-white p-4">
+            <img src={qrSrc} alt="MFA enrollment QR code" className="mx-auto h-40 w-40" />
+          </div>
           {secret && (
-            <p className="text-center text-xs text-muted-foreground">
-              Can't scan it? Enter this key manually: <span className="font-mono">{secret}</span>
+            <p className="break-words text-center text-xs leading-5 text-muted-foreground">
+              Can&apos;t scan it? Enter this key manually:{" "}
+              <span className="font-mono text-foreground">{secret}</span>
             </p>
           )}
         </div>
       )}
 
       {enrolling && !qrSrc && !error && (
-        <p className="text-sm text-muted-foreground">Setting up your authenticator...</p>
+        <div className="mt-6 flex items-center gap-2 rounded-2xl border border-border bg-muted/40 p-4 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Setting up your authenticator...
+        </div>
       )}
 
-      <div className="space-y-2">
-        <Label htmlFor="mfa-code">Authentication code</Label>
-        <Input
-          id="mfa-code"
-          inputMode="numeric"
-          autoComplete="one-time-code"
-          maxLength={6}
-          value={code}
-          onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
-          required
-          disabled={!factorId}
-        />
+      <div className="mt-6 space-y-2">
+        <Label htmlFor="mfa-code" className="text-sm text-foreground">
+          Authentication code
+        </Label>
+        <div className="relative">
+          <KeyRound className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            id="mfa-code"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            maxLength={6}
+            placeholder="000000"
+            value={code}
+            onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+            className="h-11 bg-white pl-10 text-center font-mono text-lg tracking-[0.35em]"
+            required
+            disabled={!factorId}
+          />
+        </div>
       </div>
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {error && (
+        <div className="mt-5 flex gap-3 rounded-xl border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>{error}</p>
+        </div>
+      )}
 
-      <Button type="submit" className="w-full" disabled={submitting || !factorId || code.length !== 6}>
-        {submitting ? "Verifying…" : "Verify and sign in"}
+      <Button
+        type="submit"
+        className="mt-6 h-11 w-full"
+        disabled={submitting || !factorId || code.length !== 6}
+      >
+        {submitting ? (
+          <>
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Verifying
+          </>
+        ) : (
+          "Verify and sign in"
+        )}
       </Button>
+
+      <p className="mt-6 text-center text-xs leading-5 text-muted-foreground">
+        Codes refresh every 30 seconds. If one expires, enter the next code from your app.
+      </p>
     </form>
   );
 }
