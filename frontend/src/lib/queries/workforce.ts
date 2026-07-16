@@ -419,6 +419,19 @@ export function useProjectCapabilityGapsQuery(
   return useQuery(projectCapabilityGapsQueryOptions(projectId, canReadInternalWorkforce));
 }
 
+export function useProjectWorkforceSections(
+  projectId: string | null,
+  canReadInternalWorkforce: boolean,
+) {
+  const summary = useProjectWorkforceSummary(projectId, canReadInternalWorkforce);
+  const utilization = useProjectUtilizationQuery(projectId, canReadInternalWorkforce);
+  const skillMatrix = useProjectSkillMatrixQuery(projectId, canReadInternalWorkforce);
+  const trainingGaps = useProjectTrainingGapsQuery(projectId, canReadInternalWorkforce);
+  const capabilityGaps = useProjectCapabilityGapsQuery(projectId, canReadInternalWorkforce);
+
+  return { summary, utilization, skillMatrix, trainingGaps, capabilityGaps };
+}
+
 export function useWorkforceCertificationsQuery(enabled: boolean) {
   return useQuery({
     queryKey: queryKeys.workforceCertifications,

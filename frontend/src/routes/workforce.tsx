@@ -1,4 +1,3 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, SectionHeader } from "@/components/bsg/widgets";
@@ -15,13 +14,9 @@ import { WorkforceRecommendationsPanel } from "@/components/bsg/WorkforceRecomme
 import { useProjectsQuery } from "@/lib/queries/delivery";
 import {
   UTILIZATION_CAPACITY_THRESHOLD,
-  buildAnnotatorsByTeamFromList,
   buildLatestTeamUtilization,
-  buildProjectWorkforceSummary,
   EMPTY_UTILIZATION,
-  seedWorkforceSectionCaches,
-  useProjectWorkforceDashboardQuery,
-  useProjectWorkforceSummary,
+  useProjectWorkforceSections,
 } from "@/lib/queries/workforce";
 import {
   useWorkforceDashboardFilters,
@@ -41,7 +36,6 @@ import type {
   TrainingGapRow,
   TrainingGapSummaryRead,
 } from "@/types/workforce";
-import type { ProjectRecommendationsResponse } from "@/features/mitigation-recommendations/types";
 
 export const Route = createFileRoute("/workforce")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -132,78 +126,38 @@ function WorkforcePage() {
     setDrawerOpen(false);
   }, [resolvedProjectId]);
 
-  const queryClient = useQueryClient();
-  const dashboardQuery = useProjectWorkforceDashboardQuery(
-    resolvedProjectId,
-    canReadInternalWorkforce,
-  );
-  const dashboard = dashboardQuery.data;
+  const sections = useProjectWorkforceSections(resolvedProjectId, canReadInternalWorkforce);
 
-  useEffect(() => {
-    if (!resolvedProjectId || !dashboard) return;
-    seedWorkforceSectionCaches(queryClient, resolvedProjectId, dashboard);
-  }, [dashboard, queryClient, resolvedProjectId]);
+  const summary = sections.summary.summary;
+  const workforceLoading = sections.summary.isLoading;
+  const workforceError = sections.summary.error;
 
-  // Client / non-internal roles still need teams via the lightweight summary path.
-  const fallbackWorkforceQuery = useProjectWorkforceSummary(
-    canReadInternalWorkforce ? null : resolvedProjectId,
-    false,
-  );
-
-  const summary = useMemo(() => {
-    if (canReadInternalWorkforce && dashboard) {
-      const teams = dashboard.summary.teams;
-      const annotatorsByTeam = buildAnnotatorsByTeamFromList(teams, dashboard.summary.annotators);
-      return buildProjectWorkforceSummary(teams, annotatorsByTeam);
-    }
-    return fallbackWorkforceQuery.summary;
-  }, [canReadInternalWorkforce, dashboard, fallbackWorkforceQuery.summary]);
-
-  const workforceLoading = canReadInternalWorkforce
-    ? dashboardQuery.isLoading
-    : fallbackWorkforceQuery.isLoading;
-  const workforceError = canReadInternalWorkforce
-    ? dashboardQuery.error instanceof Error
-      ? dashboardQuery.error.message
-      : null
-    : fallbackWorkforceQuery.error;
-
-  const utilizationSnapshots = dashboard?.utilization ?? EMPTY_UTILIZATION;
+  const utilizationSnapshots = sections.utilization.data ?? EMPTY_UTILIZATION;
   const teamUtilization = useMemo(
     () => buildLatestTeamUtilization(utilizationSnapshots, summary.teams),
     [utilizationSnapshots, summary.teams],
   );
-  const skillMatrixRows = dashboard?.skill_matrix.rows ?? EMPTY_LIST;
-  const skillMatrixLoading = canReadInternalWorkforce && dashboardQuery.isLoading;
+  const skillMatrixRows = sections.skillMatrix.data?.rows ?? EMPTY_LIST;
+  const skillMatrixLoading = canReadInternalWorkforce && sections.skillMatrix.isLoading;
   const skillMatrixError =
-    canReadInternalWorkforce && dashboardQuery.error instanceof Error
-      ? dashboardQuery.error.message
-      : null;
+    sections.skillMatrix.error instanceof Error ? sections.skillMatrix.error.message : null;
   const skillMatrixConfidencePct = useMemo(
     () => skillMatrixConfidence(skillMatrixRows),
     [skillMatrixRows],
   );
 
-  const trainingGaps = dashboard?.training_gaps;
+  const trainingGaps = sections.trainingGaps.data;
   const trainingGapRows = trainingGaps?.rows ?? EMPTY_LIST;
-  const trainingGapsLoading = canReadInternalWorkforce && dashboardQuery.isLoading;
+  const trainingGapsLoading = canReadInternalWorkforce && sections.trainingGaps.isLoading;
   const trainingGapsError =
-    canReadInternalWorkforce && dashboardQuery.error instanceof Error
-      ? dashboardQuery.error.message
-      : null;
+    sections.trainingGaps.error instanceof Error ? sections.trainingGaps.error.message : null;
 
   const canManageWorkforce = canManageWorkforceRole(user?.role);
 
-  const capabilityGaps = dashboard?.capability_gaps ?? EMPTY_LIST;
-  const capabilityGapsLoading = canReadInternalWorkforce && dashboardQuery.isLoading;
+  const capabilityGaps = sections.capabilityGaps.data ?? EMPTY_LIST;
+  const capabilityGapsLoading = canReadInternalWorkforce && sections.capabilityGaps.isLoading;
   const capabilityGapsError =
-    canReadInternalWorkforce && dashboardQuery.error instanceof Error
-      ? dashboardQuery.error.message
-      : null;
-
-  const bundledRecommendations = (
-    canReadInternalWorkforce ? (dashboard?.recommendations ?? null) : undefined
-  ) as ProjectRecommendationsResponse | null | undefined;
+    sections.capabilityGaps.error instanceof Error ? sections.capabilityGaps.error.message : null;
 
   const {
     siteFilter,
@@ -278,13 +232,13 @@ function WorkforcePage() {
   );
 
   const projectsLoading = projectsQuery.isLoading;
-  const utilizationLoading = canReadInternalWorkforce && dashboardQuery.isLoading;
+  const utilizationLoading = canReadInternalWorkforce && sections.utilization.isLoading;
 
   const projectsError = projectsQuery.error instanceof Error ? projectsQuery.error.message : null;
   const workforceLoadWarning = workforceError;
   const utilizationLoadWarning =
-    canReadInternalWorkforce && dashboardQuery.error instanceof Error
-      ? dashboardQuery.error.message
+    canReadInternalWorkforce && sections.utilization.error instanceof Error
+      ? sections.utilization.error.message
       : null;
 
   const selectProject = (projectId: string) => {
@@ -515,9 +469,6 @@ function WorkforcePage() {
             <WorkforceRecommendationsPanel
               projectId={resolvedProjectId}
               canManage={canManageWorkforce}
-              bundledRecommendations={bundledRecommendations ?? null}
-              bundledLoading={dashboardQuery.isLoading}
-              bundledError={dashboardQuery.isError}
             />
           ) : null}
 
