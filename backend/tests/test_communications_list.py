@@ -137,8 +137,10 @@ def test_list_stmt_joins_project_and_evidence_counts(delivery_manager) -> None:
     sql = _compile(build_communications_list_stmt(delivery_manager))
     assert "client_communications" in sql
     assert "projects" in sql
+    assert "programs" in sql
     assert "organisations" in sql
     assert "project_name" in sql or "projects.name" in sql
+    assert "program_name" in sql or "programs.name" in sql
     assert "communication_evidence_links" in sql
     assert "evidence_link_count" in sql
     assert "body_draft" not in sql

@@ -50,6 +50,7 @@ from app.agents.delivery.events.handlers import (
     register_delivery_handlers,
     risk_alert_snapshot_from_row,
 )
+from app.agents.delivery.services.summary_service import build_structured_summary_payload
 from app.db.models import AlertType, Project
 
 
@@ -305,6 +306,7 @@ def build_dashboard_response(
         "bottlenecks": context.bottlenecks,
         "traffic_light": scores.traffic_light,
         "daily_summary": None,
+        "structured_summary": build_structured_summary_payload(context, scores),
     }
 
 
@@ -314,6 +316,7 @@ async def run_delivery_scoring(
     project_id: UUID,
     as_of_date: date | None = None,
     project: Project | None = None,
+    thresholds: DeliveryScoringThresholds | None = None,
 ) -> DeliveryScoringRunResult:
     """Orchestrate a delivery scoring run with safe transaction boundaries.
 
@@ -330,14 +333,22 @@ async def run_delivery_scoring(
 
     if session.in_transaction():
         compute_result = await _compute_scoring_event(
-            session, project_id=project_id, as_of_date=effective_date, project=project
+            session,
+            project_id=project_id,
+            as_of_date=effective_date,
+            project=project,
+            thresholds=thresholds,
         )
         handler_results = await emit_event(session, compute_result.event)
     else:
         # Phase 1: reads + pure computation only — no DB writes.
         async with session.begin():
             compute_result = await _compute_scoring_event(
-                session, project_id=project_id, as_of_date=effective_date, project=project
+                session,
+                project_id=project_id,
+                as_of_date=effective_date,
+                project=project,
+                thresholds=thresholds,
             )
         # Phase 1 committed. The event is built from a stable, committed snapshot.
 
@@ -354,6 +365,7 @@ async def _compute_scoring_event(
     project_id: UUID,
     as_of_date: date,
     project: Project | None,
+    thresholds: DeliveryScoringThresholds | None = None,
 ) -> _ScoringComputeResult:
     """Load scoring inputs and build the delivery event. Pure reads and computation."""
     from app.agents.delivery.services.dashboard_service import load_project_scoring_inputs
@@ -367,8 +379,11 @@ async def _compute_scoring_event(
         resolved_project,
         as_of_date=as_of_date,
     )
-    thresholds = await load_delivery_scoring_thresholds(session, resolved_project.org_id)
-    context = ScoringContext.from_raw_data(inputs.raw_data, thresholds=thresholds)
+    resolved_thresholds = thresholds or await load_delivery_scoring_thresholds(
+        session,
+        resolved_project.org_id,
+    )
+    context = ScoringContext.from_raw_data(inputs.raw_data, thresholds=resolved_thresholds)
     scores = compute_delivery_scores(context)
     milestone_updates = compute_milestone_status_updates(
         inputs.raw_data["milestones"],

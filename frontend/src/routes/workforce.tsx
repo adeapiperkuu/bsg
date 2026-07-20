@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import { Card, SectionHeader } from "@/components/bsg/widgets";
 import { EmployeeProfileDrawer } from "@/components/bsg/EmployeeProfileDrawer";
 import { CapabilityGapsSection } from "@/components/bsg/workforce/CapabilityGapsSection";
@@ -300,7 +301,11 @@ function WorkforcePage() {
     );
   }
 
-  if (!projectsLoading && projects.length === 0) {
+  if (authLoading || projectsLoading || (Boolean(resolvedProjectId) && workforceLoading)) {
+    return <PageLoadingScreen />;
+  }
+
+  if (projects.length === 0) {
     return (
       <Card>
         <SectionHeader title="Workforce & Capability" sub="No projects available" />

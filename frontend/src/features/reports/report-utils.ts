@@ -17,6 +17,10 @@ export function resolveCommunicationBody(detail: {
 export type InboxProjectGroup = {
   projectId: string;
   projectName: string;
+  programId: string | null;
+  programName: string | null;
+  /** Prefer "Program · Sprint" when a parent program exists. */
+  label: string;
   reports: CommunicationListItem[];
 };
 
@@ -26,6 +30,19 @@ export type InboxClientGroup = {
   projects: InboxProjectGroup[];
   reportCount: number;
 };
+
+/** Inbox / chrome label: program name with sprint scope when both exist. */
+export function reportProjectLabel(item: {
+  project_name: string;
+  program_name?: string | null;
+}): string {
+  const project = item.project_name?.trim() || "Project";
+  const program = item.program_name?.trim();
+  if (program && program !== project) {
+    return `${program} · ${project}`;
+  }
+  return project;
+}
 
 /** Group inbox rows as Client → Project → reports (preserves input order). */
 export function groupReportsByClientAndProject(
@@ -49,6 +66,9 @@ export function groupReportsByClientAndProject(
       project = {
         projectId: report.project_id,
         projectName: report.project_name,
+        programId: report.program_id ?? null,
+        programName: report.program_name ?? null,
+        label: reportProjectLabel(report),
         reports: [],
       };
       client.projects.push(project);

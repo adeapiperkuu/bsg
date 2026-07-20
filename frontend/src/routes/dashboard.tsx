@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import {
   Card,
   SectionHeader,
@@ -298,6 +299,12 @@ function Dashboard() {
     ? filteredMilestones
     : filteredMilestones.slice(0, MILESTONES_PREVIEW);
   const visibleActivity = showAllActivity ? activity : activity.slice(0, ACTIVITY_PREVIEW);
+
+  const loading = sections.some((s) => s.isLoading);
+
+  if (loading) {
+    return <PageLoadingScreen />;
+  }
 
   return (
     <div className="space-y-5">

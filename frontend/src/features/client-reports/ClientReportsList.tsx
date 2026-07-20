@@ -1,7 +1,7 @@
 import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
 import { Skeleton } from "@/components/ui/skeleton";
 import { typeLabel } from "@/features/reports/report-status";
-import { formatReportDate } from "@/features/reports/report-utils";
+import { formatReportDate, reportProjectLabel } from "@/features/reports/report-utils";
 import type { CommunicationListItem } from "@/types/communications";
 
 export interface ClientReportsListProps {
@@ -71,7 +71,7 @@ export function ClientReportsList({
                   <span className="min-w-0">
                     <div className="truncate font-medium">{r.subject}</div>
                     <div className="truncate text-[10px] text-muted-foreground">
-                      {r.project_name} · {typeLabel(r.comm_type)} · Sent{" "}
+                      {reportProjectLabel(r)} · {typeLabel(r.comm_type)} · Sent{" "}
                       {formatReportDate(r.sent_at ?? r.updated_at)}
                     </div>
                   </span>

@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
 
+import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import { GenerateReportDialog } from "@/features/reports/GenerateReportDialog";
 import { ReportsInboxPanel } from "@/features/reports/ReportsInboxPanel";
 import { ReportWorkspacePanel } from "@/features/reports/ReportWorkspacePanel";
@@ -18,7 +19,7 @@ import {
   parseInboxFilter,
   type ReportInboxFilter,
 } from "@/features/reports/report-status";
-import { userFacingReportsError } from "@/features/reports/report-utils";
+import { userFacingReportsError, reportProjectLabel } from "@/features/reports/report-utils";
 import { useReportMutations } from "@/features/reports/useReportMutations";
 import { useReportsQueries } from "@/features/reports/useReportsQueries";
 import { ApiError } from "@/lib/api";
@@ -54,7 +55,9 @@ export function ReportsPage() {
   const reports = listQuery.data?.data ?? EMPTY_REPORTS;
   const selectedListItem = reports.find((r) => r.id === selectedId) ?? null;
   const detail = detailQuery.data ?? null;
-  const projectName = selectedListItem?.project_name ?? detail?.project_name ?? null;
+  const projectName = selectedListItem
+    ? reportProjectLabel(selectedListItem)
+    : (detail?.project_name ?? null);
 
   useEffect(() => {
     if (listQuery.isLoading || listQuery.isError) return;
@@ -107,6 +110,10 @@ export function ReportsPage() {
     mutations.approve.isPending ||
     mutations.reject.isPending ||
     mutations.send.isPending;
+
+  if (listQuery.isLoading && reports.length === 0 && !listQuery.isError) {
+    return <PageLoadingScreen />;
+  }
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">

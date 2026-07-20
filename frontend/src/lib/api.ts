@@ -578,6 +578,22 @@ export async function createCommunicationDraft(
   return body.data;
 }
 
+export type DeliveryBottleneckSeverity = "low" | "medium" | "high" | "critical";
+
+export type DeliveryStructuredSummary = {
+  status: DeliveryTrafficLight;
+  headline: string;
+  key_facts: string[];
+  risks: string[];
+  delivery_changes: string[];
+  bottleneck_summary: {
+    active_count: number;
+    highest_severity: DeliveryBottleneckSeverity | null;
+  };
+  data_quality: string[];
+  generated_at: string;
+};
+
 export type DeliveryDashboardResponse = {
   overview: Record<string, unknown>;
   milestones: Array<Record<string, unknown>>;
@@ -586,6 +602,8 @@ export type DeliveryDashboardResponse = {
   bottlenecks: Array<Record<string, unknown>>;
   traffic_light: DeliveryTrafficLight;
   daily_summary: string | null;
+  /** Deterministic facts; additive Phase 3 field. Absent on legacy fixtures only. */
+  structured_summary?: DeliveryStructuredSummary | null;
 };
 
 export async function fetchDeliveryDashboard(
@@ -673,6 +691,86 @@ export async function listProjectDeliveryConfidence(
 ): Promise<DeliveryConfidencePoint[]> {
   const body = await apiFetch<{ data: DeliveryConfidencePoint[] }>(
     `/projects/${projectId}/delivery-confidence?limit=100`,
+  );
+  return body.data;
+}
+
+export type RootCauseFactorRead = {
+  factor: string;
+  label: string;
+  impact_percent: number;
+  impact_points: number;
+  severity: "low" | "medium" | "high" | "critical";
+  explanation: string;
+  evidence_json?: Record<string, unknown> | null;
+};
+
+export type MainContributorRead = {
+  factor: string;
+  label: string;
+  impact_percent: number;
+};
+
+export type RootCauseSnapshotRead = {
+  id: string;
+  project_id: string;
+  org_id: string;
+  snapshot_date: string;
+  overall_confidence: number;
+  confidence_loss: number;
+  model_version: string;
+  generated_at: string | null;
+  factors: RootCauseFactorRead[];
+  main_contributors: MainContributorRead[];
+};
+
+export type ProjectRootCausesResponse = {
+  project_id: string;
+  as_of: string;
+  latest: RootCauseSnapshotRead | null;
+  history: RootCauseSnapshotRead[];
+  root_cause_summary: Record<string, unknown> | null;
+};
+
+export type RootCauseTrendFactorRead = {
+  factor: string;
+  label: string;
+  today: number | null;
+  last_week: number | null;
+  last_month: number | null;
+  trend_direction: "up" | "down" | "flat" | "insufficient_data";
+};
+
+export type RootCauseTrendsResponse = {
+  as_of: string;
+  project_id: string | null;
+  org_id: string | null;
+  factors: RootCauseTrendFactorRead[];
+};
+
+export async function fetchProjectRootCauses(
+  projectId: string,
+  params: { as_of?: string; history_days?: number } = {},
+): Promise<ProjectRootCausesResponse> {
+  const qs = new URLSearchParams();
+  if (params.as_of) qs.set("as_of", params.as_of);
+  if (params.history_days != null) qs.set("history_days", String(params.history_days));
+  const query = qs.toString();
+  const body = await apiFetch<{ data: ProjectRootCausesResponse }>(
+    `/delivery/projects/${projectId}/root-causes${query ? `?${query}` : ""}`,
+  );
+  return body.data;
+}
+
+export async function fetchRootCauseTrends(
+  params: { project_id?: string; org_id?: string } = {},
+): Promise<RootCauseTrendsResponse> {
+  const qs = new URLSearchParams();
+  if (params.project_id) qs.set("project_id", params.project_id);
+  if (params.org_id) qs.set("org_id", params.org_id);
+  const query = qs.toString();
+  const body = await apiFetch<{ data: RootCauseTrendsResponse }>(
+    `/delivery/root-causes/trends${query ? `?${query}` : ""}`,
   );
   return body.data;
 }
@@ -786,6 +884,8 @@ export type AdminProject = {
   vertical: string;
   start_date: string;
   target_end_date: string;
+  program_id: string | null;
+  program_name: string | null;
   latest_iso_year: number | null;
   latest_iso_week: number | null;
   active_drift_alerts: number;

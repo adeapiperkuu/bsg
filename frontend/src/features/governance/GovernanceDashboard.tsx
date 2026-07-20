@@ -5,6 +5,7 @@ import { AlertCircle, Plus, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
+import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -1050,6 +1051,10 @@ export function GovernanceDashboard() {
         />
       </Card>
     );
+  }
+
+  if (primaryTableQuery.isLoading && !primaryTableQuery.data) {
+    return <PageLoadingScreen />;
   }
 
   return (

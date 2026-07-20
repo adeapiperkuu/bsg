@@ -2,11 +2,39 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 
 from app.agents.delivery.audit.audit_logger import AuditLogger
+from app.agents.delivery.schemas.operations import (
+    BottleneckAcknowledgeRequest,
+    BottleneckDetectionRunResponse,
+    BottleneckResolveRequest,
+    BottleneckResponse,
+    TeamThroughputSnapshotCreate,
+    TeamThroughputSnapshotResponse,
+    TeamThroughputSnapshotUpdate,
+)
+from app.agents.delivery.schemas.root_cause import (
+    ProjectRootCausesResponse,
+    RootCauseAnalyticsResponse,
+    RootCauseRecalculateResponse,
+    RootCauseSnapshotRead,
+    RootCauseTrendsResponse,
+)
+from app.agents.delivery.services.bottleneck_service import (
+    acknowledge_bottleneck,
+    detect_project_bottlenecks,
+    get_project_bottleneck,
+    resolve_bottleneck,
+)
 from app.agents.delivery.services.dashboard_service import clear_delivery_portfolio_cache
+from app.agents.delivery.services.delivery_root_cause_service import (
+    get_org_root_cause_analytics,
+    get_project_root_causes,
+    get_root_cause_trends,
+    recalculate_root_causes,
+)
 from app.agents.delivery.services.recommendation_service import (
     fetch_recommendation_row,
     get_recommendation_for_mutation,
@@ -16,17 +44,25 @@ from app.agents.delivery.services.recommendation_service import (
     recommendation_row_to_read,
     validate_owner_assignment,
 )
+from app.agents.delivery.services.team_throughput_service import (
+    correct_team_snapshot,
+    create_or_update_team_snapshot,
+    get_team_snapshot,
+)
 from app.api.deps import LimitQuery, SessionDep, UserDep
 from app.core.exceptions import ApiError
-from app.core.security import require_role
+from app.core.security import CurrentUser, require_role
 from app.db.models import (
     AlertStatus,
     AppRole,
+    Bottleneck,
     DeliveryConfidenceScore,
     MilestoneStatus,
     OwnerType,
     RecommendationStatus,
     RiskAlert,
+    RiskTier,
+    TeamThroughputSnapshot,
     ThroughputSnapshot,
 )
 from app.schemas.common import DataResponse, ListResponse, ORMModel, Pagination
@@ -45,6 +81,10 @@ from app.services.ingestion import upsert_throughput_snapshot
 from app.services.scoping import get_visible_project
 
 router = APIRouter(tags=["delivery"])
+InternalDeliveryUser = Depends(
+    require_role(AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
+)
+DeliveryOperator = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN))
 
 
 class DeliveryConfidenceScoreRead(ORMModel):
@@ -56,6 +96,326 @@ class DeliveryConfidenceScoreRead(ORMModel):
     status: MilestoneStatus
     model_version: str | None
     created_at: datetime
+
+
+def _team_snapshot_response(
+    snapshot: TeamThroughputSnapshot,
+    *,
+    corrected: bool = False,
+    detection_changed: bool = False,
+    scoring_status: str | None = None,
+    scoring_error: str | None = None,
+) -> TeamThroughputSnapshotResponse:
+    response = TeamThroughputSnapshotResponse.model_validate(snapshot)
+    response.corrected = corrected
+    response.detection_changed = detection_changed
+    response.scoring_status = scoring_status
+    response.scoring_error = scoring_error
+    return response
+
+
+@router.get(
+    "/projects/{project_id}/team-throughput",
+    response_model=ListResponse[TeamThroughputSnapshotResponse],
+)
+async def list_team_throughput(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = InternalDeliveryUser,
+    team_id: UUID | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    limit: LimitQuery = 100,
+    offset: int = Query(default=0, ge=0, le=10_000),
+) -> ListResponse[TeamThroughputSnapshotResponse]:
+    project = await get_visible_project(session, project_id, current_user)
+    if date_from is not None and date_to is not None and date_from > date_to:
+        raise ApiError(422, "INVALID_DATE_RANGE", "date_from must be on or before date_to.")
+    query = select(TeamThroughputSnapshot).where(
+        TeamThroughputSnapshot.org_id == project.org_id,
+        TeamThroughputSnapshot.project_id == project.id,
+    )
+    if team_id is not None:
+        query = query.where(TeamThroughputSnapshot.team_id == team_id)
+    if date_from is not None:
+        query = query.where(TeamThroughputSnapshot.snapshot_date >= date_from)
+    if date_to is not None:
+        query = query.where(TeamThroughputSnapshot.snapshot_date <= date_to)
+    rows = (
+        await session.execute(
+            query.order_by(
+                TeamThroughputSnapshot.snapshot_date.desc(),
+                TeamThroughputSnapshot.team_id,
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+    ).scalars()
+    data = [_team_snapshot_response(row) for row in rows]
+    return ListResponse(
+        data=data,
+        pagination=Pagination(
+            limit=limit,
+            offset=offset,
+            items=len(data),
+            has_more=len(data) == limit,
+        ),
+    )
+
+
+@router.post(
+    "/projects/{project_id}/team-throughput",
+    response_model=DataResponse[TeamThroughputSnapshotResponse],
+)
+async def create_team_throughput(
+    project_id: UUID,
+    payload: TeamThroughputSnapshotCreate,
+    session: SessionDep,
+    current_user: CurrentUser = DeliveryOperator,
+) -> DataResponse[TeamThroughputSnapshotResponse]:
+    project = await get_visible_project(session, project_id, current_user)
+    result = await create_or_update_team_snapshot(
+        session,
+        project=project,
+        actor=current_user,
+        payload=payload,
+    )
+    await session.commit()
+    if result.created or result.corrected:
+        clear_delivery_portfolio_cache(org_id=project.org_id)
+    await session.refresh(result.snapshot)
+    scoring = result.detection.scoring if result.detection is not None else None
+    return DataResponse(
+        data=_team_snapshot_response(
+            result.snapshot,
+            corrected=result.corrected,
+            detection_changed=result.detection.changed if result.detection else False,
+            scoring_status=scoring.scoring_status if scoring else None,
+            scoring_error=scoring.scoring_error if scoring else None,
+        )
+    )
+
+
+@router.get(
+    "/projects/{project_id}/team-throughput/{snapshot_id}",
+    response_model=DataResponse[TeamThroughputSnapshotResponse],
+)
+async def get_team_throughput(
+    project_id: UUID,
+    snapshot_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = InternalDeliveryUser,
+) -> DataResponse[TeamThroughputSnapshotResponse]:
+    project = await get_visible_project(session, project_id, current_user)
+    snapshot = await get_team_snapshot(
+        session,
+        project_id=project.id,
+        snapshot_id=snapshot_id,
+    )
+    return DataResponse(data=_team_snapshot_response(snapshot))
+
+
+@router.patch(
+    "/projects/{project_id}/team-throughput/{snapshot_id}",
+    response_model=DataResponse[TeamThroughputSnapshotResponse],
+)
+async def update_team_throughput(
+    project_id: UUID,
+    snapshot_id: UUID,
+    payload: TeamThroughputSnapshotUpdate,
+    session: SessionDep,
+    current_user: CurrentUser = DeliveryOperator,
+) -> DataResponse[TeamThroughputSnapshotResponse]:
+    project = await get_visible_project(session, project_id, current_user)
+    snapshot = await get_team_snapshot(
+        session,
+        project_id=project.id,
+        snapshot_id=snapshot_id,
+        for_update=True,
+    )
+    result = await correct_team_snapshot(
+        session,
+        project=project,
+        snapshot=snapshot,
+        actor=current_user,
+        payload=payload,
+    )
+    await session.commit()
+    if result.corrected:
+        clear_delivery_portfolio_cache(org_id=project.org_id)
+    await session.refresh(result.snapshot)
+    scoring = result.detection.scoring if result.detection is not None else None
+    return DataResponse(
+        data=_team_snapshot_response(
+            result.snapshot,
+            corrected=result.corrected,
+            detection_changed=result.detection.changed if result.detection else False,
+            scoring_status=scoring.scoring_status if scoring else None,
+            scoring_error=scoring.scoring_error if scoring else None,
+        )
+    )
+
+
+@router.get(
+    "/projects/{project_id}/bottlenecks",
+    response_model=ListResponse[BottleneckResponse],
+)
+async def list_bottlenecks(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = InternalDeliveryUser,
+    status: AlertStatus | None = None,
+    severity: RiskTier | None = None,
+    team_id: UUID | None = None,
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
+    limit: LimitQuery = 100,
+    offset: int = Query(default=0, ge=0, le=10_000),
+) -> ListResponse[BottleneckResponse]:
+    project = await get_visible_project(session, project_id, current_user)
+    query = select(Bottleneck).where(
+        Bottleneck.org_id == project.org_id,
+        Bottleneck.project_id == project.id,
+        Bottleneck.deleted_at.is_(None),
+    )
+    if status is not None:
+        query = query.where(Bottleneck.status == status)
+    if severity is not None:
+        query = query.where(Bottleneck.severity == severity)
+    if team_id is not None:
+        query = query.where(Bottleneck.team_id == team_id)
+    if created_from is not None:
+        query = query.where(Bottleneck.created_at >= created_from)
+    if created_to is not None:
+        query = query.where(Bottleneck.created_at <= created_to)
+    rows = (
+        await session.execute(
+            query.order_by(Bottleneck.created_at.desc()).offset(offset).limit(limit)
+        )
+    ).scalars()
+    data = [BottleneckResponse.model_validate(row) for row in rows]
+    return ListResponse(
+        data=data,
+        pagination=Pagination(
+            limit=limit,
+            offset=offset,
+            items=len(data),
+            has_more=len(data) == limit,
+        ),
+    )
+
+
+@router.get(
+    "/projects/{project_id}/bottlenecks/{bottleneck_id}",
+    response_model=DataResponse[BottleneckResponse],
+)
+async def get_bottleneck(
+    project_id: UUID,
+    bottleneck_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = InternalDeliveryUser,
+) -> DataResponse[BottleneckResponse]:
+    project = await get_visible_project(session, project_id, current_user)
+    bottleneck = await get_project_bottleneck(
+        session,
+        project_id=project.id,
+        bottleneck_id=bottleneck_id,
+    )
+    return DataResponse(data=BottleneckResponse.model_validate(bottleneck))
+
+
+@router.post(
+    "/projects/{project_id}/bottlenecks/{bottleneck_id}/acknowledge",
+    response_model=DataResponse[BottleneckResponse],
+)
+async def acknowledge_project_bottleneck(
+    project_id: UUID,
+    bottleneck_id: UUID,
+    payload: BottleneckAcknowledgeRequest,
+    session: SessionDep,
+    current_user: CurrentUser = DeliveryOperator,
+) -> DataResponse[BottleneckResponse]:
+    project = await get_visible_project(session, project_id, current_user)
+    bottleneck = await get_project_bottleneck(
+        session,
+        project_id=project.id,
+        bottleneck_id=bottleneck_id,
+        for_update=True,
+    )
+    changed = await acknowledge_bottleneck(
+        session,
+        bottleneck=bottleneck,
+        actor=current_user,
+        note=payload.note,
+    )
+    await session.commit()
+    if changed:
+        clear_delivery_portfolio_cache(org_id=project.org_id)
+    await session.refresh(bottleneck)
+    return DataResponse(data=BottleneckResponse.model_validate(bottleneck))
+
+
+@router.post(
+    "/projects/{project_id}/bottlenecks/{bottleneck_id}/resolve",
+    response_model=DataResponse[BottleneckResponse],
+)
+async def resolve_project_bottleneck(
+    project_id: UUID,
+    bottleneck_id: UUID,
+    payload: BottleneckResolveRequest,
+    session: SessionDep,
+    current_user: CurrentUser = DeliveryOperator,
+) -> DataResponse[BottleneckResponse]:
+    project = await get_visible_project(session, project_id, current_user)
+    bottleneck = await get_project_bottleneck(
+        session,
+        project_id=project.id,
+        bottleneck_id=bottleneck_id,
+        for_update=True,
+    )
+    changed, _ = await resolve_bottleneck(
+        session,
+        project=project,
+        bottleneck=bottleneck,
+        actor=current_user,
+        reason=payload.reason,
+    )
+    await session.commit()
+    if changed:
+        clear_delivery_portfolio_cache(org_id=project.org_id)
+    await session.refresh(bottleneck)
+    return DataResponse(data=BottleneckResponse.model_validate(bottleneck))
+
+
+@router.post(
+    "/projects/{project_id}/bottlenecks/detect",
+    response_model=DataResponse[BottleneckDetectionRunResponse],
+)
+async def detect_project_bottlenecks_route(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = DeliveryOperator,
+) -> DataResponse[BottleneckDetectionRunResponse]:
+    project = await get_visible_project(session, project_id, current_user)
+    result = await detect_project_bottlenecks(session, project=project)
+    await session.commit()
+    if result.changed:
+        clear_delivery_portfolio_cache(org_id=project.org_id)
+    return DataResponse(
+        data=BottleneckDetectionRunResponse(
+            project_id=project.id,
+            evaluated_teams=result.analysis.evaluated_teams,
+            valid_observation_days=result.analysis.valid_observation_days,
+            signals_detected=len(result.analysis.signals),
+            created=result.created,
+            updated=result.updated,
+            resolved=result.resolved,
+            reopened=result.reopened,
+            skipped_reasons=[item.reason for item in result.analysis.skipped_reasons],
+            scoring_status=result.scoring.scoring_status if result.scoring else None,
+            scoring_error=result.scoring.scoring_error if result.scoring else None,
+        )
+    )
 
 
 @router.get("/projects/{project_id}/throughput", response_model=ListResponse[ThroughputSnapshotRead])
@@ -320,3 +680,109 @@ async def assign_recommendation_owner(
     if row is None:
         raise ApiError(404, "NOT_FOUND", "Recommendation was not found.")
     return DataResponse(data=MitigationRecommendationRead.model_validate(recommendation_row_to_read(row)))
+
+
+# ---------------------------------------------------------------------------
+# Phase 15.1 — Root-cause intelligence
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/delivery/root-causes",
+    response_model=DataResponse[RootCauseAnalyticsResponse],
+)
+async def get_delivery_root_cause_analytics(
+    session: SessionDep,
+    current_user: CurrentUser = InternalDeliveryUser,
+    org_id: UUID | None = None,
+    lookback_days: int = Query(default=30, ge=1, le=365),
+) -> DataResponse[RootCauseAnalyticsResponse]:
+    payload = await get_org_root_cause_analytics(
+        session,
+        org_id=org_id,
+        current_user=current_user,
+        lookback_days=lookback_days,
+    )
+    return DataResponse(data=RootCauseAnalyticsResponse.model_validate(payload))
+
+
+@router.get(
+    "/delivery/root-causes/trends",
+    response_model=DataResponse[RootCauseTrendsResponse],
+)
+async def get_delivery_root_cause_trends(
+    session: SessionDep,
+    current_user: CurrentUser = InternalDeliveryUser,
+    org_id: UUID | None = None,
+    project_id: UUID | None = None,
+) -> DataResponse[RootCauseTrendsResponse]:
+    if project_id is not None:
+        await get_visible_project(session, project_id, current_user)
+    payload = await get_root_cause_trends(
+        session,
+        org_id=org_id,
+        project_id=project_id,
+        current_user=current_user,
+    )
+    return DataResponse(data=RootCauseTrendsResponse.model_validate(payload))
+
+
+@router.get(
+    "/delivery/projects/{project_id}/root-causes",
+    response_model=DataResponse[ProjectRootCausesResponse],
+)
+async def get_project_delivery_root_causes(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: UserDep,
+    as_of: date | None = None,
+    history_days: int = Query(default=30, ge=1, le=365),
+) -> DataResponse[ProjectRootCausesResponse]:
+    await get_visible_project(session, project_id, current_user)
+    payload = await get_project_root_causes(
+        session,
+        project_id=project_id,
+        as_of=as_of,
+        history_days=history_days,
+        current_user=current_user,
+    )
+    return DataResponse(data=ProjectRootCausesResponse.model_validate(payload))
+
+
+@router.post(
+    "/delivery/projects/{project_id}/recalculate-root-causes",
+    response_model=DataResponse[RootCauseRecalculateResponse],
+)
+async def recalculate_project_root_causes(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = DeliveryOperator,
+    snapshot_date: date | None = None,
+) -> DataResponse[RootCauseRecalculateResponse]:
+    project = await get_visible_project(session, project_id, current_user)
+    try:
+        snapshot = await recalculate_root_causes(
+            session,
+            project_id=project.id,
+            org_id=project.org_id,
+            snapshot_date=snapshot_date,
+        )
+    except ValueError as exc:
+        raise ApiError(404, "NOT_FOUND", str(exc)) from exc
+    await session.commit()
+    refreshed = await get_project_root_causes(
+        session,
+        project_id=project.id,
+        as_of=snapshot.snapshot_date,
+        history_days=1,
+        current_user=current_user,
+    )
+    latest = refreshed.get("latest")
+    if latest is None:
+        raise ApiError(500, "ROOT_CAUSE_PERSIST_FAILED", "Root-cause snapshot was not persisted.")
+    return DataResponse(
+        data=RootCauseRecalculateResponse(
+            snapshot=RootCauseSnapshotRead.model_validate(latest),
+            recalculated=True,
+        )
+    )

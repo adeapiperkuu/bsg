@@ -2,6 +2,8 @@ import { queryOptions, useQuery } from "@tanstack/react-query";
 import {
   fetchDeliveryDashboard,
   fetchDeliveryPortfolio,
+  fetchProjectRootCauses,
+  fetchRootCauseTrends,
   listAdminProjects,
   listDeliveryConversations,
   listOrganisations,
@@ -69,6 +71,24 @@ export function projectDeliveryConfidenceQueryOptions(projectId: string | null) 
   });
 }
 
+export function projectRootCausesQueryOptions(projectId: string | null) {
+  return queryOptions({
+    queryKey: queryKeys.projectRootCauses(projectId ?? ""),
+    queryFn: () => fetchProjectRootCauses(projectId!),
+    enabled: Boolean(projectId),
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function rootCauseTrendsQueryOptions(projectId: string | null) {
+  return queryOptions({
+    queryKey: queryKeys.rootCauseTrends(projectId),
+    queryFn: () => fetchRootCauseTrends(projectId ? { project_id: projectId } : {}),
+    enabled: Boolean(projectId),
+    staleTime: STALE_TIME_MS,
+  });
+}
+
 export function useProjectsQuery() {
   return useQuery(projectsQueryOptions);
 }
@@ -98,4 +118,15 @@ export function useDeliveryConversationsQuery(projectId: string | null, enabled 
 
 export function useProjectDeliveryConfidenceQuery(projectId: string | null) {
   return useQuery(projectDeliveryConfidenceQueryOptions(projectId));
+}
+
+export function useProjectRootCausesQuery(projectId: string | null) {
+  return useQuery(projectRootCausesQueryOptions(projectId));
+}
+
+export function useRootCauseTrendsQuery(projectId: string | null, enabled = true) {
+  return useQuery({
+    ...rootCauseTrendsQueryOptions(projectId),
+    enabled: Boolean(projectId) && enabled,
+  });
 }

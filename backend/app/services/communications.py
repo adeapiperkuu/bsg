@@ -18,6 +18,7 @@ from app.db.models import (
     CommunicationStatus,
     CommunicationType,
     Organisation,
+    Program,
     Project,
     ProjectAssignment,
     QualitySnapshot,
@@ -1009,13 +1010,15 @@ def build_communications_list_stmt(
     limit: int = COMMUNICATIONS_LIST_DEFAULT_LIMIT,
     offset: int = 0,
 ) -> Select:
-    """Single lightweight list query: project name + aggregated evidence counts, no bodies."""
+    """Single lightweight list query: project/program names + evidence counts, no bodies."""
     evidence_counts = _evidence_count_subquery()
     stmt = (
         select(
             ClientCommunication.id,
             ClientCommunication.project_id,
             Project.name.label("project_name"),
+            Project.program_id.label("program_id"),
+            Program.name.label("program_name"),
             Project.org_id.label("org_id"),
             Organisation.name.label("org_name"),
             ClientCommunication.comm_type,
@@ -1028,6 +1031,10 @@ def build_communications_list_stmt(
         )
         .join(Project, Project.id == ClientCommunication.project_id)
         .join(Organisation, Organisation.id == Project.org_id)
+        .outerjoin(
+            Program,
+            (Program.id == Project.program_id) & Program.deleted_at.is_(None),
+        )
         .outerjoin(
             evidence_counts,
             evidence_counts.c.communication_id == ClientCommunication.id,
@@ -1064,6 +1071,8 @@ def _row_to_list_item(row) -> CommunicationListItem:
         id=row.id,
         project_id=row.project_id,
         project_name=row.project_name,
+        program_id=getattr(row, "program_id", None),
+        program_name=getattr(row, "program_name", None),
         org_id=row.org_id,
         org_name=row.org_name,
         comm_type=row.comm_type,
@@ -1116,6 +1125,8 @@ async def list_client_sent_communications(
             ClientCommunication.id,
             ClientCommunication.project_id,
             Project.name.label("project_name"),
+            Project.program_id.label("program_id"),
+            Program.name.label("program_name"),
             Project.org_id.label("org_id"),
             Organisation.name.label("org_name"),
             ClientCommunication.comm_type,
@@ -1127,6 +1138,10 @@ async def list_client_sent_communications(
         )
         .join(Project, Project.id == ClientCommunication.project_id)
         .join(Organisation, Organisation.id == Project.org_id)
+        .outerjoin(
+            Program,
+            (Program.id == Project.program_id) & Program.deleted_at.is_(None),
+        )
         .where(*visibility)
         .order_by(
             ClientCommunication.sent_at.desc().nullslast(),
@@ -1153,6 +1168,8 @@ async def list_client_sent_communications(
             id=row.id,
             project_id=row.project_id,
             project_name=row.project_name,
+            program_id=getattr(row, "program_id", None),
+            program_name=getattr(row, "program_name", None),
             org_id=row.org_id,
             org_name=row.org_name,
             comm_type=row.comm_type,

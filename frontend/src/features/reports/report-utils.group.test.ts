@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { groupReportsByClientAndProject } from "@/features/reports/report-utils";
+import { groupReportsByClientAndProject, reportProjectLabel } from "@/features/reports/report-utils";
 import type { CommunicationListItem } from "@/types/communications";
 
 function item(
@@ -22,15 +22,36 @@ function item(
   };
 }
 
+describe("reportProjectLabel", () => {
+  it("prefixes program name when distinct from scope", () => {
+    expect(
+      reportProjectLabel({
+        project_name: "Sprint 3 — Harden",
+        program_name: "AI Driven Operational Intelligence",
+      }),
+    ).toBe("AI Driven Operational Intelligence · Sprint 3 — Harden");
+  });
+
+  it("falls back to project name alone", () => {
+    expect(reportProjectLabel({ project_name: "Helios" })).toBe("Helios");
+  });
+});
+
 describe("groupReportsByClientAndProject", () => {
   it("groups reports under client then project", () => {
     const groups = groupReportsByClientAndProject([
-      item({ id: "a", project_id: "p1", project_name: "Sprint 13" }),
+      item({
+        id: "a",
+        project_id: "p1",
+        project_name: "Sprint 13",
+        program_name: "Aurora",
+      }),
       item({ id: "b", project_id: "p2", project_name: "Ops 39" }),
       item({
         id: "c",
         project_id: "p1",
         project_name: "Sprint 13",
+        program_name: "Aurora",
         subject: "Second",
       }),
       item({
@@ -49,6 +70,7 @@ describe("groupReportsByClientAndProject", () => {
       reportCount: 3,
     });
     expect(groups[0].projects).toHaveLength(2);
+    expect(groups[0].projects[0].label).toBe("Aurora · Sprint 13");
     expect(groups[0].projects[0].reports.map((r) => r.id)).toEqual(["a", "c"]);
     expect(groups[0].projects[1].reports.map((r) => r.id)).toEqual(["b"]);
     expect(groups[1].orgName).toBe("Helix Mobility");

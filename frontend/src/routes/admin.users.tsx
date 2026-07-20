@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Loader2, Mail, Pencil, Plus, RefreshCw, Search } from "lucide-react";
 
 import { Card } from "@/components/bsg/widgets";
+import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import { TablePagination } from "@/components/bsg/TablePagination";
 import { Button } from "@/components/ui/button";
 import {
@@ -225,6 +226,10 @@ function AdminUsersPage() {
       },
     });
   };
+
+  if (isFirstLoad && !bannerError) {
+    return <PageLoadingScreen />;
+  }
 
   return (
     <div className="space-y-5">

@@ -139,6 +139,8 @@ def _bottleneck_payload(bottleneck: Bottleneck) -> dict[str, Any]:
         "title": bottleneck.title,
         "detail": bottleneck.detail,
         "status": _enum_value(bottleneck.status),
+        # Severity only — never source_key, evidence_json, or acknowledgement audit fields.
+        "severity": _enum_value(bottleneck.severity),
         "created_at": bottleneck.created_at,
         "updated_at": bottleneck.updated_at,
     }
@@ -358,6 +360,7 @@ FROM (
                'title', b.title,
                'detail', b.detail,
                'status', b.status,
+               'severity', b.severity,
                'created_at', b.created_at,
                'updated_at', b.updated_at
            )

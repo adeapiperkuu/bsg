@@ -255,7 +255,7 @@ export function ReportsInboxPanel({
                               <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
                             )}
                             <span className="min-w-0 flex-1 truncate font-medium">
-                              {project.projectName}
+                              {project.label}
                             </span>
                             <span className="shrink-0 text-[10px] text-muted-foreground">
                               {project.reports.length}

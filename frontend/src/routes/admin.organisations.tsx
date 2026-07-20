@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Building2, Loader2, Pencil, Plus, RefreshCw, Search } from "lucide-react";
 
 import { Card } from "@/components/bsg/widgets";
+import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import { TablePagination } from "@/components/bsg/TablePagination";
 import { Button } from "@/components/ui/button";
 import {
@@ -185,6 +186,10 @@ function AdminOrganisationsPage() {
     setError(null);
     updateMutation.mutate({ id: editingOrg.id, payload: editForm });
   };
+
+  if (isFirstLoad && !bannerError) {
+    return <PageLoadingScreen />;
+  }
 
   return (
     <div className="space-y-5">

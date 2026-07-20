@@ -7,7 +7,7 @@ except ImportError:
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, Numeric, Text, UniqueConstraint, desc, func, text
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Enum, ForeignKey, ForeignKeyConstraint, Index, Integer, Numeric, Text, UniqueConstraint, desc, func, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import UserDefinedType
@@ -25,6 +25,19 @@ class AppRole(StrEnum):
 class DeliverySite(StrEnum):
     INDIA = "india"
     KOSOVO = "kosovo"
+
+
+class TeamThroughputSourceType(StrEnum):
+    MANUAL = "manual"
+    IMPORT = "import"
+    EVENT = "event"
+    DERIVED = "derived"
+    CORRECTION = "correction"
+
+
+class BottleneckSourceType(StrEnum):
+    MANUAL = "manual"
+    DETECTOR = "detector"
 
 
 class ProjectStatus(StrEnum):
@@ -524,6 +537,16 @@ class GovernanceRecordLinkType(StrEnum):
 
 app_role = Enum(AppRole, name="app_role", values_callable=lambda x: [e.value for e in x])
 delivery_site = Enum(DeliverySite, name="delivery_site", values_callable=lambda x: [e.value for e in x])
+team_throughput_source_type = Enum(
+    TeamThroughputSourceType,
+    name="team_throughput_source_type",
+    values_callable=lambda x: [e.value for e in x],
+)
+bottleneck_source_type = Enum(
+    BottleneckSourceType,
+    name="bottleneck_source_type",
+    values_callable=lambda x: [e.value for e in x],
+)
 project_status = Enum(ProjectStatus, name="project_status", values_callable=lambda x: [e.value for e in x])
 milestone_status = Enum(MilestoneStatus, name="milestone_status", values_callable=lambda x: [e.value for e in x])
 risk_tier = Enum(RiskTier, name="risk_tier", values_callable=lambda x: [e.value for e in x])
@@ -884,6 +907,67 @@ class ThroughputSnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     rolling_7day_units: Mapped[int | None] = mapped_column(Integer)
 
 
+class TeamThroughputSnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "team_throughput_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "project_id",
+            "team_id",
+            "snapshot_date",
+            name="team_throughput_snapshots_org_project_team_date_key",
+        ),
+        Index(
+            "team_throughput_snapshots_org_project_date_idx",
+            "org_id",
+            "project_id",
+            desc("snapshot_date"),
+        ),
+        Index(
+            "team_throughput_snapshots_org_project_team_date_idx",
+            "org_id",
+            "project_id",
+            "team_id",
+            desc("snapshot_date"),
+        ),
+        Index(
+            "team_throughput_snapshots_org_date_idx",
+            "org_id",
+            desc("snapshot_date"),
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "org_id"],
+            ["projects.id", "projects.org_id"],
+            name="team_throughput_snapshots_project_org_fkey",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["team_id", "project_id", "org_id"],
+            ["teams.id", "teams.project_id", "teams.org_id"],
+            name="team_throughput_snapshots_team_project_org_fkey",
+            ondelete="RESTRICT",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
+    project_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
+    team_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
+    snapshot_date: Mapped[date] = mapped_column(Date)
+    units_completed: Mapped[int] = mapped_column(Integer)
+    active_headcount: Mapped[int | None] = mapped_column(Integer)
+    source_type: Mapped[TeamThroughputSourceType] = mapped_column(
+        team_throughput_source_type
+    )
+    source_reference: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    updated_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
 class Team(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     __tablename__ = "teams"
     __table_args__ = (Index("teams_project_id_idx", "project_id"), Index("teams_org_id_idx", "org_id"))
@@ -1214,6 +1298,20 @@ class MitigationRecommendation(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftD
 
 class Bottleneck(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     __tablename__ = "bottlenecks"
+    __table_args__ = (
+        Index(
+            "bottlenecks_detector_source_active_uidx",
+            "source_key",
+            unique=True,
+            postgresql_where=text("source_key IS NOT NULL AND deleted_at IS NULL"),
+        ),
+        Index(
+            "bottlenecks_org_project_status_idx",
+            "org_id",
+            "project_id",
+            "status",
+        ),
+    )
 
     project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
@@ -1221,8 +1319,26 @@ class Bottleneck(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     title: Mapped[str] = mapped_column(Text)
     detail: Mapped[str] = mapped_column(Text)
     status: Mapped[AlertStatus] = mapped_column(alert_status, default=AlertStatus.OPEN)
+    severity: Mapped[RiskTier] = mapped_column(risk_tier, default=RiskTier.MEDIUM)
+    source_type: Mapped[BottleneckSourceType | None] = mapped_column(
+        bottleneck_source_type
+    )
+    source_key: Mapped[str | None] = mapped_column(Text)
+    detector_version: Mapped[str | None] = mapped_column(Text)
+    evidence_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    first_detected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_detected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    acknowledged_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    acknowledgement_note: Mapped[str | None] = mapped_column(Text)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resolved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    resolution_reason: Mapped[str | None] = mapped_column(Text)
+    recovery_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_evidence_hash: Mapped[str | None] = mapped_column(Text)
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
 
 class ClientCommunication(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
@@ -1388,6 +1504,43 @@ class DeliveryConfidenceScore(Base, UuidPrimaryKey, CreatedAt):
     forecast_completion_date: Mapped[date | None] = mapped_column(Date)
     status: Mapped[MilestoneStatus] = mapped_column(milestone_status)
     model_version: Mapped[str | None] = mapped_column(Text)
+
+
+class DeliveryRootCauseSnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "delivery_root_cause_snapshots"
+    __table_args__ = (
+        UniqueConstraint("project_id", "snapshot_date", name="delivery_root_cause_snapshots_project_date_key"),
+        Index("delivery_root_cause_snapshots_org_date_idx", "org_id", desc("snapshot_date")),
+        Index("delivery_root_cause_snapshots_project_date_idx", "project_id", desc("snapshot_date")),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    snapshot_date: Mapped[date] = mapped_column(Date)
+    overall_confidence: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    confidence_loss: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    model_version: Mapped[str] = mapped_column(Text, default="delivery_root_cause_v1")
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class DeliveryRootCauseFactor(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "delivery_root_cause_factors"
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "factor", name="delivery_root_cause_factors_snapshot_factor_key"),
+        Index("delivery_root_cause_factors_snapshot_idx", "snapshot_id"),
+        Index("delivery_root_cause_factors_factor_idx", "factor"),
+    )
+
+    snapshot_id: Mapped[UUID] = mapped_column(
+        ForeignKey("delivery_root_cause_snapshots.id", ondelete="CASCADE"),
+        index=True,
+    )
+    factor: Mapped[str] = mapped_column(Text)
+    impact_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    impact_points: Mapped[Decimal] = mapped_column(Numeric(6, 2))
+    severity: Mapped[RiskTier] = mapped_column(risk_tier, default=RiskTier.LOW)
+    explanation: Mapped[str] = mapped_column(Text)
+    evidence_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
 
 
 class Notification(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):

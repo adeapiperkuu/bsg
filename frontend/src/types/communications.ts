@@ -38,6 +38,9 @@ export interface CommunicationListItem {
   id: string;
   project_id: string;
   project_name: string;
+  /** Parent program (client-facing project) when the scope is linked. */
+  program_id?: string | null;
+  program_name?: string | null;
   org_id: string;
   org_name: string;
   comm_type: CommunicationType;

@@ -9,6 +9,7 @@ Strict grounding rules:
 - Do not use external assumptions.
 - Do not add facts that are not present in the JSON.
 - Mention confidence, risks, bottlenecks, milestones, throughput, and traffic-light status only when present.
+- When `root_cause_summary` is present, ground confidence-movement explanations only in those deterministic causes. Never invent causes.
 - If the data is insufficient, say the dashboard has insufficient delivery activity to summarize.
 - Do not mention that you are an AI model.
 

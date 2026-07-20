@@ -64,11 +64,21 @@ Wire values remain `green | yellow | red`; `yellow` is presentation-labeled “A
 {
   "observation_days": 5,
   "decline_threshold_pct": 20,
-  "recovery_days": 3
+  "recovery_days": 3,
+  "historical_window_days": 14,
+  "minimum_history_days": 5,
+  "minimum_project_units": 1,
+  "headcount_tolerance_pct": 5,
+  "stale_after_days": 2,
+  "maximum_history_days": 90,
+  "require_headcount": true,
+  "severity_medium_pct": 35,
+  "severity_high_pct": 50,
+  "severity_critical_pct": 70
 }
 ```
 
-This immutable, validated section is reserved for Phase 2. Phase 1 does not read it in scoring and does not implement detection or lifecycle behavior. Day values are 1 through 365; decline is greater than 0 and at most 100.
+This immutable, validated section controls the Phase 2 deterministic team-throughput detector. It owns no score weight: existing active bottleneck scoring remains fixed. Day values are bounded; `minimum_history_days <= historical_window_days`, `recovery_days <= observation_days`, the maximum history window covers all required windows, and severity boundaries satisfy `decline <= medium <= high <= critical`. See [Team Throughput and Bottlenecks](delivery-agent-team-throughput-and-bottlenecks.md) for formula and lifecycle details.
 
 ## 2. Defaults and compatibility
 
@@ -85,6 +95,10 @@ This immutable, validated section is reserved for Phase 2. Phase 1 does not read
 | Bottleneck observation | 5 days | Phase 1 reserved default |
 | Bottleneck decline | 20% | Phase 1 reserved default |
 | Bottleneck recovery | 3 days | Phase 1 reserved default |
+| Bottleneck historical/minimum history | 14 / 5 days | Phase 2 detector default |
+| Bottleneck minimum project units | 1 | Phase 2 data-quality guard |
+| Headcount tolerance/staleness | 5% / 2 days | Phase 2 detector default |
+| Bottleneck severity medium/high/critical | 35% / 50% / 70% | Phase 2 detector bands |
 
 Code defaults remain authoritative fallback values, so an organisation with no database rows produces the exact pre-Phase-1 scores. Percent scores continue to be clamped to `[0, 100]`. Scoring functions do not accept `None`, NaN, or infinity as configuration values; invalid sections fall back.
 

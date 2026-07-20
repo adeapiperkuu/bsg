@@ -39,7 +39,7 @@ def _summary_context(dashboard_data: dict[str, Any]) -> dict[str, Any]:
     """Select structured dashboard facts for the LLM without recalculating metrics."""
     risks = dashboard_data.get("risks") or []
     bottlenecks = dashboard_data.get("bottlenecks") or []
-    return {
+    context = {
         "overview": dashboard_data.get("overview"),
         "milestones": dashboard_data.get("milestones"),
         "confidence": dashboard_data.get("confidence"),
@@ -51,6 +51,11 @@ def _summary_context(dashboard_data: dict[str, Any]) -> dict[str, Any]:
         ],
         "traffic_light": dashboard_data.get("traffic_light"),
     }
+    # Phase 15.4: ground narratives in deterministic causes only. Never invent causes.
+    root_cause_summary = dashboard_data.get("root_cause_summary")
+    if root_cause_summary is not None:
+        context["root_cause_summary"] = root_cause_summary
+    return context
 
 
 def build_daily_summary_prompt(dashboard_data: dict[str, Any]) -> str:

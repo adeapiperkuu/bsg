@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 
 import { Card, SectionHeader } from "@/components/bsg/widgets";
+import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import { summarizeClientPortfolio } from "@/features/client-dashboard/client-dashboard-utils";
 import { clientCommunicationsListQueryOptions } from "@/features/client-reports/useClientReportsQueries";
 import { formatReportDate } from "@/features/reports/report-utils";
@@ -28,6 +29,14 @@ function ClientHome() {
           ? "text-[color:var(--warning)]"
           : "text-[color:var(--danger)]";
 
+  if (
+    (portfolioQuery.isLoading || reportsQuery.isLoading) &&
+    !portfolioQuery.isError &&
+    !reportsQuery.isError
+  ) {
+    return <PageLoadingScreen />;
+  }
+
   return (
     <div className="space-y-5">
       <Card>
@@ -43,12 +52,7 @@ function ClientHome() {
             <div className="text-xs uppercase tracking-wider text-muted-foreground">
               Delivery Confidence
             </div>
-            {portfolioQuery.isLoading ? (
-              <div
-                className="mt-3 h-12 w-24 animate-pulse rounded bg-muted"
-                aria-label="Loading delivery confidence"
-              />
-            ) : portfolioQuery.isError ? (
+            {portfolioQuery.isError ? (
               <div className="mt-3 text-sm text-[color:var(--danger)]">Unavailable</div>
             ) : (
               <div className={`mt-2 text-5xl font-semibold ${confidenceTone}`}>
@@ -75,8 +79,6 @@ function ClientHome() {
                   Retry
                 </button>
               </p>
-            ) : portfolioQuery.isLoading ? (
-              <p className="text-xs text-muted-foreground">Loading projects…</p>
             ) : portfolio.projects.length === 0 ? (
               <p className="text-xs text-muted-foreground">
                 No projects are assigned to your account yet.
@@ -145,8 +147,6 @@ function ClientHome() {
                 Retry
               </button>
             </p>
-          ) : reportsQuery.isLoading ? (
-            <p className="text-xs text-muted-foreground">Loading reports…</p>
           ) : reports.length === 0 ? (
             <p className="text-xs text-muted-foreground">
               No sent reports yet. When your delivery team sends a report, it will show up here.

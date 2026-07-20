@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
 import { Button } from "@/components/ui/button";
 import {
@@ -1928,6 +1929,10 @@ function KnowledgePage() {
     }
   };
 
+  if (loadingDocs) {
+    return <PageLoadingScreen />;
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 px-1 py-2 lg:flex-row lg:items-center lg:justify-between">
@@ -1950,7 +1955,7 @@ function KnowledgePage() {
         <Card className="flex min-h-0 flex-1 flex-col border-transparent bg-card/80">
           <SectionHeader
             title="Knowledge Library"
-            sub={loadingDocs ? "" : `${documents.length} governed documents`}
+            sub={`${documents.length} governed documents`}
             right={
               <Button
                 type="button"
@@ -1971,23 +1976,7 @@ function KnowledgePage() {
             </div>
           )}
 
-          {loadingDocs && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                Loading library...
-              </div>
-              {Array.from({ length: 3 }).map((_, index) => (
-                <div key={index} className="space-y-2 rounded-md border border-border/60 bg-card/70 p-3">
-                  <Skeleton className="h-4 w-2/5" />
-                  <Skeleton className="h-3 w-full" />
-                  <Skeleton className="h-3 w-4/5" />
-                </div>
-              ))}
-            </div>
-          )}
-
-          {!loadingDocs && hasLibraryTodos && (
+          {hasLibraryTodos && (
             <div className="space-y-2 rounded-md border border-[color:var(--brand)]/20 bg-[color:var(--brand)]/5 p-3">
               <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
                 <AlertTriangle className="h-3.5 w-3.5 text-[color:var(--brand)]" />
@@ -2290,16 +2279,13 @@ function KnowledgePage() {
                 No folders yet. Use <span className="font-medium text-foreground">Create</span> to add your first folder.
               </div>
             )}
-            {filteredDocuments.length === 0 && libraryFolders.length > 0 && !isLibraryControlSettling && !loadingDocs && (
+            {filteredDocuments.length === 0 &&
+              libraryFolders.length > 0 &&
+              documents.length > 0 &&
+              !isLibraryControlSettling &&
+              !loadingDocs && (
               <div className="rounded-md bg-secondary/50 p-6 text-center text-xs text-muted-foreground">
-                {documents.length === 0 && !docsLoadError ? (
-                  <span>
-                    No documents are visible for {user?.organisation?.name ?? "your organisation"}.
-                    {user?.role === "client" ? " Client accounts cannot access the knowledge library API." : " Try the PM dev account (pm@bsg.dev) or upload a new document."}
-                  </span>
-                ) : (
-                  "No documents match the current filters."
-                )}
+                No documents match the current filters.
               </div>
             )}
             </>

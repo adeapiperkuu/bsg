@@ -41,6 +41,9 @@ class DeliveryMetricKey(StrEnum):
     BOTTLENECK = "delivery_bottleneck"
 
 
+DELIVERY_ROOT_CAUSE_METRIC_KEY = "delivery_root_cause"
+
+
 class _ImmutableThresholdModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -146,11 +149,83 @@ class DeliveryBottleneckThresholds(_ImmutableThresholdModel):
     recovery_days: StrictInt = Field(
         default=3, ge=1, le=365, description="Reserved sustained-recovery window."
     )
+    historical_window_days: StrictInt = Field(
+        default=14,
+        ge=1,
+        le=365,
+        description="Maximum valid days used for the pre-decline share baseline.",
+    )
+    minimum_history_days: StrictInt = Field(
+        default=5,
+        ge=1,
+        le=365,
+        description="Minimum valid baseline days required before detection.",
+    )
+    minimum_project_units: StrictInt = Field(
+        default=1,
+        ge=1,
+        le=1_000_000_000,
+        description="Minimum summed team output for a date to be analytically valid.",
+    )
+    headcount_tolerance_pct: Decimal = Field(
+        default=Decimal("5.00"),
+        ge=0,
+        le=100,
+        description="Tolerance when comparing share decline with headcount reduction.",
+    )
+    stale_after_days: StrictInt = Field(
+        default=2,
+        ge=0,
+        le=365,
+        description="Maximum age of the latest complete observation date.",
+    )
+    maximum_history_days: StrictInt = Field(
+        default=90,
+        ge=1,
+        le=730,
+        description="Hard bound for team-throughput history reads.",
+    )
+    require_headcount: StrictBool = Field(
+        default=True,
+        description="Require complete headcount evidence before emitting a signal.",
+    )
+    severity_medium_pct: Decimal = Field(default=Decimal("35.00"), ge=0, le=100)
+    severity_high_pct: Decimal = Field(default=Decimal("50.00"), ge=0, le=100)
+    severity_critical_pct: Decimal = Field(default=Decimal("70.00"), ge=0, le=100)
 
-    @field_validator("decline_threshold_pct", mode="before")
+    @field_validator(
+        "decline_threshold_pct",
+        "headcount_tolerance_pct",
+        "severity_medium_pct",
+        "severity_high_pct",
+        "severity_critical_pct",
+        mode="before",
+    )
     @classmethod
     def validate_numeric_type(cls, value: object) -> object:
         return _require_finite_number(value)
+
+    @model_validator(mode="after")
+    def validate_detection_relationships(self) -> DeliveryBottleneckThresholds:
+        if self.recovery_days > self.observation_days:
+            raise ValueError("recovery_days must be <= observation_days")
+        if self.minimum_history_days > self.historical_window_days:
+            raise ValueError("minimum_history_days must be <= historical_window_days")
+        minimum_window = self.historical_window_days + self.observation_days + self.recovery_days
+        if self.maximum_history_days < minimum_window:
+            raise ValueError(
+                "maximum_history_days must cover the historical, observation, and recovery windows"
+            )
+        if not (
+            self.decline_threshold_pct
+            <= self.severity_medium_pct
+            <= self.severity_high_pct
+            <= self.severity_critical_pct
+        ):
+            raise ValueError(
+                "severity thresholds must satisfy decline <= medium <= high <= critical"
+            )
+        return self
 
 
 class DeliveryScoringThresholds(_ImmutableThresholdModel):
@@ -174,6 +249,196 @@ _SECTION_NAME_BY_KEY: dict[DeliveryMetricKey, str] = {
     DeliveryMetricKey.TRAFFIC_LIGHT: "traffic_light",
     DeliveryMetricKey.BOTTLENECK: "bottleneck",
 }
+
+
+ROOT_CAUSE_FACTOR_KEYS: tuple[str, ...] = (
+    "review_turnaround",
+    "rework",
+    "capacity",
+    "absenteeism",
+    "queue",
+    "blocked_work",
+    "dependency_delays",
+    "milestone_slippage",
+    "quality_regression",
+    "scope_volatility",
+)
+
+
+class DeliveryRootCauseWeights(_ImmutableThresholdModel):
+    """Configurable factor weights and severity bands for root-cause allocation."""
+
+    weights: dict[str, Decimal] = Field(
+        default_factory=lambda: {
+            "review_turnaround": Decimal("0.25"),
+            "rework": Decimal("0.20"),
+            "capacity": Decimal("0.15"),
+            "queue": Decimal("0.10"),
+            "blocked_work": Decimal("0.10"),
+            "milestone_slippage": Decimal("0.08"),
+            "quality_regression": Decimal("0.07"),
+            "absenteeism": Decimal("0.03"),
+            "dependency_delays": Decimal("0.01"),
+            "scope_volatility": Decimal("0.01"),
+        }
+    )
+    severity_medium_points: Decimal = Field(default=Decimal("3.00"), ge=0, le=100)
+    severity_high_points: Decimal = Field(default=Decimal("6.00"), ge=0, le=100)
+    severity_critical_points: Decimal = Field(default=Decimal("10.00"), ge=0, le=100)
+
+    @field_validator("weights", mode="before")
+    @classmethod
+    def validate_weights_object(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            raise ValueError("weights must be an object")
+        return value
+
+    @field_validator(
+        "severity_medium_points",
+        "severity_high_points",
+        "severity_critical_points",
+        mode="before",
+    )
+    @classmethod
+    def validate_numeric_type(cls, value: object) -> object:
+        return _require_finite_number(value)
+
+    @model_validator(mode="after")
+    def validate_and_normalize(self) -> DeliveryRootCauseWeights:
+        if not (
+            self.severity_medium_points
+            <= self.severity_high_points
+            <= self.severity_critical_points
+        ):
+            raise ValueError("severity points must satisfy medium <= high <= critical")
+
+        cleaned: dict[str, Decimal] = {}
+        for key in ROOT_CAUSE_FACTOR_KEYS:
+            raw = self.weights.get(key, Decimal("0"))
+            if isinstance(raw, bool) or not isinstance(raw, int | float | Decimal):
+                raise ValueError(f"weights.{key} must be a JSON number")
+            weight = Decimal(str(raw))
+            if not weight.is_finite() or weight < 0:
+                raise ValueError(f"weights.{key} must be a non-negative finite number")
+            cleaned[key] = weight
+
+        total = sum(cleaned.values(), Decimal("0"))
+        if total <= 0:
+            raise ValueError("weights must sum to a positive value")
+        normalized = {
+            key: (value / total).quantize(Decimal("0.0001")) for key, value in cleaned.items()
+        }
+        # Fix rounding drift on the last key so normalized weights sum to 1.
+        drift = Decimal("1") - sum(normalized.values(), Decimal("0"))
+        last_key = ROOT_CAUSE_FACTOR_KEYS[-1]
+        normalized[last_key] = (normalized[last_key] + drift).quantize(Decimal("0.0001"))
+        object.__setattr__(self, "weights", normalized)
+        return self
+
+
+DEFAULT_DELIVERY_ROOT_CAUSE_WEIGHTS = DeliveryRootCauseWeights()
+
+
+@dataclass(frozen=True, slots=True)
+class _RootCauseCacheEntry:
+    loaded_at: datetime
+    weights: DeliveryRootCauseWeights
+
+
+_root_cause_cache: dict[UUID, _RootCauseCacheEntry] = {}
+_root_cause_cache_lock = asyncio.Lock()
+
+
+def invalidate_delivery_root_cause_weights_cache(organisation_id: UUID | None = None) -> int:
+    """Invalidate one organisation's cached root-cause weights, or every entry."""
+    if organisation_id is None:
+        count = len(_root_cause_cache)
+        _root_cause_cache.clear()
+        return count
+    return int(_root_cause_cache.pop(organisation_id, None) is not None)
+
+
+def validate_delivery_root_cause_config(payload: object) -> None:
+    """Reject invalid root-cause weight payloads at write time."""
+    if not isinstance(payload, dict):
+        raise ValueError("Delivery root-cause threshold_config must be an object.")
+    try:
+        DeliveryRootCauseWeights.model_validate(
+            {**DEFAULT_DELIVERY_ROOT_CAUSE_WEIGHTS.model_dump(), **payload}
+        )
+    except ValidationError as exc:
+        raise ValueError(_validation_summary(exc)) from exc
+
+
+async def load_delivery_root_cause_weights(
+    session: AsyncSession,
+    organisation_id: UUID,
+) -> DeliveryRootCauseWeights:
+    """Load org-scoped root-cause weights with a short TTL cache."""
+    now = datetime.now(UTC)
+    entry = _root_cause_cache.get(organisation_id)
+    if entry is not None and now - entry.loaded_at < CONFIGURATION_CACHE_TTL:
+        return entry.weights
+
+    async with _root_cause_cache_lock:
+        entry = _root_cause_cache.get(organisation_id)
+        if entry is not None and now - entry.loaded_at < CONFIGURATION_CACHE_TTL:
+            return entry.weights
+
+        try:
+            rows = (
+                (
+                    await session.execute(
+                        select(MetricConfiguration).where(
+                            MetricConfiguration.deleted_at.is_(None),
+                            MetricConfiguration.metric_key == DELIVERY_ROOT_CAUSE_METRIC_KEY,
+                            or_(
+                                MetricConfiguration.org_id.is_(None),
+                                MetricConfiguration.org_id == organisation_id,
+                            ),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        except Exception:
+            logger.warning(
+                "event=delivery_root_cause_weights_load_failed organisation_id=%s fallback=defaults",
+                organisation_id,
+            )
+            _store_root_cause_cache(organisation_id, DEFAULT_DELIVERY_ROOT_CAUSE_WEIGHTS, now)
+            return DEFAULT_DELIVERY_ROOT_CAUSE_WEIGHTS
+
+        org_row = next((row for row in rows if row.org_id == organisation_id), None)
+        global_row = next((row for row in rows if row.org_id is None), None)
+        row = org_row or global_row
+        weights = DEFAULT_DELIVERY_ROOT_CAUSE_WEIGHTS
+        if row is not None and isinstance(row.threshold_config, dict):
+            try:
+                weights = DeliveryRootCauseWeights.model_validate(
+                    {**DEFAULT_DELIVERY_ROOT_CAUSE_WEIGHTS.model_dump(), **row.threshold_config}
+                )
+            except ValidationError as exc:
+                logger.warning(
+                    "event=delivery_root_cause_weights_invalid organisation_id=%s "
+                    "validation_error=%s fallback=defaults",
+                    organisation_id,
+                    _validation_summary(exc),
+                )
+        _store_root_cause_cache(organisation_id, weights, now)
+        return weights
+
+
+def _store_root_cause_cache(
+    organisation_id: UUID,
+    weights: DeliveryRootCauseWeights,
+    loaded_at: datetime,
+) -> None:
+    if len(_root_cause_cache) >= CONFIGURATION_CACHE_MAX_ENTRIES:
+        oldest_key = min(_root_cause_cache, key=lambda key: _root_cause_cache[key].loaded_at)
+        _root_cause_cache.pop(oldest_key, None)
+    _root_cause_cache[organisation_id] = _RootCauseCacheEntry(loaded_at=loaded_at, weights=weights)
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +472,9 @@ def invalidate_delivery_scoring_thresholds_cache(organisation_id: UUID | None = 
 
 def validate_delivery_metric_threshold_config(metric_key: str, payload: object) -> None:
     """Reject invalid Delivery payloads at write time; unrelated metric keys are ignored."""
+    if metric_key == DELIVERY_ROOT_CAUSE_METRIC_KEY:
+        validate_delivery_root_cause_config(payload)
+        return
     try:
         key = DeliveryMetricKey(metric_key)
     except ValueError:

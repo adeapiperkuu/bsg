@@ -874,6 +874,8 @@ class CommunicationListItem(BaseModel):
     id: UUID
     project_id: UUID
     project_name: str
+    program_id: UUID | None = None
+    program_name: str | None = None
     org_id: UUID
     org_name: str
     comm_type: CommunicationType
@@ -1026,6 +1028,8 @@ class AdminProjectRead(BaseModel):
     vertical: str
     start_date: date
     target_end_date: date
+    program_id: UUID | None = None
+    program_name: str | None = None
     latest_iso_year: int | None = None
     latest_iso_week: int | None = None
     active_drift_alerts: int = 0

@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
 import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
+import { ScopeTeamSheet } from "@/components/bsg/workforce-management/ScopeTeamSheet";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -29,6 +30,8 @@ import {
   useProgramsQuery,
   useProjectsQuery,
 } from "@/lib/queries/delivery";
+import { canManageWorkforce, canReadInternalWorkforce } from "@/lib/workforcePermissions";
+import { useAuthStore } from "@/stores/useAuthStore";
 import { cn } from "@/lib/utils";
 import { Search, X } from "lucide-react";
 
@@ -68,6 +71,9 @@ const fieldClass =
 
 function ProjectsPage() {
   const queryClient = useQueryClient();
+  const userRole = useAuthStore((state) => state.user?.role);
+  const canReadTeam = canReadInternalWorkforce(userRole);
+  const canManageTeam = canManageWorkforce(userRole);
   const programsQuery = useProgramsQuery();
   const projectsQuery = useProjectsQuery();
   const programs = useMemo(() => programsQuery.data ?? [], [programsQuery.data]);
@@ -88,6 +94,7 @@ function ProjectsPage() {
   const [isCreateScopeOpen, setIsCreateScopeOpen] = useState(false);
   const [createForm, setCreateForm] = useState<ProjectCreatePayload>(emptyScopeForm(""));
   const [editingScope, setEditingScope] = useState<ProjectRead | null>(null);
+  const [teamScope, setTeamScope] = useState<ProjectRead | null>(null);
 
   useEffect(() => {
     if (loading || programs.length === 0) return;
@@ -292,7 +299,7 @@ function ProjectsPage() {
             aria-label="Project"
             value={selectedProgramId ?? ""}
             onChange={(event) => setSelectedProgramId(event.target.value || null)}
-            className="h-[30px] max-w-56 rounded-sm border border-input bg-background px-2 text-xs shadow-none outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="h-[30px] min-w-64 max-w-md rounded-sm border border-input bg-background px-2 text-xs shadow-none outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             {programs.map((program) => (
               <option key={program.id} value={program.id}>
@@ -313,15 +320,6 @@ function ProjectsPage() {
         >
           New project
         </Button>
-        <Button
-          type="button"
-          size="sm"
-          className="h-[30px] rounded-sm bg-[color:var(--brand)] px-3 text-xs text-[color:var(--brand-foreground)] shadow-none hover:bg-[color:var(--brand)]/90"
-          onClick={openCreateScope}
-          disabled={!selectedProgramId}
-        >
-          Create
-        </Button>
       </div>
 
       {error && !isCreateProgramOpen && !isCreateScopeOpen && !editingScope && !loading && (
@@ -340,6 +338,18 @@ function ProjectsPage() {
               selectedProgram
                 ? `Scopes in ${selectedProgram.name}`
                 : "Select a project to view scopes"
+            }
+            right={
+              selectedProgramId ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-[30px] shrink-0 rounded-sm bg-[color:var(--brand)] px-3 text-xs text-[color:var(--brand-foreground)] shadow-none hover:bg-[color:var(--brand)]/90"
+                  onClick={openCreateScope}
+                >
+                  Add scope
+                </Button>
+              ) : undefined
             }
           />
 
@@ -363,7 +373,7 @@ function ProjectsPage() {
                 <p className="text-sm text-muted-foreground">
                   {query.trim()
                     ? "No scopes found."
-                    : "No scopes in this project yet. Click Create to add one."}
+                    : "No scopes in this project yet. Click Add scope to create one."}
                 </p>
               ) : (
                 <div className="overflow-x-auto">
@@ -397,6 +407,15 @@ function ProjectsPage() {
                               >
                                 Open
                               </Link>
+                              {canReadTeam && (
+                                <button
+                                  type="button"
+                                  onClick={() => setTeamScope(scope)}
+                                  className="rounded-sm border border-border px-3 py-1 text-xs font-medium hover:bg-elevated"
+                                >
+                                  Team
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => setEditingScope({ ...scope })}
@@ -416,6 +435,17 @@ function ProjectsPage() {
           )}
         </Card>
       )}
+
+      <ScopeTeamSheet
+        open={Boolean(teamScope)}
+        onOpenChange={(open) => {
+          if (!open) setTeamScope(null);
+        }}
+        projectId={teamScope?.id ?? null}
+        scopeName={teamScope?.name ?? null}
+        canManage={canManageTeam}
+        canRead={canReadTeam}
+      />
 
       <Dialog
         open={isCreateProgramOpen}

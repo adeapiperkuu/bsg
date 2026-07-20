@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -37,6 +38,8 @@ from app.db.models import (
 )
 from app.services.notifications import create_notification
 
+logger = logging.getLogger(__name__)
+
 MODEL_VERSION = "delivery_v1"
 CONFIDENCE_CHANGE_THRESHOLD = Decimal("5.00")
 RISK_INCREASE_THRESHOLD = Decimal("5.00")
@@ -69,6 +72,23 @@ async def handle_delivery_scored(
         project_id=event.project_id,
         org_id=event.org_id,
     )
+    try:
+        from app.agents.delivery.services.delivery_root_cause_service import (
+            safe_recalculate_after_scoring,
+        )
+
+        await safe_recalculate_after_scoring(
+            session,
+            project_id=event.project_id,
+            org_id=event.org_id,
+            snapshot_date=event.as_of_date,
+            overall_confidence=event.scores.confidence,
+        )
+    except Exception:
+        logger.exception(
+            "event=delivery_root_cause_hook_failed project_id=%s",
+            event.project_id,
+        )
     notifications_sent = await NotificationHandler(session).handle(
         event,
         confidence_score_id=confidence_score_id,

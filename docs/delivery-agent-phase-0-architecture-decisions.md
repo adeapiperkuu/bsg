@@ -18,7 +18,7 @@ Phase 0 removes ambiguity before scoring, persistence, API, dashboard, and clien
 | Duplicate safety | `events/handlers.py` | Confidence is upserted/compared by milestone/date; open risk alerts and notifications are checked before creation; recommendation sync is keyed to source risks. Safety is handler-specific, not a universal event idempotency guarantee. | Partly. | Define durable idempotency only if transport changes. |
 | Scoring persistence | `events/handlers.py`, `db/models/entities.py` | Handler updates milestone status, confidence history, risk alerts, recommendations, notifications, and append-only audit entries. Traffic light is derived, not persisted. | Partly. | Configurable scoring is deferred. |
 | Throughput-triggered scoring | `services/ingestion.py`, `api/routes/delivery.py` | A project/date snapshot upsert flushes, recalculates rolling seven-day units, then synchronously awaits scoring inside a nested transaction before the route commits. | Open item is stale. | Retain flow. |
-| Dashboard aggregation | `services/dashboard_service.py`, `services/scoring_service.py`, `routes/dashboard.py` | Scoped project data is bulk-loaded and deterministically scored. Dashboard route forces `daily_summary=None`; it does not call AI. | Partly; older flow showed AI invocation. | Structured summary is deferred. |
+| Dashboard aggregation | `services/dashboard_service.py`, `services/scoring_service.py`, `routes/dashboard.py` | Scoped project data is bulk-loaded and deterministically scored. Dashboard route forces `daily_summary=None`; it does not call AI. `structured_summary` is computed in `build_dashboard_response`. | Partly; older flow showed AI invocation. | Optional AI narrative wiring remains deferred. |
 | Portfolio aggregation/cache | `services/dashboard_service.py` | Visible projects are limited, inputs are loaded in one bundled round trip, projects are scored in memory, and default reads use a 30-second in-process cache keyed by org/role/user. | No cache was documented. | Preserve bulk loading; do not add per-project queries. |
 | Cache invalidation | `api/routes/delivery.py` | Committed throughput writes and risk-resolution writes invalidate org and super-admin portfolio entries. Event handlers do not independently invalidate the cache. | Previously unspecified. | Review all future write paths. |
 | Traffic light | `analytics/status.py`, `schemas/dashboard_schema.py`, `frontend/src/lib/api.ts` | Runtime/API values are `green`, `yellow`, `red`; there is no DB traffic-light column. | Older prose used Amber as if it were a value. | Keep `yellow`; present it as Amber. |
@@ -27,7 +27,7 @@ Phase 0 removes ambiguity before scoring, persistence, API, dashboard, and clien
 | Role/project access | `db/models/entities.py`, `services/scoping.py` | Real roles are `super_admin`, `bsg_leadership`, `delivery_manager`, `client`. There is no `project_manager` role. Super admin is cross-org; leadership/DM are org-scoped; clients require active project assignments. | Mostly. | Product must decide whether PM is a future role or a DM persona. |
 | Chat evidence | `services/chat_service.py` | Chat uses visible project dashboards/portfolio, includes risk/bottleneck details and at-risk/missed milestones, and persists cited evidence links. It does not yet apply client evidence allowlists. | Incomplete. | Phase 5 shaping required. |
 | Recommendations | `services/recommendation_service.py`, `api/routes/delivery.py` | Recommendations derive from delivery risks; visible-project readers can list full grouped data and owners, while mutation is DM/super-admin only and audited. | Partly. | Client-safe recommendation contract needed. |
-| Throughput/bottlenecks | `db/models/entities.py`, initial migration | `throughput_snapshots` is project/day only, unique on `(project_id, snapshot_date)`. `bottlenecks` can reference `team_id`, but no detector/service or team-throughput history exists. | No; planned detection was described as available architecture. | New table/detector deferred. |
+| Throughput/bottlenecks | `services/team_throughput_service.py`, `analytics/bottlenecks.py`, `services/bottleneck_service.py` | Phase 2 adds tenant/project/team/day snapshots, deterministic share-decline detection, lifecycle, audit, notification, and existing scoring integration. | Superseded. | See the Phase 2 operations record. |
 | Cross-agent signals | `services/quality_signal_consumer.py`, `services/signal_dispatcher.py` | Pending quality-risk records are polled from `inter_agent_signals`; consumption annotates an alert, may notify DMs, acknowledges an open alert, and marks the signal consumed/failed. This is separate from the delivery event bus. | Partly. | Refactor deferred. |
 | Audit/notifications | `audit/audit_logger.py`, `events/handlers.py` | Delivery state transitions and recommendation mutations append `audit_logs`; scoring may create user notifications with duplicate checks. | Mostly. | No Phase 0 change. |
 
@@ -74,6 +74,8 @@ ThroughputSnapshot create/update
 ## 5. Decision: separate deterministic and AI summaries
 
 **Decision.** Reserve `structured_summary` for a future deterministic object. Retain `daily_summary: str | None` as optional generated prose.
+
+**Phase 3 update.** `structured_summary` is now implemented as documented in [Delivery Performance Agent — Deterministic Structured Summary](delivery-agent-structured-summary.md). `daily_summary` remains nullable and is still not AI-wired on the dashboard route.
 
 **Context.** The dashboard already returns deterministic fields and a nullable narrative. The AI generator fails closed to `None`, and the current route does not invoke it.
 
@@ -140,6 +142,8 @@ Legend: **A** client-approved; **I** internal operational; **R** restricted to l
 
 ## 7. Decision: separate team throughput snapshots
 
+**Phase 2 update.** This decision is implemented. The authoritative schema, ingestion, access, and correction contract is documented in [the Phase 2 operations record](delivery-agent-team-throughput-and-bottlenecks.md). Remaining work is limited to selecting final upstream sources and any approved historical backfill.
+
 **Decision.** A later migration will add `team_throughput_snapshots`; it will not overload project-level `throughput_snapshots`.
 
 **Context.** The current unique key `(project_id, snapshot_date)` permits only one project aggregate per day and has no team identity or headcount. Existing `bottlenecks.team_id` and utilization data cannot reconstruct completed delivery units attributed to each team.
@@ -187,6 +191,8 @@ Required uniqueness: `(organisation_id, project_id, team_id, snapshot_date)`. Fo
 
 ## 8. Bottleneck detection prerequisites
 
+**Phase 2 update.** The deterministic detector and its lifecycle are now implemented. The requirements below remain the governing design rationale; see [the Phase 2 operations record](delivery-agent-team-throughput-and-bottlenecks.md) for the running contract.
+
 **Decision.** Future detection is deterministic and must not run until complete team-throughput inputs exist.
 
 **Context.** Current bottleneck rows can identify a team but the repository has no team-attributed delivery-unit history from which to calculate contribution-share decline.
@@ -233,7 +239,7 @@ class BottleneckDetectionSignal(BaseModel):
 
 - Delivery APIs and persisted values continue to use `green | yellow | red`.
 - Frontend presentation uses Green / Amber / Red.
-- `daily_summary` remains nullable; no `structured_summary` response key is added yet.
+- `daily_summary` remains nullable; `structured_summary` is additive and optional on the schema for backward compatibility.
 - Existing dashboard and portfolio shapes remain valid.
 - Event-driven scoring and handler persistence remain intact.
 - Portfolio scoring remains bulk-loaded; Phase 0 adds no per-project query loop.
@@ -241,7 +247,7 @@ class BottleneckDetectionSignal(BaseModel):
 
 ## 10. Deferred implementation phases
 
-Phase 0 did **not** implement configurable scoring thresholds. Phase 1 has now implemented them as documented in [Delivery Performance Agent — Configurable Scoring](delivery-agent-configurable-scoring.md). A team-throughput migration, bottleneck detection or lifecycle, the structured-summary service, resource-allocation summaries, full client response shaping, and an inter-agent signal refactor remain deferred.
+Phase 0 did **not** implement configurable scoring thresholds. Phase 1 has now implemented them as documented in [Delivery Performance Agent — Configurable Scoring](delivery-agent-configurable-scoring.md). Phase 2 has now implemented the team-throughput migration and deterministic bottleneck lifecycle as documented in [Delivery Performance Agent — Team Throughput and Bottlenecks](delivery-agent-team-throughput-and-bottlenecks.md). Phase 3 has now implemented deterministic `structured_summary` as documented in [Delivery Performance Agent — Deterministic Structured Summary](delivery-agent-structured-summary.md). Optional AI summaries, resource-allocation summaries, full client response shaping, and an inter-agent signal refactor remain deferred.
 
 ## 11. Open product decisions
 
@@ -260,8 +266,8 @@ Phase 0 did **not** implement configurable scoring thresholds. Phase 1 has now i
 - [x] `yellow` API and Amber presentation contract enforced.
 - [x] `structured_summary` and optional `daily_summary` responsibilities separated.
 - [x] Client visibility defined as allowlist-first with conservative unresolved defaults.
-- [x] Team-throughput contract and ingestion semantics specified without a migration.
-- [x] Bottleneck formula and data-quality guards specified without implementation.
+- [x] Team-throughput contract, migration, and secure idempotent ingestion implemented in Phase 2.
+- [x] Deterministic bottleneck formula, data-quality guards, lifecycle, audit, and existing scoring integration implemented in Phase 2.
 - [x] Compatibility contracts covered by focused backend/frontend tests.
 - [x] Phase 1 configurable thresholds are now implemented without introducing Phase 2 features.
-- [x] Later Phase 2+ implementation remains deferred.
+- [x] Later Phase 3 structured summary is now implemented; Phase 4+ AI narrative, resource-allocation summary, and client allowlists remain deferred.

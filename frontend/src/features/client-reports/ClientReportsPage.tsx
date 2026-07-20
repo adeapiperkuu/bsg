@@ -5,6 +5,7 @@
 
 import { useEffect, useState } from "react";
 
+import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import { ReportsInboxPanel } from "@/features/reports/ReportsInboxPanel";
 import { ReportWorkspacePanel } from "@/features/reports/ReportWorkspacePanel";
 import { useClientReportsQueries } from "@/features/client-reports/useClientReportsQueries";
@@ -48,6 +49,10 @@ export function ClientReportsPage() {
   const detailError = detailQuery.isError
     ? userFacingReportsError(detailQuery.error, "Failed to load this report.")
     : null;
+
+  if (listQuery.isLoading && reports.length === 0 && !listQuery.isError) {
+    return <PageLoadingScreen />;
+  }
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">

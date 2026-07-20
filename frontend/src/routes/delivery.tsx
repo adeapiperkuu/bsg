@@ -9,14 +9,16 @@ import {
   Tooltip,
 } from "recharts";
 import { useEffect, useMemo, useRef } from "react";
-import { Card, SectionHeader, KpiCard, AiBadge, StatusPill } from "@/components/bsg/widgets";
+import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
+import { Card, SectionHeader, KpiCard, StatusPill } from "@/components/bsg/widgets";
 import { TablePagination } from "@/components/bsg/TablePagination";
 import { usePagination } from "@/hooks/usePagination";
-import { type DeliveryDashboardResponse } from "@/lib/api";
 import {
   useDeliveryPortfolioQuery,
   useOrganisationsQuery,
   useProjectDeliveryConfidenceQuery,
+  useProjectRootCausesQuery,
+  useRootCauseTrendsQuery,
 } from "@/lib/queries/delivery";
 import {
   avgDailyThroughputUnits,
@@ -27,10 +29,12 @@ import {
   sortByPriority,
   toPortfolioEntries,
 } from "@/features/delivery/portfolio";
+import { DeliveryRootCauseSection } from "@/features/delivery/root-cause";
 import { flushNavPrefetch } from "@/lib/queries/nav-prefetch";
 import { cn } from "@/lib/utils";
 import { MitigationRecommendationsPanel } from "@/features/mitigation-recommendations/components/MitigationRecommendationsPanel";
 import { DeliveryChat } from "@/components/delivery";
+import { useAuthStore } from "@/stores/useAuthStore";
 
 export const Route = createFileRoute("/delivery")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -63,20 +67,6 @@ const tip = {
   color: "#f0f2f7",
 };
 
-const ROOT_CAUSE_LABELS: Record<string, string> = {
-  confidence_shortfall: "Schedule confidence shortfall",
-  throughput_decline: "Throughput decline",
-  milestone_urgency: "Milestone urgency",
-  open_bottlenecks: "Open bottlenecks",
-  quality_drift: "Quality drift",
-};
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 function formatNumber(value: number): string {
   return value.toLocaleString();
 }
@@ -107,25 +97,6 @@ function riskLabel(tier?: string): string {
 /** Rows per page for the Project Performance table. */
 const PROJECTS_PER_PAGE = 25;
 
-function buildRootCauses(dashboard: DeliveryDashboardResponse) {
-  const overview = asRecord(dashboard.overview);
-  const calculatedRisk = asRecord(overview?.calculated_risk);
-  const causes = asRecord(calculatedRisk?.contributing_causes) ?? {};
-  const entries = Object.entries(causes)
-    .map(([key, value]) => ({
-      cause: ROOT_CAUSE_LABELS[key] ?? key.replace(/_/g, " "),
-      impact: typeof value === "number" ? value : 0,
-    }))
-    .filter((item) => item.impact > 0)
-    .sort((a, b) => b.impact - a.impact);
-
-  const total = entries.reduce((sum, item) => sum + item.impact, 0) || 1;
-  return entries.map((item) => ({
-    cause: item.cause,
-    impact: Math.round((item.impact / total) * 100),
-  }));
-}
-
 function buildConfidenceChart(
   points: Array<{ created_at: string; score_pct: string; forecast_completion_date: string | null }>,
 ) {
@@ -155,6 +126,8 @@ function DeliveryPage() {
   const navigate = useNavigate({ from: "/delivery" });
   const { projectId: urlProjectId } = Route.useSearch();
   const syncedProjectIdRef = useRef<string | null>(null);
+  const userRole = useAuthStore((s) => s.user?.role);
+  const canViewRootCauseTrends = userRole !== "client";
 
   const organisationsQuery = useOrganisationsQuery();
   const portfolioQuery = useDeliveryPortfolioQuery();
@@ -185,6 +158,11 @@ function DeliveryPage() {
   }, [resolvedProjectId, urlProjectId, navigate]);
 
   const confidenceQuery = useProjectDeliveryConfidenceQuery(resolvedProjectId);
+  const rootCausesQuery = useProjectRootCausesQuery(resolvedProjectId);
+  const rootCauseTrendsQuery = useRootCauseTrendsQuery(
+    resolvedProjectId,
+    canViewRootCauseTrends,
+  );
 
   const orgById = useMemo(
     () => new Map(organisations.map((org) => [org.id, org.name])),
@@ -209,12 +187,14 @@ function DeliveryPage() {
   // faster /projects call.
   const orgsLoading = organisationsQuery.isLoading;
   const portfolioLoading = portfolioQuery.isLoading;
-  const dashboardLoading = portfolioLoading;
   const confidenceLoading = portfolioLoading || confidenceQuery.isLoading;
+  const rootCausesLoading = portfolioLoading || rootCausesQuery.isLoading;
+  const rootCauseTrendsLoading = portfolioLoading || rootCauseTrendsQuery.isLoading;
 
   const errorMessage =
     (organisationsQuery.error instanceof Error ? organisationsQuery.error.message : null) ??
-    (portfolioQuery.error instanceof Error ? portfolioQuery.error.message : null);
+    (portfolioQuery.error instanceof Error ? portfolioQuery.error.message : null) ??
+    (rootCausesQuery.error instanceof Error ? rootCausesQuery.error.message : null);
 
   // Computed from the full entry list, never the current page: pagination is a view
   // window over the same universe the KPIs summarise, so paging must not move them.
@@ -228,14 +208,7 @@ function DeliveryPage() {
     [entries, portfolioMilestones],
   );
 
-  const rootCauses = selectedDashboard ? buildRootCauses(selectedDashboard) : [];
   const confidenceChart = buildConfidenceChart(confidenceQuery.data ?? []);
-  const evidenceAttachments = selectedDashboard
-    ? [
-        ...selectedDashboard.risks.map((risk) => String(risk.title ?? "")),
-        ...selectedDashboard.bottlenecks.map((bottleneck) => String(bottleneck.title ?? "")),
-      ].filter(Boolean)
-    : [];
 
   const selectProject = (projectId: string) => {
     navigate({ search: { projectId } });
@@ -254,7 +227,11 @@ function DeliveryPage() {
     );
   }
 
-  if (!portfolioLoading && projects.length === 0) {
+  if (portfolioLoading || orgsLoading) {
+    return <PageLoadingScreen />;
+  }
+
+  if (projects.length === 0) {
     return (
       <Card>
         <SectionHeader title="Delivery Performance" sub="No projects available" />
@@ -273,7 +250,7 @@ function DeliveryPage() {
           <select
             value={resolvedProjectId ?? ""}
             onChange={(event) => selectProject(event.target.value)}
-            disabled={portfolioLoading || projects.length === 0}
+            disabled={projects.length === 0}
             className="rounded border border-border bg-card px-2.5 py-1.5 text-xs outline-none"
           >
             {projects.map((project) => (
@@ -289,23 +266,23 @@ function DeliveryPage() {
               so there is no prior period to compare against. */}
           <KpiCard
             label="Throughput (7-day avg)"
-            value={portfolioLoading ? "—" : `${formatNumber(portfolioKpis.totalThroughput)}/d`}
+            value={`${formatNumber(portfolioKpis.totalThroughput)}/d`}
             tone="success"
           />
           <KpiCard
             label="Schedule Confidence"
-            value={portfolioLoading ? "—" : `${portfolioKpis.avgConfidence}%`}
+            value={`${portfolioKpis.avgConfidence}%`}
             tone="warning"
           />
           <KpiCard
             label="At-Risk Projects"
-            value={portfolioLoading ? "—" : portfolioKpis.atRiskProjects}
+            value={portfolioKpis.atRiskProjects}
             tone="danger"
           />
           <KpiCard
             label="Milestone Hit Rate"
             value={
-              portfolioLoading || portfolioKpis.milestoneHitRate === null
+              portfolioKpis.milestoneHitRate === null
                 ? "—"
                 : `${portfolioKpis.milestoneHitRate}%`
             }
@@ -313,67 +290,16 @@ function DeliveryPage() {
           />
         </div>
 
-        <Card>
-          <SectionHeader
-            title="Root Cause Analysis"
-            sub={
-              selectedProject ? `Why is ${selectedProject.name} at risk?` : "Root cause breakdown"
-            }
-            right={
-              selectedDashboard && !hasSufficientData(selectedDashboard) ? (
-                <AiBadge label="Insufficient data" source="formula" />
-              ) : (
-                <AiBadge
-                  label="Risk score"
-                  source="formula"
-                  confidence={Math.round(selectedDashboard?.confidence ?? 0)}
-                />
-              )
-            }
-          />
-          {dashboardLoading ? (
-            <div className="h-2 overflow-hidden rounded bg-elevated">
-              <div className="h-full w-1/3 animate-pulse rounded bg-[color:var(--brand)]" />
-            </div>
-          ) : rootCauses.length > 0 ? (
-            <div className="space-y-2.5">
-              {rootCauses.map((cause) => (
-                <div key={cause.cause}>
-                  <div className="mb-1 flex items-center justify-between text-xs">
-                    <span>{cause.cause}</span>
-                    <span className="text-muted-foreground">{cause.impact}%</span>
-                  </div>
-                  <div className="h-2 overflow-hidden rounded bg-elevated">
-                    <div
-                      className="h-full rounded bg-[color:var(--brand)]"
-                      // buildRootCauses already normalises impact to percent-of-total,
-                      // so the bar is drawn 1:1 with the number in the label. Doubling
-                      // it made any cause at/above 50% saturate the track identically.
-                      style={{ width: `${cause.impact}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">No contributing causes identified.</p>
-          )}
-          {evidenceAttachments.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-1.5 text-[10px]">
-              {evidenceAttachments.slice(0, 3).map((attachment) => (
-                <span
-                  key={attachment}
-                  className="rounded border border-border bg-elevated px-2 py-0.5 text-muted-foreground"
-                >
-                  📄 {attachment}
-                </span>
-              ))}
-            </div>
-          )}
-        </Card>
+        <DeliveryRootCauseSection
+          projectName={selectedProject?.name}
+          rootCauses={rootCausesQuery.data}
+          trends={rootCauseTrendsQuery.data}
+          loading={rootCausesLoading}
+          trendsLoading={rootCauseTrendsLoading}
+          fallbackConfidence={selectedDashboard?.confidence ?? null}
+        />
 
         <MitigationRecommendationsPanel projectId={resolvedProjectId} />
-
         <Card>
           <SectionHeader
             title="Confidence Trend & 4-Week Forecast"
