@@ -71,6 +71,7 @@ class ProjectOverviewSchema(BaseModel):
     target_end_date: date
     actual_end_date: date | None = None
     daily_target_units: int | None = None
+    updated_at: datetime | None = None
 
 
 class ThroughputSnapshotSchema(BaseModel):
@@ -134,3 +135,7 @@ class DeliveryPortfolioProject(BaseModel):
 class DeliveryPortfolioResponse(BaseModel):
     projects: list[DeliveryPortfolioProject] = Field(default_factory=list)
     milestones: list[dict[str, Any]] = Field(default_factory=list)
+    # Total projects visible to the caller, which may exceed len(projects) when the
+    # service's PORTFOLIO_PROJECT_LIMIT truncates. Clients must surface the difference
+    # rather than render a partial portfolio as if it were complete.
+    total_count: int = 0

@@ -9,10 +9,7 @@ export const Route = createFileRoute("/")({
 
 function IndexRedirect() {
   const user = useAuthStore((s) => s.user);
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  const isLoading = useAuthStore((s) => s.isLoading);
 
-  if (isLoading) return null;
-  if (!isAuthenticated || !user) return <Navigate to="/login" replace />;
+  if (!user) return null;
   return <Navigate to={defaultRouteForRole(user.role)} replace />;
 }

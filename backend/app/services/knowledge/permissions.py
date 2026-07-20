@@ -127,6 +127,23 @@ def can_access_visibility(role: AppRole, visibility: KnowledgeVisibility) -> boo
         return visibility == KnowledgeVisibility.CLIENT_SAFE
     return False
 
+def visibility_values_for_role(role: AppRole) -> list[KnowledgeVisibility] | None:
+    """Return explicit visibility values for SQL filters, or None when unrestricted (super_admin)."""
+    if role == AppRole.SUPER_ADMIN:
+        return None
+    if role == AppRole.BSG_LEADERSHIP:
+        return [
+            KnowledgeVisibility.INTERNAL_ONLY,
+            KnowledgeVisibility.LEADERSHIP_ONLY,
+            KnowledgeVisibility.RESTRICTED,
+            KnowledgeVisibility.CLIENT_SAFE,
+        ]
+    if role == AppRole.DELIVERY_MANAGER:
+        return [KnowledgeVisibility.INTERNAL_ONLY, KnowledgeVisibility.CLIENT_SAFE]
+    if role == AppRole.CLIENT:
+        return [KnowledgeVisibility.CLIENT_SAFE]
+    return []
+
 def _knowledge_permissions_for_role(role: AppRole) -> KnowledgePermissionsRead:
     allowed = {AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN}
     leadership = {AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN}

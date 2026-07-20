@@ -3,6 +3,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { prefetchDeliveryNav } from "@/lib/queries/delivery-prefetch";
 import { adminProjectsQueryOptions } from "@/lib/queries/delivery";
 import { prefetchGovernanceNav } from "@/features/governance/governance-prefetch";
+import { prefetchKnowledgeNav } from "@/lib/queries/knowledge-prefetch";
 
 /**
  * Sidebar nav prefetch coordinator.
@@ -13,13 +14,14 @@ import { prefetchGovernanceNav } from "@/features/governance/governance-prefetch
 const HOVER_LINGER_MS = 450;
 const SAME_ROUTE_COOLDOWN_MS = 2_500;
 
-type PrefetchPath = "/delivery" | "/governance" | "/admin/projects";
+type PrefetchPath = "/delivery" | "/governance" | "/knowledge" | "/admin/projects";
 
 type Prefetcher = (queryClient: QueryClient, signal: AbortSignal) => Promise<void>;
 
 const PREFETCHERS: Record<PrefetchPath, Prefetcher> = {
   "/delivery": (qc, signal) => prefetchDeliveryNav(qc, signal),
   "/governance": (qc, signal) => prefetchGovernanceNav(qc, signal),
+  "/knowledge": (qc, signal) => prefetchKnowledgeNav(qc, signal),
   "/admin/projects": (qc) => qc.prefetchQuery(adminProjectsQueryOptions),
 };
 
@@ -102,4 +104,13 @@ export function flushNavPrefetch(queryClient: QueryClient, to: string): void {
   clearLinger();
   pendingPath = null;
   void runPrefetch(queryClient, to);
+}
+
+/** Test-only: clear linger/single-flight/cooldown state between cases. */
+export function resetNavPrefetchStateForTests(): void {
+  clearLinger();
+  abortActive();
+  pendingPath = null;
+  lastCompletedPath = null;
+  lastCompletedAt = 0;
 }

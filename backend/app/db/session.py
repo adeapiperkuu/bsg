@@ -3,12 +3,13 @@ import logging
 import ssl
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Literal
 from urllib.parse import urlparse
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
 
 from app.core.config import get_settings
 from app.db.rls import register_rls_event_listeners
@@ -25,6 +26,11 @@ logger = logging.getLogger(__name__)
 # shouldn't get) this protection.
 _SESSION_MODE_MAX_CONCURRENT = 4
 _session_semaphore: asyncio.Semaphore | None = None
+DatabaseConnectionMode = Literal[
+    "direct_postgres",
+    "supabase_session_pooler",
+    "supabase_transaction_pooler",
+]
 
 # Phase 1A (docs/PERF_IMPLEMENTATION_PLAN.md): persistent client-side pool
 # sizing for the transaction pooler (port 6543). Supabase's transaction
@@ -49,8 +55,17 @@ def _is_transaction_pooler(database_url: str) -> bool:
     return ":6543/" in database_url or ":6543?" in database_url
 
 
+def classify_database_url(database_url: str) -> DatabaseConnectionMode:
+    """Classify DB URLs without exposing credentials in logs."""
+    if not _is_supabase_pooler(database_url):
+        return "direct_postgres"
+    if _is_transaction_pooler(database_url):
+        return "supabase_transaction_pooler"
+    return "supabase_session_pooler"
+
+
 def _uses_session_pooler(database_url: str) -> bool:
-    return _is_supabase_pooler(database_url) and not _is_transaction_pooler(database_url)
+    return classify_database_url(database_url) == "supabase_session_pooler"
 
 
 def _get_session_semaphore() -> asyncio.Semaphore:
@@ -61,7 +76,8 @@ def _get_session_semaphore() -> asyncio.Semaphore:
 
 
 def _engine_connect_args(database_url: str) -> dict:
-    if not _is_supabase_pooler(database_url):
+    mode = classify_database_url(database_url)
+    if mode == "direct_postgres":
         return {}
 
     ctx = ssl.create_default_context()
@@ -69,17 +85,10 @@ def _engine_connect_args(database_url: str) -> dict:
     ctx.verify_mode = ssl.CERT_NONE
     connect_args: dict = {"ssl": ctx}
 
-    if _is_transaction_pooler(database_url):
-        # PgBouncer transaction mode hands out its (few) real Postgres server
-        # connections to whichever client transaction needs one, so the SAME
-        # client-side connection object can be multiplexed across different
-        # backend connections/roles/settings between transactions. asyncpg's
-        # and SQLAlchemy's prepared-statement caches must stay OFF (unique
-        # name per prepare() call) so a client-side connection reused across
-        # requests never executes a stale cached statement prepared against a
-        # backend connection it no longer holds. This is what makes it safe
-        # to hold a real, persistent pool of these connections client-side
-        # (see _engine_kwargs) instead of opening a fresh one per request.
+    if mode == "supabase_transaction_pooler":
+        # PgBouncer transaction mode: disable asyncpg + SQLAlchemy prepared-statement caches.
+        # Unique names per prepare() call so a pooled connection cannot collide with a
+        # prepared statement left behind on a different PgBouncer backend.
         connect_args["statement_cache_size"] = 0
         connect_args["prepared_statement_cache_size"] = 0
         connect_args["prepared_statement_name_func"] = lambda: f"__asyncpg_{uuid4()}__"
@@ -92,28 +101,44 @@ def _engine_kwargs(database_url: str) -> dict:
         "connect_args": _engine_connect_args(database_url),
     }
 
-    if not _is_supabase_pooler(database_url):
+    mode = classify_database_url(database_url)
+    if mode == "direct_postgres":
         kwargs["pool_pre_ping"] = True
         return kwargs
 
-    if _is_transaction_pooler(database_url):
-        # Phase 1A: a real, persistent client-side pool. Previously this was
-        # NullPool, which opened and immediately discarded a brand-new
-        # connection (and a fresh TLS handshake to the remote AWS eu-west-1
-        # Supabase Postgres) on every single request -- a measured ~1s fixed
-        # tax per authenticated request with zero reuse benefit, even on
-        # back-to-back repeat calls (docs/perf-baseline.md). PgBouncer
-        # transaction mode is exactly what makes a persistent pool safe here:
-        # each checked-out connection's asyncpg-level statement cache is
-        # already disabled above, so there is no stale-prepared-statement
-        # risk from reuse. `pool_pre_ping` costs one extra round trip per
-        # checkout but guards against a connection PgBouncer/Supabase closed
-        # server-side while idle; `pool_recycle` proactively retires
-        # connections before that becomes likely.
-        kwargs["pool_size"] = _TRANSACTION_POOLER_POOL_SIZE
-        kwargs["max_overflow"] = _TRANSACTION_POOLER_MAX_OVERFLOW
+    if mode == "supabase_transaction_pooler":
+        # PgBouncer owns *server*-side pooling, but the client still has to establish its own
+        # TCP + TLS + auth handshake to reach it — measured at ~1.5s against
+        # aws-0-eu-west-1 from a dev machine. Under NullPool that handshake was paid on
+        # every single request (a bare /me cost ~1.65s, essentially all of it connection
+        # setup), so keep a small client-side pool and reuse the connections instead.
+        #
+        # The stale-prepared-statement hazard that motivated NullPool here is already
+        # handled independently by _engine_connect_args above: asyncpg's statement cache is
+        # disabled and every prepare() gets a unique name, so a reused connection cannot
+        # collide with a prepared statement left behind on a different PgBouncer backend.
+        #
+        # Sized for the dashboard's fan-out: the Operational Tower alone issues 5 section
+        # requests in parallel, each holding a connection for its whole request. At
+        # pool_size=5 one dashboard load would saturate the pool and the sections would
+        # serialize behind each other, undoing the split. Still bounded per worker by
+        # pool_size + max_overflow, well under Supabase's caps even with --reload.
+        # AsyncAdaptedQueuePool, not QueuePool: the sync pool cannot back an asyncio engine.
+        kwargs["poolclass"] = AsyncAdaptedQueuePool
+        kwargs["pool_size"] = 10
+        kwargs["max_overflow"] = 10
+        # PgBouncer can close an idle client connection from its side; recycle before that
+        # is likely and verify on checkout, so a dropped connection surfaces as a cheap
+        # reconnect rather than a failed request.
+        #
+        # pre_ping is not free: measured at ~278ms per checkout from a dev machine against
+        # eu-west-1 (a full extra round trip), i.e. ~506ms per request with it vs ~278ms
+        # without — against ~1636ms under NullPool, so both are a large win. It stays on
+        # because dropping it trades intermittent request failures for that 278ms, and
+        # Supabase's client idle timeout here is unverified. Co-located with the database
+        # the round trip is ~1ms and the cost is irrelevant.
+        kwargs["pool_recycle"] = 900
         kwargs["pool_pre_ping"] = True
-        kwargs["pool_recycle"] = _TRANSACTION_POOLER_POOL_RECYCLE_SECONDS
         return kwargs
 
     # Session pooler (port 5432, fallback only -- see .env): do NOT hold a

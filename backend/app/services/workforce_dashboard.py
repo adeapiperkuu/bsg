@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
 from uuid import UUID
 
 from sqlalchemy import select
@@ -14,6 +18,8 @@ from app.agents.delivery.services.recommendation_service import (
 )
 from app.core.security import CurrentUser
 from app.db.models import AlertType, Project, UtilizationSnapshot
+from app.db.rls import set_rls_context
+from app.db.session import session_scope
 from app.schemas.common import Pagination
 from app.schemas.domain import (
     CapabilityGapRead,
@@ -31,6 +37,26 @@ from app.services.workforce_training import build_project_training_gaps
 WORKFORCE_RISK_TYPE = AlertType.WORKFORCE_IMBALANCE.value
 DEFAULT_UTILIZATION_LIMIT = 100
 DEFAULT_CAPABILITY_GAPS_LIMIT = 100
+
+T = TypeVar("T")
+
+
+async def _run_section(
+    current_user: CurrentUser,
+    builder: Callable[[AsyncSession], Awaitable[T]],
+) -> T:
+    """Run one dashboard section on its own pooled connection.
+
+    A single AsyncSession maps to one DB connection and cannot multiplex concurrent
+    queries, so the sections can only run in parallel on independent sessions. Each
+    fresh session must re-establish the request's RLS context (the app role has
+    BYPASSRLS; ``set_rls_context`` switches to ``authenticated`` + the JWT claims, so
+    without it a spawned session would run unscoped) — mirroring what
+    ``get_current_user`` does for the request-injected session.
+    """
+    async with session_scope() as section_session:
+        await set_rls_context(section_session, json.dumps({"sub": str(current_user.id)}))
+        return await builder(section_session)
 
 
 async def _list_project_utilization_snapshots(
@@ -63,29 +89,42 @@ async def get_project_workforce_dashboard(
 ) -> ProjectWorkforceDashboardRead:
     """Assemble the Workforce page sections in one service call.
 
-    Reuses existing batched service functions. Same AsyncSession cannot safely
-    run concurrent queries, so sections are loaded sequentially.
+    Reuses existing batched service functions. The six sections are independent, so
+    they run concurrently — each on its own pooled connection via ``_run_section`` —
+    instead of serializing on the request session. Against the remote Supabase pooler
+    (where every query is a network round trip) this collapses the wall time from the
+    sum of the sections toward the slowest single section. The client pool is sized for
+    exactly this fan-out (see ``app/db/session.py``).
     """
     assert_can_read_annotators(current_user)
 
-    summary = await get_project_workforce_summary(session, project, current_user)
-    utilization_rows = await _list_project_utilization_snapshots(
-        session,
-        project.id,
-        limit=utilization_limit,
+    (
+        summary,
+        utilization_rows,
+        skill_matrix,
+        training_gaps,
+        capability_gap_rows,
+        recommendations_result,
+    ) = await asyncio.gather(
+        _run_section(current_user, lambda s: get_project_workforce_summary(s, project, current_user)),
+        _run_section(
+            current_user,
+            lambda s: _list_project_utilization_snapshots(s, project.id, limit=utilization_limit),
+        ),
+        _run_section(current_user, lambda s: build_project_skill_matrix(s, project, current_user)),
+        _run_section(current_user, lambda s: build_project_training_gaps(s, project, current_user)),
+        _run_section(current_user, lambda s: list_project_capability_gaps(s, project, current_user)),
+        _run_section(
+            current_user,
+            lambda s: list_project_recommendations(s, project_id=project.id, org_id=project.org_id),
+        ),
     )
-    skill_matrix = await build_project_skill_matrix(session, project, current_user)
-    training_gaps = await build_project_training_gaps(session, project, current_user)
-    capability_gap_rows = await list_project_capability_gaps(session, project, current_user)
+
     capability_gaps = [
         CapabilityGapRead.model_validate(gap) for gap in capability_gap_rows[:capability_gaps_limit]
     ]
 
-    recommendation_rows, owners = await list_project_recommendations(
-        session,
-        project_id=project.id,
-        org_id=project.org_id,
-    )
+    recommendation_rows, owners = recommendations_result
     workforce_rows = [
         row for row in recommendation_rows if row.source_risk_type == WORKFORCE_RISK_TYPE
     ]

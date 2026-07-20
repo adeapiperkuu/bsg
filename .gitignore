@@ -47,6 +47,7 @@ backups/
 # Frontend
 node_modules
 .tanstack/
+.claude/
 
 # Backend
 .venv/
@@ -61,3 +62,4 @@ __pycache__/
 # Claude Code local tooling
 .claude/
 graphify-out/
+!backend/.env.example

@@ -155,8 +155,16 @@
   box-shadow: none !important;
 }
 
+.governance-dialog label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .governance-table-shell {
-  overflow: hidden;
+  overflow: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--card);

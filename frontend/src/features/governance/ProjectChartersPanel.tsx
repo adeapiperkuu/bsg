@@ -1,6 +1,6 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
-import { Archive, Download, FileText, Loader2, Sparkles } from "lucide-react";
+import { Archive, BookOpen, Download, FileText, Loader2, RefreshCw, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 import { AiBadge, Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
@@ -32,16 +32,31 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { useGovernanceJob } from "@/features/governance/useGovernanceJob";
 import { formatDate } from "@/lib/governance-utils";
+import { queryKeys } from "@/lib/queries/keys";
 import {
   approveProjectCharter,
   archiveProjectCharter,
   exportProjectCharter,
   generateProjectCharter,
-  listProjectCharters,
+  getProjectCharter,
+  governanceProjectChartersPanelQueryOptions,
+  listProjectCharterPublicationVersions,
+  publishProjectCharter,
+  republishProjectCharter,
+  retryProjectCharterPublication,
+  unpublishProjectCharter,
   updateProjectCharter,
 } from "@/lib/queries/governance";
-import type { KnowledgeVisibility, ProjectCharter } from "@/types/governance";
+import type {
+  GovernanceCharterPublicationStatus,
+  KnowledgeVisibility,
+  ProjectCharter,
+  ProjectChartersPanelData,
+} from "@/types/governance";
+
+const PROJECT_CHARTER_PAGE_SIZE = 5;
 
 type ProjectOption = {
   value: string;
@@ -51,6 +66,7 @@ type ProjectOption = {
 type ProjectChartersPanelProps = {
   projects: ProjectOption[];
   canWrite: boolean;
+  canPublish?: boolean;
   isClient: boolean;
   isReadOnly: boolean;
   loadCharters?: boolean;
@@ -60,6 +76,21 @@ function formatCharterStatus(status: ProjectCharter["status"]): string {
   if (status === "approved") return "Approved";
   if (status === "archived") return "Archived";
   return "Draft";
+}
+
+function formatPublicationStatus(status: GovernanceCharterPublicationStatus | undefined): string {
+  switch (status) {
+    case "published":
+      return "Published";
+    case "publishing":
+      return "Publishing";
+    case "failed":
+      return "Failed";
+    case "superseded":
+      return "Superseded";
+    default:
+      return "Not Published";
+  }
 }
 
 function formatVisibility(value: KnowledgeVisibility): string {
@@ -98,6 +129,7 @@ function filenameFor(charter: ProjectCharter, format: "pdf" | "docx"): string {
 export function ProjectChartersPanel({
   projects,
   canWrite,
+  canPublish = false,
   isClient,
   isReadOnly,
   loadCharters = true,
@@ -107,10 +139,12 @@ export function ProjectChartersPanel({
   const [reviewOpen, setReviewOpen] = useState(false);
   const [approveOpen, setApproveOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
-  const [activeCharter, setActiveCharter] = useState<ProjectCharter | null>(null);
+  const [activeCharterId, setActiveCharterId] = useState<string | null>(null);
   const [draftText, setDraftText] = useState("");
   const [draftVisibility, setDraftVisibility] = useState<KnowledgeVisibility>("internal_only");
   const [downloading, setDownloading] = useState<"pdf" | "docx" | null>(null);
+  const [charterLimit, setCharterLimit] = useState(PROJECT_CHARTER_PAGE_SIZE);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   useEffect(() => {
     if (!selectedProjectId && projects.length > 0) {
@@ -119,23 +153,114 @@ export function ProjectChartersPanel({
   }, [projects, selectedProjectId]);
 
   useEffect(() => {
-    setActiveCharter(null);
+    setActiveCharterId(null);
     setReviewOpen(false);
+    setCharterLimit(PROJECT_CHARTER_PAGE_SIZE);
   }, [selectedProjectId]);
 
-  const chartersQuery = useQuery({
-    queryKey: ["governance", "project-charters", selectedProjectId],
-    queryFn: () => listProjectCharters(selectedProjectId),
+  const charterListParams = useMemo(
+    () => ({
+      projectId: selectedProjectId,
+      selectedCharterId: activeCharterId,
+      limit: charterLimit,
+      offset: 0,
+    }),
+    [activeCharterId, charterLimit, selectedProjectId],
+  );
+
+  const panelQuery = useQuery({
+    ...governanceProjectChartersPanelQueryOptions(charterListParams),
     enabled: Boolean(selectedProjectId) && loadCharters,
-    staleTime: 10 * 60 * 1000,
-    refetchOnWindowFocus: false,
+    placeholderData: keepPreviousData,
   });
 
-  const refresh = async () => {
+  const hydrateGeneratedCharter = async (charterId: string) => {
+    const charter = await getProjectCharter(charterId);
+    setActiveCharterId(charter.id);
+    queryClient.setQueryData(queryKeys.governanceProjectCharter(charter.id), charter);
+    queryClient.setQueriesData<ProjectChartersPanelData>(
+      { queryKey: ["governance", "project-charters-panel"] },
+      (existing) => {
+        if (!existing) {
+          return {
+            charters: [
+              {
+                ...charter,
+                generated_text: "",
+                evidence_links: [],
+              },
+            ],
+            selected_charter: charter,
+            limit: PROJECT_CHARTER_PAGE_SIZE,
+            offset: 0,
+            has_more: false,
+          };
+        }
+        const nextListRow = { ...charter, generated_text: "", evidence_links: [] };
+        const charters = existing.charters.some((row) => row.id === charter.id)
+          ? existing.charters.map((row) => (row.id === charter.id ? nextListRow : row))
+          : [nextListRow, ...existing.charters];
+        return {
+          ...existing,
+          charters,
+          selected_charter: charter,
+        };
+      },
+    );
     await queryClient.invalidateQueries({
-      queryKey: ["governance", "project-charters", selectedProjectId],
+      queryKey: ["governance", "project-charters"],
+      refetchType: "inactive",
     });
   };
+
+  const refresh = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: ["governance", "project-charters"],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["governance", "project-charters-panel"],
+      }),
+    ]);
+  };
+
+  const refreshCharter = async (charterId?: string) => {
+    const invalidations = [
+      queryClient.invalidateQueries({
+        queryKey: ["governance", "project-charters"],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["governance", "project-charters-panel"],
+      }),
+    ];
+    if (charterId) {
+      invalidations.push(
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.governanceProjectCharter(charterId),
+        }),
+      );
+      invalidations.push(
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.governanceProjectCharterVersions(charterId),
+        }),
+      );
+    }
+    await Promise.all(invalidations);
+  };
+
+  const generationJob = useGovernanceJob({
+    jobType: "project_charter_generate",
+    projectId: selectedProjectId,
+    enabled: canWrite && Boolean(selectedProjectId) && loadCharters,
+    onSucceeded: async (job) => {
+      if (job.result_record_id) {
+        await hydrateGeneratedCharter(job.result_record_id);
+      } else {
+        await refresh();
+      }
+      toast.success("Project charter draft generated for review.");
+    },
+  });
 
   const generateMutation = useMutation({
     mutationFn: () =>
@@ -143,13 +268,11 @@ export function ProjectChartersPanel({
         project_id: selectedProjectId,
         visibility: "internal_only",
       }),
-    onSuccess: async (charter) => {
-      toast.success("Project charter draft generated.");
-      setActiveCharter(charter);
-      setDraftText(charter.generated_text);
-      setDraftVisibility(charter.visibility);
-      setReviewOpen(true);
-      await refresh();
+    onSuccess: (started) => {
+      generationJob.track(started);
+      toast.message(
+        started.deduplicated ? "Charter generation already active." : "Charter generation queued.",
+      );
     },
     onError: (err) => {
       toast.error(err instanceof Error ? err.message : "Failed to generate charter.");
@@ -168,8 +291,9 @@ export function ProjectChartersPanel({
       }),
     onSuccess: async (charter) => {
       toast.success("Charter draft saved.");
-      setActiveCharter(charter);
-      await refresh();
+      setActiveCharterId(charter.id);
+      queryClient.setQueryData(queryKeys.governanceProjectCharter(charter.id), charter);
+      await refreshCharter(charter.id);
     },
     onError: (err) => {
       toast.error(err instanceof Error ? err.message : "Failed to save charter.");
@@ -180,10 +304,11 @@ export function ProjectChartersPanel({
     mutationFn: (id: string) => approveProjectCharter(id),
     onSuccess: async (charter) => {
       toast.success("Project charter approved.");
-      setActiveCharter(charter);
+      setActiveCharterId(charter.id);
+      queryClient.setQueryData(queryKeys.governanceProjectCharter(charter.id), charter);
       setApproveOpen(false);
       setReviewOpen(false);
-      await refresh();
+      await refreshCharter(charter.id);
     },
     onError: (err) => {
       toast.error(err instanceof Error ? err.message : "Failed to approve charter.");
@@ -192,25 +317,119 @@ export function ProjectChartersPanel({
 
   const archiveMutation = useMutation({
     mutationFn: (id: string) => archiveProjectCharter(id),
-    onSuccess: async () => {
+    onSuccess: async (charter) => {
       toast.success("Project charter archived.");
+      setActiveCharterId(charter.id);
+      queryClient.setQueryData(queryKeys.governanceProjectCharter(charter.id), charter);
       setArchiveOpen(false);
       setReviewOpen(false);
-      await refresh();
+      await refreshCharter(charter.id);
     },
     onError: (err) => {
       toast.error(err instanceof Error ? err.message : "Failed to archive charter.");
     },
   });
 
-  const charters = useMemo(() => chartersQuery.data ?? [], [chartersQuery.data]);
+  const publishMutation = useMutation({
+    mutationFn: (id: string) => publishProjectCharter(id),
+    onSuccess: async (charter) => {
+      toast.success("Charter published to Knowledge.");
+      setActiveCharterId(charter.id);
+      queryClient.setQueryData(queryKeys.governanceProjectCharter(charter.id), charter);
+      await refreshCharter(charter.id);
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : "Failed to publish charter.");
+    },
+  });
+
+  const retryPublishMutation = useMutation({
+    mutationFn: (id: string) => retryProjectCharterPublication(id),
+    onSuccess: async (charter) => {
+      toast.success("Publication retry succeeded.");
+      setActiveCharterId(charter.id);
+      queryClient.setQueryData(queryKeys.governanceProjectCharter(charter.id), charter);
+      await refreshCharter(charter.id);
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : "Failed to retry publication.");
+    },
+  });
+
+  const republishMutation = useMutation({
+    mutationFn: (id: string) => republishProjectCharter(id),
+    onSuccess: async (charter) => {
+      toast.success("Charter republished to Knowledge.");
+      setActiveCharterId(charter.id);
+      queryClient.setQueryData(queryKeys.governanceProjectCharter(charter.id), charter);
+      await refreshCharter(charter.id);
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : "Failed to republish charter.");
+    },
+  });
+
+  const unpublishMutation = useMutation({
+    mutationFn: (id: string) => unpublishProjectCharter(id),
+    onSuccess: async (charter) => {
+      toast.success("Charter unpublished from Knowledge.");
+      setActiveCharterId(charter.id);
+      queryClient.setQueryData(queryKeys.governanceProjectCharter(charter.id), charter);
+      await refreshCharter(charter.id);
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : "Failed to unpublish charter.");
+    },
+  });
+
+  const charters = useMemo(() => panelQuery.data?.charters ?? [], [panelQuery.data?.charters]);
   const currentCharter = pickCurrentCharter(charters);
-  const displayCharter = activeCharter ?? currentCharter;
-  const canEditActive = canWrite && activeCharter?.status === "draft";
-  const selectedVersionId = displayCharter?.id ?? "";
+  const detailCharter = panelQuery.data?.selected_charter ?? null;
+  const selectedListCharter =
+    charters.find((charter) => charter.id === (activeCharterId ?? detailCharter?.id)) ??
+    currentCharter;
+  const selectedCharterId = activeCharterId ?? detailCharter?.id ?? selectedListCharter?.id ?? null;
+
+  useEffect(() => {
+    if (charters.length === 0) {
+      setActiveCharterId(null);
+      return;
+    }
+    if (!selectedCharterId || !charters.some((charter) => charter.id === selectedCharterId)) {
+      setActiveCharterId(currentCharter?.id ?? null);
+    }
+  }, [charters, currentCharter?.id, selectedCharterId]);
+
+  const displayCharter = detailCharter ?? selectedListCharter;
+  const detailLoading = Boolean(selectedProjectId) && panelQuery.isLoading;
+
+  useEffect(() => {
+    setHistoryOpen(false);
+  }, [displayCharter?.id]);
+
+  const versionsQuery = useQuery({
+    queryKey: queryKeys.governanceProjectCharterVersions(displayCharter?.id),
+    queryFn: () => listProjectCharterPublicationVersions(displayCharter!.id),
+    enabled: Boolean(displayCharter?.id) && loadCharters && historyOpen,
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+  });
+
+  const publicationStatus = displayCharter?.publication_status ?? "not_published";
+  const showKnowledgePanel = Boolean(displayCharter && displayCharter.status !== "draft");
+  const publishBusy =
+    publishMutation.isPending ||
+    retryPublishMutation.isPending ||
+    republishMutation.isPending ||
+    unpublishMutation.isPending;
+  const canEditActive = canWrite && detailCharter?.status === "draft";
+  const selectedVersionId = selectedCharterId ?? "";
+  const canLoadOlderCharters = Boolean(panelQuery.data?.has_more);
 
   const openReview = (charter: ProjectCharter) => {
-    setActiveCharter(charter);
+    setActiveCharterId(charter.id);
     setDraftText(charter.generated_text);
     setDraftVisibility(charter.visibility);
     setReviewOpen(true);
@@ -255,8 +474,7 @@ export function ProjectChartersPanel({
               <Select
                 value={selectedVersionId}
                 onValueChange={(charterId) => {
-                  const charter = charters.find((item) => item.id === charterId);
-                  setActiveCharter(charter ?? null);
+                  setActiveCharterId(charterId);
                 }}
                 disabled={charters.length === 0}
               >
@@ -277,10 +495,13 @@ export function ProjectChartersPanel({
 
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex min-h-0 flex-1 flex-col rounded-md border border-border bg-elevated p-3">
-            {chartersQuery.isLoading ? (
-              <div className="flex flex-1 items-center gap-2 text-sm text-muted-foreground">
+            {panelQuery.isLoading ? (
+              <div
+                role="status"
+                aria-label="Loading project charters"
+                className="flex flex-1 items-center justify-center text-muted-foreground"
+              >
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Loading charters...
               </div>
             ) : displayCharter ? (
               <div className="flex min-h-0 flex-1 flex-col">
@@ -302,8 +523,190 @@ export function ProjectChartersPanel({
                       : ""}
                   </p>
                 )}
+                {showKnowledgePanel && (
+                  <div className="mb-2 rounded-lg border border-border bg-background/70 px-2.5 py-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <BookOpen className="h-3.5 w-3.5 text-muted-foreground" />
+                        <span className="text-xs font-medium">Knowledge publication</span>
+                      </div>
+                      <StatusPill status={formatPublicationStatus(publicationStatus)} />
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+                      <p>
+                        Status: {formatPublicationStatus(publicationStatus)}
+                        {displayCharter.knowledge_version_id
+                          ? ` · Knowledge version ${displayCharter.version}`
+                          : ""}
+                      </p>
+                      {displayCharter.published_at && (
+                        <p>
+                          Published {formatDate(displayCharter.published_at)}
+                          {displayCharter.published_by_name
+                            ? ` by ${displayCharter.published_by_name}`
+                            : ""}
+                        </p>
+                      )}
+                      {displayCharter.publication_error && (
+                        <p className="text-destructive">{displayCharter.publication_error}</p>
+                      )}
+                    </div>
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {displayCharter.knowledge_document_id && (
+                        <Button
+                          asChild
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-6 px-2 text-[10px] shadow-none"
+                        >
+                          <a
+                            href={
+                              displayCharter.knowledge_url ??
+                              `/knowledge?documentId=${displayCharter.knowledge_document_id}`
+                            }
+                          >
+                            View Knowledge
+                          </a>
+                        </Button>
+                      )}
+                      {canPublish &&
+                        displayCharter.status === "approved" &&
+                        (publicationStatus === "not_published" ||
+                          publicationStatus === "failed") && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="h-6 px-2 text-[10px] shadow-none"
+                            disabled={publishBusy}
+                            onClick={() =>
+                              publicationStatus === "failed"
+                                ? retryPublishMutation.mutate(displayCharter.id)
+                                : publishMutation.mutate(displayCharter.id)
+                            }
+                          >
+                            {publishBusy ? (
+                              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                            ) : (
+                              <BookOpen className="mr-1 h-3 w-3" />
+                            )}
+                            {publicationStatus === "failed" ? "Retry" : "Publish"}
+                          </Button>
+                        )}
+                      {canPublish && publicationStatus === "published" && (
+                        <>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-2 text-[10px] shadow-none"
+                            disabled={publishBusy}
+                            onClick={() => republishMutation.mutate(displayCharter.id)}
+                          >
+                            {republishMutation.isPending ? (
+                              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                            ) : (
+                              <RefreshCw className="mr-1 h-3 w-3" />
+                            )}
+                            Republish
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-2 text-[10px] shadow-none"
+                            disabled={publishBusy}
+                            onClick={() => unpublishMutation.mutate(displayCharter.id)}
+                          >
+                            {unpublishMutation.isPending ? (
+                              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                            ) : (
+                              <BookOpen className="mr-1 h-3 w-3" />
+                            )}
+                            Unpublish
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                    <div className="mt-1">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-5 px-0 text-[10px] text-muted-foreground hover:text-foreground"
+                        aria-expanded={historyOpen}
+                        onClick={() => setHistoryOpen((open) => !open)}
+                      >
+                        {historyOpen ? "Hide version history" : "Show version history"}
+                      </Button>
+                    </div>
+                    {historyOpen && (
+                      <div className="mt-3 border-t border-border pt-2">
+                        <p className="mb-1 text-[10px] font-medium text-muted-foreground">
+                          Version history
+                        </p>
+                        {versionsQuery.isLoading ? (
+                          <p className="text-[10px] text-muted-foreground">Loading history...</p>
+                        ) : versionsQuery.isError ? (
+                          <div className="flex items-center gap-2">
+                            <p className="text-[10px] text-destructive">Could not load history.</p>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-6 text-[10px]"
+                              onClick={() => void versionsQuery.refetch()}
+                            >
+                              Retry
+                            </Button>
+                          </div>
+                        ) : (versionsQuery.data?.length ?? 0) > 0 ? (
+                          <ul className="space-y-1 text-[10px] text-muted-foreground">
+                            {versionsQuery.data?.map((version) => (
+                              <li key={version.charter_id} className="flex flex-wrap gap-x-2">
+                                <span>
+                                  {version.charter_version} ·{" "}
+                                  {formatPublicationStatus(version.publication_status)}
+                                </span>
+                                {version.knowledge_url && version.knowledge_document_id && (
+                                  <a href={version.knowledge_url} className="underline">
+                                    Open
+                                  </a>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="text-[10px] text-muted-foreground">
+                            No publication history yet.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div className="min-h-0 flex-1 overflow-y-auto">
-                  <DeliveryMarkdown content={displayCharter.generated_text} />
+                  {detailLoading ? (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Loading charter details...
+                    </div>
+                  ) : panelQuery.isError ? (
+                    <div className="space-y-2 text-sm text-muted-foreground">
+                      <p>Could not load charter details.</p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-[11px]"
+                        onClick={() => void panelQuery.refetch()}
+                      >
+                        Retry
+                      </Button>
+                    </div>
+                  ) : (
+                    <DeliveryMarkdown content={detailCharter?.generated_text ?? ""} />
+                  )}
                 </div>
                 <div className="mt-3 flex shrink-0 flex-wrap gap-2">
                   <Button
@@ -311,7 +714,8 @@ export function ProjectChartersPanel({
                     size="sm"
                     variant="outline"
                     className="h-7 text-[11px]"
-                    onClick={() => openReview(displayCharter)}
+                    disabled={!detailCharter}
+                    onClick={() => detailCharter && openReview(detailCharter)}
                   >
                     <FileText className="mr-1 h-3 w-3" />
                     Review draft
@@ -351,10 +755,12 @@ export function ProjectChartersPanel({
                 <Button
                   type="button"
                   size="sm"
-                  disabled={!selectedProjectId || generateMutation.isPending}
+                  disabled={
+                    !selectedProjectId || generateMutation.isPending || generationJob.active
+                  }
                   onClick={() => generateMutation.mutate()}
                 >
-                  {generateMutation.isPending ? (
+                  {generateMutation.isPending || generationJob.active ? (
                     <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
                   ) : (
                     <Sparkles className="mr-1 h-3.5 w-3.5" />
@@ -372,6 +778,18 @@ export function ProjectChartersPanel({
                   Client-safe approved charters only.
                 </span>
               )}
+              {canLoadOlderCharters && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[11px]"
+                  disabled={panelQuery.isFetching}
+                  onClick={() => setCharterLimit((limit) => limit + PROJECT_CHARTER_PAGE_SIZE)}
+                >
+                  Load older versions
+                </Button>
+              )}
             </div>
           </div>
         </div>
@@ -382,12 +800,12 @@ export function ProjectChartersPanel({
           <DialogHeader>
             <DialogTitle>Review project charter</DialogTitle>
           </DialogHeader>
-          {activeCharter && (
+          {detailCharter && (
             <div className="space-y-3 text-xs">
               <div className="flex flex-wrap items-center gap-2">
-                <StatusPill status={formatCharterStatus(activeCharter.status)} />
-                <span className="text-muted-foreground">{activeCharter.version}</span>
-                {activeCharter.generated_by_ai && <AiBadge label="AI Generated" />}
+                <StatusPill status={formatCharterStatus(detailCharter.status)} />
+                <span className="text-muted-foreground">{detailCharter.version}</span>
+                {detailCharter.generated_by_ai && <AiBadge label="AI Generated" />}
               </div>
               {canEditActive ? (
                 <>
@@ -417,16 +835,16 @@ export function ProjectChartersPanel({
                 </>
               ) : (
                 <DeliveryMarkdown
-                  content={activeCharter.generated_text}
+                  content={detailCharter.generated_text}
                   className="rounded border border-border bg-elevated p-3"
                 />
               )}
 
-              {activeCharter.evidence_links.length > 0 && (
+              {detailCharter.evidence_links.length > 0 && (
                 <div className="rounded border border-border p-3">
                   <div className="mb-2 font-semibold">Evidence</div>
                   <ul className="max-h-40 space-y-1 overflow-y-auto text-muted-foreground">
-                    {activeCharter.evidence_links.map((link) => (
+                    {detailCharter.evidence_links.map((link) => (
                       <li key={link.id}>
                         {link.label ?? link.source_id}
                         {link.project_name ? ` - ${link.project_name}` : ""}
@@ -442,13 +860,13 @@ export function ProjectChartersPanel({
             <Button type="button" variant="outline" onClick={() => setReviewOpen(false)}>
               Close
             </Button>
-            {activeCharter && (
+            {detailCharter && (
               <>
                 <Button
                   type="button"
                   variant="outline"
                   disabled={downloading === "pdf"}
-                  onClick={() => void download(activeCharter, "pdf")}
+                  onClick={() => void download(detailCharter, "pdf")}
                 >
                   PDF
                 </Button>
@@ -456,19 +874,19 @@ export function ProjectChartersPanel({
                   type="button"
                   variant="outline"
                   disabled={downloading === "docx"}
-                  onClick={() => void download(activeCharter, "docx")}
+                  onClick={() => void download(detailCharter, "docx")}
                 >
                   DOCX
                 </Button>
               </>
             )}
-            {canWrite && activeCharter?.status !== "archived" && (
+            {canWrite && detailCharter?.status !== "archived" && (
               <Button type="button" variant="outline" onClick={() => setArchiveOpen(true)}>
                 <Archive className="mr-1 h-3.5 w-3.5" />
                 Archive
               </Button>
             )}
-            {canEditActive && activeCharter && (
+            {canEditActive && detailCharter && (
               <>
                 <Button
                   type="button"
@@ -476,7 +894,7 @@ export function ProjectChartersPanel({
                   disabled={saveMutation.isPending || !draftText.trim()}
                   onClick={() =>
                     saveMutation.mutate({
-                      id: activeCharter.id,
+                      id: detailCharter.id,
                       generated_text: draftText.trim(),
                       visibility: draftVisibility,
                     })
@@ -505,8 +923,8 @@ export function ProjectChartersPanel({
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              disabled={approveMutation.isPending || !activeCharter}
-              onClick={() => activeCharter && approveMutation.mutate(activeCharter.id)}
+              disabled={approveMutation.isPending || !detailCharter}
+              onClick={() => detailCharter && approveMutation.mutate(detailCharter.id)}
             >
               {approveMutation.isPending ? "Approving..." : "Approve"}
             </AlertDialogAction>
@@ -525,8 +943,8 @@ export function ProjectChartersPanel({
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              disabled={archiveMutation.isPending || !activeCharter}
-              onClick={() => activeCharter && archiveMutation.mutate(activeCharter.id)}
+              disabled={archiveMutation.isPending || !detailCharter}
+              onClick={() => detailCharter && archiveMutation.mutate(detailCharter.id)}
             >
               {archiveMutation.isPending ? "Archiving..." : "Archive"}
             </AlertDialogAction>

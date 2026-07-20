@@ -1,20 +1,6 @@
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import {
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
-  PieChart,
-  Pie,
-  Cell,
-  ResponsiveContainer,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ReferenceLine,
-} from "recharts";
+import { useQuery } from "@tanstack/react-query";
 import {
   Card,
   SectionHeader,
@@ -23,322 +9,561 @@ import {
   EvidenceBadge,
   StatusPill,
 } from "@/components/bsg/widgets";
-import {
-  kpis,
-  riskTrend,
-  qualityTrend,
-  utilization,
-  alerts,
-  recommendations,
-  milestones,
-  activity,
-  healthDistribution,
-  aiSummary,
-} from "@/lib/bsg/data";
 import { usePrefetchQualityIntelligence } from "@/hooks/usePrefetchQualityIntelligence";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+// Import the markdown pieces directly rather than through the components/delivery barrel:
+// the barrel re-exports DeliveryChat and its dependency tree (chat input, history popover,
+// alert-dialog, popover, use-delivery-chat), none of which the dashboard renders, and a
+// barrel import pulls all of it into this route's chunk.
+import { DeliveryMarkdown } from "@/components/delivery/delivery-markdown";
+import { sanitizeDeliveryMarkdown } from "@/components/delivery/delivery-markdown-utils";
+import {
+  executiveSummaryQueryOptions,
+  prefetchTowerSections,
+  useTowerActivityQuery,
+  useTowerEscalationsQuery,
+  useTowerHealthQuery,
+  useTowerPulseQuery,
+  useTowerWorkQuery,
+} from "@/lib/queries/dashboard";
 
-export const Route = createFileRoute("/dashboard")({ component: Dashboard });
+const DashboardCharts = lazy(() => import("@/features/dashboard/DashboardCharts"));
 
-const axisProps = {
-  tick: { fill: "#8b92a5", fontSize: 11 },
-  axisLine: { stroke: "#2a2d3a" },
-  tickLine: { stroke: "#2a2d3a" },
-};
-const tooltipStyle = {
-  backgroundColor: "#20242f",
-  border: "1px solid #2a2d3a",
-  borderRadius: 8,
-  fontSize: 12,
-  color: "#f0f2f7",
-};
+export const Route = createFileRoute("/dashboard")({
+  component: Dashboard,
+  loader: ({ context: { queryClient } }) => {
+    prefetchTowerSections(queryClient);
+  },
+});
+
+const RECS_PREVIEW = 3;
+const MILESTONES_PREVIEW = 5;
+const ACTIVITY_PREVIEW = 3;
+
+function formatRelative(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return iso;
+  const diff = Math.max(0, Date.now() - then);
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
+function formatDueDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { month: "short", day: "2-digit" });
+}
+
+function confidenceTone(value: number | null): "success" | "warning" | "danger" | "default" {
+  if (value == null) return "default";
+  if (value >= 85) return "success";
+  if (value >= 70) return "warning";
+  return "danger";
+}
+
+const EVIDENCE_TYPES = "dependency|action|escalation|scope_state|delivery_signal";
+const INLINE_EVIDENCE_RE = new RegExp(`\\s*\\((?:${EVIDENCE_TYPES}):[0-9a-fA-F-]{8,}\\)`, "g");
+const BOLD_EVIDENCE_RE = new RegExp(`\\*\\*(${EVIDENCE_TYPES}):[0-9a-fA-F-]{8,}\\*\\*`, "g");
+
+function prepareSummary(text: string): string {
+  return sanitizeDeliveryMarkdown(text)
+    .replace(/^#\s+.+\n+/, "")
+    .replace(INLINE_EVIDENCE_RE, "")
+    .replace(BOLD_EVIDENCE_RE, (_m, type: string) => `**${type.replace(/_/g, " ")}**`);
+}
+
+const ALL = "all";
+
+function FilterDropdown({
+  value,
+  onChange,
+  options,
+  allLabel,
+  ariaLabel,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options: string[];
+  allLabel: string;
+  ariaLabel: string;
+}) {
+  const humanise = (s: string) =>
+    s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return (
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger aria-label={ariaLabel} className="h-8 w-[130px] text-xs">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={ALL}>{allLabel}</SelectItem>
+        {options.map((o) => (
+          <SelectItem key={o} value={o}>
+            {humanise(o)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+function ChartsSkeleton() {
+  return (
+    <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-3">
+      <Card className="lg:col-span-2 h-[292px] animate-pulse"><span /></Card>
+      <Card className="h-[292px] animate-pulse"><span /></Card>
+      <Card className="h-[272px] animate-pulse"><span /></Card>
+      <Card className="lg:col-span-2 h-[272px] animate-pulse"><span /></Card>
+    </div>
+  );
+}
+
+function ViewAllButton({ onClick, label }: { onClick: () => void; label: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className="mt-2 text-[11px] font-medium text-[color:var(--brand)] hover:underline"
+    >
+      {label}
+    </button>
+  );
+}
+
+function WeeklySummaryDialog() {
+  const [open, setOpen] = useState(false);
+  const { data: summary, isLoading } = useQuery({
+    ...executiveSummaryQueryOptions,
+    enabled: open,
+  });
+  const summaryBody = summary ? prepareSummary(summary.text) : "";
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <button className="rounded border border-border px-3 py-1.5 text-xs font-medium hover:bg-elevated">
+          View Weekly Summary
+        </button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[80vh] max-w-2xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            Weekly Executive Summary
+            {summary?.generated_by_ai && <AiBadge label="AI" />}
+          </DialogTitle>
+          {summary && (
+            <DialogDescription>
+              Week of {formatDueDate(summary.week)} ·{" "}
+              {summary.approved ? "Approved" : "Pending review"}
+            </DialogDescription>
+          )}
+        </DialogHeader>
+        {isLoading ? (
+          <p className="text-sm text-muted-foreground">Loading summary…</p>
+        ) : summary ? (
+          <DeliveryMarkdown content={summaryBody} />
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            No executive summary has been generated yet.
+          </p>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function FreshnessStamp({
+  updatedAt,
+  isFetching,
+  hasData,
+}: {
+  updatedAt: number;
+  isFetching: boolean;
+  hasData: boolean;
+}) {
+  const [, forceTick] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => forceTick((n) => n + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (!hasData) {
+    return (
+      <span className="text-xs text-muted-foreground">
+        {isFetching ? "Loading portfolio…" : null}
+      </span>
+    );
+  }
+
+  return (
+    <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <span
+        className={`size-1.5 rounded-full ${
+          isFetching ? "animate-pulse bg-amber-500" : "bg-transparent"
+        }`}
+        aria-hidden="true"
+      />
+      <span>Updated {formatRelative(new Date(updatedAt).toISOString())}</span>
+      <span className="sr-only">{isFetching ? " — refreshing now" : ""}</span>
+    </span>
+  );
+}
 
 function Dashboard() {
-  // Operational Tower: the first page a PM sees after login. This must
-  // render on its own schedule -- the hook itself defers to browser idle
-  // time so it can never delay this component's own paint
-  // (PERF_IMPLEMENTATION_PLAN.md Phase 4).
-  usePrefetchQualityIntelligence();
+  const pulse = useTowerPulseQuery();
+  const escalations = useTowerEscalationsQuery();
+  const health = useTowerHealthQuery();
+  const work = useTowerWorkQuery();
+  const activityQuery = useTowerActivityQuery();
+
+  const healthDistribution = health.data?.healthDistribution ?? [];
+  const riskTrend = pulse.data?.riskTrend ?? { series: [], data: [] };
+  const qualityTrend = pulse.data?.qualityTrend ?? [];
+  const utilization = activityQuery.data?.utilization ?? [];
+  const alerts = pulse.data?.alerts ?? [];
+  const recommendations = work.data?.recommendations ?? [];
+  const milestones = work.data?.milestones ?? [];
+  const activity = activityQuery.data?.activity ?? [];
+
+  const totalProjects = pulse.data?.totalProjects ?? 0;
+  const atRiskCount = healthDistribution.find((d) => d.name === "At Risk")?.value ?? 0;
+  const criticalEscalations = escalations.data?.criticalEscalations ?? 0;
+
+  const sections = [pulse, escalations, health, work, activityQuery];
+  const loadedSections = sections.filter((s) => s.data !== undefined);
+  const dataUpdatedAt = loadedSections.length
+    ? Math.min(...loadedSections.map((s) => s.dataUpdatedAt))
+    : 0;
+  const isFetching = sections.some((s) => s.isFetching);
+  const iaaTrendingDown =
+    qualityTrend.length >= 2 &&
+    (qualityTrend.at(-1)?.iaa ?? 0) < (qualityTrend.at(-2)?.iaa ?? 0);
+  const recConfidence = recommendations.length
+    ? Math.round(
+        recommendations.reduce((sum, r) => sum + r.confidence, 0) / recommendations.length,
+      )
+    : null;
+
+  const [showAllRecs, setShowAllRecs] = useState(false);
+  const [showAllMilestones, setShowAllMilestones] = useState(false);
+  const [showAllActivity, setShowAllActivity] = useState(false);
+
+  const [alertSev, setAlertSev] = useState(ALL);
+  const [recPriority, setRecPriority] = useState(ALL);
+  const [milestoneStatus, setMilestoneStatus] = useState(ALL);
+
+  const alertSevOptions = useMemo(
+    () => Array.from(new Set(alerts.map((a) => a.sev))),
+    [alerts],
+  );
+  const recPriorityOptions = useMemo(
+    () => Array.from(new Set(recommendations.map((r) => r.priority))),
+    [recommendations],
+  );
+  const milestoneStatusOptions = useMemo(
+    () => Array.from(new Set(milestones.map((m) => m.status))),
+    [milestones],
+  );
+
+  const filteredAlerts =
+    alertSev === ALL ? alerts : alerts.filter((a) => a.sev === alertSev);
+  const filteredRecs =
+    recPriority === ALL
+      ? recommendations
+      : recommendations.filter((r) => r.priority === recPriority);
+  const filteredMilestones =
+    milestoneStatus === ALL
+      ? milestones
+      : milestones.filter((m) => m.status === milestoneStatus);
+
+  const visibleRecs = showAllRecs ? filteredRecs : filteredRecs.slice(0, RECS_PREVIEW);
+  const visibleMilestones = showAllMilestones
+    ? filteredMilestones
+    : filteredMilestones.slice(0, MILESTONES_PREVIEW);
+  const visibleActivity = showAllActivity ? activity : activity.slice(0, ACTIVITY_PREVIEW);
 
   return (
     <div className="space-y-5">
+      {/* Action bar — the full weekly report lives behind an action, not on the page. */}
+      <div className="flex items-center justify-end gap-3">
+        <FreshnessStamp
+          updatedAt={dataUpdatedAt}
+          isFetching={isFetching}
+          hasData={loadedSections.length > 0}
+        />
+        <WeeklySummaryDialog />
+      </div>
+
+      {/* 1. KPIs — portfolio health at a glance */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard
           label="Active Projects"
-          value={kpis.activeProjects}
-          delta="+2 this week"
+          value={pulse.data?.activeProjects ?? "—"}
+          delta={totalProjects ? `${totalProjects} total in portfolio` : undefined}
           tone="success"
         />
         <KpiCard
           label="Schedule Confidence"
-          value={`${kpis.scheduleConfidence}%`}
-          delta="−1.2 pts vs last week"
-          tone="warning"
+          value={
+            health.data?.scheduleConfidence != null ? `${health.data.scheduleConfidence}%` : "—"
+          }
+          tone={confidenceTone(health.data?.scheduleConfidence ?? null)}
         />
         <KpiCard
           label="Open Escalations"
-          value={kpis.openEscalations}
-          delta="2 critical"
-          tone="danger"
+          value={escalations.data?.openEscalations ?? "—"}
+          delta={criticalEscalations ? `${criticalEscalations} critical` : undefined}
+          tone={criticalEscalations ? "danger" : "default"}
         />
         <KpiCard
           label="Avg Quality Score"
-          value={kpis.avgQualityScore}
-          delta="+0.3 vs last week"
-          tone="success"
+          value={pulse.data?.avgQualityScore != null ? pulse.data.avgQualityScore : "—"}
+          tone={confidenceTone(pulse.data?.avgQualityScore ?? null)}
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+      {/* 1b. Trend charts — lazily loaded so KPI cards paint first (recharts is heavy). */}
+      <Suspense fallback={<ChartsSkeleton />}>
+        <DashboardCharts
+          riskTrend={riskTrend}
+          qualityTrend={qualityTrend}
+          utilization={utilization}
+          healthDistribution={healthDistribution}
+          totalProjects={totalProjects}
+          atRiskCount={atRiskCount}
+          iaaTrendingDown={iaaTrendingDown}
+        />
+      </Suspense>
+
+      {/* 2 + 3. Critical Alerts (primary) beside AI Recommendations */}
+      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <SectionHeader
-            title="Delivery Risk Trend"
-            sub="8-week rolling risk score per project"
-            right={<StatusPill status="Warning" />}
-          />
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={riskTrend}>
-              <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" />
-              <XAxis dataKey="week" {...axisProps} />
-              <YAxis {...axisProps} />
-              <Tooltip contentStyle={tooltipStyle} />
-              <Legend wrapperStyle={{ fontSize: 11, color: "#8b92a5" }} />
-              <Line type="monotone" dataKey="Aurora" stroke="#22c55e" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="Helios" stroke="#f59e0b" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="Nimbus" stroke="#ef4444" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="Orion" stroke="#3b82f6" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-          <div className="mt-2 text-xs text-muted-foreground">
-            3 at risk this week · <AiBadge confidence={84} />
-          </div>
-        </Card>
-
-        <Card>
-          <SectionHeader title="Operational Health" sub="Distribution across portfolio" />
-          <div className="relative">
-            <ResponsiveContainer width="100%" height={220}>
-              <PieChart>
-                <Pie
-                  data={healthDistribution}
-                  dataKey="value"
-                  innerRadius={55}
-                  outerRadius={85}
-                  paddingAngle={3}
-                  stroke="none"
-                >
-                  {healthDistribution.map((d) => (
-                    <Cell key={d.name} fill={d.color} />
-                  ))}
-                </Pie>
-                <Tooltip contentStyle={tooltipStyle} />
-              </PieChart>
-            </ResponsiveContainer>
-            <div className="pointer-events-none absolute inset-0 grid place-items-center">
-              <div className="text-center">
-                <div className="text-2xl font-semibold">28</div>
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                  Projects
-                </div>
+            title="Critical Alerts"
+            sub="What needs attention now"
+            right={
+              <div className="flex items-center gap-2">
+                {alertSevOptions.length > 1 && (
+                  <FilterDropdown
+                    ariaLabel="Filter alerts by severity"
+                    value={alertSev}
+                    onChange={setAlertSev}
+                    options={alertSevOptions}
+                    allLabel="All severities"
+                  />
+                )}
+                <EvidenceBadge />
               </div>
-            </div>
-          </div>
-          <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-muted-foreground">
-            {healthDistribution.map((d) => (
-              <span key={d.name} className="flex items-center gap-1.5">
-                <span className="h-2 w-2 rounded-full" style={{ background: d.color }} />
-                {d.name} · {d.value}
-              </span>
-            ))}
-          </div>
-        </Card>
-
-        <Card>
-          <SectionHeader
-            title="Quality Trend"
-            sub="Gold-set & IAA · 12 weeks"
-            right={<StatusPill status="Warning" />}
+            }
           />
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={qualityTrend}>
-              <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" />
-              <XAxis dataKey="week" {...axisProps} />
-              <YAxis yAxisId="l" {...axisProps} domain={[80, 100]} />
-              <YAxis yAxisId="r" orientation="right" {...axisProps} domain={[0.75, 0.95]} />
-              <Tooltip contentStyle={tooltipStyle} />
-              <Line
-                yAxisId="l"
-                dataKey="goldAccuracy"
-                stroke="#0D1240"
-                strokeWidth={2}
-                dot={false}
-                name="Gold Acc %"
-              />
-              <Line
-                yAxisId="r"
-                dataKey="iaa"
-                stroke="#3b82f6"
-                strokeWidth={2}
-                dot={false}
-                name="IAA"
-              />
-            </LineChart>
-          </ResponsiveContainer>
-          <div className="mt-2 text-xs">
-            <span className="rounded bg-[color:var(--danger)]/15 px-1.5 py-0.5 text-[10px] font-medium text-[color:var(--danger)]">
-              Drift Alert
-            </span>{" "}
-            Radiology subset trending down
-          </div>
-        </Card>
-
-        <Card>
-          <SectionHeader title="Resource Utilization" sub="By team · threshold 85%" />
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={utilization} layout="vertical" margin={{ left: 20 }}>
-              <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" horizontal={false} />
-              <XAxis type="number" {...axisProps} domain={[0, 100]} />
-              <YAxis dataKey="team" type="category" {...axisProps} width={110} />
-              <Tooltip contentStyle={tooltipStyle} />
-              <ReferenceLine x={85} stroke="#ef4444" strokeDasharray="4 4" />
-              <Bar dataKey="value" fill="#0D1240" radius={[0, 4, 4, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </Card>
-
-        <Card>
-          <SectionHeader title="Critical Alerts" sub="Top 5 active" right={<EvidenceBadge />} />
-          <ul className="space-y-2">
-            {alerts.map((a) => (
-              <li
-                key={a.desc}
-                className="flex items-start justify-between gap-3 rounded-md border border-border bg-elevated p-3"
-              >
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <StatusPill status={a.sev} />
-                    <span className="truncate text-xs font-medium">{a.project}</span>
+          {alerts.length === 0 ? (
+            <p className="rounded-md border border-border bg-elevated p-4 text-xs text-muted-foreground">
+              No active alerts across the portfolio.
+            </p>
+          ) : filteredAlerts.length === 0 ? (
+            <p className="rounded-md border border-border bg-elevated p-4 text-xs text-muted-foreground">
+              No alerts match this severity.
+            </p>
+          ) : (
+            <ul className="space-y-2">
+              {filteredAlerts.map((a) => (
+                <li
+                  key={`${a.project}-${a.desc}`}
+                  className="flex items-start justify-between gap-3 rounded-md border border-border bg-elevated p-3"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <StatusPill status={a.sev} />
+                      <span className="truncate text-xs font-medium">{a.project}</span>
+                    </div>
+                    <div className="mt-1 text-[11px] text-muted-foreground">{a.desc}</div>
+                    <div className="mt-1 text-[10px] text-muted-foreground">
+                      {formatRelative(a.ts)}
+                    </div>
                   </div>
-                  <div className="mt-1 text-[11px] text-muted-foreground">{a.desc}</div>
-                  <div className="mt-1 text-[10px] text-muted-foreground">{a.ts}</div>
-                </div>
-                <button className="shrink-0 rounded border border-border px-2 py-1 text-[11px] hover:bg-card">
-                  View
-                </button>
-              </li>
-            ))}
-          </ul>
+                  <button className="shrink-0 rounded border border-border px-2 py-1 text-[11px] hover:bg-card">
+                    View
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </Card>
-      </div>
 
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
+        <Card>
           <SectionHeader
             title="AI Recommendations"
-            sub="Generated by Delivery & Workforce agents"
-            right={<AiBadge confidence={88} />}
+            sub="Top actions"
+            right={
+              <div className="flex items-center gap-2">
+                {recPriorityOptions.length > 1 && (
+                  <FilterDropdown
+                    ariaLabel="Filter recommendations by priority"
+                    value={recPriority}
+                    onChange={setRecPriority}
+                    options={recPriorityOptions}
+                    allLabel="All priorities"
+                  />
+                )}
+                {recConfidence != null && <AiBadge confidence={recConfidence} label="AI" />}
+              </div>
+            }
           />
-          <ul className="space-y-2">
-            {recommendations.map((r) => (
-              <li
-                key={r.title}
-                className="flex items-center justify-between gap-3 rounded-md border border-border bg-elevated p-3"
-              >
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <StatusPill status={r.priority} />
-                    <span className="text-[10px] text-muted-foreground">
-                      {r.evidence} evidence items
-                    </span>
-                    <AiBadge confidence={r.confidence} />
-                  </div>
-                  <div className="mt-1 text-sm">{r.title}</div>
-                </div>
-                <div className="flex shrink-0 gap-1.5">
-                  <button className="rounded bg-[color:var(--brand)] px-2.5 py-1 text-[11px] font-medium text-[color:var(--brand-foreground)]">
-                    Take action
-                  </button>
-                  <button className="rounded border border-border px-2.5 py-1 text-[11px]">
-                    Dismiss
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </Card>
-
-        <Card>
-          <SectionHeader title="Recent Activity" sub="Last 10 operational events" />
-          <ul className="space-y-2.5 text-xs">
-            {activity.map((a) => (
-              <li key={a.text} className="flex gap-2.5">
-                <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--brand)]" />
-                <div className="min-w-0">
-                  <div className="truncate">
-                    <span className="font-medium">{a.actor}</span>{" "}
-                    <span className="text-muted-foreground">· {a.ts}</span>
-                  </div>
-                  <div className="text-muted-foreground">{a.text}</div>
-                </div>
-              </li>
-            ))}
-          </ul>
+          {recommendations.length === 0 ? (
+            <p className="rounded-md border border-border bg-elevated p-4 text-xs text-muted-foreground">
+              No open recommendations.
+            </p>
+          ) : filteredRecs.length === 0 ? (
+            <p className="rounded-md border border-border bg-elevated p-4 text-xs text-muted-foreground">
+              No recommendations match this priority.
+            </p>
+          ) : (
+            <>
+              <ul className="space-y-2">
+                {visibleRecs.map((r) => (
+                  <li
+                    key={r.title}
+                    className="rounded-md border border-border bg-elevated p-3"
+                  >
+                    <div className="flex items-center gap-2">
+                      <StatusPill status={r.priority} />
+                      <AiBadge confidence={r.confidence} label="AI" />
+                    </div>
+                    <div className="mt-1.5 text-xs">{r.title}</div>
+                    <div className="mt-2 flex gap-1.5">
+                      <button className="rounded bg-[color:var(--brand)] px-2.5 py-1 text-[11px] font-medium text-[color:var(--brand-foreground)]">
+                        Take action
+                      </button>
+                      <button className="rounded border border-border px-2.5 py-1 text-[11px]">
+                        Dismiss
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              {filteredRecs.length > RECS_PREVIEW && (
+                <ViewAllButton
+                  onClick={() => setShowAllRecs((v) => !v)}
+                  label={showAllRecs ? "Show less" : `View all (${filteredRecs.length})`}
+                />
+              )}
+            </>
+          )}
         </Card>
       </div>
 
-      <Card>
-        <SectionHeader title="Upcoming Milestones" sub="Sortable across portfolio" />
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead className="text-left text-muted-foreground">
-              <tr className="border-b border-border">
-                <th className="py-2 pr-3 font-medium">Project</th>
-                <th className="py-2 pr-3 font-medium">Milestone</th>
-                <th className="py-2 pr-3 font-medium">Due</th>
-                <th className="py-2 pr-3 font-medium">Confidence</th>
-                <th className="py-2 pr-3 font-medium">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {milestones.map((m) => (
-                <tr key={m.name} className="border-b border-border/50">
-                  <td className="py-2.5 pr-3 font-medium">{m.project}</td>
-                  <td className="py-2.5 pr-3 text-muted-foreground">{m.name}</td>
-                  <td className="py-2.5 pr-3">{m.due}</td>
-                  <td className="py-2.5 pr-3">{m.confidence}%</td>
-                  <td className="py-2.5 pr-3">
-                    <StatusPill status={m.status} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-
+      {/* 5. Upcoming Milestones — nearest few, full list behind View all */}
       <Card>
         <SectionHeader
-          title="Executive AI Summary"
-          sub="Auto-generated · Week 24 · Reviewed by Maya Chen"
+          title="Upcoming Milestones"
+          sub="Next by due date"
           right={
-            <div className="flex gap-2">
-              <AiBadge confidence={92} label="AI" />
-              <EvidenceBadge />
-            </div>
+            milestoneStatusOptions.length > 1 ? (
+              <FilterDropdown
+                ariaLabel="Filter milestones by status"
+                value={milestoneStatus}
+                onChange={setMilestoneStatus}
+                options={milestoneStatusOptions}
+                allLabel="All statuses"
+              />
+            ) : undefined
           }
         />
-        {aiSummary.split("\n\n").map((p, i) => (
-          <p key={i} className="mb-3 text-sm leading-6 text-foreground/90">
-            {p}
+        {milestones.length === 0 ? (
+          <p className="rounded-md border border-border bg-elevated p-4 text-xs text-muted-foreground">
+            No upcoming milestones.
           </p>
-        ))}
-        <div className="mt-2 flex gap-2">
-          <button className="rounded border border-border px-3 py-1.5 text-xs hover:bg-elevated">
-            Regenerate
-          </button>
-          <button className="rounded bg-[color:var(--brand)] px-3 py-1.5 text-xs font-medium text-[color:var(--brand-foreground)]">
-            Approve & Send
-          </button>
-        </div>
+        ) : filteredMilestones.length === 0 ? (
+          <p className="rounded-md border border-border bg-elevated p-4 text-xs text-muted-foreground">
+            No milestones match this status.
+          </p>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="text-left text-muted-foreground">
+                  <tr className="border-b border-border">
+                    <th className="py-2 pr-3 font-medium">Project</th>
+                    <th className="py-2 pr-3 font-medium">Milestone</th>
+                    <th className="py-2 pr-3 font-medium">Due</th>
+                    <th className="py-2 pr-3 font-medium">Confidence</th>
+                    <th className="py-2 pr-3 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleMilestones.map((m) => (
+                    <tr key={`${m.project}-${m.name}`} className="border-b border-border/50">
+                      <td className="py-2.5 pr-3 font-medium">{m.project}</td>
+                      <td className="py-2.5 pr-3 text-muted-foreground">{m.name}</td>
+                      <td className="py-2.5 pr-3">{formatDueDate(m.due)}</td>
+                      <td className="py-2.5 pr-3">
+                        {m.confidence != null ? `${m.confidence}%` : "—"}
+                      </td>
+                      <td className="py-2.5 pr-3">
+                        <StatusPill status={m.status} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {filteredMilestones.length > MILESTONES_PREVIEW && (
+              <ViewAllButton
+                onClick={() => setShowAllMilestones((v) => !v)}
+                label={showAllMilestones ? "Show less" : `View all (${filteredMilestones.length})`}
+              />
+            )}
+          </>
+        )}
+      </Card>
+
+      {/* Secondary. Recent Activity — collapsed to the latest few */}
+      <Card>
+        <SectionHeader title="Recent Activity" sub="Latest operational events" />
+        {activity.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No recent activity.</p>
+        ) : (
+          <>
+            <ul className="space-y-2.5 text-xs">
+              {visibleActivity.map((a) => (
+                <li key={`${a.actor}-${a.ts}-${a.text}`} className="flex gap-2.5">
+                  <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--brand)]" />
+                  <div className="min-w-0">
+                    <div className="truncate">
+                      <span className="font-medium">{a.actor}</span>{" "}
+                      <span className="text-muted-foreground">· {formatRelative(a.ts)}</span>
+                    </div>
+                    <div className="text-muted-foreground">{a.text}</div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            {activity.length > ACTIVITY_PREVIEW && (
+              <ViewAllButton
+                onClick={() => setShowAllActivity((v) => !v)}
+                label={showAllActivity ? "Show less" : `View all (${activity.length})`}
+              />
+            )}
+          </>
+        )}
       </Card>
     </div>
   );

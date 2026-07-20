@@ -1,3 +1,4 @@
+import { currentAuthGeneration, notifySessionInvalidated } from "@/lib/auth-session";
 import type {
   AppRole,
   AuthSession,
@@ -31,7 +32,6 @@ import type {
   KnowledgeLibraryHealthApi,
   KnowledgeRelatedKnowledgeApi,
   KnowledgeRetrievalSettingsApi,
-  KnowledgeSuggestionApi,
   KnowledgeVersionCompareApi,
 } from "@/types/knowledge";
 import type {
@@ -95,22 +95,14 @@ function clearSessionHintCookie() {
   document.cookie = "csrf_token=; Max-Age=0; path=/; SameSite=Lax";
 }
 
-function clearClientAuthState() {
-  if (typeof window === "undefined") return;
-  void import("@/stores/useAuthStore").then(({ useAuthStore }) => {
-    useAuthStore.setState({ user: null, isAuthenticated: false, isLoading: false });
-  });
-}
-
-/** Clear stale browser session hints after auth failure (invalid/expired session or wrong API). */
-export function resetAuthSession() {
+export function resetAuthSession(generation: number = currentAuthGeneration()) {
   clearSessionHintCookie();
-  clearClientAuthState();
+  notifySessionInvalidated(generation);
 }
 
 let refreshPromise: Promise<boolean> | null = null;
 
-async function refreshAuthSession(): Promise<boolean> {
+async function refreshAuthSession(generation: number): Promise<boolean> {
   refreshPromise ??= (async () => {
     const refreshHeaders = new Headers();
     const csrf = getCsrfToken();
@@ -125,7 +117,7 @@ async function refreshAuthSession(): Promise<boolean> {
     if (refreshed.ok) return true;
 
     if (refreshed.status === 401 || refreshed.status === 403) {
-      resetAuthSession();
+      resetAuthSession(generation);
     }
     return false;
   })().finally(() => {
@@ -171,6 +163,7 @@ export async function apiFetch<T>(
     if (csrf) headers.set("X-CSRF-Token", csrf);
   }
 
+  const generation = currentAuthGeneration();
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers,
@@ -180,10 +173,10 @@ export async function apiFetch<T>(
   if (response.status === 401 && !path.startsWith("/auth/") && !retried) {
     const error = await parseApiError(response);
     if (!getCsrfToken()) {
-      resetAuthSession();
+      resetAuthSession(generation);
       throw error;
     }
-    if (await refreshAuthSession()) {
+    if (await refreshAuthSession(generation)) {
       return apiFetch<T>(path, init, true);
     }
     throw error;
@@ -198,6 +191,7 @@ export async function apiFetchBlob(
   retried = false,
 ): Promise<Blob> {
   const headers = new Headers(init.headers);
+  const generation = currentAuthGeneration();
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers,
@@ -207,10 +201,10 @@ export async function apiFetchBlob(
   if (response.status === 401 && !path.startsWith("/auth/") && !retried) {
     const error = await parseApiError(response);
     if (!getCsrfToken()) {
-      resetAuthSession();
+      resetAuthSession(generation);
       throw error;
     }
-    if (await refreshAuthSession()) {
+    if (await refreshAuthSession(generation)) {
       return apiFetchBlob(path, init, true);
     }
     throw error;
@@ -424,6 +418,12 @@ export type DeliveryPortfolioResponse = {
     dashboard: DeliveryDashboardResponse;
   }>;
   milestones: Array<Record<string, unknown>>;
+  /**
+   * Projects visible to the caller, which exceeds `projects.length` when the backend's
+   * PORTFOLIO_PROJECT_LIMIT truncates. Surface the shortfall; never present a truncated
+   * portfolio as complete.
+   */
+  total_count: number;
 };
 
 export async function fetchDeliveryPortfolio(): Promise<DeliveryPortfolioResponse> {
@@ -801,6 +801,81 @@ export async function postAgentQuery(payload: {
   return body.data;
 }
 
+/**
+ * The Operational Tower is fetched as independent sections, not one payload, so each paints
+ * as soon as its data lands instead of the whole page waiting on the slowest part. The
+ * grouping mirrors the backend's, which is by measured cost — see
+ * backend/app/services/operational_tower.py.
+ */
+
+export type TowerPulse = {
+  activeProjects: number;
+  totalProjects: number;
+  avgQualityScore: number | null;
+  qualityTrend: Array<{ week: string; goldAccuracy: number | null; iaa: number | null }>;
+  riskTrend: {
+    series: Array<{ name: string; color: string }>;
+    data: Array<Record<string, string | number>>;
+  };
+  alerts: Array<{ sev: string; project: string; desc: string; ts: string }>;
+};
+
+export type TowerEscalations = {
+  openEscalations: number;
+  criticalEscalations: number;
+};
+
+export type TowerHealth = {
+  scheduleConfidence: number | null;
+  healthDistribution: Array<{ name: string; value: number; color: string }>;
+};
+
+export type TowerWork = {
+  recommendations: Array<{
+    title: string;
+    confidence: number;
+    evidence: number;
+    priority: string;
+  }>;
+  milestones: Array<{
+    project: string;
+    name: string;
+    due: string;
+    confidence: number | null;
+    status: string;
+  }>;
+};
+
+export type TowerActivity = {
+  utilization: Array<{ team: string; value: number }>;
+  activity: Array<{ ts: string; actor: string; text: string }>;
+};
+
+export type ExecutiveSummary = {
+  text: string;
+  week: string;
+  generated_by_ai: boolean;
+  status: string;
+  approved: boolean;
+  updated_at: string | null;
+};
+
+async function fetchTowerSection<T>(section: string): Promise<T> {
+  const body = await apiFetch<{ data: T }>(`/dashboard/operational-tower/${section}`);
+  return body.data;
+}
+
+export const fetchTowerPulse = () => fetchTowerSection<TowerPulse>("pulse");
+export const fetchTowerEscalations = () => fetchTowerSection<TowerEscalations>("escalations");
+export const fetchTowerHealth = () => fetchTowerSection<TowerHealth>("health");
+export const fetchTowerWork = () => fetchTowerSection<TowerWork>("work");
+export const fetchTowerActivity = () => fetchTowerSection<TowerActivity>("activity");
+
+export async function fetchExecutiveSummary(): Promise<ExecutiveSummary | null> {
+  const body = await apiFetch<{ data: ExecutiveSummary | null }>("/dashboard/executive-summary");
+  return body.data;
+}
+
 export function defaultRouteForRole(role: AppRole): string {
   switch (role) {
     case "client":
@@ -938,6 +1013,8 @@ function buildBootstrapFromDocuments(
       draft_count: libraryHealth?.draft_count ?? documents.filter((d) => d.status === "draft").length,
       archived_count:
         libraryHealth?.archived_count ?? documents.filter((d) => d.status === "archived").length,
+      approaching_expiry_count: libraryHealth?.approaching_expiry_count ?? 0,
+      outdated_count: libraryHealth?.outdated_count ?? 0,
     },
   };
 }
@@ -968,6 +1045,8 @@ function normalizeKnowledgeBootstrap(data: LegacyKnowledgeBootstrapApi): Knowled
         indexing_count: data.library_health?.indexing_count ?? 0,
         draft_count: data.library_health?.draft_count ?? 0,
         archived_count: data.library_health?.archived_count ?? 0,
+        approaching_expiry_count: data.library_health?.approaching_expiry_count ?? 0,
+        outdated_count: data.library_health?.outdated_count ?? 0,
       },
     };
   }
@@ -1584,36 +1663,6 @@ export async function submitKnowledgeFeedback(
       feedback_reason: payload.feedback_reason ?? null,
     }),
   });
-  return body.data;
-}
-
-export async function listKnowledgeSuggestions(status?: string): Promise<KnowledgeSuggestionApi[]> {
-  const params = status ? `?status=${encodeURIComponent(status)}` : "";
-  const body = await apiFetch<{ data: KnowledgeSuggestionApi[] }>(`/knowledge/suggestions${params}`);
-  return body.data;
-}
-
-export async function generateKnowledgeSuggestions(documentId?: string): Promise<KnowledgeSuggestionApi[]> {
-  const params = documentId ? `?document_id=${encodeURIComponent(documentId)}` : "";
-  const body = await apiFetch<{ data: KnowledgeSuggestionApi[] }>(`/knowledge/suggestions/generate${params}`, {
-    method: "POST",
-  });
-  return body.data;
-}
-
-export async function applyKnowledgeSuggestion(suggestionId: string): Promise<KnowledgeSuggestionApi> {
-  const body = await apiFetch<{ data: KnowledgeSuggestionApi }>(
-    `/knowledge/suggestions/${suggestionId}/apply`,
-    { method: "POST" },
-  );
-  return body.data;
-}
-
-export async function dismissKnowledgeSuggestion(suggestionId: string): Promise<KnowledgeSuggestionApi> {
-  const body = await apiFetch<{ data: KnowledgeSuggestionApi }>(
-    `/knowledge/suggestions/${suggestionId}/dismiss`,
-    { method: "POST" },
-  );
   return body.data;
 }
 

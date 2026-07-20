@@ -1,9 +1,10 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState, useCallback } from "react";
-import { Building2, Pencil, Plus, RefreshCw, Search } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Building2, Loader2, Pencil, Plus, RefreshCw, Search } from "lucide-react";
 
 import { Card } from "@/components/bsg/widgets";
-import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
+import { TablePagination } from "@/components/bsg/TablePagination";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -24,8 +25,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { editControlClass, toolbarIconButtonClass, USERS_PER_PAGE, visiblePages } from "@/lib/admin-shared";
-import { createOrganisation, listOrganisations, updateOrganisation } from "@/lib/api";
+import { usePagination } from "@/hooks/usePagination";
+import { editControlClass, toolbarIconButtonClass } from "@/lib/admin-shared";
+import { createOrganisation, updateOrganisation } from "@/lib/api";
+import { organisationsQueryOptions } from "@/lib/queries/delivery";
 import { useAuthStore } from "@/stores/useAuthStore";
 import type { OrganisationRead } from "@/types/auth";
 import { cn } from "@/lib/utils";
@@ -45,17 +48,13 @@ type StatusFilter = "all" | "active" | "inactive";
 
 function AdminOrganisationsPage() {
   const user = useAuthStore((s) => s.user);
-  const [orgs, setOrgs] = useState<OrganisationRead[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [creating, setCreating] = useState(false);
+  const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editingOrg, setEditingOrg] = useState<OrganisationRead | null>(null);
-  const [savingEdit, setSavingEdit] = useState(false);
-  const [page, setPage] = useState(1);
   const [form, setForm] = useState({
     name: "",
     slug: "",
@@ -72,6 +71,22 @@ function AdminOrganisationsPage() {
 
   const canManageOrganisations = user?.permissions.can_manage_organisations ?? false;
 
+  const orgsQuery = useQuery({
+    ...organisationsQueryOptions,
+    enabled: canManageOrganisations,
+  });
+
+  const orgs = useMemo(() => orgsQuery.data ?? [], [orgsQuery.data]);
+
+  const isRefreshing = orgsQuery.isFetching;
+  const isFirstLoad = isRefreshing && orgs.length === 0;
+  const bannerError = error ?? (orgsQuery.error ? orgsQuery.error.message : null);
+
+  const refresh = () => {
+    setError(null);
+    void orgsQuery.refetch();
+  };
+
   const filteredOrgs = useMemo(() => {
     const query = search.trim().toLowerCase();
     const filtered = orgs.filter((row) => {
@@ -86,55 +101,70 @@ function AdminOrganisationsPage() {
     return [...filtered].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
   }, [orgs, search, statusFilter]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredOrgs.length / USERS_PER_PAGE));
-  const currentPage = Math.min(page, totalPages);
-  const pageStart = (currentPage - 1) * USERS_PER_PAGE;
-  const pageOrgs = filteredOrgs.slice(pageStart, pageStart + USERS_PER_PAGE);
-
-  const load = useCallback(async () => {
-    if (!canManageOrganisations) return;
-    setLoading(true);
-    setError(null);
-    try {
-      setOrgs(await listOrganisations());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load organisations.");
-    } finally {
-      setLoading(false);
-    }
-  }, [canManageOrganisations]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  useEffect(() => {
-    setPage(1);
-  }, [search, statusFilter]);
-
-  useEffect(() => {
-    if (page > totalPages) setPage(totalPages);
-  }, [page, totalPages]);
+  const {
+    currentPage,
+    totalPages,
+    setPage,
+    pageItems: pageOrgs,
+    rangeStart,
+    rangeEnd,
+    total,
+  } = usePagination(filteredOrgs, `${search}|${statusFilter}`);
 
   const clearFilters = () => {
     setSearch("");
     setStatusFilter("all");
   };
 
-  const onCreateOrg = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setError(null);
-    setCreating(true);
-    try {
-      await createOrganisation(form);
+  const upsertCachedOrg = (saved: OrganisationRead) => {
+    queryClient.setQueryData<OrganisationRead[]>(organisationsQueryOptions.queryKey, (current) => {
+      if (!current) return current;
+      const index = current.findIndex((row) => row.id === saved.id);
+      if (index === -1) return [...current, saved];
+      const next = [...current];
+      next[index] = saved;
+      return next;
+    });
+  };
+
+  const createMutation = useMutation({
+    mutationFn: createOrganisation,
+    onSuccess: (saved) => {
+      upsertCachedOrg(saved);
       setForm({ name: "", slug: "", vertical: VERTICALS[0], region: "" });
       setCreateOpen(false);
-      await load();
-    } catch (err) {
+    },
+    onError: (err) => {
       setError(err instanceof Error ? err.message : "Failed to create organisation.");
-    } finally {
-      setCreating(false);
-    }
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: organisationsQueryOptions.queryKey });
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: (vars: { id: string; payload: Parameters<typeof updateOrganisation>[1] }) =>
+      updateOrganisation(vars.id, vars.payload),
+    onSuccess: (saved) => {
+      upsertCachedOrg(saved);
+      setEditOpen(false);
+      setEditingOrg(null);
+    },
+    onError: (err) => {
+      setError(err instanceof Error ? err.message : "Failed to update organisation.");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: organisationsQueryOptions.queryKey });
+    },
+  });
+
+  const creating = createMutation.isPending;
+  const savingEdit = updateMutation.isPending;
+
+  const onCreateOrg = (event: React.FormEvent) => {
+    event.preventDefault();
+    setError(null);
+    createMutation.mutate(form);
   };
 
   const openEditOrg = (target: OrganisationRead) => {
@@ -149,21 +179,11 @@ function AdminOrganisationsPage() {
     setEditOpen(true);
   };
 
-  const onUpdateOrg = async (event: React.FormEvent) => {
+  const onUpdateOrg = (event: React.FormEvent) => {
     event.preventDefault();
     if (!editingOrg) return;
     setError(null);
-    setSavingEdit(true);
-    try {
-      await updateOrganisation(editingOrg.id, editForm);
-      setEditOpen(false);
-      setEditingOrg(null);
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update organisation.");
-    } finally {
-      setSavingEdit(false);
-    }
+    updateMutation.mutate({ id: editingOrg.id, payload: editForm });
   };
 
   return (
@@ -175,22 +195,33 @@ function AdminOrganisationsPage() {
         </Button>
       </div>
 
-      {error && !loading && (
+      {bannerError && (
         <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
+          {bannerError}
         </div>
       )}
 
-      {loading ? (
-        <PageLoadingScreen />
-      ) : (
       <Card className="overflow-hidden p-0">
         <div className="space-y-4 border-b border-border p-4 sm:p-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold tracking-tight text-foreground">All Organisations</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold tracking-tight text-foreground">
+                  All Organisations
+                </h3>
+                {isRefreshing && (
+                  <span
+                    className="inline-flex items-center gap-1 text-xs text-muted-foreground"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Refreshing
+                  </span>
+                )}
+              </div>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                {`Showing ${pageOrgs.length ? pageStart + 1 : 0}-${Math.min(pageStart + pageOrgs.length, filteredOrgs.length)} of ${filteredOrgs.length} organisations`}
+                {`Showing ${rangeStart}-${rangeEnd} of ${total} organisations`}
               </p>
             </div>
             <div className="flex w-full items-center gap-2 sm:w-auto">
@@ -198,12 +229,12 @@ function AdminOrganisationsPage() {
                 variant="outline"
                 size="icon"
                 className={cn(toolbarIconButtonClass, "shrink-0")}
-                onClick={() => void load()}
-                disabled={loading}
+                onClick={refresh}
+                disabled={isRefreshing}
                 aria-label="Refresh organisations"
                 title="Refresh organisations"
               >
-                <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+                <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
               </Button>
             </div>
           </div>
@@ -287,56 +318,19 @@ function AdminOrganisationsPage() {
             {pageOrgs.length === 0 && (
               <TableRow>
                 <TableCell colSpan={6} className="h-28 text-center text-muted-foreground">
-                  No organisations match this search.
+                  {isFirstLoad ? "Loading organisations…" : "No organisations match this search."}
                 </TableCell>
               </TableRow>
             )}
           </TableBody>
         </Table>
 
-        <div className="flex flex-col gap-3 border-t border-border p-4 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-center text-xs text-muted-foreground sm:text-left">
-            Page {currentPage} of {totalPages}
-          </p>
-          <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-end">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={currentPage === 1}
-              onClick={() => setPage((value) => Math.max(1, value - 1))}
-            >
-              Previous
-            </Button>
-            {visiblePages(currentPage, totalPages).map((pageNumber, index, pages) => (
-              <div key={pageNumber} className="flex items-center gap-2">
-                {index > 0 && pageNumber - pages[index - 1] > 1 && (
-                  <span className="px-1 text-xs text-muted-foreground">...</span>
-                )}
-                <Button
-                  type="button"
-                  variant={pageNumber === currentPage ? "default" : "outline"}
-                  size="sm"
-                  className="min-w-8 px-2"
-                  onClick={() => setPage(pageNumber)}
-                >
-                  {pageNumber}
-                </Button>
-              </div>
-            ))}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={currentPage === totalPages}
-              onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
+        <TablePagination
+          currentPage={currentPage}
+          totalPages={totalPages}
+          onPageChange={setPage}
+        />
       </Card>
-      )}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="max-h-[calc(100svh-1rem)] w-[calc(100vw-1rem)] max-w-2xl gap-0 overflow-hidden p-0 sm:w-full">

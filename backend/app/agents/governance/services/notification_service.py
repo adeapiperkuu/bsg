@@ -5,8 +5,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.security import CurrentUser
 from app.db.models import AppRole, Notification, NotificationType, User
+from app.services.email import send_email
+from app.services.slack import send_slack_message
 
 GOVERNANCE_NOTIFICATION_ROLES = {
     AppRole.DELIVERY_MANAGER,
@@ -75,3 +78,25 @@ async def create_governance_notification(
                 source_row_id=source_row_id,
             )
         )
+
+    settings = get_settings()
+    if not settings.governance_outbound_notifications_enabled:
+        return
+
+    html = (
+        f"<p><strong>{title}</strong></p>"
+        f"<p>{body}</p>"
+        f"<p>Project: {project_id or 'portfolio'}<br/>"
+        f"Source: {source_table}<br/>"
+        f"Created by: {current_user.email}</p>"
+    )
+    for user in recipients:
+        if user.email:
+            await send_email(to=user.email, subject=f"[Governance] {title}", html_body=html)
+
+    slack_text = (
+        f"*Governance alert:* {title}\n"
+        f"{body}\n"
+        f"Project: {project_id or 'portfolio'} | by {current_user.email}"
+    )
+    await send_slack_message(text=slack_text)
