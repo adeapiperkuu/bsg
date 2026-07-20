@@ -142,6 +142,7 @@ class DeliveryEvidenceFacts(ClientIntelligenceModel):
     """Delivery-owned structured facts. No Client Intelligence conclusions."""
 
     latest_throughput: ThroughputSnapshotFacts | None = None
+    throughput_series: list[ThroughputSnapshotFacts] = Field(default_factory=list)
     latest_delivery_confidence: DeliveryConfidenceFacts | None = None
     milestones: list[MilestoneFacts] = Field(default_factory=list)
     next_milestone_id: UUID | None = None

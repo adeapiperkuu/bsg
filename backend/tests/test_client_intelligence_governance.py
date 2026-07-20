@@ -234,6 +234,12 @@ class FakeSession:
         if "FROM metric_configurations" in compiled:
             return FakeResult(None, [])
         if "FROM throughput_snapshots" in compiled:
+            upper = compiled.upper()
+            if "SNAPSHOT_DATE ASC" in upper and "LIMIT" not in upper:
+                rows = getattr(self, "throughput_series", None)
+                if rows is None and getattr(self, "throughput", None) is not None:
+                    rows = [self.throughput]
+                return FakeResult(None, rows or [])
             return FakeResult(None)
         if "FROM delivery_confidence_scores" in compiled:
             return FakeResult(None)

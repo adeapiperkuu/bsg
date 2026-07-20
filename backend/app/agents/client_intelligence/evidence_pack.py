@@ -45,6 +45,7 @@ from app.agents.client_intelligence.governance_adapter import load_governance_ev
 from app.agents.client_intelligence.knowledge_adapter import load_knowledge_evidence
 from app.agents.client_intelligence.quality_adapter import load_quality_evidence
 from app.agents.client_intelligence.reporting_period import resolve_reporting_period
+from app.agents.client_intelligence.source_coverage import explicit_unavailable_pack_signals
 from app.agents.client_intelligence.visibility import (
     ClientVisibilityPolicy,
     ClientVisibleMetric,
@@ -203,6 +204,7 @@ async def build_client_evidence_pack(
         today=today,
         visibility_mode=mode,
         policy=policy,
+        reporting_period=reporting_period,
     )
 
     (
@@ -278,6 +280,10 @@ async def build_client_evidence_pack(
     quality_issues.extend(knowledge_data_issues)
     visibility_limitations.extend(knowledge_visibility_limitations)
     limitations.extend(knowledge_limitations)
+
+    coverage_limitations, coverage_issues = explicit_unavailable_pack_signals()
+    limitations.extend(coverage_limitations)
+    quality_issues.extend(coverage_issues)
 
     (
         evidence,
@@ -361,6 +367,7 @@ async def _load_delivery_facts(
     today: date,
     visibility_mode: EvidenceVisibility,
     policy: ClientVisibilityPolicy | None,
+    reporting_period: ReportingPeriod,
 ) -> tuple[
     DeliveryEvidenceFacts,
     list[ClientEvidenceReference],
@@ -432,10 +439,11 @@ async def _load_delivery_facts(
 
     next_milestone_id = _select_next_milestone_id(milestone_facts, as_of=as_of)
 
-    throughput_facts = await _project_throughput(
+    throughput_facts, throughput_series = await _project_throughput(
         session,
         project.id,
         as_of=as_of,
+        series_start=reporting_period.previous_start_date,
         client_safe=client_safe,
         policy=policy,
         evidence=evidence,
@@ -474,6 +482,7 @@ async def _load_delivery_facts(
 
     delivery = DeliveryEvidenceFacts(
         latest_throughput=throughput_facts,
+        throughput_series=throughput_series,
         latest_delivery_confidence=confidence_facts,
         milestones=milestone_facts,
         next_milestone_id=next_milestone_id,
@@ -488,13 +497,14 @@ async def _project_throughput(
     project_id: UUID,
     *,
     as_of: date,
+    series_start: date,
     client_safe: bool,
     policy: ClientVisibilityPolicy | None,
     evidence: list[ClientEvidenceReference],
     quality_issues: list[DataQualityIssue],
     limitations: list[str],
     visibility_limitations: list[VisibilityLimitation],
-) -> ThroughputSnapshotFacts | None:
+) -> tuple[ThroughputSnapshotFacts | None, list[ThroughputSnapshotFacts]]:
     if client_safe:
         assert policy is not None
         if not policy.allows_any_throughput():
@@ -508,29 +518,28 @@ async def _project_throughput(
                     ),
                 )
             )
-            return None
-
-    throughput = await _load_latest_throughput(session, project_id, as_of=as_of)
-    if throughput is None:
-        quality_issues.append(
-            DataQualityIssue(
-                source="throughput_snapshots",
-                state=DataQualityState.UNAVAILABLE,
-                detail="No throughput snapshot at or before the requested as_of date.",
-                observed_at=None,
-            )
-        )
-        limitations.append("Latest throughput is unavailable.")
-        return None
+            return None, []
 
     if client_safe:
+        latest = await _load_latest_throughput(session, project_id, as_of=as_of)
+        if latest is None:
+            quality_issues.append(
+                DataQualityIssue(
+                    source="throughput_snapshots",
+                    state=DataQualityState.UNAVAILABLE,
+                    detail="No throughput snapshot at or before the requested as_of date.",
+                    observed_at=None,
+                )
+            )
+            limitations.append("Latest throughput is unavailable.")
+            return None, []
+
         assert policy is not None
         rolling = (
-            throughput.rolling_7day_units
+            latest.rolling_7day_units
             if policy.allows(ClientVisibleMetric.THROUGHPUT_ROLLING_7D)
             else None
         )
-        # units_completed / units_forecast have no known authorizing metric keys yet.
         claim_keys = ["snapshot_date"]
         if rolling is not None:
             claim_keys.append("rolling_7day_units")
@@ -545,18 +554,19 @@ async def _project_throughput(
                     ),
                 )
             )
-            return None
+            return None, []
 
+        observed_at = datetime.combine(latest.snapshot_date, time.min, tzinfo=UTC)
         evidence.append(
             ClientEvidenceReference(
                 source_agent=SourceAgent.DELIVERY_PERFORMANCE,
                 source_table="throughput_snapshots",
-                source_row_id=throughput.id,
+                source_row_id=latest.id,
                 description=(
-                    f"Latest throughput snapshot on {throughput.snapshot_date.isoformat()}."
+                    f"Latest throughput snapshot on {latest.snapshot_date.isoformat()}."
                 ),
                 visibility=EvidenceVisibility.CLIENT_SAFE,
-                observed_at=datetime.combine(throughput.snapshot_date, time.min, tzinfo=UTC),
+                observed_at=observed_at,
                 claim_keys=claim_keys,
             )
         )
@@ -568,51 +578,105 @@ async def _project_throughput(
                     "Throughput row present; freshness evaluation is unresolved because no "
                     "platform stale-data threshold is configured for Client Intelligence."
                 ),
-                observed_at=datetime.combine(throughput.snapshot_date, time.min, tzinfo=UTC),
+                observed_at=observed_at,
             )
         )
-        return ThroughputSnapshotFacts(
-            id=throughput.id,
-            snapshot_date=throughput.snapshot_date,
+        latest_fact = ThroughputSnapshotFacts(
+            id=latest.id,
+            snapshot_date=latest.snapshot_date,
             units_completed=None,
             units_forecast=None,
             rolling_7day_units=rolling,
         )
+        return latest_fact, []
 
-    evidence.append(
-        ClientEvidenceReference(
-            source_agent=SourceAgent.DELIVERY_PERFORMANCE,
-            source_table="throughput_snapshots",
-            source_row_id=throughput.id,
-            description=(f"Latest throughput snapshot on {throughput.snapshot_date.isoformat()}."),
-            visibility=EvidenceVisibility.INTERNAL,
-            observed_at=datetime.combine(throughput.snapshot_date, time.min, tzinfo=UTC),
-            claim_keys=[
-                "units_completed",
-                "units_forecast",
-                "rolling_7day_units",
-                "snapshot_date",
-            ],
-        )
+    rows = await _load_throughput_series(
+        session,
+        project_id,
+        start_date=series_start,
+        as_of=as_of,
     )
+    if not rows:
+        quality_issues.append(
+            DataQualityIssue(
+                source="throughput_snapshots",
+                state=DataQualityState.UNAVAILABLE,
+                detail="No throughput snapshots in the reporting trend window.",
+                observed_at=None,
+            )
+        )
+        limitations.append("Latest throughput is unavailable.")
+        return None, []
+
+    series_facts: list[ThroughputSnapshotFacts] = []
+    for row in rows:
+        observed_at = datetime.combine(row.snapshot_date, time.min, tzinfo=UTC)
+        series_facts.append(
+            ThroughputSnapshotFacts(
+                id=row.id,
+                snapshot_date=row.snapshot_date,
+                units_completed=row.units_completed,
+                units_forecast=row.units_forecast,
+                rolling_7day_units=row.rolling_7day_units,
+            )
+        )
+        claim_keys = ["snapshot_date"]
+        if row.units_completed is not None:
+            claim_keys.append("units_completed")
+        if row.units_forecast is not None:
+            claim_keys.append("units_forecast")
+        if row.rolling_7day_units is not None:
+            claim_keys.append("rolling_7day_units")
+        evidence.append(
+            ClientEvidenceReference(
+                source_agent=SourceAgent.DELIVERY_PERFORMANCE,
+                source_table="throughput_snapshots",
+                source_row_id=row.id,
+                description=(
+                    f"Throughput snapshot on {row.snapshot_date.isoformat()}."
+                ),
+                visibility=EvidenceVisibility.INTERNAL,
+                observed_at=observed_at,
+                claim_keys=claim_keys,
+            )
+        )
+
     quality_issues.append(
         DataQualityIssue(
             source="throughput_snapshots",
             state=DataQualityState.PARTIAL,
             detail=(
-                "Throughput row present; freshness evaluation is unresolved because no "
+                "Throughput row(s) present; freshness evaluation is unresolved because no "
                 "platform stale-data threshold is configured for Client Intelligence."
             ),
-            observed_at=datetime.combine(throughput.snapshot_date, time.min, tzinfo=UTC),
+            observed_at=datetime.combine(rows[-1].snapshot_date, time.min, tzinfo=UTC),
         )
     )
-    return ThroughputSnapshotFacts(
-        id=throughput.id,
-        snapshot_date=throughput.snapshot_date,
-        units_completed=throughput.units_completed,
-        units_forecast=throughput.units_forecast,
-        rolling_7day_units=throughput.rolling_7day_units,
-    )
+    return series_facts[-1], series_facts
+
+
+async def _load_throughput_series(
+    session: AsyncSession,
+    project_id: UUID,
+    *,
+    start_date: date,
+    as_of: date,
+) -> list[ThroughputSnapshot]:
+    rows = (
+        await session.execute(
+            select(ThroughputSnapshot)
+            .where(
+                ThroughputSnapshot.project_id == project_id,
+                ThroughputSnapshot.snapshot_date >= start_date,
+                ThroughputSnapshot.snapshot_date <= as_of,
+            )
+            .order_by(
+                ThroughputSnapshot.snapshot_date.asc(),
+                ThroughputSnapshot.id.asc(),
+            )
+        )
+    ).scalars()
+    return list(rows)
 
 
 async def _project_confidence(

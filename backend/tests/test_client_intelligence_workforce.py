@@ -107,6 +107,11 @@ class FakeSession:
         compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
         self.statements.append(compiled)
         upper = compiled.upper()
+        if "FROM throughput_snapshots" in compiled and "SNAPSHOT_DATE ASC" in upper:
+            rows = getattr(self, "throughput_series", None)
+            if rows is None and getattr(self, "throughput", None) is not None:
+                rows = [self.throughput]
+            return FakeResult(None, rows or [])
         assert "LIMIT" in upper or "limit" in compiled
 
         if "FROM teams" in compiled:
@@ -168,7 +173,15 @@ class FakeSession:
             visible = [row for row in self.metrics if getattr(row, "is_client_visible", False)]
             return FakeResult(None, visible)
         if "FROM throughput_snapshots" in compiled:
-            return FakeResult(None)
+            upper = compiled.upper()
+            if "SNAPSHOT_DATE ASC" in upper and "LIMIT" not in upper:
+                rows = getattr(self, "throughput_series", None)
+                if rows is None and getattr(self, "throughput", None) is not None:
+                    rows = [self.throughput]
+                return FakeResult(None, rows or [])
+            if "LIMIT" in upper:
+                return FakeResult(getattr(self, "throughput", None))
+            return FakeResult(None, [])
         if "FROM delivery_confidence_scores" in compiled:
             return FakeResult(None)
         if "FROM quality_snapshots" in compiled:

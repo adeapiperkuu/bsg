@@ -60,9 +60,10 @@ _PROJECT_LINKAGE_LIMITATION = (
 )
 
 _CI_D14_LIMITATION = (
-    "CI-D14 Client Communication Notes are unavailable: KnowledgeSourceType has no "
-    "CLIENT_COMMUNICATION_NOTE value (Phase 1 blocker). LESSON_LEARNED is not treated "
-    "as communication notes, and ClientCommunication records are not queried."
+    "CLIENT_COMMUNICATION_NOTES_UNAVAILABLE: CI-D14 Client Communication Notes are "
+    "unavailable because KnowledgeSourceType has no CLIENT_COMMUNICATION_NOTE value "
+    "(Phase 1 blocker). LESSON_LEARNED is not treated as communication notes, and "
+    "ClientCommunication records are not queried."
 )
 
 _VERSION_EXCLUSION_LIMITATION = (

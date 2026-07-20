@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hmac
 import re
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -1023,6 +1023,142 @@ def _evidence_ids(pack: ClientEvidencePack, table: str) -> set[UUID]:
     return {item.source_row_id for item in _evidence_for(pack, table)}
 
 
+def _is_canonical_utc_midnight(value: datetime | None, snapshot_date: date) -> bool:
+    """Exact snapshot_date at 00:00:00 UTC — reject offset-equivalent non-UTC tz."""
+    if value is None or value.tzinfo is None:
+        return False
+    if value.utcoffset() != timedelta(0):
+        return False
+    if value.tzname() != "UTC":
+        return False
+    return (
+        value.year == snapshot_date.year
+        and value.month == snapshot_date.month
+        and value.day == snapshot_date.day
+        and value.hour == 0
+        and value.minute == 0
+        and value.second == 0
+        and value.microsecond == 0
+    )
+
+
+def _expected_throughput_claim_keys(fact: Any) -> set[str]:
+    expected = {"snapshot_date"}
+    if getattr(fact, "units_completed", None) is not None:
+        expected.add("units_completed")
+    if getattr(fact, "units_forecast", None) is not None:
+        expected.add("units_forecast")
+    if getattr(fact, "rolling_7day_units", None) is not None:
+        expected.add("rolling_7day_units")
+    return expected
+
+
+def _validate_throughput_fact_evidence_binding(
+    pack: ClientEvidencePack,
+    fact: Any,
+    *,
+    expected_visibility: EvidenceVisibility,
+    window_start: date,
+    as_of: date,
+    errors: list[EvidenceValidationIssue],
+) -> None:
+    matches = [
+        item
+        for item in _evidence_for(pack, "throughput_snapshots")
+        if item.source_row_id == fact.id
+    ]
+    if len(matches) != 1:
+        errors.append(
+            _issue(
+                "throughput_evidence_row_count",
+                "Each throughput fact requires exactly one matching evidence identity.",
+                source="throughput_snapshots",
+                evidence_id=fact.id,
+            )
+        )
+        return
+    ref = matches[0]
+    if ref.source_agent != SourceAgent.DELIVERY_PERFORMANCE:
+        errors.append(
+            _issue(
+                "throughput_evidence_agent",
+                "Throughput evidence source_agent must be delivery_performance.",
+                source="throughput_snapshots",
+                evidence_id=fact.id,
+            )
+        )
+    if ref.source_table != "throughput_snapshots":
+        errors.append(
+            _issue(
+                "throughput_evidence_table",
+                "Throughput evidence source_table must be throughput_snapshots.",
+                source="throughput_snapshots",
+                evidence_id=fact.id,
+            )
+        )
+    if ref.visibility != expected_visibility:
+        errors.append(
+            _issue(
+                "throughput_evidence_visibility",
+                "Throughput evidence visibility must match the pack projection.",
+                source="throughput_snapshots",
+                evidence_id=fact.id,
+            )
+        )
+    if fact.snapshot_date < window_start or fact.snapshot_date > as_of:
+        errors.append(
+            _issue(
+                "throughput_evidence_out_of_window",
+                "Throughput evidence snapshot must be within the reporting trend window.",
+                source="throughput_snapshots",
+                evidence_id=fact.id,
+            )
+        )
+    if not _is_canonical_utc_midnight(ref.observed_at, fact.snapshot_date):
+        errors.append(
+            _issue(
+                "throughput_evidence_observed_at",
+                "Throughput evidence observed_at must be snapshot_date at 00:00:00 UTC.",
+                source="throughput_snapshots",
+                evidence_id=fact.id,
+            )
+        )
+    expected_claims = _expected_throughput_claim_keys(fact)
+    actual_claims = set(ref.claim_keys)
+    if actual_claims != expected_claims:
+        errors.append(
+            _issue(
+                "throughput_evidence_claim_mismatch",
+                "Throughput evidence claims must equal governed claims for the fact values.",
+                source="throughput_snapshots",
+                evidence_id=fact.id,
+            )
+        )
+
+
+def _validate_throughput_quality_consistency(
+    pack: ClientEvidencePack,
+    *,
+    facts_present: bool,
+    errors: list[EvidenceValidationIssue],
+) -> None:
+    if not facts_present:
+        return
+    states = [
+        issue.state
+        for issue in pack.data_quality
+        if issue.source in {"throughput_snapshots", "throughput"}
+    ]
+    if DataQualityState.UNAVAILABLE in states:
+        errors.append(
+            _issue(
+                "throughput_quality_unavailable_with_facts",
+                "Throughput facts cannot coexist with UNAVAILABLE source quality.",
+                source="throughput_snapshots",
+            )
+        )
+
+
 def _validate_project_evidence(
     pack: ClientEvidencePack,
     errors: list[EvidenceValidationIssue],
@@ -1092,21 +1228,149 @@ def _validate_delivery_evidence(
             )
         )
 
+    series = delivery.throughput_series
     throughput_evidence = _evidence_ids(pack, "throughput_snapshots")
-    if delivery.latest_throughput is None:
-        if throughput_evidence:
+    series_ids = {item.id for item in series}
+    window_start = pack.reporting_period.previous_start_date
+    as_of = pack.reporting_period.as_of
+    client_safe = pack.visibility_mode == EvidenceVisibility.CLIENT_SAFE
+    expected_visibility = (
+        EvidenceVisibility.CLIENT_SAFE if client_safe else EvidenceVisibility.INTERNAL
+    )
+
+    if series:
+        if series_ids != throughput_evidence:
             errors.append(
                 _issue(
-                    "throughput_evidence_orphaned",
-                    "Throughput evidence exists without a projected throughput fact.",
+                    "throughput_evidence_mismatch",
+                    "Throughput series facts and evidence references must match exactly.",
                     source="throughput_snapshots",
                 )
             )
-    elif {delivery.latest_throughput.id} != throughput_evidence:
+        dates = [item.snapshot_date for item in series]
+        if len(dates) != len(set(dates)):
+            errors.append(
+                _issue(
+                    "throughput_duplicate_snapshot_date",
+                    "Throughput series snapshot_date values must be unique.",
+                    source="throughput_snapshots",
+                )
+            )
+        if len(series_ids) != len(series):
+            errors.append(
+                _issue(
+                    "throughput_duplicate_row_id",
+                    "Throughput series source row IDs must be unique.",
+                    source="throughput_snapshots",
+                )
+            )
+        for item in series:
+            if item.snapshot_date < window_start or item.snapshot_date > as_of:
+                errors.append(
+                    _issue(
+                        "throughput_snapshot_out_of_window",
+                        "Throughput snapshot_date must be within the reporting trend window.",
+                        source="throughput_snapshots",
+                        evidence_id=item.id,
+                    )
+                )
+            _validate_throughput_fact_evidence_binding(
+                pack,
+                item,
+                expected_visibility=expected_visibility,
+                window_start=window_start,
+                as_of=as_of,
+                errors=errors,
+            )
+        canonical = sorted(series, key=lambda row: (row.snapshot_date, str(row.id)))
+        if series != canonical:
+            errors.append(
+                _issue(
+                    "throughput_series_unordered",
+                    "Throughput series must be ordered by snapshot_date then row ID.",
+                    source="throughput_snapshots",
+                )
+            )
+        if delivery.latest_throughput is None:
+            errors.append(
+                _issue(
+                    "throughput_latest_missing",
+                    "Throughput series requires latest_throughput to equal the latest member.",
+                    source="throughput_snapshots",
+                )
+            )
+        elif delivery.latest_throughput.model_dump() != series[-1].model_dump():
+            errors.append(
+                _issue(
+                    "throughput_latest_mismatch",
+                    "latest_throughput must equal the complete latest throughput_series member.",
+                    source="throughput_snapshots",
+                    evidence_id=delivery.latest_throughput.id,
+                )
+            )
+        if client_safe:
+            errors.append(
+                _issue(
+                    "throughput_series_client_safe_forbidden",
+                    "CLIENT_SAFE packs must not carry governed throughput series.",
+                    source="throughput_snapshots",
+                )
+            )
+        for item in series:
+            if client_safe and (
+                item.units_completed is not None or item.units_forecast is not None
+            ):
+                errors.append(
+                    _issue(
+                        "throughput_internal_fields_client_safe",
+                        "CLIENT_SAFE throughput facts cannot expose internal unit fields.",
+                        source="throughput_snapshots",
+                        evidence_id=item.id,
+                    )
+                )
+        _validate_throughput_quality_consistency(
+            pack, facts_present=True, errors=errors
+        )
+    elif delivery.latest_throughput is not None:
+        if {delivery.latest_throughput.id} != throughput_evidence:
+            errors.append(
+                _issue(
+                    "throughput_evidence_mismatch",
+                    "Throughput fact and evidence references must match exactly.",
+                    source="throughput_snapshots",
+                )
+            )
+        _validate_throughput_fact_evidence_binding(
+            pack,
+            delivery.latest_throughput,
+            expected_visibility=expected_visibility,
+            window_start=window_start,
+            as_of=as_of,
+            errors=errors,
+        )
+        if (
+            client_safe
+            and (
+                delivery.latest_throughput.units_completed is not None
+                or delivery.latest_throughput.units_forecast is not None
+            )
+        ):
+            errors.append(
+                _issue(
+                    "throughput_internal_fields_client_safe",
+                    "CLIENT_SAFE throughput facts cannot expose internal unit fields.",
+                    source="throughput_snapshots",
+                    evidence_id=delivery.latest_throughput.id,
+                )
+            )
+        _validate_throughput_quality_consistency(
+            pack, facts_present=True, errors=errors
+        )
+    elif throughput_evidence:
         errors.append(
             _issue(
-                "throughput_evidence_mismatch",
-                "Throughput fact and evidence references must match exactly.",
+                "throughput_evidence_orphaned",
+                "Throughput evidence exists without a projected throughput fact.",
                 source="throughput_snapshots",
             )
         )
@@ -1445,6 +1709,27 @@ def _validate_fact_timestamps(
     as_of_end = _as_of_end(as_of)
 
     delivery = pack.delivery
+    as_of = pack.reporting_period.as_of
+    window_start = pack.reporting_period.previous_start_date
+    for item in delivery.throughput_series:
+        if item.snapshot_date > as_of:
+            errors.append(
+                _issue(
+                    "throughput_snapshot_after_as_of",
+                    "Throughput snapshot_date must not be after as_of.",
+                    source="throughput_snapshots",
+                    evidence_id=item.id,
+                )
+            )
+        if item.snapshot_date < window_start:
+            errors.append(
+                _issue(
+                    "throughput_snapshot_before_window",
+                    "Throughput snapshot_date must not be before previous_start_date.",
+                    source="throughput_snapshots",
+                    evidence_id=item.id,
+                )
+            )
     if (
         delivery.latest_throughput is not None
         and delivery.latest_throughput.snapshot_date > as_of

@@ -86,6 +86,13 @@ class FakeSession:
         if "FROM milestones" in compiled:
             return FakeResult(None, self.milestones)
         if "FROM throughput_snapshots" in compiled:
+            upper = compiled.upper()
+            if "SNAPSHOT_DATE ASC" in upper and "LIMIT" not in upper:
+                rows = getattr(self, "throughput_series", None)
+                if rows is None and getattr(self, "throughput", None) is not None:
+                    rows = [self.throughput]
+                return FakeResult(None, rows or [])
+            assert "LIMIT" in upper or "limit" in compiled
             return FakeResult(self.throughput)
         if "FROM delivery_confidence_scores" in compiled:
             return FakeResult(self.confidence)

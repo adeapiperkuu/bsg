@@ -180,7 +180,7 @@ The current `/client-intelligence` client list may be retained as an authorized 
 | Agent module | `backend/app/agents/client_interaction.py` contains only a placeholder | Replace with a package and explicit engines |
 | Communications | Draft/review/approve/reject/send lifecycle exists | Harden state transitions, evidence, roles, scheduling |
 | Draft generation | Latest throughput plus weekly quality context | Expand to milestones, confidence, risks, readiness, changes, mitigations |
-| Agent Q&A | `client_interaction_agent` is registered but returns placeholder text | Add Client Intelligence retrieval and grounded answering |
+| Agent Q&A | Internal grounded Q&A via `POST/GET /projects/{id}/client-intelligence/queries`; `client_interaction_agent` no longer returns placeholder text | Client-facing `/client/ask` remains deferred |
 | Evidence | Query and communication evidence-link tables exist | Reuse and extend evidence to insights/readiness/recommendations |
 | Delivery confidence | Stored time-series and Delivery Agent scoring exist | Consume as source of truth; do not recalculate independently |
 | CSAT | Client-only monthly submission endpoint exists | Add read aggregation, trend, permissions, and UI |
@@ -191,7 +191,7 @@ The current `/client-intelligence` client list may be retained as an authorized 
 
 | Surface | Current state | Gap |
 |---|---|---|
-| `/client-intelligence` | Internal dashboard shell using mock `clients` data | No API integration; source dashboard content incomplete |
+| `/client-intelligence` | Internal project-level dashboard using governed `/projects` and Client Intelligence overview APIs | Reports, narrative, Q&A, readiness, alerts, client-safe delivery, and portfolio aggregation remain unavailable |
 | `/client` | Client home using static values | No project selection or governed data |
 | `/client/status` | Static confidence trend and milestones | No evidence, readiness, risks, or API data |
 | `/client/reports` | Static report list with download action | Must use sent reports; download requires separate scope decision |
@@ -411,7 +411,10 @@ The evidence pack must be assembled once per request and passed to deterministic
 - CLIENT_SAFE snapshots store only `client_safe` evidence links and redact Knowledge `untrusted_text` / `document_title` in `pack_payload`.
 - Direct loads and idempotent reuses share `verify_stored_snapshot_integrity`: reconstruct, re-validate for the requesting role, enforce row↔payload consistency, match persistable evidence links exactly, and for CLIENT_SAFE require persistence-redacted Knowledge form. Fail closed on corruption; never repair on read.
 - Policy fingerprint is null-or-lowercase-SHA-256 in canonical validation (rejected before write); it is not part of the source-fingerprint algorithm.
-- **Not** implemented: readiness assessments/dimensions, insights, recommendations, narratives, Q&A, UI, auto persist-on-build, or full Super Admin / Leadership approved-scope RBAC exit gate. **CI-DQ08 remains unresolved.** Live Postgres RLS execution of this migration is still required for the Phase 1 integration gate.
+- **Source coverage registry (CI-D01–CI-D15):** `source_coverage.py` declares owner, tables, visibility, sensitivity, implementation state, and stable unavailable reasons. Pack assembly always emits `PLAN_SERIES_UNAVAILABLE`, `WORKFLOW_STATUS_UNAVAILABLE`, `BACKLOG_QUEUE_UNAVAILABLE`, `CLIENT_COMMUNICATION_NOTES_UNAVAILABLE`, and `FRESHNESS_SLA_UNRESOLVED` where applicable. No invented plan/backlog/communication-note sources.
+- **Communication/query provenance:** `EvidenceInput` may carry server-authored visibility, observed_at, claim_keys, and pack fingerprint. Migration `20260717140000_client_intelligence_evidence_provenance.sql` adds nullable provenance columns on communication/query evidence links plus `client_communications.evidence_source_fingerprint`. Legacy null provenance is disclosed, never fabricated.
+- **Stale approval:** Approve and Send compare stored `evidence_source_fingerprint` to the current pack fingerprint. Changed evidence returns `COMMUNICATION_EVIDENCE_CHANGED` (409). Ordering-only changes do not block. Missing legacy fingerprint is disclosed and allowed without inventing a value. No automatic reapproval/send.
+- **Not** implemented: readiness assessments/dimensions, insights, recommendations, narratives, Milestone/Change UI, client portal, auto persist-on-build, or full Super Admin / Leadership approved-scope RBAC exit gate. **CI-DQ07 / CI-DQ08 / CI-DQ09 remain unresolved.** Live Postgres RLS execution of persistence/provenance migrations is still required for the Phase 1 integration gate.
 
 ### 7.4 RBAC retrieval matrix
 
@@ -426,12 +429,12 @@ Implement and test the matrix in Section 17 before exposing aggregation endpoint
 
 ### Phase 1 exit criteria
 
-- [ ] CI-D01–CI-D15 have implemented or explicitly unavailable adapters.
-- [ ] An authorized project returns a bounded `ClientEvidencePack`.
-- [ ] Unauthorized and cross-tenant requests return no records and no metadata leakage.
-- [ ] Missing and stale source states are explicit.
-- [ ] Every persisted intelligence object can store evidence transactionally.
-- [ ] Prompt context contains no individual workforce/reviewer information in client mode.
+- [x] CI-D01–CI-D15 have implemented or explicitly unavailable adapters (registry + pack signals; D07/D09/D14 unavailable by design; plan series unavailable).
+- [x] An authorized project returns a bounded `ClientEvidencePack`.
+- [x] Unauthorized and cross-tenant requests return no records and no metadata leakage.
+- [x] Missing and blocked source states are explicit (approved freshness SLA unresolved — no age-only stale).
+- [x] Every persisted intelligence object can store evidence transactionally (snapshots + communication/query provenance).
+- [x] Prompt context contains no individual workforce/reviewer information in client mode.
 
 ---
 
@@ -467,7 +470,7 @@ The health engine must aggregate source-of-truth outcomes without replacing thei
 - **No production default policy and no hardcoded Green/Amber/Red thresholds.** Missing policy → `INSUFFICIENT` + `POLICY_UNAVAILABLE`.
 - Delivery Confidence remains Delivery-owned; history comparison is in-memory/contract-level only (including material driver fingerprint changes).
 - **CI-DQ07 remains unresolved.** CI-F01 / CI-O01 remain partial (no persistence, API, or UI).
-- **Not** started in this task: Delivery Confidence Intelligence, Risk Transparency, Delivery Trend, Change/Milestone Intelligence, Today’s Insight, Phase 3 readiness, recommendations, narratives, reports, Q&A, APIs, UI, schedulers.
+- **Not** started in this task: Risk Transparency, Delivery Trend, Change/Milestone Intelligence, Today’s Insight, Phase 3 readiness, recommendations, narratives, reports, Q&A, APIs, UI, schedulers.
 
 ### 8.2 Delivery Confidence Intelligence
 
@@ -488,6 +491,26 @@ Required response:
 
 It must not invent a score when Delivery has not produced one.
 
+**TASK 11 foundation status (explanation-policy driven only):**
+
+- Typed contracts in `delivery_confidence_contracts.py`; injected `DeliveryConfidenceExplanationPolicy` in `delivery_confidence_policy.py`.
+- Entry point `assess_delivery_confidence` in `delivery_confidence_intelligence.py`.
+- **Score, status/band, milestone, forecast, observed_at, and source quality are Delivery-/pack-owned.** Confidence `status` is consumed unchanged as the band; it is **not** recomputed from score thresholds.
+- Exact Decimal `score_pct` preserved; float scores rejected. Evidence binds to the exact `delivery_confidence_scores` row and claim keys; core evidence `observed_at` must equal the Delivery fact exactly.
+- Current milestone is core Delivery-owned output resolved only via `latest_delivery_confidence.milestone_id` (never substitute `next_milestone_id`). Nested milestone evidence must also exist in top-level assessment evidence with claim coverage for ID/name/status/planned date (and `actual_date` when present).
+- Prior-cycle trend uses exact aligned COMPLETE Decimal scores only (`INCREASED` / `DECREASED` / `STABLE`); otherwise `UNKNOWN` with structured limitations.
+- **Explanation policy receives only an isolated verified candidate context** (`DeliveryConfidenceCandidateContext`) — never a `ClientEvidencePack`, project identity, raw evidence descriptions, source objects, or pack source-limitation text. The engine deep-copies validated packs and authoritative candidates; policy mutations of its copy or of a caller-held pack reference cannot alter assessment core fields.
+- Candidate reliability requires an explicit pack-owned `DataQualityIssue` for the canonical source mapping (e.g. `project_dependencies` evidence → `governance_dependencies` quality). **No `COMPLETE` fallback** from fact/evidence presence. Missing quality and non-COMPLETE pack-owned states emit distinct structured codes; unreliable candidates cannot support material drivers.
+- Facts with an authoritative `observed_at` field bind None/timestamp exactly to pack evidence; milestones and throughput (no fact `observed_at`) inherit verified evidence timestamps.
+- Driver lineage is closed: every selected candidate shares the exact driver category; driver evidence is the exact union of selected candidate identities/claim keys; driver `data_quality` matches the engine aggregate of selected candidates.
+- **Top-level assessment evidence aggregates core confidence, milestone, previous confidence, and every validated driver evidence row** with deterministic claim-key merges and fingerprint/observed_at lineage invariants.
+- Structured engine/policy `limitations` (uppercase reason codes) are separate from pack-inherited `source_limitations` (human-readable production text).
+- Explanation drivers are selected only from engine-built verified candidates by an injected policy. Missing policy → core facts + `EXPLANATION_POLICY_UNAVAILABLE`. Supplied policy on `NO_SCORE` is not evaluated (`EXPLANATION_NOT_EVALUATED_NO_SCORE`). Unreliable current confidence (STALE/CONFLICTING/PARTIAL) does not call `evaluate` (`EXPLANATION_NOT_EVALUATED_UNRELIABLE_SOURCE`).
+- **No production explanation policy and no score/band thresholds.** Backlog and dedicated mitigation contribution sources remain unavailable (`UNAVAILABLE` / structured limitations). Single throughput / quality facts do not prove “stable throughput” or “proactive QA”.
+- STALE / CONFLICTING / PARTIAL / NO_SCORE availability remain explicit; unreliable sources cannot support material drivers.
+- **CI-F02 / CI-O03 remain partial** (no persistence, API, UI, or narrative). **CI-DQ07 remains unresolved.**
+- **Not** started: Delivery Trend, Change/Milestone Intelligence, Today’s Insight, readiness, recommendations, narratives, reports, Q&A, APIs, UI, schedulers, LLM generation.
+
 ### 8.3 Risk Transparency Engine
 
 | Step | Deliverable | Exit criterion |
@@ -498,7 +521,56 @@ It must not invent a score when Delivery has not produced one.
 | 2.9 | Mitigation status | Owner role, progress, target, residual risk, and client action where safe |
 | 2.10 | Risk narrative fact model | LLM receives typed facts, not raw internal notes |
 
+**TASK 12 foundation status (contract integrity + fail-closed coverage):**
+
+- Typed contracts in `risk_transparency_contracts.py`; injected `RiskTransparencyPolicy` in `risk_transparency_policy.py`.
+- Entry point `assess_risk_transparency` in `risk_transparency.py`.
+- Verified candidates are built only from validated pack `open_risks` / `open_bottlenecks` with exact evidence lineage, pack-owned source quality (no COMPLETE fallback), and deep-copied engine-owned packs/context.
+- **Public contracts** enforce closed source-type/table/agent/status/tier/alert-type/claim/category integrity on candidates and published items; `model_validate` rejects fabricated lineage and ineligible categories.
+- Top-level assessment evidence must equal the exact selected item-evidence claim union (no orphans, no extra detail claims). Non-AVAILABLE assessments carry empty items and empty top-level risk evidence.
+- Mixed populated source quality fails closed: CONFLICTING dominates; all-STALE → STALE; incomplete/missing DQ on any populated source prevents AVAILABLE (PARTIAL when mixed with COMPLETE selections that would otherwise publish). Empty secondary sources without facts/quality do not degrade a COMPLETE primary source.
+- Structural category eligibility only: `workforce_imbalance` → `RESOURCE_CONSTRAINT`; bottleneck rows → `WORKFLOW_BOTTLENECK`. `QUALITY_DRIFT` does **not** prove `QA_REWORK`; `DELIVERY_RISK` / `MILESTONE_AT_RISK` do **not** prove `DEPENDENCY_DELAY`.
+- **No production materiality or client-visibility policy.** Missing policy fails closed (`RISK_POLICY_UNAVAILABLE` / `CLIENT_VISIBILITY_POLICY_UNAVAILABLE`) and publishes no risks. AVAILABLE assessments require explicit non-empty `rules_version` provenance; missing-policy assessments (`rules_version is None`) must carry both fail-closed policy limitations and cannot be AVAILABLE.
+- Candidate identity is deterministically bound (`risk_alert.` / `bottleneck.` + `source_row_id.hex`). Published risk items must have unique source identities (type/agent/table/row).
+- CLIENT_SAFE risk publication remains fail-closed (current packs exclude risk/bottleneck facts; INTERNAL evidence is never rewritten as CLIENT_SAFE). Published items reject `UNDECIDED` visibility.
+- Business impact remains `UNAVAILABLE` with required `BUSINESS_IMPACT_POLICY_UNRESOLVED` (**CI-DQ09 unresolved**). Mitigation remains `UNAVAILABLE` with required `MITIGATION_EVIDENCE_UNAVAILABLE` (no governed risk-linked mitigation facts in the pack).
+- **CI-F03 / CI-F04 / CI-O05 / CI-O08 remain partial.** No API/UI/persistence/narrative/LLM work.
+- **Not** started: Delivery Trend (TASK 13), Change/Milestone Intelligence, Today’s Insight, readiness, recommendations, narratives, reports, Q&A, APIs, UI, schedulers.
+
 ### 8.4 Delivery Trend Engine
+
+**TASK 13 foundation status (evidence-governed actual/forecast alignment + contract closure):**
+
+- Typed contracts in `delivery_trend_contracts.py`; injected `DeliveryTrendDeviationPolicy` in `delivery_trend_policy.py`.
+- Entry point `assess_delivery_trend` in `delivery_trend.py`.
+- Bounded governed `throughput_series` added to `DeliveryEvidenceFacts` (builder loads `previous_start_date` through `as_of`; `latest_throughput` preserved).
+- **Pack claim-to-fact binding:** each throughput evidence identity must claim exactly the governed fields present on that fact (`snapshot_date` always; `units_completed` / `units_forecast` / `rolling_7day_units` only when present). Builder does not emit claims for `None` fields.
+- **Latest-to-series equality:** when series exists, `latest_throughput` must equal the complete final series member (id, date, completed, forecast, rolling) — not ID-only.
+- Daily grain (`DAY`) and UTC convention; evidence `observed_at` must be snapshot-date `00:00:00` with `tzname() == "UTC"` (offset-equivalent non-UTC representations rejected).
+- Actual from `units_completed`, forecast from `units_forecast` only; plan remains unavailable (`PLAN_SERIES_UNAVAILABLE`) — no `units_plan` column or migration.
+- Missing pack source quality remains `None` on points (never invented as `UNAVAILABLE` or `COMPLETE`); candidates/deviations require `COMPLETE`.
+- Public contracts enforce reporting window (`covered_end_date == as_of`, `covered_start_date == resolve_reporting_period(as_of).previous_start_date`), canonical point/deviation order (no silent re-sort on `model_validate`), point limitations, and exact deviation↔point binding.
+- Top-level trend evidence is the exact claim union of points/deviations; **`rolling_7day_units` never enters** Delivery Trend output evidence (pack source may still carry it).
+- Raw `delta_actual_forecast` is exact integer subtraction; materiality is policy-classified separately.
+- **No production deviation/materiality policy or threshold.** Policy provenance is explicit: missing policy with trend points requires `DEVIATION_POLICY_UNAVAILABLE`; supplied policy not evaluated for unreliable source uses `DEVIATION_NOT_EVALUATED_UNRELIABLE_SOURCE`; evaluated policy (including zero selections) carries a valid `rules_version` and neither code. Zero selections do not mean policy unavailable.
+- CLIENT_SAFE actual/forecast Delivery Trend remains fail-closed (`ACTUAL_SERIES_NOT_CLIENT_VISIBLE` / `FORECAST_SERIES_NOT_CLIENT_VISIBLE`).
+- **CI-F05 and CI-D03 remain partial.** No assessment persistence, narrative, report, Q&A, readiness, alert, client-safe delivery, or LLM work.
+- **Accelerated internal overview API:** `GET /api/v1/projects/{project_id}/client-intelligence/overview` exposes Project Health, Delivery Confidence, Risk Transparency, and Delivery Trend from one canonical `ClientEvidencePack` (internal roles only; read-only; no persistence; no production policies injected).
+- **Accelerated internal overview UI:** `/client-intelligence` loads only authorized projects, selects one project by ID, and renders that project's four overview assessments. Partial, insufficient, stale, conflicting, and unavailable results remain visible as returned. The original four-card and `Client Master` / `Client Detail` presentation is retained, but its KPI and navigator values are live governed data rather than the former static mock values. This remains project-level intelligence, not a client portfolio aggregate.
+- **Live Client Master navigator:** `GET /api/v1/client-intelligence/master` returns one row per authorized project in a single aggregate read. Each row exposes the latest valid Delivery-owned **confidence score** (`confidence_score_pct`), latest approved Client Interaction report timestamp, next pending/on-track/at-risk milestone date, valid CSAT average plus response sample size, and current draft stock. **Client Master `Health` is not Delivery Confidence status** and must not be inferred from confidence band/status, project lifecycle, CSAT, risk tier, throughput, or milestone status. Until a governed persisted/bulk-safe Project Health assessment exists, bulk rows return `health_status = null` with `health_availability = not_assessed` (UI: `Not assessed`). Selected-row Health updates only from that project's overview `project_health.status` after View/row selection — never by loading every project overview. **CI-DQ07 remains unresolved** (no production Green/Amber/Red thresholds or default Project Health policy). Missing source facts remain null/neutral. `View` requests only the selected project overview. `Draft` reuses the existing evidence-backed communication draft endpoint, is enabled only for Delivery Manager/Super Admin roles, never auto-approves or publishes, and refreshes the master/summary reads after success.
+- **Accelerated summary KPI activation (authorized-scope read aggregates only):** `GET /api/v1/client-intelligence/summary` supplies governed aggregates over projects visible to the authenticated internal user (`scoped_project_query`). No caller-supplied organization ID. Empty authorized scope returns successful `no_data` cards, not organization-wide leakage. Values are never fabricated.
+  - **Delivery Confidence summary:** before project selection, the card shows the arithmetic mean of the latest persisted `delivery_confidence_scores` row per authorized project (latest by `created_at`, then row ID), with explicit covered/eligible project counts. Missing project scores produce `partial` coverage; no scores produce `no_data`; invalid out-of-range scores are excluded with a limitation. After selecting a project, the card switches to that project’s exact governed overview score and Delivery-owned band. No project is auto-selected and an authorized-scope aggregate is never presented as a selected-project score.
+  - **Delivery Confidence history sparkline:** `GET /api/v1/projects/{project_id}/client-intelligence/delivery-confidence-history` returns a bounded, project-scoped series sourced **only** from persisted `delivery_confidence_scores` (Delivery-owned). **Current score** = latest raw persisted row by `created_at DESC, id DESC`, then 0–100 validation (no fallback to an older valid row). **History points** = bounded valid persisted rows only, returned chronologically (`observed_at ASC`, `source_row_id ASC`). Response metadata distinguishes them via `current_score_availability`, `current_source_row_id`, and `latest_history_point_is_current`. When the newest source row is invalid, older valid points remain historical only (`latest_history_point_is_current = false`) with `LATEST_DELIVERY_CONFIDENCE_SCORE_OUT_OF_RANGE`. Invalid exclusions and truncation surface as `partial`. History loads only after project selection. No fabricated, interpolated, or throughput/delivery-trend points. No Client Intelligence confidence thresholds or recalculation. The hardcoded decorative sparkline polyline was removed.
+  - **Selected-project summary scope:** `GET /api/v1/client-intelligence/summary?project_id={id}` reuses the same governed Reports, Query Response, CSAT, and Delivery Confidence aggregators after authorizing the requested project with `get_visible_project`. Before selection, Reports Drafted vs Approved, Avg Query Response, and Avg CSAT show authorized-scope aggregates. After selection, they switch to counts/averages from only that project and label the project scope explicitly. Missing project records remain `no_data`; aggregate values are never reused as if they belonged to the selected project.
+  - **Reports Drafted vs Approved** — source: `client_communications` classified by `drafted_by_agent = 'client_interaction_agent'`. Drafted = current `status ∈ {draft, in_review}` stock. Approved = current `status ∈ {approved, sent}` (sent retains prior approval under the send gate; `approved_at` absence on sent rows surfaces `REPORT_SENT_APPROVAL_PROVENANCE_INCOMPLETE` as `partial`). Rejected rows are excluded from eligible counts. Unrelated agents/communications are not counted.
+  - **Avg Query Response** — source: `agent_queries` where `agent_name = 'client_interaction_agent'`, `project_id` is non-null and in the authorized project set, and `latency_ms` is non-null and ≥ 0. `agent_queries` has no separate completion-status column; the Client Interaction service persists these rows only after answer construction, so persisted matching rows are treated as completed without inventing another completion state. Arithmetic mean of eligible `latency_ms`; UI renders truthful units (`ms` / `s` / `min`). Null/negative latencies are excluded and marked with `QUERY_LATENCY_MISSING_OR_INVALID` when present. No WoW delta is computed.
+  - **Avg CSAT** — source: `client_csat_scores` for authorized projects on the documented 1–5 scale. Arithmetic mean of valid scores; sample size is response count (not distinct clients/users). Invalid out-of-range rows are excluded and marked `CSAT_SCORE_OUT_OF_RANGE`. Zero eligible rows render neutral “No responses.” No submitter identity or comments are returned. CSAT submission behavior was not changed.
+  - **Availability meanings:** `available` = eligible records calculated; `no_data` = accessible source with no eligible records; `partial` = some records could not safely participate; `unavailable` = required classification/source not safely usable for a calculated value.
+  - This activation is **not** portfolio analytics, Q&A UI, autonomous report approval/publication, CSAT workflow changes, or production intelligence policies.
+- **Change Intelligence foundation (TASK 14 / CI-F06 bounded):** deterministic in-memory comparison of two validated, aligned `ClientEvidencePack` instances via `build_change_comparison`, `build_change_candidates`, and `assess_change_intelligence`. Candidate detection is evidence-linked, source-identity closed, and policy-isolated. `policy_evaluated` plus `rules_version` record materiality policy provenance; zero selections retain provenance without publishing changes. Counts distinguish detected, evaluated (reliable candidates passed to policy), and published changes. Availability is capped at `PARTIAL`; `AVAILABLE` is reserved for future full lifecycle coverage. Candidates and published items bind `org_id`, `project_id`, and `comparison_period`. Domain coverage distinguishes evaluated/no-change, unavailable, unreliable, and policy-not-evaluated. Milestone/risk lifecycle creation/closure remain unavailable without governed history. No production Change Materiality policy, persistence, API route, or UI integration. Readiness and resource onboarding remain explicitly unavailable. Milestone Intelligence and Today’s Insight were not started.
+- **Not** started: Milestone Intelligence / TASK 15, Today’s Insight, readiness, recommendations, narratives, report generation workflows, Q&A UI, client-safe delivery, schedulers, production Change Materiality policy, historical pack retrieval/orchestration, CSAT submission changes.
+
+Legacy bullet summary:
 
 - Produce aligned actual, plan, and forecast series.
 - Define reporting grain and timezone.
@@ -507,6 +579,25 @@ It must not invent a score when Delivery has not produced one.
 - Preserve source row references for each series.
 
 ### 8.5 Change Intelligence
+
+**TASK 14 foundation (bounded, not production-complete):**
+
+- Compare one current and one previous validated `ClientEvidencePack` with aligned reporting cycles.
+- `build_change_comparison` / `build_change_candidates` perform deterministic candidate detection only.
+- `assess_change_intelligence(current_pack, previous_pack=None, policy=None)` publishes no material changes without an injected `ChangeMaterialityPolicy`.
+- Missing previous pack → `PREVIOUS_REPORTING_CYCLE_UNAVAILABLE`; missing policy → `CHANGE_MATERIALITY_POLICY_UNAVAILABLE` and `policy_evaluated=false`.
+- A valid injected policy may evaluate reliable candidates and select zero publishable changes; zero selections retain `rules_version`, set `policy_evaluated=true`, and do not add `CHANGE_MATERIALITY_POLICY_UNAVAILABLE`.
+- Count semantics: `detected_candidate_count` (all candidates), `evaluated_candidate_count` (reliable candidates passed to policy), `published_change_count` (`len(changes)`); enforce `published_change_count <= evaluated_candidate_count <= detected_candidate_count`.
+- `ChangeCandidate` / `ChangeItem` bind immutable `org_id`, `project_id`, and `comparison_period` from the validated packs; policy cannot mutate identity.
+- Availability is capped at `PARTIAL` for this bounded foundation; `AVAILABLE` is reserved for a future implementation with every required domain and governed lifecycle history.
+- Domains modeled: throughput, quality, rework, delivery confidence, milestone, risk, workforce capacity, SME coverage, governance dependency/action.
+- Explicitly unavailable: readiness, resource onboarding (no governed onboarding fact model).
+- Milestone/risk creation and closure detection remain unavailable without governed lifecycle history (`MILESTONE_CREATION_HISTORY_UNAVAILABLE`, `MILESTONE_CLOSURE_HISTORY_UNAVAILABLE`, `RISK_CREATION_HISTORY_UNAVAILABLE`, `RISK_CLOSURE_HISTORY_UNAVAILABLE`).
+- Evaluated/no-change (domain `EVALUATED` with zero candidates) is distinct from `UNAVAILABLE`.
+- Source pack limitations are period-aware (`previous_source_limitations` / `current_source_limitations`).
+- Mixed unreliable source coverage remains visible via `CHANGE_NOT_EVALUATED_UNRELIABLE_SOURCE` even when other domains evaluate successfully.
+- `ADDED` direction removed from the public foundation contract; creation requires future governed lifecycle proof.
+- No persistence, API, or UI integration in TASK 14. TASK 15 (Milestone Intelligence foundation) and Today’s Insight were not started in TASK 14.
 
 Detect and rank changes since the previous reporting cycle across:
 
@@ -523,13 +614,40 @@ Detect and rank changes since the previous reporting cycle across:
 
 Every change must contain previous value, current value, direction, materiality, business meaning, and evidence.
 
-### 8.6 Milestone Intelligence
+### 8.6 Milestone Intelligence (TASK 15 — foundation)
 
-- Count milestones on track vs total for the selected period.
-- Identify at-risk milestones and supported reason codes.
-- Select the next key milestone deterministically.
-- Show date, progress, confidence, blockers, and dependency state.
-- Never forecast a date without a Delivery-owned basis.
+**Entry point:** `assess_milestone_intelligence(pack)` in `milestone_intelligence.py`. Contracts live in `milestone_intelligence_contracts.py`. No production policy, LLM, API route, UI, or persistence.
+
+**Selected-period counting:** Milestones whose `planned_date` falls inclusively between `reporting_period.start_date` and `reporting_period.as_of`. `total_count` is the selected-period population size. `on_track_count` counts only explicit source status `on_track`. Separate counts exist for `at_risk`, `missed`, `completed`, `pending`, and `unclassified`. Counts reconcile exactly:
+
+```text
+total_count == on_track_count + at_risk_count + missed_count
+            + completed_count + pending_count + unclassified_count
+```
+
+Unknown source statuses outside the supported set are counted in `unclassified_count` with `MILESTONE_STATUS_UNRECOGNIZED`; they never contribute to on-track or at-risk counts and keep availability at most `PARTIAL`. Empty selected-period population is distinct from unavailable milestone source (`SELECTED_PERIOD_EMPTY_POPULATION`). Selected items are unique, ordered by `(planned_date, milestone_id)`, and each `planned_date` must fall inside the reporting period. The next key milestone may lie outside the selected-period population.
+
+**At-risk semantics:** Publishable only for explicit source statuses `at_risk` and `missed` with reason codes `SOURCE_STATUS_AT_RISK` and `SOURCE_STATUS_MISSED`. `at_risk_items` is the exact canonical projection of every qualifying selected-period item — no omissions, extras, duplicates, or field divergence. Pending/overdue/planned dates, project-level risk, and low confidence do not auto-classify milestones at risk.
+
+**Next key milestone:** Authoritative selection from `ClientEvidencePack.delivery.next_milestone_id` only, exposed as `source_next_milestone_id`. Published `next_key_milestone.milestone_id` must equal the source ID. Validates exact pack milestone resolution, evidence identity, claim coverage, org/project/fingerprint/visibility binding, and rejects completed milestones. When the next milestone also appears in `selected_period_items`, all shared fields and nested views must be exact projections. Missing/unknown/completed source selections fail closed with mutually exclusive limitations (`NEXT_MILESTONE_ID_UNAVAILABLE`, `NEXT_MILESTONE_ID_UNKNOWN`, `NEXT_MILESTONE_COMPLETED`).
+
+**Dates and forecast:** Only persisted `planned_date` and `actual_date` are exposed on milestone items. No predicted, revised, expected, or completion-forecast milestone date fields. Delivery Confidence `forecast_completion_date` may appear only on `MilestoneConfidenceView` when confidence is available. Assessment-level `MILESTONE_DATE_FORECAST_FIELDS_UNAVAILABLE` documents that milestone date fields cannot carry Delivery forecasts; it does not claim the Delivery forecast itself is unavailable.
+
+**Progress:** Source lifecycle status is preserved as `progress_state` and must equal milestone `status`. Numeric `progress_pct` remains unavailable (`MILESTONE_PROGRESS_SOURCE_UNAVAILABLE`).
+
+**Confidence binding:** Available confidence exposes `confidence_id`, `milestone_id`, exact Decimal `score_pct`, unchanged `confidence_status`, optional `forecast_completion_date`, `data_quality=COMPLETE`, and exactly one `delivery_confidence_scores` evidence ref whose `source_row_id == confidence_id` and `milestone_id` matches the parent milestone. Mismatch uses `MILESTONE_CONFIDENCE_MILESTONE_MISMATCH` with availability `mismatch`. Stale, partial, conflicting, or missing confidence returns explicit unavailable/unreliable states without source score/status/evidence.
+
+**Blocker binding:** `MilestoneBlockerCollection` preserves all exact milestone-linked risk alerts (not a single “latest” blocker). Each `MilestoneBlockerItem` carries `risk_id`, parent `milestone_id`, alert type, risk tier, source status, and one `risk_alerts` evidence ref with `source_row_id == risk_id`. Only open/acknowledged statuses with exact milestone ID match. Unrelated risks, bottlenecks, and project-level items are excluded. Absence is `NO_SUPPORTED_MILESTONE_BLOCKER` with an empty collection, not “no blockers exist.”
+
+**Dependency linkage:** Milestone-specific dependency facts are not modeled. Dependency state remains unavailable (`MILESTONE_DEPENDENCY_LINK_UNAVAILABLE`); project-level governance dependencies are not inferred.
+
+**Availability:** Explicit states `available`, `partial`, `unavailable`, `stale`, `conflicting`. `AVAILABLE` is forbidden in TASK 15. COMPLETE supported milestone facts remain at most `PARTIAL` while progress and dependency linkage stay unavailable. Missing next selection, empty selected period, and unclassified statuses produce explicit limitations without contradicting otherwise reliable counts. Conflicting/unavailable milestone source fails closed with no milestone outputs or evidence.
+
+**Evidence:** Top-level assessment evidence is canonically ordered, duplicate-lineage free, visibility-matched, fingerprint-matched, and equals the exact claim union of every nested milestone, confidence, and blocker reference. Nested evidence claims must exactly equal their top-level counterparts; orphan claims are rejected.
+
+**Integrity errors:** Milestone-specific codes only (no policy terminology), including `milestone_source_quality_missing`, `milestone_source_quality_conflict`, `milestone_fact_quality_mismatch`, `milestone_evidence_mismatch`, `milestone_confidence_evidence_mismatch`, `milestone_blocker_evidence_mismatch`, and `milestone_evidence_conflict`.
+
+**Deferred:** Today’s Insight, Phase 3 Readiness, recommendations, narratives, report generation, Q&A, client-safe delivery publication, API/UI integration, persistence, and scheduler/database writes.
 
 ### 8.7 Today's Insight
 
@@ -724,29 +842,87 @@ Content style:
 
 ### 10.4 Human approval lifecycle
 
-Allowed lifecycle:
+Allowed lifecycle (enforced centrally in `app.services.communications`):
 
 ```text
-draft -> in_review -> approved -> sent
-   |          |          |
-   +-------> rejected <---+
+create → draft
+edit draft|rejected → draft
+draft → in_review
+in_review → approved → sent
+in_review → rejected
+rejected → draft (via edit/revise)
 ```
+
+No other transitions are permitted. Invalid transitions return HTTP `409` with
+`INVALID_COMMUNICATION_STATUS_TRANSITION` and safe metadata (`current_status`,
+`requested_action`).
 
 Rules:
 
-- Agent creates drafts only.
-- Delivery Manager/Super Admin can review according to approved scope.
-- `body_draft` is immutable after creation; edits go to the reviewed/approved body.
-- Approval identity and timestamp are server-controlled.
-- Send/publish requires approved status and a valid approver role.
-- MVP send means client-visible in-app publication unless Phase 0 approves another channel.
-- Reject requires a reason and may trigger regeneration from current evidence.
-- New material evidence after approval invalidates or warns on stale approval before send.
-- Scheduled jobs may create drafts but never approve or send.
-
+- Agent/create path produces `draft` only (evidence-backed; no auto-send).
+- Mutation RBAC: Delivery Manager and Super Admin only. Client and BSG Leadership
+  cannot mutate. Clients may read only `sent` communications.
+- `PATCH /communications/{id}/draft` edits `subject` + `body_draft` for `draft` or
+  `rejected` only; rejected→draft clears rejection/review/approval/send fields.
+  Evidence links are never regenerated during manual edit.
+- `PATCH /communications/{id}/review` is strictly `draft → in_review` (caller
+  `status` is not writable). Sets reviewed body (`body_approved`), `reviewed_by`,
+  timezone-aware `reviewed_at`.
+- Approve is only `in_review → approved`. Approval cannot silently replace the
+  reviewed body with different content; omit body or exact match only.
+- Reject is only `in_review → rejected` and requires a non-empty trimmed
+  `rejection_reason` (persisted with `rejected_by` / `rejected_at`). Legacy
+  rejected rows without reasons remain readable and are surfaced as legacy
+  incomplete data — reasons are not fabricated. Generic `AuditLog.payload`
+  records `rejection_reason_recorded: true` only; the full reason stays on
+  `client_communications.rejection_reason`.
+- No-op draft edits (unchanged trimmed subject/body while already `draft`)
+  return `409` / `NO_COMMUNICATION_CHANGES` with no audit and no mutation.
+  Revising a `rejected` item remains a real change even when text is unchanged.
+- Send is only `approved → sent` and requires `approved_by`, `approved_at`, and
+  non-empty `body_approved`. `sent` means client-visible via the existing
+  sent-only communications read. No automatic send after approval. No external
+  email transport is claimed unless a configured transport already exists.
+- Successful mutations append one immutable `AuditLog` event in the same
+  transaction: `client_communication.edited|submitted_for_review|approved|rejected|sent`.
+  Payloads exclude full draft/approved bodies. Failed transitions create no audit.
+- Evidence links remain immutable across the full lifecycle.
+- **Approved & Sent report history (implemented):**
+  `GET /api/v1/projects/{project_id}/client-intelligence/reports`
+  returns paginated `client_interaction_agent` rows in `{approved, sent}` only.
+  Presentation uses `body_approved` exclusively; provenance availability
+  (`complete` / `partial` / `unavailable`) discloses legacy gaps via stable
+  limitation codes. Ordering: lifecycle timestamp DESC + id DESC. Internal
+  roles only (DM / Leadership / Super Admin); Client denied. Evidence is
+  bulk-loaded per page (count + page + evidence ≤ 3 queries after auth).
+  An `approved` item may appear in both the active Draft Queue (Send) and
+  history; `sent` leaves the queue and remains client-visible via the
+  existing sent-only communications read. No export/download; no external email.
+- **Grounded Client Intelligence Q&A (implemented):**
+  `POST/GET /api/v1/projects/{project_id}/client-intelligence/queries`.
+  Project-scoped internal Q&A over `ClientEvidencePack` with structured
+  answer availability, claim-safe deterministic answers, optional LLM polish
+  **disabled** until complete structured claim validation exists (fail-closed;
+  `model_used` stays null), prompt-injection resistance, transactional
+  `AgentQuery` + evidence persistence under the **authorized project’s org_id**,
+  and real monotonic `latency_ms` feeding Avg Query Response (null latency never
+  fabricated as 0; legacy placeholder answers redacted on read).
+  Generic `/agent-queries` rejects Client role for `client_interaction_agent`
+  and excludes CI rows from generic list/get. Client role denied on dedicated
+  endpoints. Client-facing `/client/ask` remains mock/deferred.
+- **Next task (not implemented here):** Milestone Intelligence UI / Change Intelligence UI.
+- Evidence/source-gap closure for CI-D01–CI-D15 is implemented via `source_coverage.py`, pack unavailable signals, provenance migration, and stale-approval fingerprint checks.
 ### 10.5 Audit and versioning
 
 Persist prompt version, model, evidence version, generation timestamp, reviewer, edits, approver, publication time, and stale-evidence status. An auditor must be able to compare the generated draft, human-edited body, and final published content.
+
+Lifecycle audit events currently written for governed mutations:
+
+- `client_communication.edited`
+- `client_communication.submitted_for_review`
+- `client_communication.approved`
+- `client_communication.rejected`
+- `client_communication.sent`
 
 ### Phase 4 exit criteria
 
@@ -1064,6 +1240,7 @@ Reuse a platform recommendation entity if it can enforce the same semantics with
 
 | Method | Path | Purpose | Phase |
 |---|---|---|---:|
+| GET | `/projects/{id}/client-intelligence/overview` | **Implemented (accelerated slice):** internal read-only overview from one evidence pack + four engines; no persistence | 2 |
 | GET | `/client-intelligence/projects` | Authorized project/client navigator, not portfolio analytics | 5 |
 | GET | `/projects/{id}/client-intelligence/dashboard` | Full internal dashboard payload | 2–5 |
 | GET | `/projects/{id}/client-intelligence/changes` | Reporting-cycle changes | 2 |
@@ -1071,12 +1248,15 @@ Reuse a platform recommendation entity if it can enforce the same semantics with
 | GET | `/projects/{id}/client-intelligence/readiness` | Current readiness, dimensions, gaps | 3 |
 | POST | `/projects/{id}/client-intelligence/readiness/assess` | Authorized reassessment | 3 |
 | GET | `/projects/{id}/client-intelligence/recommendations` | Guidance linked to risk/readiness | 3 |
+| GET | `/projects/{id}/client-intelligence/delivery-confidence-history` | Bounded Delivery Confidence sparkline history | 2 |
+| GET | `/projects/{id}/client-intelligence/reports` | Approved & Sent report history (paginated) | 4 |
 | POST | `/projects/{id}/communications/draft` | Weekly/executive/ad-hoc/readiness draft | 4 |
-| GET | `/projects/{id}/communications` | Role-filtered history | Existing/4 |
-| PATCH | `/communications/{id}/review` | Edit and move to review | Existing/4 |
-| POST | `/communications/{id}/approve` | Approve final content | Existing/4 |
-| POST | `/communications/{id}/reject` | Reject with reason | Existing/4 |
-| POST | `/communications/{id}/send` | Publish approved content | Existing/4 |
+| GET | `/projects/{id}/communications` | Role-filtered history (client: `sent` only) | Existing/4 |
+| PATCH | `/communications/{id}/draft` | Edit draft/rejected → draft (subject + body_draft) | 4 |
+| PATCH | `/communications/{id}/review` | `draft → in_review` | Existing/4 |
+| POST | `/communications/{id}/approve` | `in_review → approved` | Existing/4 |
+| POST | `/communications/{id}/reject` | `in_review → rejected` with reason | Existing/4 |
+| POST | `/communications/{id}/send` | `approved → sent` (client-visible; no auto-send) | Existing/4 |
 
 ### 15.2 Client-facing APIs
 

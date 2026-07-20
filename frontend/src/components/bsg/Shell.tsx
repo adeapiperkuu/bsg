@@ -1,31 +1,6 @@
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import {
-  LayoutDashboard,
-  Activity,
-  ShieldCheck,
-  Users,
-  GitBranch,
-  Briefcase,
-  BookOpen,
-  FolderKanban,
-  ListChecks,
-  Settings2,
-  FileText,
-  Folder,
-  BarChart3,
-  Settings,
-  Bell,
-  Sun,
-  Moon,
-  Search,
-  Crown,
-  Signal,
-  LogOut,
-  ChevronDown,
-  Menu,
-  Bot,
-} from "lucide-react";
+import { Bell, Sun, Moon, Search, Signal, LogOut, ChevronDown, Menu } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useRole } from "@/lib/bsg/use-role";
 import { roleLabel } from "@/lib/roleLabels";
@@ -33,7 +8,6 @@ import { cn } from "@/lib/utils";
 import { notifications } from "@/lib/bsg/data";
 import { StatusPill } from "./widgets";
 import { useAuthStore } from "@/stores/useAuthStore";
-import type { AppRole, MeUser } from "@/types/auth";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -45,85 +19,7 @@ import {
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { PageTransition } from "@/components/PageTransition";
 import { flushNavPrefetch, scheduleNavPrefetch } from "@/lib/queries/nav-prefetch";
-
-type NavItem = { to: string; label: string; icon: React.ComponentType<{ className?: string }> };
-
-const internalNav: { section: string; items: NavItem[] }[] = [
-  {
-    section: "Agents",
-    items: [
-      { to: "/dashboard", label: "Operational Tower", icon: LayoutDashboard },
-      { to: "/delivery", label: "Delivery Performance", icon: Activity },
-      { to: "/quality", label: "Quality Intelligence", icon: ShieldCheck },
-      { to: "/workforce", label: "Workforce & Capability", icon: Users },
-      { to: "/governance", label: "Project Governance", icon: GitBranch },
-      { to: "/client-intelligence", label: "Client Intelligence", icon: Briefcase },
-    ],
-  },
-  {
-    section: "Workspace",
-    items: [
-      { to: "/knowledge", label: "Knowledge Agent", icon: BookOpen },
-      { to: "/projects", label: "Projects", icon: FolderKanban },
-      { to: "/teams", label: "Teams", icon: Users },
-      // { to: "/pm-console", label: "PM Console", icon: ListChecks },
-    ],
-  },
-  {
-    section: "Reporting",
-    items: [
-      { to: "/reports", label: "Reports", icon: FileText },
-      // { to: "/documents", label: "Documents", icon: Folder },
-      { to: "/analytics", label: "Analytics", icon: BarChart3 },
-    ],
-  },
-  { section: "System", items: [{ to: "/settings", label: "Settings", icon: Settings }] },
-];
-
-const clientNav: { section: string; items: NavItem[] }[] = [
-  {
-    section: "Client Portal",
-    items: [
-      { to: "/client", label: "My Projects", icon: LayoutDashboard },
-      { to: "/client/status", label: "Delivery Status", icon: Activity },
-      { to: "/client/reports", label: "Reports", icon: FileText },
-      { to: "/client/ask", label: "Ask Agent", icon: BookOpen },
-    ],
-  },
-];
-
-const leadershipNav: { section: string; items: NavItem[] }[] = [
-  {
-    section: "Portfolio",
-    items: [{ to: "/leadership", label: "Leadership Cockpit", icon: Crown }],
-  },
-];
-
-const adminNav: { section: string; items: NavItem[] }[] = [
-  {
-    section: "Platform",
-    items: [
-      { to: "/admin", label: "Admin Console", icon: Settings2 },
-      { to: "/admin/users", label: "Users", icon: Users },
-      { to: "/admin/projects", label: "Projects", icon: FolderKanban },
-      { to: "/admin/agent-runs", label: "Agent Runs", icon: Bot },
-    ],
-  },
-];
-
-function navForUser(user: MeUser | null) {
-  if (!user) return internalNav;
-  switch (user.role as AppRole) {
-    case "client":
-      return clientNav;
-    case "bsg_leadership":
-      return leadershipNav;
-    case "super_admin":
-      return adminNav;
-    default:
-      return internalNav;
-  }
-}
+import { allNavigationSections, navForUser } from "./navigation";
 
 function initials(name: string | null, email: string): string {
   if (name) {
@@ -162,9 +58,7 @@ export function Shell({ children }: { children: ReactNode }) {
   }
 
   const currentTitle =
-    [...internalNav, ...clientNav, ...leadershipNav, ...adminNav]
-      .flatMap((s) => s.items)
-      .find((i) => i.to === pathname)?.label ??
+    allNavigationSections.flatMap((s) => s.items).find((i) => i.to === pathname)?.label ??
     (pathname === "/leadership"
       ? "Leadership Cockpit"
       : pathname === "/client"

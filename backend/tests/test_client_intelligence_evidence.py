@@ -71,12 +71,14 @@ class FakeSession:
         *,
         milestones: list[object] | None = None,
         throughput: object | None = None,
+        throughput_series: list[object] | None = None,
         confidence: object | None = None,
         risks: list[object] | None = None,
         bottlenecks: list[object] | None = None,
     ) -> None:
         self.milestones = milestones or []
         self.throughput = throughput
+        self.throughput_series = throughput_series
         self.confidence = confidence
         self.risks = risks or []
         self.bottlenecks = bottlenecks or []
@@ -90,7 +92,13 @@ class FakeSession:
             assert "ORDER BY" in compiled.upper() or "order by" in compiled
             return FakeResult(None, self.milestones)
         if "FROM throughput_snapshots" in compiled:
-            assert "LIMIT" in compiled.upper() or "limit" in compiled
+            upper = compiled.upper()
+            if "SNAPSHOT_DATE ASC" in upper and "LIMIT" not in upper:
+                rows = self.throughput_series
+                if rows is None and self.throughput is not None:
+                    rows = [self.throughput]
+                return FakeResult(None, rows or [])
+            assert "LIMIT" in upper or "limit" in compiled
             return FakeResult(self.throughput)
         if "FROM delivery_confidence_scores" in compiled:
             assert "LIMIT" in compiled.upper() or "limit" in compiled

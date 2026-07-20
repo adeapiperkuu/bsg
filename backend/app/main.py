@@ -12,6 +12,7 @@ from app.agents.governance.routes import governance as governance_routes
 from app.api.routes import (
     agents,
     auth,
+    client_intelligence,
     communications,
     csat,
     delivery,
@@ -31,9 +32,9 @@ from app.core.exceptions import register_exception_handlers
 from app.core.security_headers import SecurityHeadersMiddleware
 from app.db.models import ScanTrigger
 from app.db.session import dispose_engine, session_scope
+from app.services.knowledge_ingestion_jobs import process_ingestion_job_queue
 from app.services.quality import scan_all_projects
 from app.services.quality_thresholds import warm_thresholds_cache
-from app.services.knowledge_ingestion_jobs import process_ingestion_job_queue
 from app.services.signal_dispatcher import dispatch_pending_signals
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,7 @@ def create_app() -> FastAPI:
     app.include_router(csat.router, prefix=api_prefix)
     app.include_router(knowledge.router, prefix=api_prefix)
     app.include_router(governance_routes.router, prefix=api_prefix)
+    app.include_router(client_intelligence.router, prefix=api_prefix)
     return app
 
 

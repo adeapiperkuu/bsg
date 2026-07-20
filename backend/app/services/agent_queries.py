@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from time import perf_counter
 
 from sqlalchemy import select
@@ -10,18 +10,27 @@ from app.agents.governance.query_handler import (
 )
 from app.agents.quality_intelligence.query_handler import answer_quality_query
 from app.core.config import get_settings
+from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
-from app.db.models import AgentQuery, AgentQueryEvidenceLink
+from app.db.models import AgentQuery, AgentQueryEvidenceLink, AppRole
 from app.schemas.domain import AgentQueryCreate
 from app.services.evidence import EvidenceInput, require_evidence
 
+CLIENT_INTERACTION_AGENT_NAME = "client_interaction_agent"
 SUPPORTED_AGENTS = {
     "delivery_performance_agent",
     "quality_intelligence_agent",
-    "client_interaction_agent",
+    CLIENT_INTERACTION_AGENT_NAME,
     "workforce_capability_agent",
     PROJECT_GOVERNANCE_AGENT_NAME,
 }
+_CI_INTERNAL_ROLES = frozenset(
+    {
+        AppRole.DELIVERY_MANAGER,
+        AppRole.BSG_LEADERSHIP,
+        AppRole.SUPER_ADMIN,
+    }
+)
 GOVERNANCE_CHAT_CACHE_TTL = timedelta(minutes=3)
 
 
@@ -30,7 +39,7 @@ async def _cached_governance_query(
     current_user: CurrentUser,
     payload: AgentQueryCreate,
 ) -> AgentQuery | None:
-    since = datetime.now(timezone.utc) - GOVERNANCE_CHAT_CACHE_TTL
+    since = datetime.now(UTC) - GOVERNANCE_CHAT_CACHE_TTL
     rows = list(
         (
             await session.execute(
@@ -111,11 +120,42 @@ async def answer_query(
         if cached is not None:
             return await _copy_governance_cached_answer(session, current_user, payload, cached)
         return await answer_governance_query(session, current_user, payload, evidence)
+    if payload.agent_name == CLIENT_INTERACTION_AGENT_NAME:
+        from app.agents.client_intelligence.query_contracts import (
+            ClientIntelligenceQuestionCreate,
+        )
+        from app.agents.client_intelligence.query_handler import (
+            answer_client_intelligence_question,
+        )
+
+        if current_user.role not in _CI_INTERNAL_ROLES:
+            raise ApiError(
+                403,
+                "FORBIDDEN",
+                "Client Intelligence Q&A is restricted to internal roles.",
+            )
+        if payload.project_id is None:
+            raise ApiError(
+                422,
+                "VALIDATION_ERROR",
+                "Client Intelligence queries require a project_id.",
+            )
+        # Dedicated grounded path — ignores caller-supplied evidence IDs.
+        _read, query = await answer_client_intelligence_question(
+            session,
+            current_user,
+            payload.project_id,
+            ClientIntelligenceQuestionCreate(question=payload.query_text),
+        )
+        return query
 
     require_evidence(evidence)
     started = perf_counter()
     settings = get_settings()
-    answer_text = "The LLM provider is not configured yet; this response is grounded in the attached evidence placeholders."
+    answer_text = (
+        "The LLM provider is not configured yet; this response is grounded in the "
+        "attached evidence placeholders."
+    )
     query = AgentQuery(
         user_id=current_user.id,
         org_id=current_user.org_id,
