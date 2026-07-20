@@ -21,7 +21,7 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 load_dotenv(REPO_ROOT / ".env")
 load_dotenv(REPO_ROOT / "backend" / ".env")
 
-from app.db.models import AppRole, Organisation, User  # noqa: E402
+from app.db.models import AppRole, Organisation, Project, ProjectAssignment, User  # noqa: E402
 
 DEV_PASSWORD = "bsg-dev-2026"
 
@@ -58,6 +58,8 @@ DEV_USERS = [
         "org_name": "Northwind Analytics",
         "org_vertical": "retail",
         "org_region": "north_america",
+        # Clients only see projects (and sent reports) they are assigned to under RLS.
+        "assign_all_org_projects": True,
     },
 ]
 
@@ -147,7 +149,7 @@ async def ensure_org(session: AsyncSession, spec: dict) -> Organisation:
     return org
 
 
-async def upsert_app_user(session: AsyncSession, auth_user_id: uuid.UUID, org: Organisation, spec: dict) -> None:
+async def upsert_app_user(session: AsyncSession, auth_user_id: uuid.UUID, org: Organisation, spec: dict) -> User:
     by_auth = await session.get(User, auth_user_id)
     by_email = (
         await session.execute(select(User).where(User.email == spec["email"]))
@@ -159,17 +161,17 @@ async def upsert_app_user(session: AsyncSession, auth_user_id: uuid.UUID, org: O
 
     user = by_auth
     if user is None:
-        session.add(
-            User(
-                id=auth_user_id,
-                org_id=org.id,
-                email=spec["email"],
-                full_name=spec["full_name"],
-                role=spec["role"],
-                is_active=True,
-            )
+        user = User(
+            id=auth_user_id,
+            org_id=org.id,
+            email=spec["email"],
+            full_name=spec["full_name"],
+            role=spec["role"],
+            is_active=True,
         )
-        return
+        session.add(user)
+        await session.flush()
+        return user
 
     user.org_id = org.id
     user.email = spec["email"]
@@ -177,6 +179,55 @@ async def upsert_app_user(session: AsyncSession, auth_user_id: uuid.UUID, org: O
     user.role = spec["role"]
     user.is_active = True
     user.deleted_at = None
+    await session.flush()
+    return user
+
+
+async def ensure_client_project_assignments(
+    session: AsyncSession,
+    *,
+    user: User,
+    org: Organisation,
+) -> int:
+    """Assign the client to every active project in their org (idempotent).
+
+    Without project_assignments, RLS hides projects and sent reports from clients
+    even when they share the same org_id as the PM who sent them.
+    """
+    projects = (
+        await session.execute(
+            select(Project).where(
+                Project.org_id == org.id,
+                Project.deleted_at.is_(None),
+            )
+        )
+    ).scalars().all()
+
+    created = 0
+    for project in projects:
+        existing = (
+            await session.execute(
+                select(ProjectAssignment).where(
+                    ProjectAssignment.user_id == user.id,
+                    ProjectAssignment.project_id == project.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            session.add(
+                ProjectAssignment(
+                    user_id=user.id,
+                    project_id=project.id,
+                    org_id=org.id,
+                    is_active=True,
+                )
+            )
+            created += 1
+            continue
+        existing.is_active = True
+        existing.deleted_at = None
+        existing.org_id = org.id
+    return created
 
 
 async def seed_dev_users() -> None:
@@ -189,13 +240,25 @@ async def seed_dev_users() -> None:
             auth_user_id = await ensure_auth_user(client, base, spec)
             async with session_factory() as session:
                 org = await ensure_org(session, spec)
-                await upsert_app_user(session, auth_user_id, org, spec)
+                user = await upsert_app_user(session, auth_user_id, org, spec)
+                assigned = 0
+                if spec.get("assign_all_org_projects") and spec["role"] == AppRole.CLIENT:
+                    assigned = await ensure_client_project_assignments(
+                        session, user=user, org=org
+                    )
                 await session.commit()
-            print(f"{spec['role'].value:18} {spec['email']}  (password: {spec['password']})")
+            suffix = f"  (+{assigned} project assignments)" if assigned else ""
+            print(
+                f"{spec['role'].value:18} {spec['email']}  "
+                f"(password: {spec['password']}){suffix}"
+            )
 
     await engine.dispose()
     print("\nDev users ready. Use these on the login page in local development.")
-
+    print(
+        "Note: client@bsg.dev must be assigned to projects to see sent reports "
+        "(this script assigns all Northwind projects)."
+    )
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Seed dev login accounts for local development")

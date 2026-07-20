@@ -2,10 +2,12 @@
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.agents.delivery.contracts import DeliveryTrafficLight
 
 
 class MilestoneSchema(BaseModel):
@@ -123,7 +125,7 @@ class DashboardResponse(BaseModel):
     confidence: float
     risks: list[RiskSchema]
     bottlenecks: list[BottleneckSchema]
-    traffic_light: Literal["green", "yellow", "red"]
+    traffic_light: DeliveryTrafficLight
     daily_summary: str | None = None
 
 

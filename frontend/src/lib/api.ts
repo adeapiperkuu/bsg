@@ -1,4 +1,5 @@
 import { currentAuthGeneration, notifySessionInvalidated } from "@/lib/auth-session";
+import type { DeliveryTrafficLight } from "@/lib/delivery-traffic-light";
 import type {
   AppRole,
   AuthSession,
@@ -40,6 +41,12 @@ import type {
   DeliveryChatRequest,
   DeliveryChatSource,
 } from "@/types/delivery-chat";
+import type {
+  CommunicationDetail,
+  CommunicationListItem,
+  ListCommunicationsParams,
+  ListCommunicationsResult,
+} from "@/types/communications";
 
 function resolveApiBase(): string {
   const configured = import.meta.env.VITE_API_BASE_URL?.trim();
@@ -335,6 +342,7 @@ export type ProjectStatus = "active" | "ramping" | "paused" | "completed" | "can
 export type ProjectRead = {
   id: string;
   org_id: string;
+  program_id: string | null;
   name: string;
   description: string | null;
   vertical: string;
@@ -356,6 +364,7 @@ export type ProjectCreatePayload = {
   target_end_date: string;
   daily_target_units?: number | null;
   org_id?: string | null;
+  program_id?: string | null;
 };
 
 export type ProjectUpdatePayload = {
@@ -365,6 +374,28 @@ export type ProjectUpdatePayload = {
   target_end_date?: string;
   actual_end_date?: string | null;
   daily_target_units?: number | null;
+  program_id?: string | null;
+};
+
+export type ProgramRead = {
+  id: string;
+  org_id: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+  scope_count: number;
+};
+
+export type ProgramCreatePayload = {
+  name: string;
+  description?: string | null;
+  org_id?: string | null;
+};
+
+export type ProgramUpdatePayload = {
+  name?: string;
+  description?: string | null;
 };
 
 export async function listProjects(): Promise<ProjectRead[]> {
@@ -385,6 +416,30 @@ export async function createProject(payload: ProjectCreatePayload): Promise<Proj
   return body.data;
 }
 
+export async function listPrograms(): Promise<ProgramRead[]> {
+  const body = await apiFetch<{ data: ProgramRead[] }>("/programs?limit=100");
+  return body.data;
+}
+
+export async function createProgram(payload: ProgramCreatePayload): Promise<ProgramRead> {
+  const body = await apiFetch<{ data: ProgramRead }>("/programs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
+export async function updateProgram(
+  programId: string,
+  payload: ProgramUpdatePayload,
+): Promise<ProgramRead> {
+  const body = await apiFetch<{ data: ProgramRead }>(`/programs/${programId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
 export async function updateProject(
   projectId: string,
   payload: ProjectUpdatePayload,
@@ -396,13 +451,140 @@ export async function updateProject(
   return body.data;
 }
 
+export type { ListCommunicationsParams, ListCommunicationsResult };
+
+export async function listCommunications(
+  params: ListCommunicationsParams = {},
+): Promise<ListCommunicationsResult> {
+  const qs = new URLSearchParams();
+  if (params.status) qs.set("status", params.status);
+  if (params.project_id) qs.set("project_id", params.project_id);
+  qs.set("limit", String(params.limit ?? 30));
+  qs.set("offset", String(params.offset ?? 0));
+  const query = qs.toString();
+  const body = await apiFetch<{
+    data: CommunicationListItem[];
+    pagination: ListCommunicationsResult["pagination"];
+  }>(`/communications?${query}`);
+  return {
+    data: body.data,
+    pagination: body.pagination ?? {
+      limit: params.limit ?? 30,
+      offset: params.offset ?? 0,
+      total: body.data.length,
+      items: body.data.length,
+      has_more: false,
+    },
+  };
+}
+
+/** Client archive: sent-only org list (`GET /client/communications`). No status filter accepted. */
+export async function listClientCommunications(
+  params: { limit?: number; offset?: number } = {},
+): Promise<ListCommunicationsResult> {
+  const qs = new URLSearchParams();
+  qs.set("limit", String(params.limit ?? 30));
+  qs.set("offset", String(params.offset ?? 0));
+  const body = await apiFetch<{
+    data: CommunicationListItem[];
+    pagination: ListCommunicationsResult["pagination"];
+  }>(`/client/communications?${qs.toString()}`);
+  return {
+    data: body.data,
+    pagination: body.pagination ?? {
+      limit: params.limit ?? 30,
+      offset: params.offset ?? 0,
+      total: body.data.length,
+      items: body.data.length,
+      has_more: false,
+    },
+  };
+}
+
+export async function getCommunication(communicationId: string): Promise<CommunicationDetail> {
+  const body = await apiFetch<{ data: CommunicationDetail }>(
+    `/communications/${communicationId}`,
+  );
+  return body.data;
+}
+
+/** Save subject/body without status change (`PATCH /communications/{id}`). */
+export async function updateCommunication(
+  communicationId: string,
+  payload: { subject?: string; body?: string },
+): Promise<CommunicationDetail> {
+  const body = await apiFetch<{ data: CommunicationDetail }>(
+    `/communications/${communicationId}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+  return body.data;
+}
+
+/** Submit for review (`PATCH /communications/{id}/review`). */
+export async function reviewCommunication(
+  communicationId: string,
+  payload: { body_approved: string; status?: string },
+): Promise<CommunicationDetail> {
+  const body = await apiFetch<{ data: CommunicationDetail }>(
+    `/communications/${communicationId}/review`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+  return body.data;
+}
+
+/** Approve without sending (`POST /communications/{id}/approve`). */
+export async function approveCommunication(
+  communicationId: string,
+  payload?: { body_approved?: string | null },
+): Promise<CommunicationDetail> {
+  const body = await apiFetch<{ data: CommunicationDetail }>(
+    `/communications/${communicationId}/approve`,
+    { method: "POST", body: JSON.stringify(payload ?? {}) },
+  );
+  return body.data;
+}
+
+/** Reject draft/in_review (`POST /communications/{id}/reject`). */
+export async function rejectCommunication(communicationId: string): Promise<CommunicationDetail> {
+  const body = await apiFetch<{ data: CommunicationDetail }>(
+    `/communications/${communicationId}/reject`,
+    { method: "POST" },
+  );
+  return body.data;
+}
+
+/** Publish approved report to clients (`POST /communications/{id}/send`). */
+export async function sendCommunication(communicationId: string): Promise<CommunicationDetail> {
+  const body = await apiFetch<{ data: CommunicationDetail }>(
+    `/communications/${communicationId}/send`,
+    { method: "POST" },
+  );
+  return body.data;
+}
+
+/** Synchronous AI draft: one POST creates, persists, and returns full CommunicationDetail. */
+export async function createCommunicationDraft(
+  projectId: string,
+  payload: {
+    comm_type: string;
+    subject: string;
+    instructions?: string | null;
+  },
+): Promise<CommunicationDetail> {
+  const body = await apiFetch<{ data: CommunicationDetail }>(
+    `/projects/${projectId}/communications/draft`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+  return body.data;
+}
+
 export type DeliveryDashboardResponse = {
   overview: Record<string, unknown>;
   milestones: Array<Record<string, unknown>>;
   confidence: number;
   risks: Array<Record<string, unknown>>;
   bottlenecks: Array<Record<string, unknown>>;
-  traffic_light: "green" | "yellow" | "red";
+  traffic_light: DeliveryTrafficLight;
   daily_summary: string | null;
 };
 
@@ -896,7 +1078,7 @@ function isClientPortalPath(path: string): boolean {
 }
 
 export function canAccessPath(role: AppRole, path: string): boolean {
-  if (path === "/login" || path === "/unauthorized" || path === "/settings") return true;
+  if (path === "/login" || path === "/unauthorized") return true;
   if (role === "super_admin") return path.startsWith("/admin");
   if (role === "client") return isClientPortalPath(path);
   if (role === "bsg_leadership") return path.startsWith("/leadership");

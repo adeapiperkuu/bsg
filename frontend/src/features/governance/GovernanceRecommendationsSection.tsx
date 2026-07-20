@@ -22,7 +22,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useGovernanceJob } from "@/features/governance/useGovernanceJob";
 import {
@@ -690,7 +689,6 @@ export function GovernanceRecommendationsSection({
   const aiItems = (aiQuery.data?.items ?? []).filter(
     (item) => !(item.auto_detected && item.recommendation_type === "escalation_required"),
   );
-  const aiEnabled = aiQuery.data?.ai_enabled ?? false;
   const canGenerate = Boolean(canWrite && aiQuery.data?.can_generate);
   const busy =
     generationJob.active ||
@@ -719,12 +717,6 @@ export function GovernanceRecommendationsSection({
           </Button>
         ) : null}
       </div>
-
-      {!aiEnabled ? (
-        <p className="mb-3 text-xs text-muted-foreground">
-          AI recommendations are disabled. Operational rule-based recommendations remain available.
-        </p>
-      ) : null}
 
       {lastConversion ? (
         <div className="mb-4 rounded-md border border-border bg-elevated p-3 text-xs">
@@ -762,13 +754,7 @@ export function GovernanceRecommendationsSection({
 
       <div className="min-h-0 flex-1 overflow-y-auto pr-1">
         <div className="space-y-3">
-          {!enabled ? null : aiQuery.isLoading && aiItems.length === 0 ? (
-            <div className="space-y-2">
-              {[0, 1].map((row) => (
-                <Skeleton key={row} className="h-20 w-full" />
-              ))}
-            </div>
-          ) : aiItems.length === 0 ? (
+          {!enabled || aiQuery.isLoading ? null : aiItems.length === 0 ? (
             <p className="py-2 text-sm text-muted-foreground">
               No AI recommendations yet. Generate recommendations for every project when ready -
               this never runs on page load.

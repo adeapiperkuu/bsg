@@ -5,6 +5,7 @@ import {
   listAdminProjects,
   listDeliveryConversations,
   listOrganisations,
+  listPrograms,
   listProjectDeliveryConfidence,
   listProjects,
 } from "@/lib/api";
@@ -13,6 +14,12 @@ import { ADMIN_LIST_GC_TIME_MS, queryKeys, STALE_TIME_MS } from "@/lib/queries/k
 export const projectsQueryOptions = queryOptions({
   queryKey: queryKeys.projects,
   queryFn: listProjects,
+  staleTime: STALE_TIME_MS,
+});
+
+export const programsQueryOptions = queryOptions({
+  queryKey: queryKeys.programs,
+  queryFn: listPrograms,
   staleTime: STALE_TIME_MS,
 });
 
@@ -64,6 +71,10 @@ export function projectDeliveryConfidenceQueryOptions(projectId: string | null) 
 
 export function useProjectsQuery() {
   return useQuery(projectsQueryOptions);
+}
+
+export function useProgramsQuery() {
+  return useQuery(programsQueryOptions);
 }
 
 export function useOrganisationsQuery() {

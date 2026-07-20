@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     openai_api_key: str | None = None
     openai_base_url: str | None = None
+    # Client communications draft generation (PM /reports Phase 4).
+    communications_llm_model: str | None = None
+    communications_llm_timeout_seconds: float = 2.5
+    communications_llm_max_tokens: int = 350
+    communications_max_body_words: int = 150
+    communications_instructions_max_chars: int = 2000
     knowledge_embedding_model: str = "text-embedding-3-small"
     knowledge_embedding_dimensions: int = 1536
     # Model used for low-confidence retry (more capable, slower)

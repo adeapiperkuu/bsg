@@ -15,13 +15,20 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  createProgram,
   createProject,
+  type ProgramRead,
   type ProjectCreatePayload,
   type ProjectRead,
   type ProjectStatus,
   updateProject,
 } from "@/lib/api";
-import { projectsQueryOptions, useProjectsQuery } from "@/lib/queries/delivery";
+import {
+  programsQueryOptions,
+  projectsQueryOptions,
+  useProgramsQuery,
+  useProjectsQuery,
+} from "@/lib/queries/delivery";
 import { cn } from "@/lib/utils";
 import { Search, X } from "lucide-react";
 
@@ -43,7 +50,7 @@ function statusLabel(status: string): string {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
-function emptyCreateForm(): ProjectCreatePayload {
+function emptyScopeForm(programId: string): ProjectCreatePayload {
   return {
     name: "",
     description: "",
@@ -52,6 +59,7 @@ function emptyCreateForm(): ProjectCreatePayload {
     start_date: today(),
     target_end_date: nextMonth(),
     daily_target_units: null,
+    program_id: programId || null,
   };
 }
 
@@ -60,27 +68,32 @@ const fieldClass =
 
 function ProjectsPage() {
   const queryClient = useQueryClient();
+  const programsQuery = useProgramsQuery();
   const projectsQuery = useProjectsQuery();
-  const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
-  const loading = projectsQuery.isLoading;
+  const programs = useMemo(() => programsQuery.data ?? [], [programsQuery.data]);
+  const scopes = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
+  const loading = programsQuery.isLoading || projectsQuery.isLoading;
+
   const [query, setQuery] = useState("");
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const [selectedProgramId, setSelectedProgramId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [editingProject, setEditingProject] = useState<ProjectRead | null>(null);
-  const [isCreateOpen, setIsCreateOpen] = useState(false);
-  const [createForm, setCreateForm] = useState<ProjectCreatePayload>(emptyCreateForm);
 
-  const filteredProjects = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return projects;
-    return projects.filter((project) =>
-      [project.name, project.description, project.vertical, project.status]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(normalized)),
-    );
-  }, [projects, query]);
+  const [isCreateProgramOpen, setIsCreateProgramOpen] = useState(false);
+  const [programName, setProgramName] = useState("");
+  const [programDescription, setProgramDescription] = useState("");
+
+  const [isCreateScopeOpen, setIsCreateScopeOpen] = useState(false);
+  const [createForm, setCreateForm] = useState<ProjectCreatePayload>(emptyScopeForm(""));
+  const [editingScope, setEditingScope] = useState<ProjectRead | null>(null);
+
+  useEffect(() => {
+    if (loading || programs.length === 0) return;
+    if (selectedProgramId && programs.some((p) => p.id === selectedProgramId)) return;
+    setSelectedProgramId(programs[0]?.id ?? null);
+  }, [loading, programs, selectedProgramId]);
 
   useEffect(() => {
     if (!isSearchOpen) return;
@@ -99,37 +112,55 @@ function ProjectsPage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isSearchOpen]);
 
+  const selectedProgram: ProgramRead | null =
+    programs.find((p) => p.id === selectedProgramId) ?? null;
+
+  const scopesForProgram = useMemo(() => {
+    if (!selectedProgramId) return [];
+    return scopes.filter((s) => s.program_id === selectedProgramId);
+  }, [scopes, selectedProgramId]);
+
+  const filteredScopes = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return scopesForProgram;
+    return scopesForProgram.filter((scope) =>
+      [scope.name, scope.description, scope.vertical, scope.status]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(normalized)),
+    );
+  }, [scopesForProgram, query]);
+
   const openSearch = () => setIsSearchOpen(true);
-
   const closeSearch = () => setIsSearchOpen(false);
-
   const clearSearch = () => {
     setQuery("");
     closeSearch();
   };
 
-  const refreshProjects = () => {
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: programsQueryOptions.queryKey });
     void queryClient.invalidateQueries({ queryKey: projectsQueryOptions.queryKey });
   };
 
-  const closeCreateDialog = () => {
-    setIsCreateOpen(false);
-    setCreateForm(emptyCreateForm());
+  const closeCreateProgram = () => {
+    setIsCreateProgramOpen(false);
+    setProgramName("");
+    setProgramDescription("");
     setError(null);
   };
 
-  const submitCreate = (event: React.FormEvent) => {
+  const submitCreateProgram = (event: React.FormEvent) => {
     event.preventDefault();
     setSaving(true);
     setError(null);
-    createProject({
-      ...createForm,
-      daily_target_units: createForm.daily_target_units || null,
-      description: createForm.description || null,
+    createProgram({
+      name: programName.trim(),
+      description: programDescription.trim() || null,
     })
-      .then(() => {
-        refreshProjects();
-        closeCreateDialog();
+      .then((created) => {
+        refresh();
+        setSelectedProgramId(created.id);
+        closeCreateProgram();
       })
       .catch((err: unknown) => {
         setError(err instanceof Error ? err.message : "Project could not be created.");
@@ -137,31 +168,68 @@ function ProjectsPage() {
       .finally(() => setSaving(false));
   };
 
+  const openCreateScope = () => {
+    if (!selectedProgramId) {
+      setError("Create or select a project tab before adding a scope.");
+      return;
+    }
+    setCreateForm(emptyScopeForm(selectedProgramId));
+    setIsCreateScopeOpen(true);
+    setError(null);
+  };
+
+  const closeCreateScope = () => {
+    setIsCreateScopeOpen(false);
+    setCreateForm(emptyScopeForm(selectedProgramId ?? ""));
+    setError(null);
+  };
+
+  const submitCreateScope = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selectedProgramId) return;
+    setSaving(true);
+    setError(null);
+    createProject({
+      ...createForm,
+      program_id: selectedProgramId,
+      daily_target_units: createForm.daily_target_units || null,
+      description: createForm.description || null,
+    })
+      .then(() => {
+        refresh();
+        closeCreateScope();
+      })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : "Scope could not be created.");
+      })
+      .finally(() => setSaving(false));
+  };
+
   const closeEditDialog = () => {
-    setEditingProject(null);
+    setEditingScope(null);
     setError(null);
   };
 
   const submitEdit = (event: React.FormEvent) => {
     event.preventDefault();
-    if (!editingProject) return;
-
+    if (!editingScope) return;
     setSaving(true);
     setError(null);
-    updateProject(editingProject.id, {
-      name: editingProject.name,
-      description: editingProject.description || null,
-      status: editingProject.status,
-      target_end_date: editingProject.target_end_date,
-      actual_end_date: editingProject.actual_end_date,
-      daily_target_units: editingProject.daily_target_units,
+    updateProject(editingScope.id, {
+      name: editingScope.name,
+      description: editingScope.description || null,
+      status: editingScope.status,
+      target_end_date: editingScope.target_end_date,
+      actual_end_date: editingScope.actual_end_date,
+      daily_target_units: editingScope.daily_target_units,
+      program_id: editingScope.program_id,
     })
       .then(() => {
-        refreshProjects();
+        refresh();
         closeEditDialog();
       })
       .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : "Project could not be updated.");
+        setError(err instanceof Error ? err.message : "Scope could not be updated.");
       })
       .finally(() => setSaving(false));
   };
@@ -179,7 +247,7 @@ function ProjectsPage() {
         >
           <button
             type="button"
-            aria-label="Search projects"
+            aria-label="Search scopes"
             onClick={() => (isSearchOpen ? searchInputRef.current?.focus() : openSearch())}
             className="flex h-[30px] w-7 shrink-0 items-center justify-center"
           >
@@ -197,7 +265,7 @@ function ProjectsPage() {
             onBlur={() => {
               if (!query.trim()) closeSearch();
             }}
-            placeholder="Search projects..."
+            placeholder="Search scopes..."
             className={cn(
               "min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none transition-all duration-300 ease-out placeholder:text-muted-foreground/80",
               isSearchOpen
@@ -219,17 +287,44 @@ function ProjectsPage() {
             <X className="h-3 w-3" />
           </button>
         </div>
+        {programs.length > 0 && (
+          <select
+            aria-label="Project"
+            value={selectedProgramId ?? ""}
+            onChange={(event) => setSelectedProgramId(event.target.value || null)}
+            className="h-[30px] max-w-56 rounded-sm border border-input bg-background px-2 text-xs shadow-none outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {programs.map((program) => (
+              <option key={program.id} value={program.id}>
+                {program.name} ({program.scope_count})
+              </option>
+            ))}
+          </select>
+        )}
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-[30px] rounded-sm px-3 text-xs shadow-none"
+          onClick={() => {
+            setIsCreateProgramOpen(true);
+            setError(null);
+          }}
+        >
+          New project
+        </Button>
         <Button
           type="button"
           size="sm"
           className="h-[30px] rounded-sm bg-[color:var(--brand)] px-3 text-xs text-[color:var(--brand-foreground)] shadow-none hover:bg-[color:var(--brand)]/90"
-          onClick={() => setIsCreateOpen(true)}
+          onClick={openCreateScope}
+          disabled={!selectedProgramId}
         >
           Create
         </Button>
       </div>
 
-      {error && !isCreateOpen && !editingProject && !loading && (
+      {error && !isCreateProgramOpen && !isCreateScopeOpen && !editingScope && !loading && (
         <Card>
           <p className="text-sm text-[color:var(--danger)]">{error}</p>
         </Card>
@@ -238,91 +333,186 @@ function ProjectsPage() {
       {loading ? (
         <PageLoadingScreen />
       ) : (
-      <Card className="rounded-md">
-        <SectionHeader title="Projects" />
-        {filteredProjects.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No projects found.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead className="text-left text-muted-foreground">
-                <tr className="border-b border-border">
-                  <th className="py-2 pr-3 font-medium">Project</th>
-                  <th className="py-2 pr-3 font-medium">Vertical</th>
-                  <th className="py-2 pr-3 font-medium">Status</th>
-                  <th className="py-2 pr-3 font-medium">Target End</th>
-                  <th className="py-2 pr-3 font-medium">Daily Target</th>
-                  <th className="py-2 pr-3 font-medium"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredProjects.map((project) => (
-                  <tr key={project.id} className="border-b border-border/50">
-                    <td className="py-2.5 pr-3 font-medium">{project.name}</td>
-                    <td className="py-2.5 pr-3">{project.vertical}</td>
-                    <td className="py-2.5 pr-3">
-                      <StatusPill status={statusLabel(project.status)} />
-                    </td>
-                    <td className="py-2.5 pr-3">{project.target_end_date}</td>
-                    <td className="py-2.5 pr-3">{project.daily_target_units ?? "No data"}</td>
-                    <td className="py-2.5 pr-3">
-                      <div className="flex items-center gap-2">
-                        <Link
-                          to="/delivery"
-                          search={{ projectId: project.id }}
-                          className="rounded-sm border border-border px-3 py-1 text-xs font-medium hover:bg-elevated"
-                        >
-                          Open
-                        </Link>
-                        <button
-                          type="button"
-                          onClick={() => setEditingProject({ ...project })}
-                          className="rounded-sm bg-[color:var(--brand)] px-3 py-1 text-xs font-medium text-[color:var(--brand-foreground)] hover:bg-[color:var(--brand)]/90"
-                        >
-                          Edit
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
+        <Card className="rounded-md">
+          <SectionHeader
+            title="Projects"
+            sub={
+              selectedProgram
+                ? `Scopes in ${selectedProgram.name}`
+                : "Select a project to view scopes"
+            }
+          />
+
+          {programs.length === 0 ? (
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                No projects yet. Create a project tab, then add scopes under it.
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                className="bg-[color:var(--brand)] text-[color:var(--brand-foreground)] shadow-none"
+                onClick={() => setIsCreateProgramOpen(true)}
+              >
+                New project
+              </Button>
+            </div>
+          ) : (
+            <>
+              {filteredScopes.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  {query.trim()
+                    ? "No scopes found."
+                    : "No scopes in this project yet. Click Create to add one."}
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead className="text-left text-muted-foreground">
+                      <tr className="border-b border-border">
+                        <th className="py-2 pr-3 font-medium">Scope</th>
+                        <th className="py-2 pr-3 font-medium">Vertical</th>
+                        <th className="py-2 pr-3 font-medium">Status</th>
+                        <th className="py-2 pr-3 font-medium">Target End</th>
+                        <th className="py-2 pr-3 font-medium">Daily Target</th>
+                        <th className="py-2 pr-3 font-medium"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredScopes.map((scope) => (
+                        <tr key={scope.id} className="border-b border-border/50">
+                          <td className="py-2.5 pr-3 font-medium">{scope.name}</td>
+                          <td className="py-2.5 pr-3">{scope.vertical}</td>
+                          <td className="py-2.5 pr-3">
+                            <StatusPill status={statusLabel(scope.status)} />
+                          </td>
+                          <td className="py-2.5 pr-3">{scope.target_end_date}</td>
+                          <td className="py-2.5 pr-3">{scope.daily_target_units ?? "No data"}</td>
+                          <td className="py-2.5 pr-3">
+                            <div className="flex items-center gap-2">
+                              <Link
+                                to="/delivery"
+                                search={{ projectId: scope.id }}
+                                className="rounded-sm border border-border px-3 py-1 text-xs font-medium hover:bg-elevated"
+                              >
+                                Open
+                              </Link>
+                              <button
+                                type="button"
+                                onClick={() => setEditingScope({ ...scope })}
+                                className="rounded-sm bg-[color:var(--brand)] px-3 py-1 text-xs font-medium text-[color:var(--brand-foreground)] hover:bg-[color:var(--brand)]/90"
+                              >
+                                Edit
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )}
+        </Card>
       )}
 
       <Dialog
-        open={isCreateOpen}
+        open={isCreateProgramOpen}
         onOpenChange={(open) => {
-          if (!open) closeCreateDialog();
-          else setIsCreateOpen(true);
+          if (!open) closeCreateProgram();
+          else setIsCreateProgramOpen(true);
         }}
       >
         <DialogContent className="max-w-lg gap-0 overflow-hidden p-0 sm:max-w-xl">
           <DialogHeader className="border-b border-border bg-elevated/60 px-4 py-4 sm:px-6">
-            <DialogTitle>Create Project</DialogTitle>
-            <DialogDescription>Saved through the backend Projects API.</DialogDescription>
+            <DialogTitle>New Project</DialogTitle>
+            <DialogDescription>
+              Create a project tab (e.g. Annotation). Then add scopes under it.
+            </DialogDescription>
           </DialogHeader>
-          <form onSubmit={submitCreate}>
+          <form onSubmit={submitCreateProgram}>
+            <div className="max-h-[calc(100svh-14rem)] space-y-4 overflow-y-auto px-4 py-4 sm:max-h-[70vh] sm:px-6">
+              {error && <p className="text-sm text-[color:var(--danger)]">{error}</p>}
+              <div className="space-y-1.5">
+                <Label htmlFor="program-name">Project name</Label>
+                <Input
+                  id="program-name"
+                  required
+                  value={programName}
+                  onChange={(event) => setProgramName(event.target.value)}
+                  placeholder="Annotation"
+                  className="h-10 shadow-none"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="program-description">Description</Label>
+                <textarea
+                  id="program-description"
+                  value={programDescription}
+                  onChange={(event) => setProgramDescription(event.target.value)}
+                  placeholder="Optional description"
+                  rows={3}
+                  className="w-full resize-none rounded-sm border border-input bg-background px-3 py-2 text-sm shadow-none outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                />
+              </div>
+            </div>
+            <DialogFooter className="gap-2 border-t border-border bg-elevated/60 px-4 py-4 sm:justify-end sm:space-x-0 sm:px-6">
+              <Button
+                type="button"
+                variant="outline"
+                className="shadow-none"
+                onClick={closeCreateProgram}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={saving || !programName.trim()}
+                className="bg-[color:var(--brand)] text-[color:var(--brand-foreground)] shadow-none"
+              >
+                {saving ? "Creating..." : "Create"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={isCreateScopeOpen}
+        onOpenChange={(open) => {
+          if (!open) closeCreateScope();
+          else setIsCreateScopeOpen(true);
+        }}
+      >
+        <DialogContent className="max-w-lg gap-0 overflow-hidden p-0 sm:max-w-xl">
+          <DialogHeader className="border-b border-border bg-elevated/60 px-4 py-4 sm:px-6">
+            <DialogTitle>Create Scope</DialogTitle>
+            <DialogDescription>
+              {selectedProgram
+                ? `Add a scope under ${selectedProgram.name}. Used for client reports.`
+                : "Saved through the backend Projects API."}
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={submitCreateScope}>
             <div className="max-h-[calc(100svh-14rem)] space-y-4 overflow-y-auto px-4 py-4 sm:max-h-[70vh] sm:px-6">
               {error && <p className="text-sm text-[color:var(--danger)]">{error}</p>}
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-1.5 sm:col-span-2">
-                  <Label htmlFor="project-name">Project name</Label>
+                  <Label htmlFor="scope-name">Scope name</Label>
                   <Input
-                    id="project-name"
+                    id="scope-name"
                     required
                     value={createForm.name}
                     onChange={(event) => setCreateForm({ ...createForm, name: event.target.value })}
-                    placeholder="Project name"
+                    placeholder="Sprint 27"
                     className="h-10 shadow-none"
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="project-vertical">Vertical</Label>
+                  <Label htmlFor="scope-vertical">Vertical</Label>
                   <Input
-                    id="project-vertical"
+                    id="scope-vertical"
                     required
                     value={createForm.vertical}
                     onChange={(event) =>
@@ -333,9 +523,9 @@ function ProjectsPage() {
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="project-status">Status</Label>
+                  <Label htmlFor="scope-status">Status</Label>
                   <select
-                    id="project-status"
+                    id="scope-status"
                     value={createForm.status}
                     onChange={(event) =>
                       setCreateForm({ ...createForm, status: event.target.value as ProjectStatus })
@@ -350,9 +540,9 @@ function ProjectsPage() {
                   </select>
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="project-start-date">Start date</Label>
+                  <Label htmlFor="scope-start-date">Start date</Label>
                   <Input
-                    id="project-start-date"
+                    id="scope-start-date"
                     required
                     type="date"
                     value={createForm.start_date}
@@ -363,9 +553,9 @@ function ProjectsPage() {
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="project-target-end-date">Target end date</Label>
+                  <Label htmlFor="scope-target-end-date">Target end date</Label>
                   <Input
-                    id="project-target-end-date"
+                    id="scope-target-end-date"
                     required
                     type="date"
                     value={createForm.target_end_date}
@@ -376,9 +566,9 @@ function ProjectsPage() {
                   />
                 </div>
                 <div className="space-y-1.5 sm:col-span-2">
-                  <Label htmlFor="project-daily-target">Daily target</Label>
+                  <Label htmlFor="scope-daily-target">Daily target</Label>
                   <Input
-                    id="project-daily-target"
+                    id="scope-daily-target"
                     type="number"
                     min={0}
                     value={createForm.daily_target_units ?? ""}
@@ -393,9 +583,9 @@ function ProjectsPage() {
                   />
                 </div>
                 <div className="space-y-1.5 sm:col-span-2">
-                  <Label htmlFor="project-description">Description</Label>
+                  <Label htmlFor="scope-description">Description</Label>
                   <textarea
-                    id="project-description"
+                    id="scope-description"
                     value={createForm.description ?? ""}
                     onChange={(event) =>
                       setCreateForm({ ...createForm, description: event.target.value })
@@ -412,7 +602,7 @@ function ProjectsPage() {
                 type="button"
                 variant="outline"
                 className="shadow-none"
-                onClick={closeCreateDialog}
+                onClick={closeCreateScope}
               >
                 Cancel
               </Button>
@@ -429,54 +619,75 @@ function ProjectsPage() {
       </Dialog>
 
       <Dialog
-        open={Boolean(editingProject)}
+        open={Boolean(editingScope)}
         onOpenChange={(open) => {
           if (!open) closeEditDialog();
         }}
       >
         <DialogContent className="max-w-lg gap-0 overflow-hidden p-0 sm:max-w-xl">
           <DialogHeader className="border-b border-border bg-elevated/60 px-4 py-4 sm:px-6">
-            <DialogTitle>Edit Project</DialogTitle>
+            <DialogTitle>Edit Scope</DialogTitle>
             <DialogDescription>
-              {editingProject
-                ? `Update details for ${editingProject.name}.`
-                : "Update project details."}
+              {editingScope
+                ? `Update details for ${editingScope.name}.`
+                : "Update scope details."}
             </DialogDescription>
           </DialogHeader>
-          {editingProject && (
+          {editingScope && (
             <form onSubmit={submitEdit}>
               <div className="max-h-[calc(100svh-14rem)] space-y-4 overflow-y-auto px-4 py-4 sm:max-h-[70vh] sm:px-6">
                 {error && <p className="text-sm text-[color:var(--danger)]">{error}</p>}
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div className="space-y-1.5 sm:col-span-2">
-                    <Label htmlFor="edit-project-name">Project name</Label>
+                    <Label htmlFor="edit-scope-name">Scope name</Label>
                     <Input
-                      id="edit-project-name"
+                      id="edit-scope-name"
                       required
-                      value={editingProject.name}
+                      value={editingScope.name}
                       onChange={(event) =>
-                        setEditingProject({ ...editingProject, name: event.target.value })
+                        setEditingScope({ ...editingScope, name: event.target.value })
                       }
                       className="h-10 shadow-none"
                     />
                   </div>
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <Label htmlFor="edit-scope-program">Project</Label>
+                    <select
+                      id="edit-scope-program"
+                      value={editingScope.program_id ?? ""}
+                      onChange={(event) =>
+                        setEditingScope({
+                          ...editingScope,
+                          program_id: event.target.value || null,
+                        })
+                      }
+                      className={fieldClass}
+                    >
+                      <option value="">Ungrouped</option>
+                      {programs.map((program) => (
+                        <option key={program.id} value={program.id}>
+                          {program.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="edit-project-vertical">Vertical</Label>
+                    <Label htmlFor="edit-scope-vertical">Vertical</Label>
                     <Input
-                      id="edit-project-vertical"
-                      value={editingProject.vertical}
+                      id="edit-scope-vertical"
+                      value={editingScope.vertical}
                       disabled
                       className="h-10 shadow-none"
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="edit-project-status">Status</Label>
+                    <Label htmlFor="edit-scope-status">Status</Label>
                     <select
-                      id="edit-project-status"
-                      value={editingProject.status}
+                      id="edit-scope-status"
+                      value={editingScope.status}
                       onChange={(event) =>
-                        setEditingProject({
-                          ...editingProject,
+                        setEditingScope({
+                          ...editingScope,
                           status: event.target.value as ProjectStatus,
                         })
                       }
@@ -490,25 +701,25 @@ function ProjectsPage() {
                     </select>
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="edit-project-start-date">Start date</Label>
+                    <Label htmlFor="edit-scope-start-date">Start date</Label>
                     <Input
-                      id="edit-project-start-date"
+                      id="edit-scope-start-date"
                       type="date"
-                      value={editingProject.start_date}
+                      value={editingScope.start_date}
                       disabled
                       className="h-10 shadow-none"
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="edit-project-target-end-date">Target end date</Label>
+                    <Label htmlFor="edit-scope-target-end-date">Target end date</Label>
                     <Input
-                      id="edit-project-target-end-date"
+                      id="edit-scope-target-end-date"
                       required
                       type="date"
-                      value={editingProject.target_end_date}
+                      value={editingScope.target_end_date}
                       onChange={(event) =>
-                        setEditingProject({
-                          ...editingProject,
+                        setEditingScope({
+                          ...editingScope,
                           target_end_date: event.target.value,
                         })
                       }
@@ -516,14 +727,14 @@ function ProjectsPage() {
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="edit-project-actual-end-date">Actual end date</Label>
+                    <Label htmlFor="edit-scope-actual-end-date">Actual end date</Label>
                     <Input
-                      id="edit-project-actual-end-date"
+                      id="edit-scope-actual-end-date"
                       type="date"
-                      value={editingProject.actual_end_date ?? ""}
+                      value={editingScope.actual_end_date ?? ""}
                       onChange={(event) =>
-                        setEditingProject({
-                          ...editingProject,
+                        setEditingScope({
+                          ...editingScope,
                           actual_end_date: event.target.value || null,
                         })
                       }
@@ -531,15 +742,15 @@ function ProjectsPage() {
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="edit-project-daily-target">Daily target</Label>
+                    <Label htmlFor="edit-scope-daily-target">Daily target</Label>
                     <Input
-                      id="edit-project-daily-target"
+                      id="edit-scope-daily-target"
                       type="number"
                       min={0}
-                      value={editingProject.daily_target_units ?? ""}
+                      value={editingScope.daily_target_units ?? ""}
                       onChange={(event) =>
-                        setEditingProject({
-                          ...editingProject,
+                        setEditingScope({
+                          ...editingScope,
                           daily_target_units: event.target.value
                             ? Number(event.target.value)
                             : null,
@@ -550,12 +761,12 @@ function ProjectsPage() {
                     />
                   </div>
                   <div className="space-y-1.5 sm:col-span-2">
-                    <Label htmlFor="edit-project-description">Description</Label>
+                    <Label htmlFor="edit-scope-description">Description</Label>
                     <textarea
-                      id="edit-project-description"
-                      value={editingProject.description ?? ""}
+                      id="edit-scope-description"
+                      value={editingScope.description ?? ""}
                       onChange={(event) =>
-                        setEditingProject({ ...editingProject, description: event.target.value })
+                        setEditingScope({ ...editingScope, description: event.target.value })
                       }
                       placeholder="Description"
                       rows={3}

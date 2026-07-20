@@ -1,20 +1,28 @@
 """DB-backed dashboard aggregation for the Delivery Performance Agent."""
 
-from dataclasses import dataclass
 from collections import defaultdict
-from datetime import date
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import bindparam, func, select, text
+from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from app.agents.delivery.analytics.milestones import select_current_milestone
+from app.agents.delivery.configuration import (
+    DeliveryScoringThresholds,
+    load_delivery_scoring_thresholds,
+    load_delivery_scoring_thresholds_for_organisations,
+)
 from app.agents.delivery.services.scoring_service import build_dashboard_response
 from app.core.security import CurrentUser
 from app.db.models import (
     AlertStatus,
+    AppRole,
     Bottleneck,
     DeliveryConfidenceScore,
     Milestone,
@@ -180,21 +188,6 @@ def _build_raw_data(
 # Batch dict-based loaders (used by get_dashboard_data / get_portfolio_data)
 # ---------------------------------------------------------------------------
 
-async def _fetch_milestones_by_project(
-    session: AsyncSession,
-    project_ids: list[UUID],
-) -> dict[UUID, list[dict[str, Any]]]:
-    """Load milestones for many projects in one query."""
-    if not project_ids:
-        return {}
-
-    rows = await session.execute(
-        select(Milestone)
-        .where(Milestone.project_id.in_(project_ids), Milestone.deleted_at.is_(None))
-        .order_by(Milestone.project_id.asc(), Milestone.planned_date.asc())
-    )
-    return _group_by_project_id([_milestone_payload(row) for row in rows.scalars()])
-
 
 async def _fetch_throughput_by_project(
     session: AsyncSession,
@@ -229,46 +222,6 @@ async def _fetch_throughput_by_project(
         )
     )
     return _group_by_project_id([_throughput_payload(row) for row in rows.scalars()])
-
-
-async def _fetch_open_risks_by_project(
-    session: AsyncSession,
-    project_ids: list[UUID],
-) -> dict[UUID, list[dict[str, Any]]]:
-    """Load open delivery risks for many projects in one query."""
-    if not project_ids:
-        return {}
-
-    rows = await session.execute(
-        select(RiskAlert)
-        .where(
-            RiskAlert.project_id.in_(project_ids),
-            RiskAlert.deleted_at.is_(None),
-            RiskAlert.status.in_(OPEN_STATUSES),
-        )
-        .order_by(RiskAlert.project_id.asc(), RiskAlert.created_at.desc())
-    )
-    return _group_by_project_id([_risk_payload(row) for row in rows.scalars()])
-
-
-async def _fetch_open_bottlenecks_by_project(
-    session: AsyncSession,
-    project_ids: list[UUID],
-) -> dict[UUID, list[dict[str, Any]]]:
-    """Load open bottlenecks for many projects in one query."""
-    if not project_ids:
-        return {}
-
-    rows = await session.execute(
-        select(Bottleneck)
-        .where(
-            Bottleneck.project_id.in_(project_ids),
-            Bottleneck.deleted_at.is_(None),
-            Bottleneck.status.in_(OPEN_STATUSES),
-        )
-        .order_by(Bottleneck.project_id.asc(), Bottleneck.created_at.desc())
-    )
-    return _group_by_project_id([_bottleneck_payload(row) for row in rows.scalars()])
 
 
 async def _fetch_latest_quality_by_project(
@@ -321,6 +274,198 @@ async def _fetch_delivery_inputs_by_project(
     }
 
 
+# All five delivery-input loads bundled into ONE statement (single remote round trip).
+# Each UNION branch tags its rows with a `kind`, and the payload is a jsonb object in
+# the exact shape the corresponding `_*_payload` helper produced. With a remote Supabase
+# database a round trip costs ~150-1100ms while the SQL itself is <10ms, so collapsing
+# 5 sequential executes into 1 is the dominant win (same approach as the governance
+# signal bundle in app/agents/governance/services/delivery_signals.py).
+_OPEN_STATUS_SQL_LITERALS = ", ".join(f"'{status.value}'" for status in OPEN_STATUSES)
+
+DELIVERY_INPUTS_BUNDLE_SQL = text(f"""
+SELECT kind, project_id, payload
+FROM (
+    SELECT 'milestone'::text AS kind,
+           m.project_id,
+           jsonb_build_object(
+               'id', m.id,
+               'project_id', m.project_id,
+               'name', m.name,
+               'description', m.description,
+               'planned_date', m.planned_date,
+               'actual_date', m.actual_date,
+               'status', m.status
+           ) AS payload
+    FROM milestones m
+    WHERE m.project_id = ANY(:project_ids)
+      AND m.deleted_at IS NULL
+
+    UNION ALL
+
+    SELECT 'throughput'::text,
+           tr.project_id,
+           jsonb_build_object(
+               'id', tr.id,
+               'project_id', tr.project_id,
+               'snapshot_date', tr.snapshot_date,
+               'units_completed', tr.units_completed,
+               'units_forecast', tr.units_forecast,
+               'rolling_7day_units', tr.rolling_7day_units,
+               'created_at', tr.created_at,
+               'updated_at', tr.updated_at
+           )
+    FROM (
+        SELECT ts.*,
+               row_number() OVER (
+                   PARTITION BY ts.project_id ORDER BY ts.snapshot_date DESC
+               ) AS rn
+        FROM throughput_snapshots ts
+        WHERE ts.project_id = ANY(:project_ids)
+    ) tr
+    WHERE tr.rn <= :throughput_limit
+
+    UNION ALL
+
+    SELECT 'risk'::text,
+           r.project_id,
+           jsonb_build_object(
+               'id', r.id,
+               'project_id', r.project_id,
+               'milestone_id', r.milestone_id,
+               'alert_type', r.alert_type,
+               'risk_tier', r.risk_tier,
+               'title', r.title,
+               'detail', r.detail,
+               'slippage_probability', r.slippage_probability,
+               'contributing_causes', r.contributing_causes,
+               'status', r.status,
+               'created_at', r.created_at,
+               'updated_at', r.updated_at
+           )
+    FROM risk_alerts r
+    WHERE r.project_id = ANY(:project_ids)
+      AND r.deleted_at IS NULL
+      AND r.status IN ({_OPEN_STATUS_SQL_LITERALS})
+
+    UNION ALL
+
+    SELECT 'bottleneck'::text,
+           b.project_id,
+           jsonb_build_object(
+               'id', b.id,
+               'project_id', b.project_id,
+               'team_id', b.team_id,
+               'title', b.title,
+               'detail', b.detail,
+               'status', b.status,
+               'created_at', b.created_at,
+               'updated_at', b.updated_at
+           )
+    FROM bottlenecks b
+    WHERE b.project_id = ANY(:project_ids)
+      AND b.deleted_at IS NULL
+      AND b.status IN ({_OPEN_STATUS_SQL_LITERALS})
+
+    UNION ALL
+
+    SELECT 'quality'::text,
+           qr.project_id,
+           jsonb_build_object(
+               'has_drift_alert', qr.has_drift_alert,
+               'rework_rate_pct', qr.rework_rate_pct
+           )
+    FROM (
+        SELECT q.project_id,
+               q.has_drift_alert,
+               q.rework_rate_pct,
+               row_number() OVER (
+                   PARTITION BY q.project_id ORDER BY q.created_at DESC
+               ) AS rn
+        FROM quality_snapshots q
+        WHERE q.project_id = ANY(:project_ids)
+    ) qr
+    WHERE qr.rn = 1
+) bundle
+""").bindparams(
+    bindparam("project_ids", type_=ARRAY(PG_UUID())),
+    bindparam("throughput_limit"),
+)
+
+
+def _coerce_bundle_date(value: Any) -> date | None:
+    """jsonb serializes DATE columns as ISO strings; scoring compares real dates."""
+    if value is None or isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
+
+
+def _coerce_bundle_datetime(value: Any) -> datetime | None:
+    if value is None or isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def _normalize_bundle_milestone(payload: dict[str, Any]) -> dict[str, Any]:
+    payload["planned_date"] = _coerce_bundle_date(payload.get("planned_date"))
+    payload["actual_date"] = _coerce_bundle_date(payload.get("actual_date"))
+    return payload
+
+
+def _normalize_bundle_throughput(payload: dict[str, Any]) -> dict[str, Any]:
+    payload["snapshot_date"] = _coerce_bundle_date(payload.get("snapshot_date"))
+    payload["created_at"] = _coerce_bundle_datetime(payload.get("created_at"))
+    payload["updated_at"] = _coerce_bundle_datetime(payload.get("updated_at"))
+    return payload
+
+
+def _normalize_bundle_timestamps(payload: dict[str, Any]) -> dict[str, Any]:
+    payload["created_at"] = _coerce_bundle_datetime(payload.get("created_at"))
+    payload["updated_at"] = _coerce_bundle_datetime(payload.get("updated_at"))
+    return payload
+
+
+def _parse_delivery_inputs_bundle_rows(
+    rows: list[tuple[str, UUID, dict[str, Any]]],
+) -> tuple[
+    dict[UUID, list[dict[str, Any]]],
+    dict[UUID, list[dict[str, Any]]],
+    dict[UUID, list[dict[str, Any]]],
+    dict[UUID, list[dict[str, Any]]],
+    dict[UUID, dict[str, Any] | None],
+]:
+    milestones: dict[UUID, list[dict[str, Any]]] = defaultdict(list)
+    throughput: dict[UUID, list[dict[str, Any]]] = defaultdict(list)
+    risks: dict[UUID, list[dict[str, Any]]] = defaultdict(list)
+    bottlenecks: dict[UUID, list[dict[str, Any]]] = defaultdict(list)
+    quality: dict[UUID, dict[str, Any] | None] = {}
+
+    for kind, project_id, payload in rows:
+        data = dict(payload)
+        if kind == "milestone":
+            milestones[project_id].append(_normalize_bundle_milestone(data))
+        elif kind == "throughput":
+            throughput[project_id].append(_normalize_bundle_throughput(data))
+        elif kind == "risk":
+            risks[project_id].append(_normalize_bundle_timestamps(data))
+        elif kind == "bottleneck":
+            bottlenecks[project_id].append(_normalize_bundle_timestamps(data))
+        elif kind == "quality":
+            quality[project_id] = data
+
+    # UNION ALL provides no ordering guarantee; restore the per-source ORDER BY the
+    # replaced individual queries had, which downstream scoring relies on.
+    for items in milestones.values():
+        items.sort(key=lambda item: item["planned_date"])
+    for items in throughput.values():
+        items.sort(key=lambda item: item["snapshot_date"], reverse=True)
+    for items in risks.values():
+        items.sort(key=lambda item: item["created_at"], reverse=True)
+    for items in bottlenecks.values():
+        items.sort(key=lambda item: item["created_at"], reverse=True)
+
+    return milestones, throughput, risks, bottlenecks, quality
+
+
 async def _gather_delivery_queries(
     session: AsyncSession,
     project_ids: list[UUID],
@@ -331,18 +476,26 @@ async def _gather_delivery_queries(
     dict[UUID, list[dict[str, Any]]],
     dict[UUID, dict[str, Any] | None],
 ]:
-    """Run the five delivery dashboard queries without N+1 fan-out."""
-    milestones = await _fetch_milestones_by_project(session, project_ids)
-    throughput = await _fetch_throughput_by_project(session, project_ids)
-    risks = await _fetch_open_risks_by_project(session, project_ids)
-    bottlenecks = await _fetch_open_bottlenecks_by_project(session, project_ids)
-    quality = await _fetch_latest_quality_by_project(session, project_ids)
-    return milestones, throughput, risks, bottlenecks, quality
+    """Load all five delivery dashboard inputs in a single DB round trip."""
+    if not project_ids:
+        return {}, {}, {}, {}, {}
+
+    rows = (
+        await session.execute(
+            DELIVERY_INPUTS_BUNDLE_SQL,
+            {"project_ids": project_ids, "throughput_limit": THROUGHPUT_HISTORY_LIMIT},
+        )
+    ).all()
+    normalized_rows: list[tuple[str, UUID, dict[str, Any]]] = [
+        (kind, project_id, payload) for kind, project_id, payload in rows
+    ]
+    return _parse_delivery_inputs_bundle_rows(normalized_rows)
 
 
 # ---------------------------------------------------------------------------
 # ORM loaders (used only by load_project_scoring_inputs / scoring path)
 # ---------------------------------------------------------------------------
+
 
 async def _fetch_orm_milestones(
     session: AsyncSession,
@@ -418,6 +571,7 @@ async def _fetch_latest_confidence_by_milestone(
 # Scoring input loader (scoring path only — ORM + raw_data in one shot)
 # ---------------------------------------------------------------------------
 
+
 async def load_project_scoring_inputs(
     session: AsyncSession,
     project: Project,
@@ -448,7 +602,9 @@ async def load_project_scoring_inputs(
         bottlenecks=[_bottleneck_payload(b) for b in bottlenecks],
         quality_snapshot=quality_map.get(project.id),
     )
-    raw_data["current_milestone_id"] = current_milestone["id"] if current_milestone is not None else None
+    raw_data["current_milestone_id"] = (
+        current_milestone["id"] if current_milestone is not None else None
+    )
 
     return ProjectScoringInputs(
         project=project,
@@ -461,13 +617,49 @@ async def load_project_scoring_inputs(
 
 
 # ---------------------------------------------------------------------------
+# Portfolio cache
+# ---------------------------------------------------------------------------
+
+# Delivery inputs change on a slow cadence (snapshots, alerts, milestones) while chat
+# turns and dashboard section loads are bursty, so a short TTL removes the expensive
+# load-and-score work from consecutive requests without meaningful staleness. Same
+# in-process pattern as the governance bootstrap KPI cache.
+PORTFOLIO_CACHE_TTL = timedelta(seconds=30)
+_portfolio_cache: dict[tuple[UUID | None, str, UUID], tuple[datetime, dict[str, Any]]] = {}
+
+
+def _portfolio_cache_key(current_user: CurrentUser) -> tuple[UUID | None, str, UUID]:
+    # user_id is part of the key because CLIENT visibility depends on per-user
+    # project assignments, not just the org.
+    org_id = None if current_user.role == AppRole.SUPER_ADMIN else current_user.org_id
+    return (org_id, current_user.role.value, current_user.id)
+
+
+def clear_delivery_portfolio_cache(*, org_id: UUID | None = None) -> int:
+    """Drop cached portfolio payloads after a committed delivery-data write.
+
+    ``org_id=None`` clears everything (also used by tests); otherwise entries for that
+    org plus all super-admin (cross-org) entries are cleared.
+    """
+    if org_id is None:
+        keys_to_remove = list(_portfolio_cache)
+    else:
+        keys_to_remove = [key for key in _portfolio_cache if key[0] in {org_id, None}]
+    for key in keys_to_remove:
+        _portfolio_cache.pop(key, None)
+    return len(keys_to_remove)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def _score_projects(
     projects: list[Project],
     inputs: dict[str, Any],
     effective_date: date,
+    thresholds_by_org: dict[UUID, DeliveryScoringThresholds],
 ) -> list[dict[str, Any]]:
     """Run the scoring pipeline for each project. Pure CPU; no I/O, no session access.
 
@@ -487,7 +679,15 @@ def _score_projects(
             bottlenecks=inputs["bottlenecks"].get(project.id, []),
             quality_snapshot=inputs["quality_snapshots"].get(project.id),
         )
-        scored.append({"project_id": project.id, "dashboard": build_dashboard_response(raw_data)})
+        scored.append(
+            {
+                "project_id": project.id,
+                "dashboard": build_dashboard_response(
+                    raw_data,
+                    thresholds=thresholds_by_org[project.org_id],
+                ),
+            }
+        )
     return scored
 
 
@@ -500,6 +700,7 @@ async def get_dashboard_data(
 ) -> dict[str, Any]:
     """Fetch raw delivery data and return the computed dashboard payload."""
     project = await get_visible_project(session, project_id, current_user)
+    thresholds = await load_delivery_scoring_thresholds(session, project.org_id)
     effective_date = as_of_date or date.today()
     inputs = await _fetch_delivery_inputs_by_project(session, [project.id])
     raw_data = _build_raw_data(
@@ -511,7 +712,7 @@ async def get_dashboard_data(
         bottlenecks=inputs["bottlenecks"].get(project.id, []),
         quality_snapshot=inputs["quality_snapshots"].get(project.id),
     )
-    return build_dashboard_response(raw_data)
+    return build_dashboard_response(raw_data, thresholds=thresholds)
 
 
 async def get_portfolio_data(
@@ -528,35 +729,48 @@ async def get_portfolio_data(
     the `limit` applied here. Clients must compare it against len(projects) and disclose
     the shortfall rather than presenting a truncated portfolio as the whole picture.
     """
+    # Only the default read shape is cacheable — caller-supplied project subsets and
+    # historical as_of_date reads bypass the cache entirely.
+    cache_eligible = projects is None and as_of_date is None and limit == PORTFOLIO_PROJECT_LIMIT
+    if cache_eligible:
+        cache_key = _portfolio_cache_key(current_user)
+        cached = _portfolio_cache.get(cache_key)
+        if cached and datetime.now(UTC) - cached[0] < PORTFOLIO_CACHE_TTL:
+            return cached[1]
+
     if projects is None:
         project_rows = (
             await session.execute(
                 scoped_project_query(current_user)
+                # count(*) OVER () is evaluated before LIMIT, so the visible-project
+                # total rides along in the same round trip instead of a second query.
+                .add_columns(func.count().over().label("total_count"))
                 # Tie-break on id so the truncated window is total, not merely sorted:
                 # two projects sharing a name would otherwise straddle the limit boundary
                 # in an unspecified order and swap between requests.
                 .order_by(Project.name.asc(), Project.id.asc())
                 .limit(limit)
             )
-        ).scalars()
-        projects = list(project_rows)
-        total_count = int(
-            (
-                await session.execute(
-                    select(func.count()).select_from(scoped_project_query(current_user).subquery())
-                )
-            ).scalar_one()
-        )
+        ).all()
+        projects = [row[0] for row in project_rows]
+        total_count = int(project_rows[0][1]) if project_rows else 0
     else:
         # The caller supplied the universe (e.g. operational_tower's in-flight subset), so
         # nothing was truncated here and no extra count query is warranted.
         total_count = len(projects)
 
     if not projects:
-        return {"projects": [], "milestones": [], "total_count": total_count}
+        empty_result = {"projects": [], "milestones": [], "total_count": total_count}
+        if cache_eligible:
+            _portfolio_cache[cache_key] = (datetime.now(UTC), empty_result)
+        return empty_result
 
     effective_date = as_of_date or date.today()
     project_ids = [project.id for project in projects]
+    thresholds_by_org = await load_delivery_scoring_thresholds_for_organisations(
+        session,
+        {project.org_id for project in projects},
+    )
     inputs = await _fetch_delivery_inputs_by_project(session, project_ids)
 
     # Scoring is pure CPU over already-fetched rows, and it is not cheap: ~700ms of the
@@ -564,7 +778,11 @@ async def get_portfolio_data(
     # it cannot stall the dashboard's other section requests, which are issued in parallel
     # and would otherwise block behind it despite needing none of its work.
     portfolio_projects = await run_in_threadpool(
-        _score_projects, projects, inputs, effective_date
+        _score_projects,
+        projects,
+        inputs,
+        effective_date,
+        thresholds_by_org,
     )
 
     # DeliveryPortfolioResponse declares a portfolio-wide `milestones` list, but this
@@ -572,11 +790,16 @@ async def get_portfolio_data(
     # clients' milestone hit-rate read as "no data". These are already batch-loaded
     # above, so flattening them here costs no extra query.
     portfolio_milestones = [
-        milestone for project_id in project_ids for milestone in inputs["milestones"].get(project_id, [])
+        milestone
+        for project_id in project_ids
+        for milestone in inputs["milestones"].get(project_id, [])
     ]
 
-    return {
+    result = {
         "projects": portfolio_projects,
         "milestones": portfolio_milestones,
         "total_count": total_count,
     }
+    if cache_eligible:
+        _portfolio_cache[cache_key] = (datetime.now(UTC), result)
+    return result

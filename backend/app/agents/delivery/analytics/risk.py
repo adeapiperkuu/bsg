@@ -1,6 +1,6 @@
 """Pure risk analytics for the Delivery Performance Agent."""
 
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 
 from app.agents.delivery.analytics.confidence import ON_TRACK_THRESHOLD
@@ -173,6 +173,7 @@ def build_contributing_causes(
     has_quality_drift: bool = False,
     rework_rate_pct: Decimal | None = None,
     on_track_threshold: Decimal = ON_TRACK_THRESHOLD,
+    warning_window_days: int = WARNING_WINDOW_DAYS,
 ) -> dict[str, float]:
     """Return normalized cause values suitable for structured risk metadata."""
     causes: dict[str, float] = {}
@@ -191,7 +192,10 @@ def build_contributing_causes(
     if throughput_component > ZERO:
         causes["throughput_decline"] = float(throughput_component)
 
-    milestone_component = milestone_risk_component(days_until_milestone=days_until_milestone)
+    milestone_component = milestone_risk_component(
+        days_until_milestone=days_until_milestone,
+        warning_window_days=warning_window_days,
+    )
     if milestone_component > ZERO:
         causes["milestone_urgency"] = float(milestone_component)
 

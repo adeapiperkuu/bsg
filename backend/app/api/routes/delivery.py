@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 
 from app.agents.delivery.audit.audit_logger import AuditLogger
+from app.agents.delivery.services.dashboard_service import clear_delivery_portfolio_cache
 from app.agents.delivery.services.recommendation_service import (
     fetch_recommendation_row,
     get_recommendation_for_mutation,
@@ -86,6 +87,8 @@ async def create_throughput(
     project = await get_visible_project(session, project_id, current_user)
     ingest_result = await upsert_throughput_snapshot(session, project, payload)
     await session.commit()
+    # Post-commit so a rolled-back write cannot evict still-valid cached reads.
+    clear_delivery_portfolio_cache(org_id=project.org_id)
     await session.refresh(ingest_result.snapshot)
     response = ThroughputSnapshotRead.model_validate(ingest_result.snapshot)
     response.scoring_status = ingest_result.scoring_status
@@ -163,6 +166,8 @@ async def update_risk_alert(
         alert.resolved_at = datetime.now(timezone.utc)
         alert.resolved_by = current_user.id
     await session.commit()
+    # Open-risk lists feed the cached delivery portfolio payload.
+    clear_delivery_portfolio_cache(org_id=alert.org_id)
     await session.refresh(alert)
     return DataResponse(data=RiskAlertRead.model_validate(alert))
 

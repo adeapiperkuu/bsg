@@ -1,5 +1,6 @@
 export const queryKeys = {
   projects: ["projects"] as const,
+  programs: ["programs"] as const,
   adminProjects: ["admin", "projects"] as const,
   organisations: ["organisations"] as const,
   users: ["users"] as const,
@@ -129,10 +130,35 @@ export const queryKeys = {
   knowledgeDocumentVersions: (documentId: string) =>
     ["knowledge", "document", documentId, "versions"] as const,
   knowledgeAgentQueries: ["knowledge", "agent-queries"] as const,
+  communicationsList: (filters: {
+    status?: string | null;
+    projectId?: string | null;
+    limit?: number;
+    offset?: number;
+  }) =>
+    [
+      "communications",
+      "list",
+      filters.status ?? null,
+      filters.projectId ?? null,
+      filters.limit ?? 30,
+      filters.offset ?? 0,
+    ] as const,
+  communicationDetail: (communicationId: string) =>
+    ["communications", "detail", communicationId] as const,
+  clientCommunicationsList: (filters: { limit?: number; offset?: number }) =>
+    [
+      "client-communications",
+      "list",
+      filters.limit ?? 30,
+      filters.offset ?? 0,
+    ] as const,
 };
 
 export const STALE_TIME_MS = 5 * 60 * 1000;
 export const TOWER_STALE_TIME_MS = 60 * 1000;
+export const COMMUNICATIONS_LIST_STALE_TIME_MS = 30 * 1000;
+export const COMMUNICATIONS_DETAIL_STALE_TIME_MS = 60 * 1000;
 
 export const TOWER_RISK_POLL_MS = 60 * 1000;
 export const ADMIN_LIST_GC_TIME_MS = 30 * 60 * 1000;

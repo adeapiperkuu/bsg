@@ -674,35 +674,47 @@ class LLMClient:
         user: str,
         context: str,
         json_mode: bool = False,
+        model: str | None = None,
+        max_tokens: int | None = None,
+        timeout_seconds: float | None = None,
     ) -> str:
         settings = get_settings()
         api_key = settings.openai_api_key or settings.llm_api_key
         if not api_key:
             raise ApiError(503, "LLM_PROVIDER_UNAVAILABLE", "LLM provider is not configured.")
 
-        model = settings.openai_model or settings.llm_model or "gpt-4o-mini"
+        resolved_model = model or settings.openai_model or settings.llm_model or "gpt-4o-mini"
         messages: list[dict[str, str]] = [{"role": "system", "content": system}]
         if context:
             messages.append({"role": "system", "content": f"Grounded context (cite only this data):\n{context}"})
         messages.append({"role": "user", "content": user})
 
         kwargs: dict = {
-            "model": model,
+            "model": resolved_model,
             "messages": messages,
             "temperature": 0.2,
         }
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
 
-        try:
+        async def _call() -> str:
             client = get_openai_client()
             response = await client.chat.completions.create(**kwargs)
             content = response.choices[0].message.content
             if content is None:
                 raise ApiError(503, "LLM_PROVIDER_ERROR", "LLM returned an unexpected response.")
             return content
+
+        try:
+            if timeout_seconds is not None and timeout_seconds > 0:
+                return await asyncio.wait_for(_call(), timeout=timeout_seconds)
+            return await _call()
         except ApiError:
             raise
+        except TimeoutError as exc:
+            raise ApiError(503, "LLM_PROVIDER_TIMEOUT", "LLM request timed out.") from exc
         except Exception as exc:
             raise ApiError(503, "LLM_PROVIDER_ERROR", "LLM request failed.") from exc
 

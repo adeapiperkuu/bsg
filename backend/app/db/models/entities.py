@@ -802,11 +802,30 @@ class User(Base, CreatedAt, UpdatedAt, SoftDelete):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
 
 
-class Project(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
-    __tablename__ = "projects"
-    __table_args__ = (Index("projects_org_id_idx", "org_id"), Index("projects_status_idx", "status"))
+class Program(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    """Client-facing 'Project' container; child scopes live in `projects`."""
+
+    __tablename__ = "programs"
+    __table_args__ = (Index("programs_org_id_idx", "org_id"),)
 
     org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    name: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+
+
+class Project(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "projects"
+    __table_args__ = (
+        Index("projects_org_id_idx", "org_id"),
+        Index("projects_status_idx", "status"),
+        Index("projects_program_id_idx", "program_id"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    program_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("programs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     name: Mapped[str] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text)
     vertical: Mapped[str] = mapped_column(Text)
@@ -1222,6 +1241,8 @@ class ClientCommunication(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     approved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    generation_mode: Mapped[str | None] = mapped_column(Text)
+    generation_warning: Mapped[str | None] = mapped_column(Text)
 
 
 class CommunicationEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
@@ -1316,8 +1337,28 @@ class ClientCsatScore(Base, UuidPrimaryKey, CreatedAt):
 
 class MetricConfiguration(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     __tablename__ = "metric_configurations"
+    __table_args__ = (
+        Index(
+            "metric_configurations_global_key_active_uidx",
+            "metric_key",
+            unique=True,
+            postgresql_where=text("org_id IS NULL AND deleted_at IS NULL"),
+        ),
+        Index(
+            "metric_configurations_org_key_active_uidx",
+            "org_id",
+            "metric_key",
+            unique=True,
+            postgresql_where=text("org_id IS NOT NULL AND deleted_at IS NULL"),
+        ),
+    )
 
-    metric_key: Mapped[str] = mapped_column(Text, unique=True)
+    org_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    metric_key: Mapped[str] = mapped_column(Text)
     display_label: Mapped[str] = mapped_column(Text)
     is_client_visible: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     display_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
