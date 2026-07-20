@@ -9,6 +9,7 @@ import {
   EvidenceBadge,
   StatusPill,
 } from "@/components/bsg/widgets";
+import { usePrefetchQualityIntelligence } from "@/hooks/usePrefetchQualityIntelligence";
 import {
   Select,
   SelectContent,

@@ -8,16 +8,22 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import Session
 from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
 
 from app.core.config import get_settings
+from app.db.rls import register_rls_event_listeners
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
 # Supabase session-mode (port 5432) caps total clients (~15 project-wide).
 # Keep app concurrency well under that so uvicorn --reload + browser bursts
-# cannot trigger EMAXCONNSESSION.
+# cannot trigger EMAXCONNSESSION. This gate is SKIPPED entirely on the
+# transaction pooler (port 6543, the default -- see _uses_session_pooler /
+# session_scope below): PgBouncer transaction mode fans many client
+# connections out over few server connections, so it doesn't need (and
+# shouldn't get) this protection.
 _SESSION_MODE_MAX_CONCURRENT = 4
 _session_semaphore: asyncio.Semaphore | None = None
 DatabaseConnectionMode = Literal[
@@ -25,6 +31,15 @@ DatabaseConnectionMode = Literal[
     "supabase_session_pooler",
     "supabase_transaction_pooler",
 ]
+
+# Phase 1A (docs/PERF_IMPLEMENTATION_PLAN.md): persistent client-side pool
+# sizing for the transaction pooler (port 6543). Supabase's transaction
+# pooler tolerates far more client connections than the session pooler, so a
+# real pool here is safe; keep it modest relative to the pooler's server-side
+# capacity and revisit in Phase 3 if burst testing shows it should change.
+_TRANSACTION_POOLER_POOL_SIZE = 10
+_TRANSACTION_POOLER_MAX_OVERFLOW = 10
+_TRANSACTION_POOLER_POOL_RECYCLE_SECONDS = 1800
 
 
 def _normalized_url(database_url: str) -> str:
@@ -126,30 +141,52 @@ def _engine_kwargs(database_url: str) -> dict:
         kwargs["pool_pre_ping"] = True
         return kwargs
 
-    # Session pooler (port 5432): do NOT hold a large idle QueuePool — those clients
-    # count against Supabase's ~15 session cap even when the app is idle, and
-    # uvicorn --reload can briefly double them. NullPool + a concurrency gate
-    # keeps peak clients bounded; prefer port 6543 (transaction mode) for prod.
+    # Session pooler (port 5432, fallback only -- see .env): do NOT hold a
+    # large idle QueuePool — those clients count against Supabase's ~15
+    # session cap even when the app is idle, and uvicorn --reload can briefly
+    # double them. NullPool + a concurrency gate keeps peak clients bounded.
+    # This branch is no longer the default; DATABASE_URL should point at the
+    # transaction pooler (port 6543, handled above) unless you have a
+    # specific reason to fall back (e.g. a feature that turns out to need a
+    # session-scoped `SET`/advisory lock across statements, which PgBouncer
+    # transaction mode cannot support).
     logger.warning(
-        "DATABASE_URL uses Supabase session pooler (port 5432). "
-        "Prefer transaction pooler port 6543 to avoid EMAXCONNSESSION. "
-        "Capping concurrent DB sessions at %s.",
+        "DATABASE_URL uses the Supabase SESSION pooler (port 5432), the Phase 1A "
+        "fallback path -- not the default. This re-enables the ~1s-per-request "
+        "connection-open tax the transaction pooler (port 6543) exists to avoid. "
+        "Capping concurrent DB sessions at %s to stay under Supabase's ~15-client cap.",
         _SESSION_MODE_MAX_CONCURRENT,
     )
     kwargs["poolclass"] = NullPool
     return kwargs
 
 
+class _AppSyncSession(Session):
+    """Dedicated sync `Session` subclass (rather than the bare `Session`) so
+    the RLS `after_begin` hook registered below is scoped precisely to
+    sessions created by this app's `AsyncSessionLocal`, and can't fire for
+    some unrelated sync `Session` (e.g. a future script/test) that happens to
+    exist in the same process."""
+
+
 engine = create_async_engine(
     settings.async_database_url,
     **_engine_kwargs(settings.async_database_url),
 )
-AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, sync_session_class=_AppSyncSession)
+
+# Phase 1A: reapply RLS context (app/db/rls.py) at the start of every
+# transaction this app's sessions open, not just the first -- required now
+# that connections/sessions are reused across transactions (mid-request
+# commits, pooled physical connections) rather than torn down per request.
+register_rls_event_listeners(_AppSyncSession)
 
 
 @asynccontextmanager
 async def session_scope() -> AsyncIterator[AsyncSession]:
-    """Open a DB session, gated when using Supabase session-mode pooler."""
+    """Open a DB session, gated when using Supabase session-mode pooler
+    (no-op gate on the default transaction-pooler path -- see
+    _uses_session_pooler)."""
     gate = _get_session_semaphore() if _uses_session_pooler(settings.async_database_url) else None
     if gate is not None:
         await gate.acquire()

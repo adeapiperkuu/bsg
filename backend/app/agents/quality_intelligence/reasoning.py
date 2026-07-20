@@ -7,6 +7,29 @@ reasoning engine (validated by citations.validate_reasoning) or falls back to
 the deterministic waterfall in root_cause.py — never both silently. Shadow
 mode runs the LLM engine for divergence logging without affecting the
 response, when the main flag is off.
+
+PHASE 2B NOTE (perf plan): query_handler.answer_quality_query() calls this
+function, then makes a second, separate LLM call to synthesize the final
+answer from its result — two sequential OpenAI calls per NL query. A merged
+single-call design (one prompt producing both a `root_cause` object and the
+final `answer` in one JSON envelope, validated identically via
+citations.validate_reasoning before either half is trusted) was implemented
+and measured live against the running dev server. It was reverted rather than
+shipped: measured agent-query p50 went from ~24.9s (two calls) to ~33.1s
+(merged), i.e. *slower*, not faster. Root cause of the regression: for the
+test project's evidence pack, the reasoning half fails grounding validation
+on the large majority of calls (the model repeatedly proposes
+"systemic_sop_ambiguity" as primary_driver against a pre-pass that marks it
+not observed) — this happens at a similar rate in the original two-call
+architecture too, so it is not a correctness regression from merging, but
+merging makes each rejected attempt strictly more expensive: the combined
+prompt must generate the *entire answer text* before validation can reject
+it, whereas the reasoning-only call discards a much smaller response on
+rejection. Every rejection still falls back to a full separate synthesis
+call either way, so the merge produces no call-count savings on the branch
+that dominates in practice here, while adding real latency to it. See the
+Phase 2B report for full before/after numbers. Recommendation: pursue
+streaming the synthesis answer (first-token latency) instead of merging.
 """
 
 from __future__ import annotations

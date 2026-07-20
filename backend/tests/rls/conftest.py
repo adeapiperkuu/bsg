@@ -42,7 +42,7 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.session import session_scope
+from app.db.session import engine, session_scope
 
 # `pytest_addoption` lives in tests/conftest.py, not here: pytest's early
 # conftest scan (which registers command-line options before collection)
@@ -93,6 +93,39 @@ class Seed:
     delivery_manager_a: UUID  # org A
     bsg_leadership: UUID  # org A (role ignores org_id per policy)
     super_admin: UUID  # org A (role ignores org_id per policy)
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _dispose_engine_pool_after_test() -> AsyncIterator[None]:
+    """Phase 1A (docs/PERF_IMPLEMENTATION_PLAN.md): `app/db/session.py`'s
+    async engine now holds a persistent connection pool (`pool_size=10`)
+    instead of `NullPool`, and that engine/pool is a module-level singleton
+    created once at import. `pytest-asyncio`'s default (function-scoped)
+    event loop means every test in this package runs on its OWN fresh loop
+    -- so a pooled asyncpg connection checked out and returned idle during
+    test A's loop would, under the old NullPool, simply never exist by the
+    time test B ran (NullPool closes every connection on checkin, all within
+    the same loop that opened it). With a persistent pool that connection
+    instead survives, idle, into test B's DIFFERENT loop; asyncpg's
+    connection/transport objects are bound to the loop that created them, so
+    any operation on it from test B's loop (or the pool later closing it
+    against test A's now-closed loop) raises `RuntimeError: Event loop is
+    closed` or `InterfaceError: another operation is in progress`. This is a
+    test-infrastructure-only problem (uvicorn's single long-lived loop in
+    production never hits it) but it makes this opt-in `--run-live-rls` suite
+    flaky/broken once a real pool is in place.
+
+    Fix: dispose the pool's connections here, in THIS test's teardown, while
+    its own event loop -- the one that actually owns them -- is still alive
+    and running. That guarantees no connection ever survives to be touched
+    from a different test's loop. Runs after `rls_conn`'s own teardown
+    (pytest tears fixtures down in reverse of setup order, and this fixture,
+    being autouse, is set up before the test explicitly requests `rls_conn`),
+    so the session's connection has already been checked back into the pool
+    by the time this disposes it.
+    """
+    yield
+    await engine.dispose()
 
 
 @pytest_asyncio.fixture
