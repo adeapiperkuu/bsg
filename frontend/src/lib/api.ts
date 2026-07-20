@@ -1360,6 +1360,72 @@ export async function* streamDeliveryChatMessage(
   }
 }
 
+export type AgentQueryStreamEvent =
+  | { type: "status"; phase: "gathering_evidence" | "reasoning" | "writing" }
+  | { type: "delta"; text: string }
+  | { type: "done"; data: AgentQueryRead }
+  | { type: "error"; code?: string; message: string; retryable?: boolean };
+
+/** Streaming counterpart to postAgentQuery — currently only the quality
+ * intelligence agent supports this on the backend (see
+ * POST /agent-queries/stream). Emits `status` events during evidence
+ * gathering / root-cause reasoning, `delta` events as the answer is
+ * synthesized, then a single `done` event with the full grounded
+ * AgentQueryRead payload (identical in shape to postAgentQuery's result). */
+export async function* streamAgentQuery(payload: {
+  agent_name: string;
+  project_id?: string;
+  query_text: string;
+}): AsyncGenerator<AgentQueryStreamEvent> {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  const csrf = getCsrfToken();
+  if (csrf) headers.set("X-CSRF-Token", csrf);
+
+  const response = await fetch(`${API_BASE}/agent-queries/stream`, {
+    method: "POST",
+    headers,
+    credentials: "include",
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok || !response.body) {
+    throw await parseApiError(response);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+
+  const parseLine = (line: string): AgentQueryStreamEvent | null => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data: ")) return null;
+    const raw = trimmed.slice(6).trim();
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as AgentQueryStreamEvent;
+    } catch {
+      return null;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split(/\r?\n/);
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      const event = parseLine(line);
+      if (event) yield event;
+    }
+  }
+
+  if (buf.trim()) {
+    const event = parseLine(buf);
+    if (event) yield event;
+  }
+}
+
 export async function getDeliveryChatConversation(
   conversationId: string,
 ): Promise<DeliveryChatConversation> {

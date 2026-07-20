@@ -35,6 +35,7 @@ import {
   healthDistribution,
   aiSummary,
 } from "@/lib/bsg/data";
+import { usePrefetchQualityIntelligence } from "@/hooks/usePrefetchQualityIntelligence";
 
 export const Route = createFileRoute("/dashboard")({ component: Dashboard });
 
@@ -52,6 +53,12 @@ const tooltipStyle = {
 };
 
 function Dashboard() {
+  // Operational Tower: the first page a PM sees after login. This must
+  // render on its own schedule -- the hook itself defers to browser idle
+  // time so it can never delay this component's own paint
+  // (PERF_IMPLEMENTATION_PLAN.md Phase 4).
+  usePrefetchQualityIntelligence();
+
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">

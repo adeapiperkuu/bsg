@@ -57,3 +57,7 @@ __pycache__/
 .env.development
 .env.production
 .env.example
+
+# Claude Code local tooling
+.claude/
+graphify-out/

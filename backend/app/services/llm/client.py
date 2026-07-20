@@ -706,6 +706,67 @@ class LLMClient:
         except Exception as exc:
             raise ApiError(503, "LLM_PROVIDER_ERROR", "LLM request failed.") from exc
 
+    async def stream_structured(
+        self,
+        *,
+        system: str,
+        user: str,
+        context: str,
+        json_mode: bool = False,
+    ) -> AsyncGenerator[dict[str, object], None]:
+        """Streaming counterpart to generate_structured.
+
+        generate_structured's callers (e.g. the Quality Intelligence synthesis
+        prompt) use the raw completion text directly as the answer — unlike
+        stream_rag_answer/stream_delivery_answer there is no "answer" JSON
+        field to extract mid-stream (QUALITY_SYNTHESIS_PROMPT describes a
+        prose response shape, not a JSON envelope, even when a caller passes
+        json_mode=True for OpenAI's response_format). So this yields the raw
+        output tokens as deltas, unmodified — the concatenated deltas equal
+        exactly what generate_structured would return as a single string for
+        the same call.
+
+        Yields dicts of two shapes:
+        - {"type": "delta", "text": "<token>"}
+        - {"type": "done", "answer_text": "<full raw text>", "model": str, "error": str | None}
+        """
+        settings = get_settings()
+        api_key = settings.openai_api_key or settings.llm_api_key
+        if not api_key:
+            yield {"type": "done", "answer_text": "", "model": "", "error": "LLM_PROVIDER_UNAVAILABLE"}
+            return
+
+        model = settings.openai_model or settings.llm_model or "gpt-4o-mini"
+        messages: list[dict[str, str]] = [{"role": "system", "content": system}]
+        if context:
+            messages.append({"role": "system", "content": f"Grounded context (cite only this data):\n{context}"})
+        messages.append({"role": "user", "content": user})
+
+        kwargs: dict = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.2,
+            "stream": True,
+        }
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+
+        accumulated = ""
+        try:
+            client = get_openai_client()
+            async with await client.chat.completions.create(**kwargs) as stream:
+                async for chunk in stream:
+                    token = chunk.choices[0].delta.content or "" if chunk.choices else ""
+                    if not token:
+                        continue
+                    accumulated += token
+                    yield {"type": "delta", "text": token}
+        except Exception as exc:
+            yield {"type": "done", "answer_text": accumulated, "model": model, "error": str(exc)}
+            return
+
+        yield {"type": "done", "answer_text": accumulated, "model": model, "error": None}
+
     async def generate_rag_answer(
         self,
         query: str,

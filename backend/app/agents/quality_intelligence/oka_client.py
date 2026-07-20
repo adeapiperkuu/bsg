@@ -15,6 +15,14 @@ from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# OKA is a best-effort, non-blocking side call on the agent-query hot path
+# (query_handler.py) — a slow or hanging OKA request must never be allowed to
+# dominate an already latency-sensitive NL query. 3s is generous for a
+# same-network lookup/write while bounding worst case impact when
+# OKA_BASE_URL points at a degraded or unreachable service (PHASE 2B
+# prod-hardening; inert/no-op in dev where OKA_BASE_URL is unset).
+OKA_TIMEOUT_SECONDS = 3.0
+
 
 class OKAClient:
     async def retrieve_lessons(
@@ -30,7 +38,7 @@ class OKAClient:
 
         query = " ".join(p for p in (task_type, error_category) if p).strip() or "quality"
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=OKA_TIMEOUT_SECONDS) as client:
                 response = await client.get(
                     f"{settings.oka_base_url.rstrip('/')}/lessons/search",
                     params={"q": query, "org_id": org_id},
@@ -57,7 +65,7 @@ class OKAClient:
             return None
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=OKA_TIMEOUT_SECONDS) as client:
                 response = await client.post(
                     f"{settings.oka_base_url.rstrip('/')}/lessons",
                     json={
