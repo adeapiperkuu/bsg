@@ -103,10 +103,15 @@ export function TrainingGapsSection({
       ) : trainingGapsError ? (
         <p className="text-sm text-[color:var(--danger)]">{trainingGapsError}</p>
       ) : (trainingGaps?.total_training_gaps ?? 0) === 0 ? (
-        <WorkforcePlaceholder
-          title="No open training gaps"
-          reason="Mandatory training, certifications, and training records are current for project teams."
-        />
+        <div className="flex items-start gap-3 rounded-md border border-[color:var(--success)]/25 bg-[color:var(--success)]/5 px-3 py-2.5">
+          <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-[color:var(--success)]" />
+          <div>
+            <p className="text-sm font-medium text-foreground">Training coverage is current</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              No mandatory, expired, or pending certification gaps for this project.
+            </p>
+          </div>
+        </div>
       ) : filteredTrainingGapRows.length === 0 ? (
         <WorkforcePlaceholder
           title="No training gaps match the current filters"

@@ -11,7 +11,7 @@ export function WorkforcePlaceholder({
   onAction?: () => void;
 }) {
   return (
-    <div className="flex flex-col items-center rounded-md border border-dashed border-border bg-elevated/50 px-4 py-5 text-center">
+    <div className="flex flex-col items-center rounded-md border border-dashed border-border bg-elevated/50 px-3 py-3 text-center">
       <p className="text-sm font-medium text-muted-foreground">{title}</p>
       <p className="mt-1 text-xs text-muted-foreground">{reason}</p>
       {actionLabel && onAction ? (

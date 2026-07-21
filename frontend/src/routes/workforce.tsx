@@ -449,7 +449,7 @@ function WorkforcePage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-5">
+      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-5">
         <div className="space-y-5 lg:col-span-3">
           {/* --- Live KPIs (teams + annotators API) --- */}
           <WorkforceKpiStrip
@@ -537,6 +537,24 @@ function WorkforcePage() {
               bundledError={dashboardQuery.isError}
             />
           ) : null}
+        </div>
+
+        <div className="space-y-5 lg:sticky lg:top-4 lg:col-span-2 lg:self-start">
+          <RegionalOverviewSection
+            view={view}
+            onViewChange={setView}
+            workforceLoading={workforceLoading}
+            hasTeams={hasTeams}
+            filteredTeams={filteredTeams}
+            summary={summary}
+            canReadInternalWorkforce={canReadInternalWorkforce}
+            filteredSiteUtilization={filteredSiteUtilization}
+            visibleSites={visibleSites}
+            skillMatrixLoading={skillMatrixLoading}
+            skillMatrixError={skillMatrixError}
+            skillMatrixRows={skillMatrixRows}
+            filteredSkillMatrixRows={filteredSkillMatrixRows}
+          />
 
           <TeamSummarySection
             workforceLoading={workforceLoading}
@@ -552,24 +570,6 @@ function WorkforcePage() {
             onToggleTeamsManager={() => setShowTeamsManager((value) => !value)}
             onToggleTeam={toggleTeamExpanded}
             onSelectAnnotator={openAnnotatorProfile}
-          />
-        </div>
-
-        <div className="space-y-5 lg:col-span-2">
-          <RegionalOverviewSection
-            view={view}
-            onViewChange={setView}
-            workforceLoading={workforceLoading}
-            hasTeams={hasTeams}
-            filteredTeams={filteredTeams}
-            summary={summary}
-            canReadInternalWorkforce={canReadInternalWorkforce}
-            filteredSiteUtilization={filteredSiteUtilization}
-            visibleSites={visibleSites}
-            skillMatrixLoading={skillMatrixLoading}
-            skillMatrixError={skillMatrixError}
-            skillMatrixRows={skillMatrixRows}
-            filteredSkillMatrixRows={filteredSkillMatrixRows}
           />
 
           <TrainingGapsSection

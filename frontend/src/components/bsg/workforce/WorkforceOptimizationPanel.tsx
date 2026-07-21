@@ -385,10 +385,6 @@ export function WorkforceOptimizationPanel({
   loading?: boolean;
   error?: boolean;
 }) {
-  const [tab, setTab] = useState<TabId>("planning");
-
-  const currentUtilization = optimization?.utilization_forecast[0]?.projected_utilization_pct ?? null;
-
   const tabs = useMemo(() => {
     if (!optimization) return [];
     return [
@@ -414,6 +410,16 @@ export function WorkforceOptimizationPanel({
       },
     ];
   }, [optimization]);
+
+  const defaultTab = useMemo<TabId>(() => {
+    const firstWithContent = tabs.find((item) => item.count > 0);
+    return firstWithContent?.id ?? "planning";
+  }, [tabs]);
+
+  const [tab, setTab] = useState<TabId>(defaultTab);
+  const activeTab = tabs.some((item) => item.id === tab) ? tab : defaultTab;
+  const currentUtilization =
+    optimization?.utilization_forecast[0]?.projected_utilization_pct ?? null;
 
   return (
     <Card id="workforce-optimization">
@@ -463,7 +469,7 @@ export function WorkforceOptimizationPanel({
                 onClick={() => setTab(item.id)}
                 className={cn(
                   "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                  tab === item.id
+                  activeTab === item.id
                     ? "bg-foreground text-background"
                     : "text-muted-foreground hover:bg-elevated hover:text-foreground",
                 )}
@@ -476,19 +482,19 @@ export function WorkforceOptimizationPanel({
             ))}
           </div>
 
-          {tab === "matching" ? (
+          {activeTab === "matching" ? (
             <SkillMatchingSection rows={optimization.skill_matches} />
           ) : null}
-          {tab === "rebalancing" ? (
+          {activeTab === "rebalancing" ? (
             <RebalancingSection
               rows={optimization.rebalancing}
               currentUtilization={currentUtilization}
             />
           ) : null}
-          {tab === "planning" ? (
+          {activeTab === "planning" ? (
             <ResourcePlanningSection rows={optimization.resource_planning} />
           ) : null}
-          {tab === "sme" ? <SmeCoverageSection rows={optimization.sme_coverage} /> : null}
+          {activeTab === "sme" ? <SmeCoverageSection rows={optimization.sme_coverage} /> : null}
         </div>
       )}
     </Card>
