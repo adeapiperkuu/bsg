@@ -42,7 +42,6 @@ const internalNav: NavSection[] = [
     items: [
       { to: "/knowledge", label: "Knowledge Agent", icon: BookOpen },
       { to: "/projects", label: "Projects", icon: FolderKanban },
-      { to: "/teams", label: "Teams", icon: Users },
     ],
   },
   {

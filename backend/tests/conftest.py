@@ -95,6 +95,20 @@ class FakeSession:
 
 
 @pytest.fixture(autouse=True)
+def _force_sequential_evidence_pack(monkeypatch: pytest.MonkeyPatch):
+    """Unit tests inject FakeSessions, but the evidence pack's parallel branch
+    (taken when DATABASE_URL points at the transaction pooler) opens real pooled
+    DB connections via AsyncSessionLocal. Those connections outlive the per-test
+    event loop and make the suite flaky/network-dependent, so force the
+    sequential single-session path during tests."""
+    from app.agents.client_intelligence import evidence_pack
+    from app.services import client_intelligence as client_intelligence_service
+
+    monkeypatch.setattr(evidence_pack, "_uses_session_pooler", lambda _url: True)
+    monkeypatch.setattr(client_intelligence_service, "_uses_session_pooler", lambda _url: True)
+
+
+@pytest.fixture(autouse=True)
 def _clear_delivery_portfolio_cache():
     """Delivery portfolio reads are cached in-process; user/org fixture ids are reused
     across tests, so a stale entry from one test could leak into the next."""

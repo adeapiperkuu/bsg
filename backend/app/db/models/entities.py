@@ -1470,6 +1470,11 @@ class ClientCommunication(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     approved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejection_reason: Mapped[str | None] = mapped_column(Text)
+    rejected_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # SHA-256 hex digest of the governed evidence pack; null only on legacy rows.
+    evidence_source_fingerprint: Mapped[str | None] = mapped_column(Text)
     generation_mode: Mapped[str | None] = mapped_column(Text)
     generation_warning: Mapped[str | None] = mapped_column(Text)
 
@@ -1481,6 +1486,11 @@ class CommunicationEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
     source_table: Mapped[str] = mapped_column(Text)
     source_row_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
     description: Mapped[str] = mapped_column(Text)
+    # Provenance columns are nullable on legacy rows; new governed writes set all.
+    visibility: Mapped[str | None] = mapped_column(Text)
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claim_keys: Mapped[list[str]] = mapped_column(JSONB, default=list, server_default=text("'[]'::jsonb"))
+    pack_source_fingerprint: Mapped[str | None] = mapped_column(Text)
 
 
 class AgentQuery(Base, UuidPrimaryKey, CreatedAt):
@@ -1512,6 +1522,11 @@ class AgentQueryEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
     source_table: Mapped[str] = mapped_column(Text)
     source_row_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
     description: Mapped[str] = mapped_column(Text)
+    # Provenance columns are nullable on legacy rows; new governed writes set all.
+    visibility: Mapped[str | None] = mapped_column(Text)
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claim_keys: Mapped[list[str]] = mapped_column(JSONB, default=list, server_default=text("'[]'::jsonb"))
+    pack_source_fingerprint: Mapped[str | None] = mapped_column(Text)
 
 
 class DeliveryConversation(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):

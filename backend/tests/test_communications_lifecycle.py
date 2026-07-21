@@ -1,4 +1,9 @@
-"""Phase 5: communication lifecycle transitions (edit / review / approve / reject / send)."""
+"""Phase 5: communication lifecycle transitions (edit / review / approve / reject / send).
+
+Post-merge these assert the governed lifecycle semantics:
+draft -> in_review -> approved -> sent, with reject only from in_review.
+Detailed audit/fingerprint coverage lives in test_communication_lifecycle.py.
+"""
 
 from __future__ import annotations
 
@@ -12,8 +17,9 @@ import pytest
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
 from app.db.models import AppRole, CommunicationStatus, CommunicationType
-from app.schemas.domain import CommunicationApprove, CommunicationReview
+from app.schemas.domain import CommunicationApprove, CommunicationReject, CommunicationReview
 from app.services.communications import (
+    ERROR_INVALID_TRANSITION,
     approve,
     move_to_review,
     reject,
@@ -21,6 +27,17 @@ from app.services.communications import (
     update_communication_content,
 )
 from tests.conftest import FakeSession, override_user
+
+
+class _Session(FakeSession):
+    def __init__(self) -> None:
+        self.added: list[object] = []
+
+    def add(self, obj: object) -> None:
+        self.added.append(obj)
+
+    async def flush(self, *_args: object, **_kwargs: object) -> None:
+        return None
 
 
 def _user() -> CurrentUser:
@@ -50,6 +67,10 @@ def _comm(**overrides: object) -> SimpleNamespace:
         "approved_by": None,
         "approved_at": None,
         "sent_at": None,
+        "rejection_reason": None,
+        "rejected_by": None,
+        "rejected_at": None,
+        "evidence_source_fingerprint": None,
         "created_at": now,
         "updated_at": now,
     }
@@ -59,7 +80,7 @@ def _comm(**overrides: object) -> SimpleNamespace:
 
 @pytest.mark.asyncio
 async def test_edit_allowed_for_draft_updates_body_draft() -> None:
-    session = FakeSession()
+    session = _Session()
     communication = _comm(status=CommunicationStatus.DRAFT, body_draft="Old")
     updated = await update_communication_content(
         session,  # type: ignore[arg-type]
@@ -74,7 +95,7 @@ async def test_edit_allowed_for_draft_updates_body_draft() -> None:
 
 @pytest.mark.asyncio
 async def test_edit_allowed_for_in_review_updates_body_approved() -> None:
-    session = FakeSession()
+    session = _Session()
     communication = _comm(
         status=CommunicationStatus.IN_REVIEW,
         body_approved="Reviewed body",
@@ -101,7 +122,7 @@ async def test_edit_allowed_for_in_review_updates_body_approved() -> None:
 async def test_edit_denied_for_terminal_statuses(status: CommunicationStatus) -> None:
     with pytest.raises(ApiError) as exc:
         await update_communication_content(
-            FakeSession(),  # type: ignore[arg-type]
+            _Session(),  # type: ignore[arg-type]
             _comm(status=status),  # type: ignore[arg-type]
             subject=None,
             body="Nope",
@@ -111,49 +132,74 @@ async def test_edit_denied_for_terminal_statuses(status: CommunicationStatus) ->
 
 
 @pytest.mark.asyncio
-async def test_approve_from_draft_and_in_review() -> None:
+async def test_approve_only_from_in_review() -> None:
     user = _user()
-    for status in (CommunicationStatus.DRAFT, CommunicationStatus.IN_REVIEW):
-        communication = _comm(status=status, body_draft="Body", body_approved=None)
-        result = await approve(
-            FakeSession(),  # type: ignore[arg-type]
-            communication,  # type: ignore[arg-type]
-            CommunicationApprove(body_approved="Approved body"),
-            user,
-        )
-        assert result.status == CommunicationStatus.APPROVED
-        assert result.body_approved == "Approved body"
-        assert result.approved_by == user.id
-        assert result.sent_at is None
+    communication = _comm(
+        status=CommunicationStatus.IN_REVIEW,
+        body_approved="Reviewed body",
+        reviewed_by=uuid4(),
+        reviewed_at=datetime(2026, 7, 16, tzinfo=timezone.utc),
+    )
+    result = await approve(
+        _Session(),  # type: ignore[arg-type]
+        communication,  # type: ignore[arg-type]
+        CommunicationApprove(body_approved=None),
+        user,
+    )
+    assert result.status == CommunicationStatus.APPROVED
+    assert result.body_approved == "Reviewed body"
+    assert result.approved_by == user.id
+    assert result.sent_at is None
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "status",
-    [CommunicationStatus.APPROVED, CommunicationStatus.SENT, CommunicationStatus.REJECTED],
+    [
+        CommunicationStatus.DRAFT,
+        CommunicationStatus.APPROVED,
+        CommunicationStatus.SENT,
+        CommunicationStatus.REJECTED,
+    ],
 )
 async def test_approve_denied_from_invalid_status(status: CommunicationStatus) -> None:
     with pytest.raises(ApiError) as exc:
         await approve(
-            FakeSession(),  # type: ignore[arg-type]
+            _Session(),  # type: ignore[arg-type]
             _comm(status=status, body_approved="x"),  # type: ignore[arg-type]
             CommunicationApprove(),
             _user(),
         )
     assert exc.value.status_code == 409
-    assert exc.value.code == "INVALID_COMMUNICATION_TRANSITION"
+    assert exc.value.code == ERROR_INVALID_TRANSITION
 
 
 @pytest.mark.asyncio
-async def test_reject_permitted_only_from_draft_or_in_review() -> None:
-    for status in (CommunicationStatus.DRAFT, CommunicationStatus.IN_REVIEW):
-        result = await reject(FakeSession(), _comm(status=status))  # type: ignore[arg-type]
-        assert result.status == CommunicationStatus.REJECTED
+async def test_reject_permitted_only_from_in_review() -> None:
+    payload = CommunicationReject(rejection_reason="Needs clearer milestones.")
+    result = await reject(
+        _Session(),  # type: ignore[arg-type]
+        _comm(status=CommunicationStatus.IN_REVIEW, body_approved="Reviewed"),  # type: ignore[arg-type]
+        payload,
+        _user(),
+    )
+    assert result.status == CommunicationStatus.REJECTED
+    assert result.rejection_reason == "Needs clearer milestones."
 
-    for status in (CommunicationStatus.APPROVED, CommunicationStatus.SENT, CommunicationStatus.REJECTED):
+    for status in (
+        CommunicationStatus.DRAFT,
+        CommunicationStatus.APPROVED,
+        CommunicationStatus.SENT,
+        CommunicationStatus.REJECTED,
+    ):
         with pytest.raises(ApiError) as exc:
-            await reject(FakeSession(), _comm(status=status))  # type: ignore[arg-type]
-        assert exc.value.code == "INVALID_COMMUNICATION_TRANSITION"
+            await reject(
+                _Session(),  # type: ignore[arg-type]
+                _comm(status=status),  # type: ignore[arg-type]
+                payload,
+                _user(),
+            )
+        assert exc.value.code == ERROR_INVALID_TRANSITION
 
 
 @pytest.mark.asyncio
@@ -162,8 +208,9 @@ async def test_send_only_from_approved() -> None:
         status=CommunicationStatus.APPROVED,
         body_approved="Ready",
         approved_by=uuid4(),
+        approved_at=datetime(2026, 7, 16, tzinfo=timezone.utc),
     )
-    result = await send(FakeSession(), approved)  # type: ignore[arg-type]
+    result = await send(_Session(), approved, _user())  # type: ignore[arg-type]
     assert result.status == CommunicationStatus.SENT
     assert result.sent_at is not None
 
@@ -171,9 +218,9 @@ async def test_send_only_from_approved() -> None:
 @pytest.mark.asyncio
 async def test_send_draft_rejected() -> None:
     with pytest.raises(ApiError) as exc:
-        await send(FakeSession(), _comm(status=CommunicationStatus.DRAFT))  # type: ignore[arg-type]
+        await send(_Session(), _comm(status=CommunicationStatus.DRAFT), _user())  # type: ignore[arg-type]
     assert exc.value.status_code == 409
-    assert exc.value.code == "INVALID_COMMUNICATION_TRANSITION"
+    assert exc.value.code == ERROR_INVALID_TRANSITION
 
 
 @pytest.mark.asyncio
@@ -185,7 +232,7 @@ async def test_duplicate_send_is_idempotent() -> None:
         approved_by=uuid4(),
         sent_at=sent_at,
     )
-    result = await send(FakeSession(), communication)  # type: ignore[arg-type]
+    result = await send(_Session(), communication, _user())  # type: ignore[arg-type]
     assert result.status == CommunicationStatus.SENT
     assert result.sent_at == sent_at
 
@@ -193,8 +240,8 @@ async def test_duplicate_send_is_idempotent() -> None:
 @pytest.mark.asyncio
 async def test_send_rejected_report_denied() -> None:
     with pytest.raises(ApiError) as exc:
-        await send(FakeSession(), _comm(status=CommunicationStatus.REJECTED))  # type: ignore[arg-type]
-    assert exc.value.code == "INVALID_COMMUNICATION_TRANSITION"
+        await send(_Session(), _comm(status=CommunicationStatus.REJECTED), _user())  # type: ignore[arg-type]
+    assert exc.value.code == ERROR_INVALID_TRANSITION
 
 
 @pytest.mark.asyncio
@@ -202,7 +249,7 @@ async def test_review_submits_to_in_review() -> None:
     user = _user()
     communication = _comm(status=CommunicationStatus.DRAFT)
     result = await move_to_review(
-        FakeSession(),  # type: ignore[arg-type]
+        _Session(),  # type: ignore[arg-type]
         communication,  # type: ignore[arg-type]
         CommunicationReview(body_approved="Ready for review"),
         user,
@@ -216,12 +263,12 @@ async def test_review_submits_to_in_review() -> None:
 async def test_review_denied_for_approved() -> None:
     with pytest.raises(ApiError) as exc:
         await move_to_review(
-            FakeSession(),  # type: ignore[arg-type]
+            _Session(),  # type: ignore[arg-type]
             _comm(status=CommunicationStatus.APPROVED, body_approved="x"),  # type: ignore[arg-type]
             CommunicationReview(body_approved="x"),
             _user(),
         )
-    assert exc.value.code == "INVALID_COMMUNICATION_TRANSITION"
+    assert exc.value.code == ERROR_INVALID_TRANSITION
 
 
 @pytest.mark.asyncio

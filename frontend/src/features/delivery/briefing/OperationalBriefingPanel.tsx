@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { ChevronDown } from "lucide-react";
 import { AiBadge, Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
 import {
   generateProjectOperationalBriefing,
@@ -21,111 +23,51 @@ const TRAFFIC_LABEL: Record<string, string> = {
   red: "Red",
 };
 
-const URGENCY_LABEL: Record<string, string> = {
-  critical: "Critical",
-  high: "High",
-  medium: "Medium",
-  low: "Low",
-};
+/** Joins list items into one flowing sentence-per-item paragraph. */
+function toProse(items: string[], max = 8): string {
+  const shown = items.slice(0, max).map((item) => {
+    const trimmed = item.trim().replace(/[.;]+$/, "");
+    return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+  });
+  let text = shown.join(". ");
+  if (text) text += ".";
+  if (items.length > max) text += ` Plus ${items.length - max} more.`;
+  return text;
+}
 
-/** Bordered sub-panel so every briefing section has the same visual weight. */
-function SectionCard({
-  title,
-  className,
-  children,
-}: {
-  title: string;
-  className?: string;
-  children: React.ReactNode;
-}) {
+function BriefingParagraph({ label, text }: { label: string; text: string }) {
+  if (!text) return null;
   return (
-    <div className={cn("rounded-md border border-border bg-elevated/30 p-3.5", className)}>
-      <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-        {title}
-      </p>
-      {children}
-    </div>
+    <p className="text-sm leading-relaxed text-foreground/90">
+      <span className="font-semibold text-foreground">{label}. </span>
+      {text}
+    </p>
   );
 }
 
-function BulletList({ items, max = 8 }: { items: string[]; max?: number }) {
-  return (
-    <ul className="space-y-1.5">
-      {items.slice(0, max).map((item) => (
-        <li key={item} className="flex gap-2 text-xs leading-snug text-foreground/85">
-          <span className="mt-[5px] h-1 w-1 shrink-0 rounded-full bg-muted-foreground/60" />
-          <span>{item}</span>
-        </li>
-      ))}
-      {items.length > max ? (
-        <li className="text-[11px] text-muted-foreground">+{items.length - max} more</li>
-      ) : null}
-    </ul>
-  );
-}
-
-function ConfidenceMovementCard({ briefing }: { briefing: OperationalBriefing }) {
+function confidenceProse(briefing: OperationalBriefing): string {
   const move = briefing.confidence_movement;
-  const deltaTone =
-    move.delta == null || move.delta === 0
-      ? "text-muted-foreground"
-      : move.delta > 0
-        ? "text-[color:var(--success)]"
-        : "text-[color:var(--danger)]";
-  const arrow = move.delta == null || move.delta === 0 ? "→" : move.delta > 0 ? "▲" : "▼";
-  return (
-    <SectionCard title="Confidence movement">
-      <div className="flex items-baseline gap-2">
-        <span className="text-2xl font-semibold tabular-nums text-foreground">
-          {move.current.toFixed(0)}%
-        </span>
-        {move.delta != null ? (
-          <span className={cn("text-sm font-medium tabular-nums", deltaTone)}>
-            {arrow} {move.delta > 0 ? "+" : ""}
-            {move.delta.toFixed(1)} pts
-          </span>
-        ) : (
-          <span className="text-xs text-muted-foreground">no prior score</span>
-        )}
-      </div>
-      {move.previous != null ? (
-        <p className="mt-1 text-[11px] text-muted-foreground">
-          Previous {move.previous.toFixed(0)}% → current {move.current.toFixed(0)}%
-        </p>
-      ) : null}
-      {move.drivers.length > 0 ? (
-        <div className="mt-2.5 border-t border-border/60 pt-2.5">
-          <BulletList items={move.drivers} max={3} />
-        </div>
-      ) : null}
-    </SectionCard>
-  );
+  let text = `Delivery confidence is at ${move.current.toFixed(0)}%`;
+  if (move.previous != null && move.delta != null && move.delta !== 0) {
+    text += `, ${move.delta > 0 ? "up" : "down"} ${Math.abs(move.delta).toFixed(1)} points from ${move.previous.toFixed(0)}%`;
+  } else if (move.previous == null) {
+    text += " with no prior score to compare against";
+  }
+  text += ".";
+  const drivers = toProse(move.drivers, 3);
+  return drivers ? `${text} ${drivers}` : text;
 }
 
-function PmActionsCard({ briefing }: { briefing: OperationalBriefing }) {
-  if (briefing.recommended_pm_actions.length === 0) return null;
-  return (
-    <SectionCard title="Recommended PM actions">
-      <ol className="space-y-2">
-        {briefing.recommended_pm_actions.map((action) => (
-          <li key={`${action.rank}-${action.title}`} className="flex items-start gap-2.5">
-            <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-elevated text-[10px] font-semibold text-muted-foreground">
-              {action.rank}
-            </span>
-            <div className="min-w-0">
-              <p className="text-xs font-medium leading-snug text-foreground">{action.title}</p>
-              <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                <StatusPill status={URGENCY_LABEL[action.urgency] ?? action.urgency} />
-                <span className="text-[10px] text-muted-foreground">
-                  ~{Math.round(action.estimated_impact_points)} pts impact
-                </span>
-              </div>
-            </div>
-          </li>
-        ))}
-      </ol>
-    </SectionCard>
-  );
+function pmActionsProse(briefing: OperationalBriefing): string {
+  return briefing.recommended_pm_actions
+    .map(
+      (action) =>
+        `${action.title.trim().replace(/[.;]+$/, "")} (${action.urgency}, ~${Math.round(
+          action.estimated_impact_points,
+        )} pts impact)`,
+    )
+    .join(". ")
+    .concat(briefing.recommended_pm_actions.length ? "." : "");
 }
 
 export function OperationalBriefingPanel({ projectId, projectName }: Props) {
@@ -134,6 +76,7 @@ export function OperationalBriefingPanel({ projectId, projectName }: Props) {
   const canView = role !== "client";
   const canOperate = role === "delivery_manager" || role === "super_admin";
   const query = useProjectOperationalBriefingQuery(projectId, canView);
+  const [expanded, setExpanded] = useState(true);
 
   const refreshMutation = useMutation({
     mutationFn: () => generateProjectOperationalBriefing(projectId!, { with_ai: true }),
@@ -175,7 +118,26 @@ export function OperationalBriefingPanel({ projectId, projectName }: Props) {
         }
       />
 
-      {query.isLoading ? (
+      <div className="mb-3 flex border-b border-border">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((v) => !v)}
+          className={cn(
+            "flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-xs font-medium transition-colors",
+            expanded
+              ? "border-[color:var(--brand)] text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground",
+          )}
+        >
+          Briefing
+          <ChevronDown
+            className={cn("h-3.5 w-3.5 transition-transform", expanded ? "" : "-rotate-90")}
+          />
+        </button>
+      </div>
+
+      {!expanded ? null : query.isLoading ? (
         <div className="space-y-2">
           <div className="h-16 animate-pulse rounded bg-elevated" />
           <div className="h-24 animate-pulse rounded bg-elevated" />
@@ -188,7 +150,7 @@ export function OperationalBriefingPanel({ projectId, projectName }: Props) {
       ) : !briefing ? (
         <p className="text-sm text-muted-foreground">No briefing available for this project.</p>
       ) : (
-        <div className="space-y-4">
+        <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2.5">
             <StatusPill
               status={TRAFFIC_LABEL[briefing.traffic_light] ?? briefing.traffic_light}
@@ -197,74 +159,50 @@ export function OperationalBriefingPanel({ projectId, projectName }: Props) {
             <span className="text-[11px] text-muted-foreground">as of {briefing.as_of}</span>
           </div>
 
-          {/* The deterministic narrative is a machine-built concatenation of the exact
-              facts already shown in the section cards below, so rendering it just adds
-              a wall of duplicated text. Only the AI-written narrative reads as prose
-              worth surfacing. */}
-          {briefing.narrative && briefing.ai_generated ? (
-            <div className="rounded-md border border-[color:var(--brand)]/25 bg-[color:var(--brand)]/5 p-3.5">
+          <div className="space-y-3 rounded-md border border-border bg-background/60 p-4">
+            {briefing.narrative && briefing.ai_generated ? (
               <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
                 {briefing.narrative}
               </p>
-            </div>
-          ) : null}
-
-          <div className="grid items-start gap-3 md:grid-cols-2">
-            <div className="space-y-3">
-              {briefing.overnight_changes.length > 0 ? (
-                <SectionCard title="Overnight changes">
-                  <BulletList items={briefing.overnight_changes} />
-                </SectionCard>
-              ) : null}
-              {briefing.new_risks.length > 0 ? (
-                <SectionCard title="New risks">
-                  <BulletList items={briefing.new_risks} />
-                </SectionCard>
-              ) : null}
-              {briefing.milestones_due_soon.length > 0 ? (
-                <SectionCard title="Milestones due soon">
-                  <BulletList items={briefing.milestones_due_soon} />
-                </SectionCard>
-              ) : null}
-            </div>
-            <div className="space-y-3">
-              <ConfidenceMovementCard briefing={briefing} />
-              {briefing.top_priorities.length > 0 ? (
-                <SectionCard title="Top priorities">
-                  <BulletList items={briefing.top_priorities} />
-                </SectionCard>
-              ) : null}
-              <PmActionsCard briefing={briefing} />
-            </div>
-          </div>
-
-          {(briefing.knowledge_evidence?.length ?? 0) > 0 ? (
-            <SectionCard title="Knowledge evidence">
-              <ul className="grid gap-3 md:grid-cols-2">
-                {briefing.knowledge_evidence!.slice(0, 5).map((item) => (
-                  <li key={`${item.document_id}-${item.chunk_id ?? item.title}`}>
+            ) : null}
+            {confidenceProse(briefing) ? (
+              <BriefingParagraph label="Confidence movement" text={confidenceProse(briefing)} />
+            ) : null}
+            <BriefingParagraph
+              label="Overnight changes"
+              text={toProse(briefing.overnight_changes)}
+            />
+            <BriefingParagraph label="New risks" text={toProse(briefing.new_risks)} />
+            <BriefingParagraph
+              label="Milestones due soon"
+              text={toProse(briefing.milestones_due_soon)}
+            />
+            <BriefingParagraph label="Top priorities" text={toProse(briefing.top_priorities)} />
+            <BriefingParagraph
+              label="Recommended PM actions"
+              text={pmActionsProse(briefing)}
+            />
+            {(briefing.knowledge_evidence?.length ?? 0) > 0 ? (
+              <p className="text-sm leading-relaxed text-foreground/90">
+                <span className="font-semibold text-foreground">Knowledge evidence. </span>
+                {briefing.knowledge_evidence!.slice(0, 5).map((item, index) => (
+                  <span key={`${item.document_id}-${item.chunk_id ?? item.title}`}>
+                    {index > 0 ? ", " : ""}
                     <a
                       href={`/knowledge?documentId=${encodeURIComponent(item.document_id)}`}
-                      className="text-xs font-medium text-foreground hover:underline"
+                      className="font-medium text-foreground hover:underline"
                     >
                       {item.title}
                     </a>
                     {item.source_type ? (
-                      <span className="text-[10px] text-muted-foreground">
-                        {" "}
-                        · {item.source_type}
-                      </span>
+                      <span className="text-muted-foreground"> ({item.source_type})</span>
                     ) : null}
-                    {item.excerpt ? (
-                      <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">
-                        {item.excerpt}
-                      </p>
-                    ) : null}
-                  </li>
+                  </span>
                 ))}
-              </ul>
-            </SectionCard>
-          ) : null}
+                .
+              </p>
+            ) : null}
+          </div>
         </div>
       )}
     </Card>

@@ -384,13 +384,52 @@ def test_gather_draft_evidence_is_sequential_not_concurrent() -> None:
 
 @pytest.mark.asyncio
 async def test_draft_route_fallback_returns_200_with_warning(api_client, delivery_manager) -> None:
+    from collections.abc import AsyncIterator
     from datetime import datetime, timezone
 
+    from app.db.session import get_db_session
+    from app.main import app
     from app.schemas.domain import CommunicationRead
-    from tests.conftest import override_user
+    from tests.conftest import FakeResult, override_user
 
     project = _project()
     now = datetime(2026, 7, 16, 10, 0, tzinfo=timezone.utc)
+    throughput = _throughput()
+
+    class _DraftSession:
+        """Throughput lookup returns a row; snapshot/alert list queries return empty."""
+
+        def add(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        async def execute(self, *_args: object, **_kwargs: object) -> FakeResult:
+            return FakeResult(value=throughput, items=[])
+
+        async def commit(self) -> None:
+            return None
+
+        async def refresh(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        async def flush(self) -> None:
+            return None
+
+        async def rollback(self) -> None:
+            return None
+
+    async def _session_override() -> AsyncIterator[_DraftSession]:
+        yield _DraftSession()
+
+    pack_ref = SimpleNamespace(
+        source_table="throughput_snapshots",
+        source_row_id=throughput.id,
+        description="Latest throughput snapshot for communication grounding.",
+        visibility=SimpleNamespace(value="internal"),
+        observed_at=now,
+        claim_keys=["throughput.units_completed"],
+    )
+    pack = SimpleNamespace(source_fingerprint="a" * 64, evidence=[pack_ref])
+
     communication = SimpleNamespace(
         id=uuid4(),
         project_id=project.id,
@@ -432,23 +471,33 @@ async def test_draft_route_fallback_returns_200_with_warning(api_client, deliver
         generation_warning=None,
     )
 
+    read_payload.generation_mode = "fallback"
+    read_payload.generation_warning = GENERATION_FALLBACK_WARNING
+
     override_user(delivery_manager)
+    app.dependency_overrides[get_db_session] = _session_override
     with (
         patch(
             "app.api.routes.communications.get_visible_project",
             AsyncMock(return_value=project),
         ),
         patch(
-            "app.api.routes.communications.create_communication_draft",
+            "app.agents.client_intelligence.evidence_pack.build_client_evidence_pack",
+            AsyncMock(return_value=pack),
+        ),
+        patch(
+            "app.api.routes.communications.generate_quality_summary",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "app.api.routes.communications.generate_comms_draft_body",
             AsyncMock(
-                return_value=DraftGenerationResult(
-                    communication=communication,  # type: ignore[arg-type]
-                    generation_mode="fallback",
-                    generation_warning=GENERATION_FALLBACK_WARNING,
-                    timings=DraftGenerationTimings(total_ms=40.0, llm_ms=5.0),
-                    evidence_link_count=1,
-                )
+                return_value=("Fallback body", "fallback", GENERATION_FALLBACK_WARNING, 5.0)
             ),
+        ),
+        patch(
+            "app.api.routes.communications.create_draft",
+            AsyncMock(return_value=communication),
         ),
         patch(
             "app.api.routes.communications._communication_read",

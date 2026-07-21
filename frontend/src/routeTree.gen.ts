@@ -11,7 +11,6 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WorkforceRouteImport } from './routes/workforce'
 import { Route as UnauthorizedRouteImport } from './routes/unauthorized'
-import { Route as TeamsRouteImport } from './routes/teams'
 import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as QualityRouteImport } from './routes/quality'
 import { Route as ProjectsRouteImport } from './routes/projects'
@@ -44,11 +43,6 @@ const WorkforceRoute = WorkforceRouteImport.update({
 const UnauthorizedRoute = UnauthorizedRouteImport.update({
   id: '/unauthorized',
   path: '/unauthorized',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const TeamsRoute = TeamsRouteImport.update({
-  id: '/teams',
-  path: '/teams',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ReportsRoute = ReportsRouteImport.update({
@@ -182,7 +176,6 @@ export interface FileRoutesByFullPath {
   '/projects': typeof ProjectsRoute
   '/quality': typeof QualityRoute
   '/reports': typeof ReportsRoute
-  '/teams': typeof TeamsRoute
   '/unauthorized': typeof UnauthorizedRoute
   '/workforce': typeof WorkforceRoute
   '/admin/agent-runs': typeof AdminAgentRunsRoute
@@ -209,7 +202,6 @@ export interface FileRoutesByTo {
   '/projects': typeof ProjectsRoute
   '/quality': typeof QualityRoute
   '/reports': typeof ReportsRoute
-  '/teams': typeof TeamsRoute
   '/unauthorized': typeof UnauthorizedRoute
   '/workforce': typeof WorkforceRoute
   '/admin/agent-runs': typeof AdminAgentRunsRoute
@@ -238,7 +230,6 @@ export interface FileRoutesById {
   '/projects': typeof ProjectsRoute
   '/quality': typeof QualityRoute
   '/reports': typeof ReportsRoute
-  '/teams': typeof TeamsRoute
   '/unauthorized': typeof UnauthorizedRoute
   '/workforce': typeof WorkforceRoute
   '/admin/agent-runs': typeof AdminAgentRunsRoute
@@ -268,7 +259,6 @@ export interface FileRouteTypes {
     | '/projects'
     | '/quality'
     | '/reports'
-    | '/teams'
     | '/unauthorized'
     | '/workforce'
     | '/admin/agent-runs'
@@ -295,7 +285,6 @@ export interface FileRouteTypes {
     | '/projects'
     | '/quality'
     | '/reports'
-    | '/teams'
     | '/unauthorized'
     | '/workforce'
     | '/admin/agent-runs'
@@ -323,7 +312,6 @@ export interface FileRouteTypes {
     | '/projects'
     | '/quality'
     | '/reports'
-    | '/teams'
     | '/unauthorized'
     | '/workforce'
     | '/admin/agent-runs'
@@ -352,7 +340,6 @@ export interface RootRouteChildren {
   ProjectsRoute: typeof ProjectsRoute
   QualityRoute: typeof QualityRoute
   ReportsRoute: typeof ReportsRoute
-  TeamsRoute: typeof TeamsRoute
   UnauthorizedRoute: typeof UnauthorizedRoute
   WorkforceRoute: typeof WorkforceRoute
   ClientAskRoute: typeof ClientAskRoute
@@ -375,13 +362,6 @@ declare module '@tanstack/react-router' {
       path: '/unauthorized'
       fullPath: '/unauthorized'
       preLoaderRoute: typeof UnauthorizedRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/teams': {
-      id: '/teams'
-      path: '/teams'
-      fullPath: '/teams'
-      preLoaderRoute: typeof TeamsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/reports': {
@@ -581,7 +561,6 @@ const rootRouteChildren: RootRouteChildren = {
   ProjectsRoute: ProjectsRoute,
   QualityRoute: QualityRoute,
   ReportsRoute: ReportsRoute,
-  TeamsRoute: TeamsRoute,
   UnauthorizedRoute: UnauthorizedRoute,
   WorkforceRoute: WorkforceRoute,
   ClientAskRoute: ClientAskRoute,

@@ -770,7 +770,6 @@ function ProjectTable({
 function ProjectListState({
   loading,
   error,
-  draftNotice,
   onRetry,
 }: {
   loading: boolean;
