@@ -418,7 +418,7 @@ export function AskGovernanceAgentPanel({
               <Textarea
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
-                placeholder="Ask about governance risks, overdue actions, scope changes, or leadership attention..."
+                placeholder="Ask governance agent"
                 className="h-10 min-h-10 resize-none overflow-hidden bg-card py-2 shadow-none"
                 disabled={askMutation.isPending}
                 onKeyDown={(event) => {

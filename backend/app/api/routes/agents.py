@@ -1,8 +1,10 @@
 from uuid import UUID
 
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
+from app.agents.quality_intelligence.query_handler import stream_quality_query
 from app.api.deps import LimitQuery, SessionDep, UserDep
 from app.core.exceptions import ApiError
 from app.db.models import AgentQuery, AgentQueryEvidenceLink, QualitySnapshot, ThroughputSnapshot
@@ -18,6 +20,8 @@ from app.services.scoping import get_visible_project
 from app.services.workforce_agent import WORKFORCE_AGENT_NAME, answer_workforce_query
 
 router = APIRouter(tags=["agent queries"])
+
+QUALITY_INTELLIGENCE_AGENT_NAME = "quality_intelligence_agent"
 
 
 def _agent_query_read(row: AgentQuery) -> AgentQueryRead:
@@ -110,6 +114,62 @@ async def create_agent_query(
         EvidenceLinkRead(**item.__dict__) for item in await _query_evidence(session, query.id)
     ]
     return DataResponse(data=data)
+
+
+@router.post("/agent-queries/stream")
+async def stream_agent_query(
+    payload: AgentQueryCreate, session: SessionDep, current_user: UserDep
+) -> StreamingResponse:
+    """SSE-streaming counterpart to POST /agent-queries.
+
+    Only the quality_intelligence_agent supports streaming today — the two-
+    call reasoning-then-synthesis flow it uses is the reason streaming has
+    perceived-latency value (see query_handler.py's stream_quality_query).
+    The other agents keep using the non-streaming endpoint above unchanged.
+    """
+    if payload.agent_name != QUALITY_INTELLIGENCE_AGENT_NAME:
+        raise ApiError(
+            400,
+            "VALIDATION_ERROR",
+            "Streaming is only supported for the quality intelligence agent.",
+        )
+
+    # Same explicit-evidence pre-lookup create_agent_query performs for this
+    # agent above — kept identical so the streamed `done` payload's evidence
+    # set matches what the non-streaming endpoint would return.
+    evidence: list[EvidenceInput] = []
+    if payload.project_id:
+        project = await get_visible_project(session, payload.project_id, current_user)
+        snapshot = (
+            await session.execute(
+                select(QualitySnapshot)
+                .where(QualitySnapshot.project_id == project.id)
+                .order_by(QualitySnapshot.iso_year.desc(), QualitySnapshot.iso_week.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if snapshot:
+            evidence.append(
+                EvidenceInput(
+                    source_table="quality_snapshots",
+                    source_row_id=snapshot.id,
+                    description="Latest quality snapshot for the selected project.",
+                )
+            )
+
+    async def _generate():
+        async for chunk in stream_quality_query(session, current_user, payload, evidence):
+            yield chunk
+        await session.commit()
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/agent-queries", response_model=ListResponse[AgentQueryRead])

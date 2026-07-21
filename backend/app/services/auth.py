@@ -118,6 +118,74 @@ class SupabaseAuthService:
             if response.status_code >= 400:
                 raise ApiError(400, "AUTH_USER_DELETE_FAILED", "Unable to delete auth user.")
 
+    def _bearer_headers(self, access_token: str) -> dict[str, str]:
+        return {"apikey": self._settings.supabase_anon_key, "Authorization": f"Bearer {access_token}"}
+
+    async def get_user(self, access_token: str) -> dict[str, Any]:
+        """GET /auth/v1/user -- includes a `factors` array (id/factor_type/status)
+        for the current session's user, used to decide enroll vs. challenge."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{self._base}/auth/v1/user",
+                headers=self._bearer_headers(access_token),
+            )
+            if response.status_code >= 400:
+                raise ApiError(401, "INVALID_TOKEN", "Unable to load the current user from Supabase Auth.")
+            return response.json()
+
+    async def enroll_totp_factor(self, access_token: str, *, friendly_name: str) -> dict[str, Any]:
+        """POST /auth/v1/factors -- DEVELOPMENT_PLAN.md Workstream E.
+
+        NOTE: this request/response shape is built from Supabase's documented
+        enroll/challenge/verify flow (supabase.com/docs/guides/auth/auth-mfa/totp)
+        and has not been verified against a live sandbox -- see the
+        `mfa_required_roles` setting's docstring. Verify with one real account
+        before relying on this.
+        """
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{self._base}/auth/v1/factors",
+                headers=self._bearer_headers(access_token),
+                json={"factor_type": "totp", "friendly_name": friendly_name},
+            )
+            if response.status_code >= 400:
+                detail = response.json() if response.content else {}
+                message = detail.get("error_description") or detail.get("msg") or "Unable to enroll MFA factor."
+                raise ApiError(400, "MFA_ENROLL_FAILED", message)
+            return response.json()
+
+    async def create_mfa_challenge(self, access_token: str, factor_id: str) -> dict[str, Any]:
+        """POST /auth/v1/factors/{factor_id}/challenge"""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{self._base}/auth/v1/factors/{factor_id}/challenge",
+                headers=self._bearer_headers(access_token),
+            )
+            if response.status_code >= 400:
+                detail = response.json() if response.content else {}
+                message = detail.get("error_description") or detail.get("msg") or "Unable to create MFA challenge."
+                raise ApiError(400, "MFA_CHALLENGE_FAILED", message)
+            return response.json()
+
+    async def verify_mfa_challenge(
+        self, access_token: str, factor_id: str, *, challenge_id: str, code: str
+    ) -> dict[str, Any]:
+        """POST /auth/v1/factors/{factor_id}/verify -- on success returns a new
+        session (access_token/refresh_token/user) at aal2, same shape as the
+        password-grant /token response. Also activates the factor if this was
+        its first successful verification (enrollment)."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{self._base}/auth/v1/factors/{factor_id}/verify",
+                headers=self._bearer_headers(access_token),
+                json={"challenge_id": challenge_id, "code": code},
+            )
+            if response.status_code >= 400:
+                detail = response.json() if response.content else {}
+                message = detail.get("error_description") or detail.get("msg") or "Invalid or expired MFA code."
+                raise ApiError(401, "MFA_VERIFY_FAILED", message)
+            return response.json()
+
     async def _token_request(self, payload: dict[str, str], *, apikey: str) -> dict[str, Any]:
         grant_type = payload.pop("grant_type", "password")
         async with httpx.AsyncClient(timeout=30.0) as client:

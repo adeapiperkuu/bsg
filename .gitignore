@@ -34,6 +34,9 @@ dist-ssr
 # Python
 __pycache__/
 
+# Database backups
+backups/
+
 # Environment variables
 .env
 .env.local
@@ -44,6 +47,7 @@ __pycache__/
 # Frontend
 node_modules
 .tanstack/
+.claude/
 
 # Backend
 .venv/
@@ -54,3 +58,8 @@ __pycache__/
 .env.development
 .env.production
 .env.example
+
+# Claude Code local tooling
+.claude/
+graphify-out/
+!backend/.env.example

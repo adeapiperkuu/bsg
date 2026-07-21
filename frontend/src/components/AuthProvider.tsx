@@ -1,7 +1,10 @@
 import { useEffect } from "react";
-import { Navigate, useNavigate, useRouterState } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { canAccessPath, defaultRouteForRole } from "@/lib/api";
+import { projectsQueryOptions } from "@/lib/queries/delivery";
+import { useRenderedPathname } from "@/lib/use-rendered-pathname";
 import { useAuthStore } from "@/stores/useAuthStore";
 
 const PUBLIC_PATHS = ["/login", "/unauthorized"];
@@ -16,8 +19,11 @@ function SessionLoadingScreen() {
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const { bootstrap, isLoading, isAuthenticated, user } = useAuthStore();
+  const queryClient = useQueryClient();
+  const pathname = useRenderedPathname();
+  const status = useAuthStore((s) => s.status);
+  const user = useAuthStore((s) => s.user);
+  const bootstrap = useAuthStore((s) => s.bootstrap);
   const isPublicPath = PUBLIC_PATHS.includes(pathname);
 
   useEffect(() => {
@@ -25,35 +31,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [bootstrap]);
 
   useEffect(() => {
-    if (isLoading) return;
+    if (status !== "authenticated") return;
+    void queryClient.prefetchQuery(projectsQueryOptions);
+  }, [status, queryClient]);
 
-    if (!isAuthenticated && !isPublicPath) {
-      void navigate({ to: "/login", replace: true });
-      return;
+  let redirectTo: string | null = null;
+  if (status === "authenticated" && user) {
+    if (pathname === "/login") {
+      redirectTo = defaultRouteForRole(user.role);
+    } else if (!isPublicPath && !canAccessPath(user.role, pathname)) {
+      redirectTo = "/unauthorized";
     }
-
-    if (isAuthenticated && user && pathname === "/login") {
-      void navigate({ to: defaultRouteForRole(user.role), replace: true });
-      return;
+  } else if (status === "anonymous" && !isPublicPath) {
+    redirectTo = "/login";
+  }
     }
-
-    if (
-      isAuthenticated &&
-      user &&
-      !PUBLIC_PATHS.includes(pathname) &&
-      !canAccessPath(user.role, pathname)
-    ) {
-      void navigate({ to: "/unauthorized", replace: true });
-    }
-  }, [isLoading, isAuthenticated, isPublicPath, pathname, user, navigate]);
-
-  if (!isPublicPath && isLoading) {
-    return <SessionLoadingScreen />;
+  } else if (status === "anonymous" && !isPublicPath) {
+    redirectTo = "/login";
   }
 
-  if (!isPublicPath && !isAuthenticated) {
-    return <Navigate to="/login" replace />;
-  }
+  useEffect(() => {
+    if (!redirectTo) return;
+    void navigate({ to: redirectTo, replace: true });
+  }, [redirectTo, navigate]);
+
+  if (status === "initializing") return <SessionLoadingScreen />;
+
+  if (redirectTo) return <SessionLoadingScreen />;
+
+  if (!isPublicPath && status !== "authenticated") return <SessionLoadingScreen />;
 
   return <>{children}</>;
 }

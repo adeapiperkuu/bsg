@@ -7,6 +7,9 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.governance.services.governance_service import (
+    invalidate_governance_read_caches_after_commit,
+)
 from app.agents.governance.services.project_governance_summary_service import (
     refresh_project_governance_summary,
 )
@@ -98,6 +101,7 @@ async def promote_risk_alert_to_escalation(
     )
     await session.commit()
     await session.refresh(escalation)
+    invalidate_governance_read_caches_after_commit(org_id=escalation.org_id)
     return escalation
 
 

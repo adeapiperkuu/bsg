@@ -1,7 +1,15 @@
 export const queryKeys = {
   projects: ["projects"] as const,
+  adminProjects: ["admin", "projects"] as const,
   organisations: ["organisations"] as const,
+  users: ["users"] as const,
   deliveryPortfolio: ["delivery", "portfolio"] as const,
+  towerPulse: ["dashboard", "operational-tower", "pulse"] as const,
+  towerEscalations: ["dashboard", "operational-tower", "escalations"] as const,
+  towerHealth: ["dashboard", "operational-tower", "health"] as const,
+  towerWork: ["dashboard", "operational-tower", "work"] as const,
+  towerActivity: ["dashboard", "operational-tower", "activity"] as const,
+  executiveSummary: ["dashboard", "executive-summary"] as const,
   deliveryDashboard: (projectId: string) => ["delivery", "dashboard", projectId] as const,
   deliveryConversations: (projectId: string | null) =>
     ["delivery", "conversations", projectId ?? "__portfolio__"] as const,
@@ -50,9 +58,55 @@ export const queryKeys = {
   projectTrainingGaps: (projectId: string) => ["projects", projectId, "training-gaps"] as const,
   projectCapabilityGaps: (projectId: string) => ["projects", projectId, "capability-gaps"] as const,
   governanceBootstrap: ["governance", "bootstrap"] as const,
-  governanceAnalyticsSummary: (days: number) =>
-    ["governance", "analytics", "summary", days] as const,
-  governanceAnalyticsDetail: (days: number) => ["governance", "analytics", "detail", days] as const,
+  governanceWeeklySummary: ["governance", "weekly-summary", "latest"] as const,
+  governanceWeeklySummaries: ["governance", "weekly-summary", "history"] as const,
+  governanceWeeklySummaryDetail: (summaryId: string | null | undefined) =>
+    ["governance", "weekly-summary", "detail", summaryId ?? "__none__"] as const,
+  governanceAnalyticsSummary: (
+    days: number,
+    filters: { projectId?: string | null; vertical?: string | null } = {},
+  ) =>
+    [
+      "governance",
+      "analytics",
+      "summary",
+      days,
+      filters.projectId ?? null,
+      filters.vertical ?? null,
+    ] as const,
+  governanceAnalyticsDetail: (
+    days: number,
+    filters: { projectId?: string | null; vertical?: string | null } = {},
+  ) =>
+    [
+      "governance",
+      "analytics",
+      "detail",
+      days,
+      filters.projectId ?? null,
+      filters.vertical ?? null,
+    ] as const,
+  governanceRecommendationEffectivenessSummary: (
+    filters: Record<string, string | number | boolean | null | undefined>,
+  ) => ["governance", "effectiveness", "summary", filters] as const,
+  governanceRecommendationEffectivenessFunnel: (
+    filters: Record<string, string | number | boolean | null | undefined>,
+  ) => ["governance", "effectiveness", "funnel", filters] as const,
+  governanceRecommendationEffectivenessTrends: (
+    filters: Record<string, string | number | boolean | null | undefined>,
+  ) => ["governance", "effectiveness", "trends", filters] as const,
+  governanceRecommendationEffectivenessCategories: (
+    kind: "dismissed" | "accepted",
+    filters: Record<string, string | number | boolean | null | undefined>,
+  ) => ["governance", "effectiveness", kind, filters] as const,
+  governanceRecommendationOptimizationSummary: (
+    filters: Record<string, string | number | boolean | null | undefined>,
+  ) => ["governance", "optimization", "summary", filters] as const,
+  governanceRecommendationOptimizationCompare: (
+    strategyA: string,
+    strategyB: string,
+    days: number,
+  ) => ["governance", "optimization", "compare", strategyA, strategyB, days] as const,
   governanceDependencies: (params: Record<string, unknown> = {}) =>
     ["governance", "dependencies", params] as const,
   governanceActions: (params: Record<string, unknown> = {}) =>
@@ -63,6 +117,20 @@ export const queryKeys = {
     ["governance", "scope-states", params] as const,
   governanceRegister: (params: Record<string, unknown> = {}) =>
     ["governance", "register", params] as const,
+  governanceProjectSheet: (projectId: string) =>
+    ["governance", "project-sheet", projectId] as const,
+  governanceProjectCharters: (params: Record<string, unknown> = {}) =>
+    ["governance", "project-charters", params] as const,
+  governanceProjectChartersPanel: (params: Record<string, unknown> = {}) =>
+    ["governance", "project-charters-panel", params] as const,
+  governanceProjectCharter: (charterId: string | null | undefined) =>
+    ["governance", "project-charter", charterId ?? "__none__"] as const,
+  governanceProjectCharterVersions: (charterId: string | null | undefined) =>
+    ["governance", "project-charter-versions", charterId ?? "__none__"] as const,
+  governanceJobs: (params: Record<string, unknown> = {}) => ["governance", "jobs", params] as const,
+  governanceJob: (jobId: string) => ["governance", "jobs", jobId] as const,
+  governanceAIRecommendations: (params: Record<string, unknown> = {}) =>
+    ["governance", "ai-recommendations", params] as const,
   qualityPage: (projectId: string) => ["quality", "page", projectId] as const,
   knowledgeBootstrap: ["knowledge", "bootstrap"] as const,
   knowledgeDocuments: ["knowledge", "documents"] as const,
@@ -70,7 +138,6 @@ export const queryKeys = {
   knowledgeDocumentApprovalHistory: (documentId: string) =>
     ["knowledge", "documents", documentId, "approval-history"] as const,
   knowledgeLibraryHealth: ["knowledge", "library-health"] as const,
-  knowledgeSuggestions: (status = "open") => ["knowledge", "suggestions", status] as const,
   knowledgeRelatedDocuments: (documentId: string) =>
     ["knowledge", "documents", documentId, "related"] as const,
   knowledgeRetrievalSettings: ["knowledge", "retrieval-settings"] as const,
@@ -81,8 +148,10 @@ export const queryKeys = {
 };
 
 export const STALE_TIME_MS = 5 * 60 * 1000;
+export const TOWER_STALE_TIME_MS = 60 * 1000;
+
+export const TOWER_RISK_POLL_MS = 60 * 1000;
+export const ADMIN_LIST_GC_TIME_MS = 30 * 60 * 1000;
 export const KNOWLEDGE_BOOTSTRAP_STALE_TIME_MS = 10 * 60 * 1000;
-/** Catalog taxonomies change rarely; prefer longer cache on Workforce. */
 export const WORKFORCE_CATALOG_STALE_TIME_MS = 15 * 60 * 1000;
-/** Project workforce aggregates; safe to keep briefly without instant refresh. */
 export const WORKFORCE_PROJECT_STALE_TIME_MS = 10 * 60 * 1000;

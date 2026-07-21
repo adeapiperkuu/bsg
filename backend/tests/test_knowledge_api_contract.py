@@ -11,6 +11,7 @@ from app.api.routes import knowledge as knowledge_routes
 from app.core.exceptions import ApiError
 from app.schemas.domain import (
     KnowledgeFeedbackRead,
+    KnowledgeHealthScoreRead,
     KnowledgeRetrievalSettingsRead,
 )
 from tests.conftest import override_user
@@ -63,6 +64,30 @@ async def test_knowledge_document_routes_reject_client_role(api_client, knowledg
 
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "FORBIDDEN"
+
+
+@pytest.mark.asyncio
+async def test_knowledge_health_score_route_calls_set_rls_context_correctly(
+    api_client,
+    knowledge_users,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test: every `knowledge.py` route used to call
+    `set_rls_context(session, current_user.id, current_user.org_id,
+    current_user.role.value)` -- 4 positional arguments -- against a function
+    that only accepts `(session, jwt: str)`. That raised a TypeError on every
+    real request, never caught because no test hit these routes over HTTP."""
+    override_user(knowledge_users["delivery_manager"])
+
+    async def _get_knowledge_health_score(*_args, **_kwargs):
+        return KnowledgeHealthScoreRead(score=92.5, band="healthy", recommendations=[], ready_ratio=0.9)
+
+    monkeypatch.setattr(knowledge_routes, "get_knowledge_health_score", _get_knowledge_health_score)
+
+    response = await api_client.get("/api/v1/knowledge/health-score")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["band"] == "healthy"
 
 
 @pytest.mark.asyncio

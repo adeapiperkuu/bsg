@@ -263,22 +263,6 @@ export interface KnowledgeDocumentApi {
   updated_at: string;
 }
 
-export interface KnowledgeSuggestionApi {
-  id: string;
-  org_id: string;
-  document_id: string | null;
-  suggestion_type: string;
-  title: string;
-  detail: string;
-  proposed_changes: Record<string, unknown>;
-  evidence: Record<string, unknown>;
-  status: string;
-  reviewed_by: string | null;
-  reviewed_at: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface KnowledgeRelatedItemApi {
   document_id: string;
   title: string;

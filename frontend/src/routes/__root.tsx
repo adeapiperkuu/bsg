@@ -16,6 +16,8 @@ import { Shell } from "../components/bsg/Shell";
 import { AuthProvider } from "../components/AuthProvider";
 import { Toaster } from "../components/ui/sonner";
 import { PageTransition } from "../components/PageTransition";
+import { useRenderedPathname } from "../lib/use-rendered-pathname";
+import { QueryPersistence } from "../lib/queries/persist";
 
 const PUBLIC_PATHS = ["/login", "/unauthorized"];
 const FAVICON_HREF =
@@ -122,23 +124,27 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const pathname = useRenderedPathname();
   const isPublic = PUBLIC_PATHS.includes(pathname);
 
   return (
     <QueryClientProvider client={queryClient}>
       <RoleProvider>
         <AuthProvider>
-          <Toaster richColors position="top-right" />
-          {isPublic ? (
-            <PageTransition>
-              <Outlet />
-            </PageTransition>
-          ) : (
-            <Shell>
-              <Outlet />
-            </Shell>
-          )}
+          {/* Inside AuthProvider: it gates children until the session resolves, so the
+              signed-in user id is known and the cache can be keyed to it. */}
+          <QueryPersistence>
+            <Toaster richColors position="top-right" />
+            {isPublic ? (
+              <PageTransition>
+                <Outlet />
+              </PageTransition>
+            ) : (
+              <Shell>
+                <Outlet />
+              </Shell>
+            )}
+          </QueryPersistence>
         </AuthProvider>
       </RoleProvider>
     </QueryClientProvider>

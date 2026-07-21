@@ -1,19 +1,30 @@
 import { create } from "zustand";
 
+import {
+  currentAuthGeneration,
+  nextAuthGeneration,
+  setSessionInvalidatedHandler,
+} from "@/lib/auth-session";
 import { fetchMe, login as apiLogin, logout as apiLogout, resetAuthSession } from "@/lib/api";
-import type { MeUser } from "@/types/auth";
+import type { LoginResult, MeUser } from "@/types/auth";
+
+export type AuthStatus = "initializing" | "authenticating" | "authenticated" | "anonymous";
 
 type AuthState = {
   user: MeUser | null;
+  status: AuthStatus;
   isLoading: boolean;
   isAuthenticated: boolean;
   bootstrap: () => Promise<void>;
-  login: (email: string, password: string) => Promise<MeUser>;
+  login: (email: string, password: string) => Promise<LoginResult>;
+  /** DEVELOPMENT_PLAN.md Workstream E: call after POST /auth/mfa/verify
+   * succeeds (which already set the real session cookies) to populate the
+   * store the same way a non-MFA login does. */
+  completeMfaLogin: () => Promise<MeUser>;
   logout: () => Promise<void>;
   setUser: (user: MeUser | null) => void;
 };
 
-let sessionRequestId = 0;
 let bootstrapPromise: Promise<void> | null = null;
 
 function hasSessionHint() {
@@ -21,29 +32,36 @@ function hasSessionHint() {
   return /(?:^|; )csrf_token=/.test(document.cookie);
 }
 
+function stateFor(status: AuthStatus, user: MeUser | null) {
+  return {
+    status,
+    user,
+    isAuthenticated: status === "authenticated",
+    isLoading: status === "initializing" || status === "authenticating",
+  };
+}
+
 export const useAuthStore = create<AuthState>((set) => ({
-  user: null,
-  isLoading: true,
-  isAuthenticated: false,
+  ...stateFor("initializing", null),
 
   bootstrap: async () => {
     if (bootstrapPromise) return bootstrapPromise;
     if (typeof window === "undefined") return;
     bootstrapPromise = (async () => {
-      const requestId = ++sessionRequestId;
+      const generation = nextAuthGeneration();
       if (!hasSessionHint()) {
-        set({ user: null, isAuthenticated: false, isLoading: false });
+        set(stateFor("anonymous", null));
         return;
       }
-      set({ isLoading: true });
+      set(stateFor("initializing", null));
       try {
         const user = await fetchMe();
-        if (requestId !== sessionRequestId) return;
-        set({ user, isAuthenticated: true, isLoading: false });
+        if (generation !== currentAuthGeneration()) return;
+        set(stateFor("authenticated", user));
       } catch {
-        if (requestId !== sessionRequestId) return;
-        resetAuthSession();
-        set({ user: null, isAuthenticated: false, isLoading: false });
+        if (generation !== currentAuthGeneration()) return;
+        resetAuthSession(generation);
+        set(stateFor("anonymous", null));
       }
     })().finally(() => {
       bootstrapPromise = null;
@@ -52,31 +70,50 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   login: async (email, password) => {
-    const requestId = ++sessionRequestId;
-    set({ isLoading: true });
+    const generation = nextAuthGeneration();
+    set(stateFor("authenticating", null));
     try {
-      await apiLogin(email, password);
-      const user = await fetchMe();
-      if (requestId === sessionRequestId) {
-        set({ user, isAuthenticated: true, isLoading: false });
+      const result = await apiLogin(email, password);
+      if (result.status === "mfa_required") {
+        if (generation === currentAuthGeneration()) set(stateFor("anonymous", null));
+        return result;
       }
+      const user = await fetchMe();
+      if (generation === currentAuthGeneration()) set(stateFor("authenticated", user));
+      return result;
+    } catch (err) {
+      if (generation === currentAuthGeneration()) set(stateFor("anonymous", null));
+      throw err;
+    }
+  },
+
+  completeMfaLogin: async () => {
+    const generation = nextAuthGeneration();
+    set(stateFor("authenticating", null));
+    try {
+      const user = await fetchMe();
+      if (generation === currentAuthGeneration()) set(stateFor("authenticated", user));
       return user;
     } catch (err) {
-      if (requestId === sessionRequestId) {
-        set({ isLoading: false });
-      }
+      if (generation === currentAuthGeneration()) set(stateFor("anonymous", null));
       throw err;
     }
   },
 
   logout: async () => {
-    ++sessionRequestId;
+    const generation = nextAuthGeneration();
+    set(stateFor("authenticating", null));
     try {
       await apiLogout();
     } finally {
-      set({ user: null, isAuthenticated: false, isLoading: false });
+      if (generation === currentAuthGeneration()) set(stateFor("anonymous", null));
     }
   },
 
-  setUser: (user) => set({ user, isAuthenticated: user !== null }),
+  setUser: (user) => set(stateFor(user ? "authenticated" : "anonymous", user)),
 }));
+
+setSessionInvalidatedHandler((generation) => {
+  if (generation !== currentAuthGeneration()) return;
+  useAuthStore.setState(stateFor("anonymous", null));
+});

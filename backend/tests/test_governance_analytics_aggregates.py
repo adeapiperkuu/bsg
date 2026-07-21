@@ -7,12 +7,10 @@ import pytest
 
 from app.agents.governance.services.analytics_service import (
     ANALYTICS_CACHE_TTL,
-    _analytics_cache,
     _analytics_cache_key,
     _merge_project_metrics,
     _score_project_from_metrics,
     _fetch_dependency_counts_by_project,
-    _fetch_visible_projects,
     _trend_window_start,
     get_governance_analytics,
 )
@@ -119,19 +117,11 @@ async def test_get_governance_analytics_scores_projects_from_aggregate_counts(
         _empty_list,
     )
     monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_trend_dependencies",
+        "app.agents.governance.services.analytics_service._fetch_window_escalations",
         _empty_list,
     )
     monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_trend_escalations",
-        _empty_list,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_trend_actions",
-        _empty_list,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_trend_scopes",
+        "app.agents.governance.services.analytics_service._fetch_window_actions",
         _empty_list,
     )
     monkeypatch.setattr(
@@ -167,6 +157,10 @@ async def test_get_governance_analytics_scores_projects_from_aggregate_counts(
         AsyncMock(return_value={}),
     )
     monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_ai_recommendations_for_insights",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
         "app.agents.governance.services.analytics_service._analytics_cache",
         {},
     )
@@ -181,6 +175,7 @@ async def test_get_governance_analytics_scores_projects_from_aggregate_counts(
         "Executive Insights",
         "Governance Health",
         "Evidence Appendix",
+        "Insights KPIs",
     ]
     session.execute.assert_not_awaited()
 
@@ -247,19 +242,11 @@ async def test_get_governance_analytics_uses_in_process_cache(
         AsyncMock(return_value={}),
     )
     monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_trend_dependencies",
+        "app.agents.governance.services.analytics_service._fetch_window_escalations",
         _empty_list,
     )
     monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_trend_escalations",
-        _empty_list,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_trend_actions",
-        _empty_list,
-    )
-    monkeypatch.setattr(
-        "app.agents.governance.services.analytics_service._fetch_trend_scopes",
+        "app.agents.governance.services.analytics_service._fetch_window_actions",
         _empty_list,
     )
     monkeypatch.setattr(
@@ -285,6 +272,10 @@ async def test_get_governance_analytics_uses_in_process_cache(
     monkeypatch.setattr(
         "app.agents.governance.services.analytics_service._fetch_recent_activity",
         _empty_list,
+    )
+    monkeypatch.setattr(
+        "app.agents.governance.services.analytics_service._fetch_ai_recommendations_for_insights",
+        AsyncMock(return_value=[]),
     )
     monkeypatch.setattr(
         "app.agents.governance.services.analytics_service._analytics_cache",
@@ -357,7 +348,7 @@ def test_analytics_cache_key_scopes_by_org_role_user_and_days() -> None:
         is_active=True,
     )
 
-    assert _analytics_cache_key(dm, 30) == (org_id, "delivery_manager", user_id, 30)
+    assert _analytics_cache_key(dm, 30) == (org_id, "delivery_manager", user_id, 30, None, None)
     assert _analytics_cache_key(dm, 7) != _analytics_cache_key(dm, 30)
     assert _analytics_cache_key(dm, 30) != _analytics_cache_key(other, 30)
     assert ANALYTICS_CACHE_TTL.total_seconds() == 180

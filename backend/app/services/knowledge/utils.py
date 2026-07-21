@@ -463,7 +463,8 @@ def _loaded_datetime(doc: KnowledgeDocument, attr: str) -> datetime:
 def _clean_optional(value: str | None) -> str | None:
     if value is None:
         return None
-    cleaned = _clean_text(value)
+    # Keep this independent of ingestion._clean_text to avoid circular imports.
+    cleaned = re.sub(r"\s+", " ", value.replace("\x00", " ")).strip()
     return cleaned or None
 
 _FOLLOW_UP_PRONOUN_RE = re.compile(

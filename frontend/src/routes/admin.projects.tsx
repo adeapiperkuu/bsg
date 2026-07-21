@@ -1,13 +1,16 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, FolderKanban, PauseCircle, RefreshCw, Search } from "lucide-react";
 
 import { Card } from "@/components/bsg/widgets";
+import { TablePagination } from "@/components/bsg/TablePagination";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { editControlClass, toolbarIconButtonClass, USERS_PER_PAGE, visiblePages } from "@/lib/admin-shared";
-import { listAdminProjects, type AdminProject } from "@/lib/api";
+import { usePagination } from "@/hooks/usePagination";
+import { editControlClass } from "@/lib/admin-shared";
+import { adminProjectsQueryOptions } from "@/lib/queries/delivery";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/admin/projects")({ component: AdminProjectsPage });
@@ -21,61 +24,77 @@ function formatStatus(status: string): string {
     .join(" ");
 }
 
+function statusBadgeClass(status: string): string {
+  switch (status) {
+    case "active":
+      return "border-[color:var(--success)]/30 bg-[color:var(--success)]/15 text-[color:var(--success)]";
+    case "ramping":
+      return "border-[color:var(--brand)]/30 bg-[color:var(--brand)]/10 text-[color:var(--brand)]";
+    case "paused":
+      return "border-amber-500/30 bg-amber-500/15 text-amber-600";
+    case "cancelled":
+      return "border-destructive/30 bg-destructive/10 text-destructive";
+    default:
+      return "border-border bg-secondary text-muted-foreground";
+  }
+}
+
 function AdminProjectsPage() {
-  const [projects, setProjects] = useState<AdminProject[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const projectsQuery = useQuery(adminProjectsQueryOptions);
+  const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
+  const loading = projectsQuery.isFetching;
+  const error = projectsQuery.error
+    ? projectsQuery.error instanceof Error
+      ? projectsQuery.error.message
+      : "Failed to load projects."
+    : null;
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [page, setPage] = useState(1);
+  const [organisationFilter, setOrganisationFilter] = useState<string>("all");
 
-  const load = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setProjects(await listAdminProjects());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load projects.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    void load();
-  }, []);
+  /** Options come from the loaded projects, so the list never offers an org with no rows. */
+  const organisations = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const p of projects) byId.set(p.org_id, p.org_name);
+    return [...byId].
+      map(([id, name]) => ({ id, name })).
+      sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  }, [projects]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return projects.filter((p) => {
       if (q && ![p.name, p.org_name, p.vertical].some((v) => v.toLowerCase().includes(q))) return false;
       if (statusFilter !== "all" && p.status !== statusFilter) return false;
+      if (organisationFilter !== "all" && p.org_id !== organisationFilter) return false;
       return true;
     });
-  }, [projects, search, statusFilter]);
+  }, [projects, search, statusFilter, organisationFilter]);
 
-  const activeCount = projects.filter((p) => p.status === "active").length;
-  const rampingPaused = projects.filter((p) => p.status === "ramping" || p.status === "paused").length;
-  const withDrift = projects.filter((p) => p.active_drift_alerts > 0).length;
+  const { activeCount, rampingPaused, withDrift } = useMemo(
+    () => ({
+      activeCount: projects.filter((p) => p.status === "active").length,
+      rampingPaused: projects.filter((p) => p.status === "ramping" || p.status === "paused").length,
+      withDrift: projects.filter((p) => p.active_drift_alerts > 0).length,
+    }),
+    [projects],
+  );
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / USERS_PER_PAGE));
-  const currentPage = Math.min(page, totalPages);
-  const pageStart = (currentPage - 1) * USERS_PER_PAGE;
-  const pageRows = filtered.slice(pageStart, pageStart + USERS_PER_PAGE);
-
-  useEffect(() => {
-    setPage(1);
-  }, [search, statusFilter]);
-
-  useEffect(() => {
-    if (page > totalPages) setPage(totalPages);
-  }, [page, totalPages]);
+  const {
+    currentPage,
+    totalPages,
+    setPage,
+    pageItems: pageRows,
+    rangeStart,
+    rangeEnd,
+    total,
+  } = usePagination(filtered, `${search}|${statusFilter}|${organisationFilter}`);
 
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">Cross-org project health and quality posture.</p>
-        <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+        <Button variant="outline" size="sm" onClick={() => void projectsQuery.refetch()} disabled={loading}>
           <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
           Refresh
         </Button>
@@ -122,81 +141,125 @@ function AdminProjectsPage() {
       </div>
 
       <Card className="overflow-hidden p-0">
-        <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
-          <div className="relative min-w-[12rem] flex-1">
-            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              className="h-9 pl-8"
-              placeholder="Search name, org, vertical…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
+        <div className="space-y-4 border-b border-border p-4 sm:p-5">
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold tracking-tight text-foreground">All Projects</h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {`Showing ${rangeStart}-${rangeEnd} of ${total} projects`}
+            </p>
           </div>
-          <select
-            className={cn(editControlClass, "h-9 w-auto")}
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
-          >
-            <option value="all">All statuses</option>
-            <option value="active">Active</option>
-            <option value="ramping">Ramping</option>
-            <option value="paused">Paused</option>
-            <option value="completed">Completed</option>
-            <option value="cancelled">Cancelled</option>
-          </select>
+          <div className="flex flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center">
+            <div className="relative min-w-0 flex-1 lg:min-w-[220px] lg:max-w-sm">
+              <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[color:var(--brand)]" />
+              <Input
+                aria-label="Search projects"
+                className="h-10 rounded-full border-[color:var(--brand)]/25 bg-[color:var(--brand)]/5 pl-10 text-[color:var(--brand)] shadow-none placeholder:text-[color:var(--brand)]/55 focus-visible:border-[color:var(--brand)] focus-visible:ring-2 focus-visible:ring-[color:var(--brand)]/20"
+                placeholder="Search name, org, vertical…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+            <select
+              aria-label="Filter by status"
+              className={cn(editControlClass, "w-full lg:w-auto lg:min-w-[160px]")}
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+            >
+              <option value="all">All statuses</option>
+              <option value="active">Active</option>
+              <option value="ramping">Ramping</option>
+              <option value="paused">Paused</option>
+              <option value="completed">Completed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+            <select
+              aria-label="Filter by organisation"
+              className={cn(editControlClass, "w-full lg:w-auto lg:min-w-[180px]")}
+              value={organisationFilter}
+              onChange={(e) => setOrganisationFilter(e.target.value)}
+            >
+              <option value="all">All Organisations</option>
+              {organisations.map((org) => (
+                <option key={org.id} value={org.id}>
+                  {org.name}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         <Table>
           <TableHeader>
-            <TableRow>
-              <TableHead>Project</TableHead>
-              <TableHead>Organisation</TableHead>
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="pl-5">Project</TableHead>
+              <TableHead className="hidden md:table-cell">Organisation</TableHead>
               <TableHead>Status</TableHead>
-              <TableHead>Vertical</TableHead>
-              <TableHead>Start</TableHead>
-              <TableHead>Latest QA</TableHead>
-              <TableHead>Drift</TableHead>
-              <TableHead>Data gaps</TableHead>
+              <TableHead className="hidden xl:table-cell">Vertical</TableHead>
+              <TableHead className="hidden xl:table-cell">Start</TableHead>
+              <TableHead className="hidden lg:table-cell">Latest QA</TableHead>
+              <TableHead className="hidden sm:table-cell">Drift</TableHead>
+              <TableHead className="hidden pr-5 lg:table-cell">Data gaps</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading && pageRows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={8} className="text-center text-muted-foreground">
+                <TableCell colSpan={8} className="h-28 text-center text-muted-foreground">
                   Loading projects…
                 </TableCell>
               </TableRow>
             )}
             {!loading && pageRows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={8} className="text-center text-muted-foreground">
+                <TableCell colSpan={8} className="h-28 text-center text-muted-foreground">
                   No projects match your filters.
                 </TableCell>
               </TableRow>
             )}
             {pageRows.map((p) => (
               <TableRow key={p.id}>
-                <TableCell className="font-medium">{p.name}</TableCell>
-                <TableCell>{p.org_name}</TableCell>
-                <TableCell>{formatStatus(p.status)}</TableCell>
-                <TableCell>{p.vertical}</TableCell>
-                <TableCell>{p.start_date}</TableCell>
-                <TableCell>
-                  {p.latest_iso_week != null ? `W${p.latest_iso_week}/${p.latest_iso_year}` : "—"}
+                <TableCell className="min-w-36 pl-5 font-medium text-foreground">
+                  <div>{p.name}</div>
+                  <div className="mt-1 text-xs font-normal text-muted-foreground md:hidden">
+                    {p.org_name}
+                  </div>
+                </TableCell>
+                <TableCell className="hidden text-muted-foreground md:table-cell">
+                  {p.org_name}
                 </TableCell>
                 <TableCell>
+                  <span
+                    className={cn(
+                      "inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium",
+                      statusBadgeClass(p.status),
+                    )}
+                  >
+                    {formatStatus(p.status)}
+                  </span>
+                </TableCell>
+                <TableCell className="hidden text-muted-foreground xl:table-cell">
+                  {p.vertical}
+                </TableCell>
+                <TableCell className="hidden whitespace-nowrap text-muted-foreground xl:table-cell">
+                  {p.start_date}
+                </TableCell>
+                <TableCell className="hidden whitespace-nowrap tabular-nums text-muted-foreground lg:table-cell">
+                  {p.latest_iso_week != null ? `W${p.latest_iso_week}/${p.latest_iso_year}` : "—"}
+                </TableCell>
+                <TableCell className="hidden sm:table-cell">
                   {p.active_drift_alerts > 0 ? (
-                    <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-medium text-destructive">
+                    <span className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-xs font-medium tabular-nums text-destructive">
+                      <AlertTriangle className="h-3 w-3" />
                       {p.active_drift_alerts}
                     </span>
                   ) : (
-                    <span className="text-muted-foreground">0</span>
+                    <span className="tabular-nums text-muted-foreground">0</span>
                   )}
                 </TableCell>
-                <TableCell>
+                <TableCell className="hidden pr-5 lg:table-cell">
                   {p.data_gap_teams.length > 0 ? (
                     <span
-                      className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-600"
+                      className="inline-flex whitespace-nowrap rounded-full border border-amber-500/30 bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-600"
                       title={p.data_gap_teams.join(", ")}
                     >
                       {p.data_gap_teams.length} team{p.data_gap_teams.length !== 1 ? "s" : ""}
@@ -211,20 +274,11 @@ function AdminProjectsPage() {
         </Table>
 
         {totalPages > 1 && (
-          <div className="flex items-center justify-center gap-1 border-t border-border p-3">
-            {visiblePages(currentPage, totalPages).map((p, i, arr) => (
-              <span key={p} className="flex items-center gap-1">
-                {i > 0 && arr[i - 1] !== p - 1 && <span className="px-1 text-muted-foreground">…</span>}
-                <button
-                  type="button"
-                  className={cn(toolbarIconButtonClass, "h-8 w-8 text-xs", currentPage === p && "ring-2 ring-ring")}
-                  onClick={() => setPage(p)}
-                >
-                  {p}
-                </button>
-              </span>
-            ))}
-          </div>
+          <TablePagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            onPageChange={setPage}
+          />
         )}
       </Card>
     </div>

@@ -4,6 +4,7 @@ import {
   BookOpen,
   Bot,
   Briefcase,
+  Building2,
   Crown,
   FileText,
   FolderKanban,
@@ -84,6 +85,7 @@ const adminNav: NavSection[] = [
     items: [
       { to: "/admin", label: "Admin Console", icon: Settings2 },
       { to: "/admin/users", label: "Users", icon: Users },
+      { to: "/admin/organisations", label: "Organisations", icon: Building2 },
       { to: "/admin/projects", label: "Projects", icon: FolderKanban },
       { to: "/admin/agent-runs", label: "Agent Runs", icon: Bot },
       { to: "/client-intelligence", label: "Client Intelligence", icon: Briefcase },

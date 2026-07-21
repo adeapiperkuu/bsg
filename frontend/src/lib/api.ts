@@ -1,4 +1,15 @@
-import type { AppRole, AuthSession, MeUser, OrganisationRead, UserRead } from "@/types/auth";
+import { currentAuthGeneration, notifySessionInvalidated } from "@/lib/auth-session";
+import type {
+  AppRole,
+  AuthSession,
+  LoginResult,
+  MeUser,
+  MfaChallengeResult,
+  MfaEnrollResult,
+  MfaRequired,
+  OrganisationRead,
+  UserRead,
+} from "@/types/auth";
 import type { AgentQueryCreate, AgentQueryRead } from "@/types/workforce";
 import type {
   KnowledgeBootstrapApi,
@@ -21,7 +32,6 @@ import type {
   KnowledgeLibraryHealthApi,
   KnowledgeRelatedKnowledgeApi,
   KnowledgeRetrievalSettingsApi,
-  KnowledgeSuggestionApi,
   KnowledgeVersionCompareApi,
 } from "@/types/knowledge";
 import type {
@@ -100,22 +110,14 @@ function clearSessionHintCookie() {
   document.cookie = "csrf_token=; Max-Age=0; path=/; SameSite=Lax";
 }
 
-function clearClientAuthState() {
-  if (typeof window === "undefined") return;
-  void import("@/stores/useAuthStore").then(({ useAuthStore }) => {
-    useAuthStore.setState({ user: null, isAuthenticated: false, isLoading: false });
-  });
-}
-
-/** Clear stale browser session hints after auth failure (invalid/expired session or wrong API). */
-export function resetAuthSession() {
+export function resetAuthSession(generation: number = currentAuthGeneration()) {
   clearSessionHintCookie();
-  clearClientAuthState();
+  notifySessionInvalidated(generation);
 }
 
 let refreshPromise: Promise<boolean> | null = null;
 
-async function refreshAuthSession(): Promise<boolean> {
+async function refreshAuthSession(generation: number): Promise<boolean> {
   refreshPromise ??= (async () => {
     const refreshHeaders = new Headers();
     const csrf = getCsrfToken();
@@ -130,7 +132,7 @@ async function refreshAuthSession(): Promise<boolean> {
     if (refreshed.ok) return true;
 
     if (refreshed.status === 401 || refreshed.status === 403) {
-      resetAuthSession();
+      resetAuthSession(generation);
     }
     return false;
   })().finally(() => {
@@ -176,6 +178,7 @@ export async function apiFetch<T>(
     if (csrf) headers.set("X-CSRF-Token", csrf);
   }
 
+  const generation = currentAuthGeneration();
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers,
@@ -185,10 +188,10 @@ export async function apiFetch<T>(
   if (response.status === 401 && !path.startsWith("/auth/") && !retried) {
     const error = await parseApiError(response);
     if (!getCsrfToken()) {
-      resetAuthSession();
+      resetAuthSession(generation);
       throw error;
     }
-    if (await refreshAuthSession()) {
+    if (await refreshAuthSession(generation)) {
       return apiFetch<T>(path, init, true);
     }
     throw error;
@@ -203,6 +206,7 @@ export async function apiFetchBlob(
   retried = false,
 ): Promise<Blob> {
   const headers = new Headers(init.headers);
+  const generation = currentAuthGeneration();
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers,
@@ -212,10 +216,10 @@ export async function apiFetchBlob(
   if (response.status === 401 && !path.startsWith("/auth/") && !retried) {
     const error = await parseApiError(response);
     if (!getCsrfToken()) {
-      resetAuthSession();
+      resetAuthSession(generation);
       throw error;
     }
-    if (await refreshAuthSession()) {
+    if (await refreshAuthSession(generation)) {
       return apiFetchBlob(path, init, true);
     }
     throw error;
@@ -227,10 +231,47 @@ export async function apiFetchBlob(
   return response.blob();
 }
 
-export async function login(email: string, password: string): Promise<AuthSession> {
-  const body = await apiFetch<{ data: AuthSession }>("/auth/login", {
+export async function login(email: string, password: string): Promise<LoginResult> {
+  const body = await apiFetch<{ data: AuthSession | MfaRequired }>("/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
+  });
+  if ("mfa_required" in body.data && body.data.mfa_required) {
+    return { status: "mfa_required", ...body.data };
+  }
+  return { status: "success", session: body.data as AuthSession };
+}
+
+/** DEVELOPMENT_PLAN.md Workstream E. `pendingToken` authenticates these calls
+ * via Authorization header -- there's no session cookie yet at this stage. */
+export async function mfaEnroll(pendingToken: string): Promise<MfaEnrollResult> {
+  const body = await apiFetch<{ data: MfaEnrollResult }>("/auth/mfa/enroll", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${pendingToken}` },
+    body: JSON.stringify({}),
+  });
+  return body.data;
+}
+
+export async function mfaChallenge(pendingToken: string, factorId: string): Promise<MfaChallengeResult> {
+  const body = await apiFetch<{ data: MfaChallengeResult }>("/auth/mfa/challenge", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${pendingToken}` },
+    body: JSON.stringify({ factor_id: factorId }),
+  });
+  return body.data;
+}
+
+export async function mfaVerify(
+  pendingToken: string,
+  factorId: string,
+  challengeId: string,
+  code: string,
+): Promise<AuthSession> {
+  const body = await apiFetch<{ data: AuthSession }>("/auth/mfa/verify", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${pendingToken}` },
+    body: JSON.stringify({ factor_id: factorId, challenge_id: challengeId, code }),
   });
   return body.data;
 }
@@ -264,6 +305,43 @@ export async function listUsers(): Promise<UserRead[]> {
 
 export async function listOrganisations(): Promise<OrganisationRead[]> {
   const body = await apiFetch<{ data: OrganisationRead[] }>("/organisations");
+  return body.data;
+}
+
+export async function createOrganisation(payload: {
+  name: string;
+  slug: string;
+  vertical: string;
+  region: string;
+  is_active?: boolean;
+}): Promise<OrganisationRead> {
+  const body = await apiFetch<{ data: OrganisationRead }>("/organisations", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
+/** Also used to deactivate (is_active: false) -- matching admin.users.tsx's
+ * convention, deactivation is a field on the edit form, not a separate
+ * destructive action. The backend's DELETE /organisations/{id} route exists
+ * but isn't used here: it also sets deleted_at, permanently hiding the org
+ * from scoped_organisation_query with no UI path to undo -- a different,
+ * more destructive operation than what "deactivate" means for users. */
+export async function updateOrganisation(
+  orgId: string,
+  payload: {
+    name?: string;
+    slug?: string;
+    vertical?: string;
+    region?: string;
+    is_active?: boolean;
+  },
+): Promise<OrganisationRead> {
+  const body = await apiFetch<{ data: OrganisationRead }>(`/organisations/${orgId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
   return body.data;
 }
 
@@ -537,6 +615,12 @@ export type DeliveryPortfolioResponse = {
     dashboard: DeliveryDashboardResponse;
   }>;
   milestones: Array<Record<string, unknown>>;
+  /**
+   * Projects visible to the caller, which exceeds `projects.length` when the backend's
+   * PORTFOLIO_PROJECT_LIMIT truncates. Surface the shortfall; never present a truncated
+   * portfolio as complete.
+   */
+  total_count: number;
 };
 
 export async function fetchDeliveryPortfolio(): Promise<DeliveryPortfolioResponse> {
@@ -925,6 +1009,81 @@ export async function postAgentQuery(payload: {
   return body.data;
 }
 
+/**
+ * The Operational Tower is fetched as independent sections, not one payload, so each paints
+ * as soon as its data lands instead of the whole page waiting on the slowest part. The
+ * grouping mirrors the backend's, which is by measured cost — see
+ * backend/app/services/operational_tower.py.
+ */
+
+export type TowerPulse = {
+  activeProjects: number;
+  totalProjects: number;
+  avgQualityScore: number | null;
+  qualityTrend: Array<{ week: string; goldAccuracy: number | null; iaa: number | null }>;
+  riskTrend: {
+    series: Array<{ name: string; color: string }>;
+    data: Array<Record<string, string | number>>;
+  };
+  alerts: Array<{ sev: string; project: string; desc: string; ts: string }>;
+};
+
+export type TowerEscalations = {
+  openEscalations: number;
+  criticalEscalations: number;
+};
+
+export type TowerHealth = {
+  scheduleConfidence: number | null;
+  healthDistribution: Array<{ name: string; value: number; color: string }>;
+};
+
+export type TowerWork = {
+  recommendations: Array<{
+    title: string;
+    confidence: number;
+    evidence: number;
+    priority: string;
+  }>;
+  milestones: Array<{
+    project: string;
+    name: string;
+    due: string;
+    confidence: number | null;
+    status: string;
+  }>;
+};
+
+export type TowerActivity = {
+  utilization: Array<{ team: string; value: number }>;
+  activity: Array<{ ts: string; actor: string; text: string }>;
+};
+
+export type ExecutiveSummary = {
+  text: string;
+  week: string;
+  generated_by_ai: boolean;
+  status: string;
+  approved: boolean;
+  updated_at: string | null;
+};
+
+async function fetchTowerSection<T>(section: string): Promise<T> {
+  const body = await apiFetch<{ data: T }>(`/dashboard/operational-tower/${section}`);
+  return body.data;
+}
+
+export const fetchTowerPulse = () => fetchTowerSection<TowerPulse>("pulse");
+export const fetchTowerEscalations = () => fetchTowerSection<TowerEscalations>("escalations");
+export const fetchTowerHealth = () => fetchTowerSection<TowerHealth>("health");
+export const fetchTowerWork = () => fetchTowerSection<TowerWork>("work");
+export const fetchTowerActivity = () => fetchTowerSection<TowerActivity>("activity");
+
+export async function fetchExecutiveSummary(): Promise<ExecutiveSummary | null> {
+  const body = await apiFetch<{ data: ExecutiveSummary | null }>("/dashboard/executive-summary");
+  return body.data;
+}
+
 export function defaultRouteForRole(role: AppRole): string {
   switch (role) {
     case "client":
@@ -1066,6 +1225,8 @@ function buildBootstrapFromDocuments(
         libraryHealth?.draft_count ?? documents.filter((d) => d.status === "draft").length,
       archived_count:
         libraryHealth?.archived_count ?? documents.filter((d) => d.status === "archived").length,
+      approaching_expiry_count: libraryHealth?.approaching_expiry_count ?? 0,
+      outdated_count: libraryHealth?.outdated_count ?? 0,
     },
   };
 }
@@ -1097,6 +1258,8 @@ function normalizeKnowledgeBootstrap(data: LegacyKnowledgeBootstrapApi): Knowled
         indexing_count: data.library_health?.indexing_count ?? 0,
         draft_count: data.library_health?.draft_count ?? 0,
         archived_count: data.library_health?.archived_count ?? 0,
+        approaching_expiry_count: data.library_health?.approaching_expiry_count ?? 0,
+        outdated_count: data.library_health?.outdated_count ?? 0,
       },
     };
   }
@@ -1489,6 +1652,72 @@ export async function* streamDeliveryChatMessage(
     if (!raw) return null;
     try {
       return JSON.parse(raw) as DeliveryChatStreamEvent;
+    } catch {
+      return null;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split(/\r?\n/);
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      const event = parseLine(line);
+      if (event) yield event;
+    }
+  }
+
+  if (buf.trim()) {
+    const event = parseLine(buf);
+    if (event) yield event;
+  }
+}
+
+export type AgentQueryStreamEvent =
+  | { type: "status"; phase: "gathering_evidence" | "reasoning" | "writing" }
+  | { type: "delta"; text: string }
+  | { type: "done"; data: AgentQueryRead }
+  | { type: "error"; code?: string; message: string; retryable?: boolean };
+
+/** Streaming counterpart to postAgentQuery — currently only the quality
+ * intelligence agent supports this on the backend (see
+ * POST /agent-queries/stream). Emits `status` events during evidence
+ * gathering / root-cause reasoning, `delta` events as the answer is
+ * synthesized, then a single `done` event with the full grounded
+ * AgentQueryRead payload (identical in shape to postAgentQuery's result). */
+export async function* streamAgentQuery(payload: {
+  agent_name: string;
+  project_id?: string;
+  query_text: string;
+}): AsyncGenerator<AgentQueryStreamEvent> {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  const csrf = getCsrfToken();
+  if (csrf) headers.set("X-CSRF-Token", csrf);
+
+  const response = await fetch(`${API_BASE}/agent-queries/stream`, {
+    method: "POST",
+    headers,
+    credentials: "include",
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok || !response.body) {
+    throw await parseApiError(response);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+
+  const parseLine = (line: string): AgentQueryStreamEvent | null => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data: ")) return null;
+    const raw = trimmed.slice(6).trim();
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as AgentQueryStreamEvent;
     } catch {
       return null;
     }

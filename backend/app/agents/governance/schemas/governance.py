@@ -1,10 +1,17 @@
 from datetime import date, datetime
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 from app.db.models import (
     GovernanceActionStatus,
+    GovernanceAIRecommendationPriority,
+    GovernanceAIRecommendationScope,
+    GovernanceAIRecommendationStatus,
+    GovernanceAIRecommendationType,
+    GovernanceCharterPublicationEventType,
+    GovernanceCharterPublicationStatus,
     GovernanceCharterStatus,
     GovernanceDependencyStatus,
     GovernanceDependencyType,
@@ -12,11 +19,273 @@ from app.db.models import (
     GovernanceEscalationSourceType,
     GovernanceEscalationStatus,
     GovernanceEvidenceSourceType,
+    GovernanceRecommendationAcceptanceStatus,
+    GovernanceRecommendationConversionTarget,
+    GovernanceRecordEvidenceSourceType,
+    GovernanceRecordLinkType,
     GovernanceScopeStatus,
     GovernanceSummaryStatus,
+    GovernanceJobStatus,
     KnowledgeVisibility,
 )
 from app.schemas.common import ORMModel
+
+
+class GovernanceJobStartRead(BaseModel):
+    job_id: UUID
+    job_type: str
+    status: GovernanceJobStatus
+    deduplicated: bool = False
+
+
+class GovernanceJobRead(BaseModel):
+    id: UUID
+    org_id: UUID
+    project_id: UUID | None = None
+    job_type: str
+    status: GovernanceJobStatus
+    progress_stage: str
+    progress_percent: int
+    attempt_count: int
+    max_attempts: int
+    requested_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    next_attempt_at: datetime | None = None
+    retryable: bool
+    cancellable: bool
+    error_code: str | None = None
+    error_message: str | None = None
+    result_record_type: str | None = None
+    result_record_id: UUID | None = None
+    result: dict[str, Any] | None = None
+
+
+class GovernanceAnalyticsExportJobRequest(BaseModel):
+    days: int = Field(default=30, ge=1, le=365)
+    project_id: UUID | None = None
+    vertical: str | None = Field(default=None, max_length=120)
+    format: Literal["csv", "pdf"] = "csv"
+
+
+# --- Phase 8 provenance schemas ---
+
+
+class GovernanceRecordEvidenceLinkRead(BaseModel):
+    id: UUID
+    link_type: GovernanceRecordLinkType
+    source_type: GovernanceRecordEvidenceSourceType
+    source_id: UUID | None = None
+    evidence_id: str | None = None
+    recommendation_id: UUID | None = None
+    conversion_id: UUID | None = None
+    title: str | None = None
+    description: str | None = None
+    status: str | None = None
+    severity: str | None = None
+    project_id: UUID | None = None
+    project_name: str | None = None
+    occurred_at: datetime | None = None
+    created_at: datetime
+    source_available: bool = True
+    can_view_source: bool = True
+
+
+class GovernanceSourceRecommendationRead(BaseModel):
+    id: UUID
+    title: str
+    recommendation_type: str | None = None
+    priority: str | None = None
+    confidence: float | None = None
+    generated_at: datetime | None = None
+    status: str | None = None
+    accepted_at: datetime | None = None
+    source_type: Literal["ai_recommendation"] = "ai_recommendation"
+    can_view: bool = True
+    source_available: bool = True
+
+
+# --- AI recommendation schemas (Phase 6) ---
+
+
+class GovernanceSuggestedAction(BaseModel):
+    label: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=800)
+    action_type: Literal[
+        "review",
+        "assign_owner",
+        "resolve_dependency",
+        "create_action",
+        "consider_escalation",
+        "schedule_governance_review",
+        "update_scope",
+        "monitor",
+    ]
+    target_entity_type: str | None = Field(default=None, max_length=64)
+    target_entity_id: UUID | None = None
+
+
+class GovernanceAIRecommendationCandidate(BaseModel):
+    scope: Literal["project", "portfolio"]
+    project_id: UUID | None = None
+    recommendation_type: GovernanceAIRecommendationType
+    title: str = Field(min_length=1, max_length=200)
+    narrative: str = Field(min_length=1, max_length=2500)
+    rationale: str = Field(min_length=1, max_length=1500)
+    priority: Literal["low", "medium", "high", "critical"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence_ids: list[str] = Field(min_length=1, max_length=20)
+    suggested_actions: list[GovernanceSuggestedAction] = Field(default_factory=list, max_length=8)
+
+
+class GovernanceAIRecommendationLLMResponse(BaseModel):
+    recommendations: list[GovernanceAIRecommendationCandidate] = Field(default_factory=list)
+
+
+class GovernanceAIRecommendationEvidenceRead(BaseModel):
+    evidence_id: str
+    entity_type: str
+    entity_id: UUID | None = None
+    project_id: UUID | None = None
+    title: str
+    summary: str
+    status: str | None = None
+    severity: str | None = None
+    occurred_at: datetime | None = None
+
+
+class GovernanceAIRecommendationRead(BaseModel):
+    id: UUID
+    scope: GovernanceAIRecommendationScope
+    project_id: UUID | None = None
+    project_name: str | None = None
+    recommendation_type: GovernanceAIRecommendationType
+    title: str
+    narrative: str
+    rationale: str
+    priority: GovernanceAIRecommendationPriority
+    confidence: float
+    suggested_actions: list[GovernanceSuggestedAction] = Field(default_factory=list)
+    evidence: list[GovernanceAIRecommendationEvidenceRead] = Field(default_factory=list)
+    status: GovernanceAIRecommendationStatus
+    generated_at: datetime
+    expires_at: datetime | None = None
+    can_regenerate: bool = False
+    can_dismiss: bool = False
+    is_ai_generated: bool = True
+    source_type: Literal["ai", "rule_based"] = "ai"
+    is_stale: bool = False
+    evidence_hash: str | None = None
+    acceptance_status: GovernanceRecommendationAcceptanceStatus = (
+        GovernanceRecommendationAcceptanceStatus.NOT_ACCEPTED
+    )
+    accepted_at: datetime | None = None
+    accepted_by_user_id: UUID | None = None
+    converted_action_id: UUID | None = None
+    converted_escalation_id: UUID | None = None
+    accepted_suggested_action_index: int | None = None
+    acceptance_note: str | None = None
+    auto_detected: bool = False
+    trigger_type: str | None = None
+    trigger_entity_type: str | None = None
+    trigger_entity_id: UUID | None = None
+    severity_score: float | None = None
+    detected_at: datetime | None = None
+    snoozed_until: datetime | None = None
+    can_snooze: bool = False
+    linked_milestone_id: UUID | None = None
+    risk_categories: list[str] = Field(default_factory=list)
+    signal_providers: list[str] = Field(default_factory=list)
+    repeated_detection_count: int | None = None
+    latest_detected_at: datetime | None = None
+
+
+class GovernanceRuleBasedRecommendationRead(BaseModel):
+    title: str
+    detail: str
+    priority: str
+    project_id: UUID | None = None
+    project_name: str | None = None
+    evidence: list[GovernanceAIRecommendationEvidenceRead] = Field(default_factory=list)
+    source_type: Literal["rule_based"] = "rule_based"
+    is_ai_generated: bool = False
+
+
+class GovernanceAIRecommendationGenerateRequest(BaseModel):
+    project_id: UUID | None = None
+    scope: GovernanceAIRecommendationScope = GovernanceAIRecommendationScope.PROJECT
+    force: bool = False
+
+
+class GovernanceAIRecommendationDismissRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class GovernanceAIRecommendationFeedbackRequest(BaseModel):
+    helpful: bool
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class GovernanceAIRecommendationFeedbackRead(BaseModel):
+    id: UUID
+    recommendation_id: UUID
+    helpful: bool
+    reason: str | None = None
+    created_at: datetime
+
+
+class ConvertRecommendationToActionRequest(BaseModel):
+    suggested_action_index: int | None = Field(default=None, ge=0)
+    title: str = Field(min_length=1, max_length=500)
+    description: str | None = None
+    project_id: UUID
+    owner_id: UUID | None = None
+    due_date: date | None = None
+    status: GovernanceActionStatus = GovernanceActionStatus.OPEN
+    linked_knowledge_document_id: UUID | None = None
+    note: str | None = Field(default=None, max_length=500)
+    idempotency_key: str | None = Field(default=None, max_length=120)
+
+
+class ConvertRecommendationToEscalationRequest(BaseModel):
+    suggested_action_index: int | None = Field(default=None, ge=0)
+    title: str = Field(min_length=1, max_length=500)
+    description: str | None = None
+    project_id: UUID
+    severity: GovernanceEscalationSeverity = GovernanceEscalationSeverity.MEDIUM
+    status: GovernanceEscalationStatus = GovernanceEscalationStatus.OPEN
+    assigned_to: UUID | None = None
+    note: str | None = Field(default=None, max_length=500)
+    idempotency_key: str | None = Field(default=None, max_length=120)
+
+
+class GovernanceAIRecommendationGenerationResult(BaseModel):
+    recommendations: list[GovernanceAIRecommendationRead] = Field(default_factory=list)
+    rule_based_fallback: list[GovernanceRuleBasedRecommendationRead] = Field(default_factory=list)
+    reused: bool = False
+    fallback_used: bool = False
+    fallback_reason: str | None = None
+    generation_request_id: UUID | None = None
+    evidence_hash: str | None = None
+    candidates_returned: int = 0
+    candidates_persisted: int = 0
+    candidates_rejected_grounding: int = 0
+    duplicates_suppressed: int = 0
+    duration_ms: float | None = None
+    projects_attempted: int = 0
+    projects_with_recommendations: int = 0
+    projects_reused: int = 0
+    projects_using_fallback: int = 0
+    project_failures: dict[str, str] = Field(default_factory=dict)
+
+
+class GovernanceAIRecommendationListRead(BaseModel):
+    items: list[GovernanceAIRecommendationRead] = Field(default_factory=list)
+    rule_based: list[GovernanceRuleBasedRecommendationRead] = Field(default_factory=list)
+    total: int = 0
+    ai_enabled: bool = False
+    can_generate: bool = False
+
 
 
 class GovernanceKpisRead(BaseModel):
@@ -132,6 +401,17 @@ class GovernanceEscalationRead(ORMModel):
     assigned_to_name: str | None = None
     source_type: GovernanceEscalationSourceType | None = None
     source_id: UUID | None = None
+    client_summary: str | None = None
+    client_visible: bool = False
+    client_published_at: datetime | None = None
+    provenance_source_type: Literal["manual", "ai_recommendation", "delivery_risk", "other"] = (
+        "manual"
+    )
+    source_recommendation_id: UUID | None = None
+    source_recommendation_title: str | None = None
+    source_conversion_id: UUID | None = None
+    evidence_link_count: int = 0
+    has_ai_source: bool = False
 
 
 class GovernanceEscalationCreate(BaseModel):
@@ -154,10 +434,16 @@ class GovernanceEscalationUpdate(BaseModel):
     resolved_at: datetime | None = None
     source_type: GovernanceEscalationSourceType | None = None
     source_id: UUID | None = None
+    client_summary: str | None = Field(default=None, max_length=4000)
 
 
 class PromoteRiskAlertRequest(BaseModel):
     risk_alert_id: UUID
+
+
+class PublishClientEscalationSummaryRequest(BaseModel):
+    client_summary: str = Field(min_length=1, max_length=4000)
+    client_visible: bool = True
 
 
 class GovernanceEscalationListRead(BaseModel):
@@ -172,6 +458,10 @@ class GovernanceEscalationListRead(BaseModel):
     project_name: str | None = None
     raised_by_name: str | None = None
     assigned_to_name: str | None = None
+    description: str | None = None
+    client_summary: str | None = None
+    client_visible: bool = False
+    client_published_at: datetime | None = None
 
 
 class GovernanceActionRead(ORMModel):
@@ -191,6 +481,14 @@ class GovernanceActionRead(ORMModel):
     project_name: str | None = None
     owner_name: str | None = None
     linked_knowledge_document_id: UUID | None = None
+    provenance_source_type: Literal["manual", "ai_recommendation", "delivery_risk", "other"] = (
+        "manual"
+    )
+    source_recommendation_id: UUID | None = None
+    source_recommendation_title: str | None = None
+    source_conversion_id: UUID | None = None
+    evidence_link_count: int = 0
+    has_ai_source: bool = False
 
 
 class GovernanceActionCreate(BaseModel):
@@ -224,6 +522,96 @@ class GovernanceActionUpdate(BaseModel):
     linked_knowledge_document_id: UUID | None = None
 
 
+class GovernanceProjectSheetProjectRead(BaseModel):
+    id: UUID
+    name: str
+    description: str | None = None
+    vertical: str
+    status: str
+    start_date: date
+    target_end_date: date
+
+
+class GovernanceProjectSheetSummaryRead(BaseModel):
+    scope_status: GovernanceScopeStatus | None = None
+    scope_version: str | None = None
+    open_dependencies: int = 0
+    blocking_dependencies: int = 0
+    overdue_actions: int = 0
+    open_actions: int = 0
+    open_escalations: int = 0
+    critical_escalations: int = 0
+    health: str = "green"
+
+
+class GovernanceProjectSheetRiskRead(BaseModel):
+    id: UUID
+    project_id: UUID
+    title: str
+    detail: str
+    risk_tier: str
+    status: str
+    created_at: datetime
+
+
+class GovernanceProjectSheetPermissionsRead(BaseModel):
+    can_write: bool = False
+    can_view_internal: bool = False
+    can_view_delivery_risks: bool = False
+
+
+class GovernanceProjectSheetDependencySectionRead(BaseModel):
+    items: list[ProjectDependencyListRead] = Field(default_factory=list)
+    total: int = 0
+    has_more: bool = False
+
+
+class GovernanceProjectSheetActionSectionRead(BaseModel):
+    items: list[GovernanceActionListRead] = Field(default_factory=list)
+    total: int = 0
+    has_more: bool = False
+
+
+class GovernanceProjectSheetEscalationSectionRead(BaseModel):
+    items: list[GovernanceEscalationListRead] = Field(default_factory=list)
+    total: int = 0
+    has_more: bool = False
+
+
+class GovernanceProjectSheetRiskSectionRead(BaseModel):
+    items: list[GovernanceProjectSheetRiskRead] = Field(default_factory=list)
+    total: int = 0
+    has_more: bool = False
+
+
+class GovernanceProjectSheetRead(BaseModel):
+    project: GovernanceProjectSheetProjectRead
+    summary: GovernanceProjectSheetSummaryRead
+    scope: ProjectScopeStateRead | None = None
+    dependencies: GovernanceProjectSheetDependencySectionRead
+    actions: GovernanceProjectSheetActionSectionRead
+    escalations: GovernanceProjectSheetEscalationSectionRead
+    delivery_risks: GovernanceProjectSheetRiskSectionRead
+    permissions: GovernanceProjectSheetPermissionsRead
+    generated_at: datetime
+
+
+class GovernanceRecommendationConversionRead(BaseModel):
+    id: UUID
+    recommendation_id: UUID
+    conversion_target: GovernanceRecommendationConversionTarget
+    suggested_action_index: int
+    created_action_id: UUID | None = None
+    created_escalation_id: UUID | None = None
+    created_by_user_id: UUID | None = None
+    created_at: datetime
+    note: str | None = None
+    idempotent_reuse: bool = False
+    created_action: GovernanceActionRead | None = None
+    created_escalation: GovernanceEscalationRead | None = None
+    updated_recommendation: GovernanceAIRecommendationRead | None = None
+
+
 class GovernanceEvidenceLinkRead(ORMModel):
     id: UUID
     org_id: UUID
@@ -249,6 +637,21 @@ class GovernanceWeeklySummaryRead(ORMModel):
     created_at: datetime
     updated_at: datetime
     evidence_links: list[GovernanceEvidenceLinkRead] = Field(default_factory=list)
+    evidence_link_count: int = 0
+    approved_by_name: str | None = None
+
+
+class GovernanceWeeklySummaryListRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    summary_week: date
+    status: GovernanceSummaryStatus
+    generated_by_ai: bool
+    approved_by: UUID | None
+    approved_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    evidence_link_count: int = 0
     approved_by_name: str | None = None
 
 
@@ -291,20 +694,99 @@ class ProjectCharterRead(ORMModel):
     generated_by_ai: bool
     previous_version_id: UUID | None
     knowledge_document_id: UUID | None
+    knowledge_version_id: UUID | None = None
     visibility: KnowledgeVisibility
     approved_by: UUID | None
     approved_at: datetime | None
+    publication_status: GovernanceCharterPublicationStatus = (
+        GovernanceCharterPublicationStatus.NOT_PUBLISHED
+    )
+    published_at: datetime | None = None
+    published_by: UUID | None = None
+    publication_error: str | None = None
+    publication_attempt_count: int = 0
+    last_publication_attempt_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     evidence_links: list[GovernanceEvidenceLinkRead] = Field(default_factory=list)
     approved_by_name: str | None = None
+    published_by_name: str | None = None
     project_name: str | None = None
+    knowledge_url: str | None = None
+
+
+class ProjectChartersPanelRead(BaseModel):
+    charters: list[ProjectCharterRead]
+    selected_charter: ProjectCharterRead | None = None
+    limit: int
+    offset: int
+    has_more: bool = False
+
+
+class CharterPublicationActionRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class CharterPublicationStatusRead(BaseModel):
+    charter_id: UUID
+    publication_status: GovernanceCharterPublicationStatus
+    knowledge_document_id: UUID | None = None
+    knowledge_version_id: UUID | None = None
+    published_at: datetime | None = None
+    published_by: UUID | None = None
+    published_by_name: str | None = None
+    publication_error: str | None = None
+    publication_attempt_count: int = 0
+    last_publication_attempt_at: datetime | None = None
+    knowledge_url: str | None = None
+    charter_status: GovernanceCharterStatus
+    charter_version: str
+
+
+class CharterKnowledgeLinkRead(CharterPublicationStatusRead):
+    project_name: str | None = None
+    knowledge_document_title: str | None = None
+    view_document_url: str | None = None
+    open_in_knowledge_url: str | None = None
+
+
+class CharterPublicationVersionRead(BaseModel):
+    charter_id: UUID
+    charter_version: str
+    charter_status: GovernanceCharterStatus
+    publication_status: GovernanceCharterPublicationStatus
+    knowledge_document_id: UUID | None = None
+    knowledge_version_id: UUID | None = None
+    knowledge_version: str | None = None
+    created_at: datetime
+    published_at: datetime | None = None
+    published_by: UUID | None = None
+    published_by_name: str | None = None
+    approval_date: datetime | None = None
+    knowledge_url: str | None = None
+
+
+class CharterPublicationEventRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    charter_id: UUID
+    project_id: UUID
+    event_type: GovernanceCharterPublicationEventType
+    actor_user_id: UUID | None = None
+    knowledge_document_id: UUID | None = None
+    knowledge_version_id: UUID | None = None
+    previous_knowledge_version_id: UUID | None = None
+    charter_version: str | None = None
+    reason: str | None = None
+    event_metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
 
 
 class GovernanceKnowledgeDocumentRef(BaseModel):
     document_id: UUID
     title: str
     project: str | None
+    department: str | None = None
     version: str
     status: str
     visibility: str
@@ -361,6 +843,7 @@ class GovernanceHealthProjectRead(BaseModel):
     quality_risk: str | None = None
     workforce_risk: str | None = None
     trend: str
+    vertical: str | None = None
     evidence: list[GovernanceEvidenceRead] = Field(default_factory=list)
 
 
@@ -370,22 +853,30 @@ class GovernanceChartPointRead(BaseModel):
     secondary_value: float | None = None
 
 
-class GovernanceTrendPointRead(BaseModel):
-    date: date
-    open_dependencies: int
-    resolved_dependencies: int
-    blocking_dependencies: int
-    escalations_created: int
-    escalations_resolved: int
-    critical_escalations: int
-    actions_created: int
-    actions_completed: int
-    overdue_actions: int
-    scope_revisions: int
-    scope_approvals: int
-    locked_scope: int
-    portfolio_health: float
-    sla_adherence_pct: float
+class GovernanceInsightsKpisRead(BaseModel):
+    portfolio_governance_score: float
+    projects_at_risk: int = 0
+    recommendation_acceptance_rate_pct: float = 0.0
+    recommendation_dismissal_rate_pct: float = 0.0
+    escalations_created: int = 0
+    recommendations_created: int = 0
+    sla_adherence_pct: float = 0.0
+
+
+class GovernanceRiskHeatmapCellRead(BaseModel):
+    vertical: str
+    risk_level: str
+    project_count: int
+    avg_score: float
+
+
+class GovernanceNamedCountRead(BaseModel):
+    label: str
+    count: int
+    project_id: UUID | None = None
+    project_name: str | None = None
+    vertical: str | None = None
+    detail: str | None = None
 
 
 class GovernanceAnalyticsRead(BaseModel):
@@ -395,10 +886,19 @@ class GovernanceAnalyticsRead(BaseModel):
     portfolio_risk_ranking: list[GovernanceHealthProjectRead]
     insights: list[GovernanceInsightRead]
     recommendations: list[GovernanceRecommendationRead]
-    trends: list[GovernanceTrendPointRead]
     charts: dict[str, list[GovernanceChartPointRead]]
     recent_activity: list[GovernanceEvidenceRead] = Field(default_factory=list)
     export_sections: list[str] = Field(default_factory=list)
+    portfolio_governance_score: float | None = None
+    insights_kpis: GovernanceInsightsKpisRead | None = None
+    top_governance_risks: list[GovernanceNamedCountRead] = Field(default_factory=list)
+    top_recurring_blockers: list[GovernanceNamedCountRead] = Field(default_factory=list)
+    top_recurring_mitigation_failures: list[GovernanceNamedCountRead] = Field(
+        default_factory=list
+    )
+    most_affected_projects: list[GovernanceNamedCountRead] = Field(default_factory=list)
+    most_affected_departments: list[GovernanceNamedCountRead] = Field(default_factory=list)
+    risk_heatmap: list[GovernanceRiskHeatmapCellRead] = Field(default_factory=list)
 
 
 class GovernanceAnalyticsSummaryRead(BaseModel):
@@ -408,6 +908,8 @@ class GovernanceAnalyticsSummaryRead(BaseModel):
     portfolio_risk_ranking: list[GovernanceHealthProjectRead] = Field(default_factory=list)
     charts: dict[str, list[GovernanceChartPointRead]] = Field(default_factory=dict)
     export_sections: list[str] = Field(default_factory=list)
+    portfolio_governance_score: float | None = None
+    insights_kpis: GovernanceInsightsKpisRead | None = None
 
 
 class GovernanceAnalyticsDetailRead(BaseModel):
@@ -415,10 +917,18 @@ class GovernanceAnalyticsDetailRead(BaseModel):
     date_range_days: int
     insights: list[GovernanceInsightRead] = Field(default_factory=list)
     recommendations: list[GovernanceRecommendationRead] = Field(default_factory=list)
-    trends: list[GovernanceTrendPointRead] = Field(default_factory=list)
     charts: dict[str, list[GovernanceChartPointRead]] = Field(default_factory=dict)
     recent_activity: list[GovernanceEvidenceRead] = Field(default_factory=list)
     export_sections: list[str] = Field(default_factory=list)
+    insights_kpis: GovernanceInsightsKpisRead | None = None
+    top_governance_risks: list[GovernanceNamedCountRead] = Field(default_factory=list)
+    top_recurring_blockers: list[GovernanceNamedCountRead] = Field(default_factory=list)
+    top_recurring_mitigation_failures: list[GovernanceNamedCountRead] = Field(
+        default_factory=list
+    )
+    most_affected_projects: list[GovernanceNamedCountRead] = Field(default_factory=list)
+    most_affected_departments: list[GovernanceNamedCountRead] = Field(default_factory=list)
+    risk_heatmap: list[GovernanceRiskHeatmapCellRead] = Field(default_factory=list)
 
 
 class GovernanceMonitoringRead(BaseModel):
@@ -431,3 +941,391 @@ class GovernanceMonitoringRead(BaseModel):
     failed_or_empty_ai_answers: int
     dashboard_exports: int
     recent_event_types: dict[str, int] = Field(default_factory=dict)
+
+
+# --- Phase 12: Recommendation Effectiveness ---
+
+
+class GovernanceEffectivenessMetricRead(BaseModel):
+    value: float | None = None
+    numerator: int = 0
+    denominator: int = 0
+    null_reason: str | None = None
+
+
+class GovernanceEffectivenessSummaryRead(BaseModel):
+    generated_at: datetime
+    date_range_days: int
+    total_recommendations: int = 0
+    reviewed: int = 0
+    pending: int = 0
+    acceptance_rate: GovernanceEffectivenessMetricRead
+    dismissal_rate: GovernanceEffectivenessMetricRead
+    conversion_rate: GovernanceEffectivenessMetricRead
+    resolution_rate: GovernanceEffectivenessMetricRead
+    false_positive_rate: GovernanceEffectivenessMetricRead
+    average_quality_score: float | None = None
+    median_time_to_review_seconds: float | None = None
+    average_time_to_review_seconds: float | None = None
+    median_time_to_convert_seconds: float | None = None
+    average_time_to_convert_seconds: float | None = None
+    median_time_to_resolve_seconds: float | None = None
+    average_time_to_resolve_seconds: float | None = None
+    recurrence_after_acceptance: int = 0
+    recurrence_after_dismissal: int = 0
+    metric_version: str = "v1"
+
+
+class GovernanceEffectivenessFunnelRead(BaseModel):
+    created: int = 0
+    reviewed: int = 0
+    accepted: int = 0
+    dismissed: int = 0
+    converted: int = 0
+    resolved: int = 0
+
+
+class GovernanceEffectivenessTrendPointRead(BaseModel):
+    date: date
+    created: int = 0
+    reviewed: int = 0
+    accepted: int = 0
+    dismissed: int = 0
+    converted: int = 0
+    resolved: int = 0
+    false_positives: int = 0
+    average_quality_score: float | None = None
+    recurrence_after_acceptance: int = 0
+    recurrence_after_dismissal: int = 0
+
+
+class GovernanceEffectivenessTrendsRead(BaseModel):
+    points: list[GovernanceEffectivenessTrendPointRead] = Field(default_factory=list)
+
+
+class GovernanceEffectivenessTimingRead(BaseModel):
+    average_time_to_review_seconds: float | None = None
+    median_time_to_review_seconds: float | None = None
+    average_time_to_convert_seconds: float | None = None
+    median_time_to_convert_seconds: float | None = None
+    average_time_to_resolve_seconds: float | None = None
+    median_time_to_resolve_seconds: float | None = None
+
+
+class GovernanceEffectivenessQualityScoreRead(BaseModel):
+    quality_score: float | None = None
+    quality_band: str
+    component_scores: dict[str, float] = Field(default_factory=dict)
+    weights: dict[str, float] = Field(default_factory=dict)
+    penalties: dict[str, float] = Field(default_factory=dict)
+    data_completeness: float = 0.0
+    score_version: str = "v1"
+    provisional: bool = True
+
+
+class GovernanceEffectivenessQualityRead(BaseModel):
+    average_quality_score: float | None = None
+    band_distribution: list[GovernanceNamedCountRead] = Field(default_factory=list)
+    provisional_count: int = 0
+    score_version: str = "v1"
+    sample_scores: list[GovernanceEffectivenessQualityScoreRead] = Field(default_factory=list)
+
+
+class GovernanceEffectivenessCalibrationRead(BaseModel):
+    calibrated_confidence: float | None = None
+    confidence_band: str
+    calibration_version: str = "v1"
+    observed_success_rate: float | None = None
+    calibration_gap: float | None = None
+    expected_calibration_error: float | None = None
+    brier_score: float | None = None
+    sample_size: int = 0
+    min_sample: int = 0
+    insufficient_history: bool = False
+    fallback_to_original: bool = True
+
+
+class GovernanceEffectivenessCategoryStatRead(BaseModel):
+    category_key: str
+    trigger_type: str
+    severity: str
+    confidence_band: str
+    vertical: str
+    explanation_version: str
+    sample_size: int
+    acceptance_rate: GovernanceEffectivenessMetricRead
+    dismissal_rate: GovernanceEffectivenessMetricRead
+    conversion_rate: GovernanceEffectivenessMetricRead
+    resolution_rate: GovernanceEffectivenessMetricRead
+    false_positive_rate: GovernanceEffectivenessMetricRead
+    recurrence_after_acceptance: int = 0
+    recurrence_after_dismissal: int = 0
+    successful: bool = False
+
+
+class GovernanceEffectivenessFalsePositiveRead(BaseModel):
+    confirmed: int = 0
+    likely: int = 0
+    not_false_positive: int = 0
+    insufficient_evidence: int = 0
+    rate: GovernanceEffectivenessMetricRead
+    categories: list[GovernanceEffectivenessCategoryStatRead] = Field(default_factory=list)
+
+
+class GovernanceEffectivenessRecurrenceRead(BaseModel):
+    after_acceptance: int = 0
+    after_dismissal: int = 0
+    recurring_recommendations: list[GovernanceNamedCountRead] = Field(default_factory=list)
+
+
+class GovernanceEffectivenessDrilldownItemRead(BaseModel):
+    recommendation_id: UUID
+    title: str
+    project_id: UUID | None = None
+    project_name: str | None = None
+    vertical: str | None = None
+    trigger_type: str | None = None
+    status: str
+    acceptance_status: str
+    confidence: float | None = None
+    calibrated_confidence: float | None = None
+    quality_score: float | None = None
+    quality_band: str | None = None
+    false_positive_status: str | None = None
+    generated_at: datetime | None = None
+
+
+class GovernanceEffectivenessDrilldownRead(BaseModel):
+    items: list[GovernanceEffectivenessDrilldownItemRead] = Field(default_factory=list)
+    total: int = 0
+    limit: int = 25
+    offset: int = 0
+
+
+class GovernanceRecommendationLifecycleEventRead(BaseModel):
+    id: UUID
+    recommendation_id: UUID
+    event_type: str
+    actor_user_id: UUID | None = None
+    conversion_target: str | None = None
+    conversion_target_id: UUID | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class GovernanceEffectivenessReportRead(BaseModel):
+    generated_at: datetime
+    date_range_days: int
+    filters: dict[str, Any] = Field(default_factory=dict)
+    sample_sizes: dict[str, int] = Field(default_factory=dict)
+    summary: GovernanceEffectivenessSummaryRead
+    calibration: GovernanceEffectivenessCalibrationRead
+    quality: GovernanceEffectivenessQualityRead
+    funnel: GovernanceEffectivenessFunnelRead
+    warnings: list[str] = Field(default_factory=list)
+    recommended_review_actions: list[str] = Field(default_factory=list)
+    metric_definitions: dict[str, str] = Field(default_factory=dict)
+    calculation_versions: dict[str, str] = Field(default_factory=dict)
+    data_completeness: float = 0.0
+
+
+class GovernanceStructuredFeedbackRequest(BaseModel):
+    helpful: bool | None = None
+    accurate: bool | None = None
+    useful: bool | None = None
+    actionable: bool | None = None
+    clear: bool | None = None
+    missing_evidence: bool = False
+    duplicate: bool = False
+    already_handled: bool = False
+    rating: int | None = Field(default=None, ge=1, le=5)
+    comment: str | None = Field(default=None, max_length=2000)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class GovernanceStructuredFeedbackRead(BaseModel):
+    id: UUID
+    recommendation_id: UUID
+    helpful: bool | None = None
+    accurate: bool | None = None
+    useful: bool | None = None
+    actionable: bool | None = None
+    clear: bool | None = None
+    missing_evidence: bool = False
+    duplicate: bool = False
+    already_handled: bool = False
+    rating: int | None = None
+    comment: str | None = None
+    reason: str | None = None
+    feedback_version: str = "v1"
+    created_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 — Controlled Recommendation Optimization
+# ---------------------------------------------------------------------------
+
+
+class GovernanceOptimizationFilters(BaseModel):
+    days: int = 30
+    project_id: UUID | None = None
+    vertical: str | None = None
+    trigger_type: str | None = None
+    strategy_version: str | None = None
+    learning_rule_id: UUID | None = None
+    quality_band: str | None = None
+    confidence_band: str | None = None
+    status: str | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+
+
+class GovernanceRecommendationConvertRequest(BaseModel):
+    target: GovernanceRecommendationConversionTarget
+    project_id: UUID
+    suggested_action_index: int | None = Field(default=None, ge=0)
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    description: str | None = None
+    owner_id: UUID | None = None
+    due_date: date | None = None
+    note: str | None = Field(default=None, max_length=500)
+    idempotency_key: str | None = Field(default=None, max_length=120)
+
+
+class GovernanceRecommendationResolveRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=500)
+
+
+class GovernanceRecommendationReopenRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=500)
+
+
+class GovernanceRecommendationCancelResolutionRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=500)
+
+
+class GovernanceRecommendationChangeConversionTargetRequest(BaseModel):
+    target: GovernanceRecommendationConversionTarget
+    target_id: UUID
+    note: str | None = Field(default=None, max_length=500)
+
+
+class GovernanceRecommendationLifecycleActionRead(BaseModel):
+    recommendation_id: UUID
+    event_type: str
+    conversion_target: str | None = None
+    conversion_target_id: UUID | None = None
+    resolved_at: datetime | None = None
+    reopened_at: datetime | None = None
+    message: str
+
+
+class GovernanceLearningRuleRead(BaseModel):
+    id: UUID
+    org_id: UUID
+    rule_type: str
+    rule_payload: dict[str, Any] = Field(default_factory=dict)
+    version: int = 1
+    status: str
+    evaluation_mode: str = "none"
+    change_summary: str | None = None
+    approved_at: datetime | None = None
+    activated_at: datetime | None = None
+    reverted_at: datetime | None = None
+    disabled_at: datetime | None = None
+    shadow_evaluation_id: UUID | None = None
+    supersedes_rule_id: UUID | None = None
+    performance_before: dict[str, Any] | None = None
+    performance_after: dict[str, Any] | None = None
+    allowed_effects: list[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime | None = None
+
+
+class GovernanceLearningRuleApproveRequest(BaseModel):
+    activate: bool = False
+
+
+class GovernanceLearningRuleRollbackRequest(BaseModel):
+    disable_only: bool = False
+
+
+class GovernanceOptimizationDriftAlertRead(BaseModel):
+    id: UUID | None = None
+    alert_type: str
+    severity: str
+    metric_name: str
+    baseline_value: float | None = None
+    current_value: float | None = None
+    threshold_value: float | None = None
+    message: str
+    strategy_version: str | None = None
+    created_at: datetime
+
+
+class GovernanceOptimizationDriftRead(BaseModel):
+    window_days: int
+    baseline_metrics: dict[str, Any] = Field(default_factory=dict)
+    current_metrics: dict[str, Any] = Field(default_factory=dict)
+    alerts: list[GovernanceOptimizationDriftAlertRead] = Field(default_factory=list)
+    auto_remediation: bool = False
+
+
+class GovernanceOptimizationStrategyRead(BaseModel):
+    id: UUID
+    strategy_version: str
+    confidence_version: str
+    quality_version: str
+    explanation_version: str
+    learning_rule_version: str | None = None
+    is_active: bool = False
+    change_summary: str | None = None
+    activated_at: datetime | None = None
+    created_at: datetime
+
+
+class GovernanceOptimizationCompareRead(BaseModel):
+    strategy_a: str
+    strategy_b: str
+    days: int
+    metrics_a: dict[str, Any] = Field(default_factory=dict)
+    metrics_b: dict[str, Any] = Field(default_factory=dict)
+    deltas: dict[str, float | None] = Field(default_factory=dict)
+    generated_at: datetime
+
+
+class GovernanceOptimizationShadowRead(BaseModel):
+    id: UUID
+    learning_rule_id: UUID | None = None
+    status: str
+    sample_size: int = 0
+    baseline_metrics: dict[str, Any] = Field(default_factory=dict)
+    shadow_metrics: dict[str, Any] = Field(default_factory=dict)
+    comparison_summary: dict[str, Any] = Field(default_factory=dict)
+    expected_impact: dict[str, Any] = Field(default_factory=dict)
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+
+
+class GovernanceOptimizationReportRead(BaseModel):
+    id: UUID
+    period: str
+    period_start: date
+    period_end: date
+    strategy_version: str | None = None
+    report_payload: dict[str, Any] = Field(default_factory=dict)
+    generated_at: datetime
+
+
+class GovernanceOptimizationSummaryRead(BaseModel):
+    generated_at: datetime
+    filters: dict[str, Any] = Field(default_factory=dict)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    active_learning_rules: list[GovernanceLearningRuleRead] = Field(default_factory=list)
+    pending_approvals: list[GovernanceLearningRuleRead] = Field(default_factory=list)
+    recent_shadow_evaluations: list[GovernanceOptimizationShadowRead] = Field(default_factory=list)
+    drift_warnings: list[GovernanceOptimizationDriftAlertRead] = Field(default_factory=list)
+    strategy_versions: list[GovernanceOptimizationStrategyRead] = Field(default_factory=list)
+    recent_reports: list[GovernanceOptimizationReportRead] = Field(default_factory=list)
+    learning_rules_enabled: bool = False

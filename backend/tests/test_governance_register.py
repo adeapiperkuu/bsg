@@ -74,11 +74,6 @@ async def test_register_page_maps_rows_from_paginated_query(
         "app.agents.governance.services.register_service._execute_paginated_rows",
         _paginate,
     )
-    monkeypatch.setattr(
-        "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
-        AsyncMock(return_value=0),
-    )
-
     page = await list_governance_register_page(session, _user())
 
     assert page.total == 1
@@ -100,11 +95,6 @@ async def test_register_client_empty_state_uses_scoped_projects_only(
         "app.agents.governance.services.register_service._execute_paginated_rows",
         _paginate,
     )
-    monkeypatch.setattr(
-        "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
-        AsyncMock(return_value=0),
-    )
-
     page = await list_governance_register_page(AsyncMock(), _user(AppRole.CLIENT))
 
     assert page.total == 0
@@ -113,19 +103,12 @@ async def test_register_client_empty_state_uses_scoped_projects_only(
 
 
 @pytest.mark.asyncio
-async def test_register_super_admin_does_not_call_org_day_refresh(
+async def test_register_super_admin_uses_only_the_page_query(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ensure = AsyncMock(return_value=0)
-    monkeypatch.setattr(
-        "app.agents.governance.services.register_service.ensure_org_time_sensitive_summary_counts",
-        ensure,
-    )
     monkeypatch.setattr(
         "app.agents.governance.services.register_service._execute_paginated_rows",
-        AsyncMock(
-            return_value=MagicMock(items=[], total=0, limit=50, offset=0, db_executes=1)
-        ),
+        AsyncMock(return_value=MagicMock(items=[], total=0, limit=50, offset=0, db_executes=1)),
     )
 
     super_admin = CurrentUser(
@@ -135,6 +118,6 @@ async def test_register_super_admin_does_not_call_org_day_refresh(
         role=AppRole.SUPER_ADMIN,
         is_active=True,
     )
-    await list_governance_register_page(AsyncMock(), super_admin)
+    page = await list_governance_register_page(AsyncMock(), super_admin)
 
-    ensure.assert_not_awaited()
+    assert page.db_executes == 1

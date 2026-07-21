@@ -36,6 +36,7 @@ import {
   downloadKnowledgeDocumentFile,
   getKnowledgeConversation,
   getKnowledgeRelatedDocuments,
+  generateKnowledgeDocumentSummary,
   isUuid,
   listKnowledgeDocumentApprovalHistory,
   streamKnowledgeAsk,
@@ -118,7 +119,15 @@ import {
   Upload,
 } from "lucide-react";
 
-export const Route = createFileRoute("/knowledge")({ component: KnowledgePage });
+export const Route = createFileRoute("/knowledge")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    documentId:
+      typeof search.documentId === "string" && isUuid(search.documentId)
+        ? search.documentId
+        : undefined,
+  }),
+  component: KnowledgePage,
+});
 
 const LazyKnowledgeDocumentTabPanels = lazy(() =>
   import("@/components/knowledge/KnowledgeDocumentTabPanels").then((module) => ({
@@ -362,11 +371,9 @@ function loadKnowledgeChatSession(userId: string): KnowledgeChatSession | null {
       .map(normalizeChatMessage)
       .filter((message): message is ChatMessage => message !== null);
     if (messages.length !== parsed.messages.length) return null;
+    const rawConversationId = (parsed as KnowledgeChatSession).conversationId;
     const conversationId =
-      typeof (parsed as KnowledgeChatSession).conversationId === "string" &&
-      isUuid((parsed as KnowledgeChatSession).conversationId)
-        ? (parsed as KnowledgeChatSession).conversationId
-        : null;
+      typeof rawConversationId === "string" && isUuid(rawConversationId) ? rawConversationId : null;
     return { messages, conversationId };
   } catch {
     return null;
@@ -496,7 +503,8 @@ function inferAnswerMode(question: string): "internal" | "client_safe" {
     : "internal";
 }
 
-function shouldAnimateAnswer(text: string) {
+function shouldAnimateAnswer(text: string, options?: { wasStreamed?: boolean }) {
+  if (options?.wasStreamed) return false;
   return text.trim().length > 0 && text.length <= TYPEWRITER_MAX_CHARS;
 }
 
@@ -594,6 +602,7 @@ function processingProgress(status: KnowledgeProcessingStatusApi): number {
 function KnowledgePage() {
   const user = useAuthStore((s) => s.user);
   const queryClient = useQueryClient();
+  const { documentId: deepLinkedDocumentId } = Route.useSearch();
   const { ref: librarySectionRef } = useLazyWhenVisible();
   const { ref: askPanelRef, isVisible: askPanelVisible } = useLazyWhenVisible();
   const [retrievalSettingsRequested, setRetrievalSettingsRequested] = useState(false);
@@ -603,8 +612,10 @@ function KnowledgePage() {
   const [librarySnapshot, setLibrarySnapshot] = useState<KnowledgeLibrarySnapshot | null>(() =>
     loadKnowledgeLibrarySnapshot(),
   );
+  /** Defer full-library documents/health until after bootstrap paints (unless processing). */
+  const [libraryDetailEnabled, setLibraryDetailEnabled] = useState(false);
   const libraryHealthQuery = useKnowledgeLibraryHealthQuery(
-    true,
+    libraryDetailEnabled || processingPollActive,
     processingPollActive,
     librarySnapshot?.libraryHealth,
   );
@@ -674,10 +685,29 @@ function KnowledgePage() {
   });
 
   const documentsQuery = useKnowledgeDocumentsQuery(
-    true,
+    libraryDetailEnabled || processingPollActive,
     processingPollActive,
     librarySnapshot?.documents,
   );
+
+  useEffect(() => {
+    if (processingPollActive) {
+      setLibraryDetailEnabled(true);
+      return;
+    }
+    if (!bootstrapQuery.isSuccess) return;
+    const win = window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    if (typeof win.requestIdleCallback === "function") {
+      const idleId = win.requestIdleCallback(() => setLibraryDetailEnabled(true), { timeout: 1200 });
+      return () => win.cancelIdleCallback?.(idleId);
+    }
+    const timer = window.setTimeout(() => setLibraryDetailEnabled(true), 400);
+    return () => window.clearTimeout(timer);
+  }, [bootstrapQuery.isSuccess, processingPollActive]);
+
   const debouncedSearchTerm = useDebouncedValue(searchTerm, LIBRARY_DEBOUNCE_MS);
   const debouncedActiveFolder = useDebouncedValue(activeFolder, LIBRARY_DEBOUNCE_MS);
   const debouncedStatusFilter = useDebouncedValue(statusFilter, LIBRARY_DEBOUNCE_MS);
@@ -755,6 +785,12 @@ function KnowledgePage() {
   const canReviewApprovals =
     knowledgePermissions?.can_review_approvals ??
     (user?.role === "bsg_leadership" || user?.role === "super_admin");
+  const canManageLearning =
+    user?.role === "delivery_manager" ||
+    user?.role === "bsg_leadership" ||
+    user?.role === "super_admin";
+
+  const [summaryPending, setSummaryPending] = useState(false);
 
   const handleDocumentLoaded = useCallback(
     (document: KnowledgeDocument) => {
@@ -764,6 +800,32 @@ function KnowledgePage() {
     },
     [queryClient],
   );
+
+  const handleGenerateSummary = useCallback(async () => {
+    if (!selectedDoc?.id) return;
+    setSummaryPending(true);
+    try {
+      const summary = await generateKnowledgeDocumentSummary(selectedDoc.id);
+      patchKnowledgeDocumentsCache(queryClient, (current) =>
+        current.map((item) =>
+          item.id === selectedDoc.id
+            ? {
+                ...item,
+                executiveSummary: summary.executive_summary,
+                keyProcedures: summary.key_procedures,
+                importantWarnings: summary.important_warnings,
+                affectedDepartments: summary.affected_departments,
+                summaryGeneratedAt: summary.summary_generated_at,
+              }
+            : item,
+        ),
+      );
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSummaryPending(false);
+    }
+  }, [selectedDoc?.id, queryClient]);
 
   const { loadingDetail, loadingVersions } = useDocumentTabLoader({
     documentId: selectedDoc?.id ?? null,
@@ -1015,14 +1077,19 @@ function KnowledgePage() {
   const finishAgentAnswer = (
     messageId: string,
     text: string,
-    options?: { skipAnimation?: boolean; isHistorical?: boolean },
+    options?: { skipAnimation?: boolean; isHistorical?: boolean; wasStreamed?: boolean },
   ) => {
     const displayText = text.trim();
     if (!displayText) {
       announceAgentMessage(NO_KNOWLEDGE_ANSWER);
       return;
     }
-    if (options?.skipAnimation || options?.isHistorical || !shouldAnimateAnswer(displayText)) {
+    if (
+      options?.skipAnimation ||
+      options?.isHistorical ||
+      options?.wasStreamed ||
+      !shouldAnimateAnswer(displayText, { wasStreamed: options?.wasStreamed })
+    ) {
       announceAgentMessage(displayText);
       return;
     }
@@ -1442,7 +1509,7 @@ function KnowledgePage() {
           if (event.conversation_id) {
             setActiveConversationId(event.conversation_id);
           }
-          finishAgentAnswer(agentMsgId, resolvedText, { skipAnimation: true });
+          finishAgentAnswer(agentMsgId, resolvedText, { skipAnimation: true, wasStreamed: true });
           if ((event.confidence_score ?? 1) === 0) {
             void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeLibraryHealth });
           }
@@ -1480,7 +1547,7 @@ function KnowledgePage() {
             msg.id === agentMsgId ? { ...msg, text: resolvedText, isStreaming: false, wasStreamed: true } : msg,
           ),
         );
-        finishAgentAnswer(agentMsgId, resolvedText, { skipAnimation: true });
+        finishAgentAnswer(agentMsgId, resolvedText, { skipAnimation: true, wasStreamed: true });
       }
     } catch (err) {
       if (err instanceof ApiError && err.status === 422) {
@@ -1617,7 +1684,7 @@ function KnowledgePage() {
           if (event.conversation_id) {
             setActiveConversationId(event.conversation_id);
           }
-          finishAgentAnswer(agentMsgId, resolvedText, { skipAnimation: true });
+          finishAgentAnswer(agentMsgId, resolvedText, { skipAnimation: true, wasStreamed: true });
         } else if (event.type === "error") {
           setMessages((current) =>
             current.map((msg) =>
@@ -1816,6 +1883,11 @@ function KnowledgePage() {
     setOpenedDocumentTabs((current) => new Set(current).add(tab));
     if (openDialog) setIsDocumentOpen(true);
   };
+
+  useEffect(() => {
+    if (!deepLinkedDocumentId) return;
+    openDocumentWithChunk(deepLinkedDocumentId, null, true);
+  }, [deepLinkedDocumentId]);
 
   const openCreateFolder = () => {
     setCreateFolderName("");
@@ -2441,7 +2513,8 @@ function KnowledgePage() {
                 const isAnimating =
                   message.role === "agent" &&
                   message.id === animatingMessageId &&
-                  !message.isHistorical;
+                  !message.isHistorical &&
+                  !message.wasStreamed;
                 const isAgentReply = message.role === "agent" && !message.isServiceError && !message.isStreaming;
                 const showPostAnimationActions = isAgentReply && !isAnimating;
                 const showAgentDetails = isAgentReply && !isAnimating;
@@ -2909,6 +2982,9 @@ function KnowledgePage() {
                           compareLeftId={compareLeftId}
                           compareRightId={compareRightId}
                           relatedKnowledge={relatedKnowledgeQuery.data ?? null}
+                          canGenerateSummary={canManageLearning}
+                          summaryPending={summaryPending}
+                          onGenerateSummary={() => void handleGenerateSummary()}
                           onCompareLeftChange={setCompareLeftId}
                           onCompareRightChange={setCompareRightId}
                           onRunVersionCompare={() => void runVersionCompare()}

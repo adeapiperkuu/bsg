@@ -116,6 +116,44 @@ class AuthSessionRead(BaseModel):
     role: AppRole
 
 
+class MfaRequiredRead(BaseModel):
+    """Returned by POST /auth/login instead of AuthSessionRead when the
+    authenticating user's role requires MFA (DEVELOPMENT_PLAN.md Workstream E)
+    and the session isn't at aal2 yet. No auth cookies are set at this point --
+    `pending_token` is a short-lived bearer token, used only to call the
+    /auth/mfa/* endpoints, never persisted by the frontend as a session."""
+
+    mfa_required: bool = True
+    stage: str  # "enroll" (no verified factor yet) or "challenge" (factor already verified)
+    pending_token: str
+    factor_id: str | None = None  # set when stage == "challenge"
+
+
+class MfaEnrollRead(BaseModel):
+    factor_id: str
+    qr_code: str
+    secret: str
+
+
+class MfaChallengeRead(BaseModel):
+    factor_id: str
+    challenge_id: str
+
+
+class MfaEnrollRequest(BaseModel):
+    friendly_name: str = "Authenticator app"
+
+
+class MfaChallengeRequest(BaseModel):
+    factor_id: str
+
+
+class MfaVerifyRequest(BaseModel):
+    factor_id: str
+    challenge_id: str
+    code: str
+
+
 class MeRead(UserRead):
     organisation: OrganisationSummary | None = None
     permissions: MePermissions = Field(default_factory=MePermissions)
@@ -1953,3 +1991,126 @@ class SmeAllocationRead(BaseModel):
     site: str
     skills: list[str] = []
     utilization_pct: Decimal | None = None
+
+
+# ---------------------------------------------------------------------------
+# Operational Tower dashboard
+# ---------------------------------------------------------------------------
+
+
+class DashboardSummaryRead(BaseModel):
+    active_projects: int
+    open_risk_alerts: int
+    open_quality_drifts: int
+    pending_communications: int
+    avg_utilization_pct: str | None = None
+
+
+class OperationalTowerKpis(BaseModel):
+    activeProjects: int
+    scheduleConfidence: int | None = None
+    openEscalations: int
+    avgQualityScore: float | None = None
+    totalProjects: int
+
+
+class HealthDistributionEntry(BaseModel):
+    name: str
+    value: int
+    color: str
+
+
+class RiskTrendSeries(BaseModel):
+    name: str
+    color: str
+
+
+class RiskTrendRead(BaseModel):
+    series: list[RiskTrendSeries] = []
+    data: list[dict[str, Any]] = []
+
+
+class OperationalTowerQualityTrendPoint(BaseModel):
+    week: str
+    goldAccuracy: float | None = None
+    iaa: float | None = None
+
+
+class UtilizationEntry(BaseModel):
+    team: str
+    value: int
+
+
+class CriticalAlertRead(BaseModel):
+    sev: str
+    project: str
+    desc: str
+    ts: str
+
+
+class RecommendationRead(BaseModel):
+    title: str
+    confidence: int
+    evidence: int
+    priority: str
+
+
+class UpcomingMilestoneRead(BaseModel):
+    project: str
+    name: str
+    due: str
+    confidence: int | None = None
+    status: str
+
+
+class ActivityEntry(BaseModel):
+    ts: str
+    actor: str
+    text: str
+
+
+# The Operational Tower is served as independent sections so the dashboard can request them
+# in parallel and paint each as it arrives, rather than waiting on the slowest. Grouping is
+# by measured cost — see app/services/operational_tower.py.
+
+
+class TowerPulseRead(BaseModel):
+    """Cheapest section: counts and charts needing no scoring pipeline."""
+
+    activeProjects: int
+    totalProjects: int
+    avgQualityScore: float | None = None
+    qualityTrend: list[OperationalTowerQualityTrendPoint] = []
+    riskTrend: RiskTrendRead
+    alerts: list[CriticalAlertRead] = []
+
+
+class TowerEscalationsRead(BaseModel):
+    openEscalations: int
+    criticalEscalations: int = 0
+
+
+class TowerHealthRead(BaseModel):
+    """Slowest section: requires scoring every in-flight project."""
+
+    scheduleConfidence: int | None = None
+    healthDistribution: list[HealthDistributionEntry] = []
+
+
+class TowerWorkRead(BaseModel):
+    recommendations: list[RecommendationRead] = []
+    milestones: list[UpcomingMilestoneRead] = []
+
+
+class TowerActivityRead(BaseModel):
+    utilization: list[UtilizationEntry] = []
+    activity: list[ActivityEntry] = []
+
+
+class ExecutiveSummaryRead(BaseModel):
+    text: str
+    week: str
+    generated_by_ai: bool
+    status: str
+    approved: bool
+    updated_at: str | None = None
