@@ -458,6 +458,64 @@ for p in projects:
         cursor += timedelta(days=14)
 
 # ---------------------------------------------------------------------------
+# 10b. Client Interaction Agent communications (Client Intelligence KPI source)
+#      Additive only — does not replace ops-summary-agent rows above.
+# ---------------------------------------------------------------------------
+CI_COMM_STATUSES = ["draft", "in_review", "approved", "sent"]
+for p in projects:
+    reviewer = pick_manager(p["org_id"])
+    for idx, status in enumerate(CI_COMM_STATUSES):
+        created = min(p["start_date"] + timedelta(days=14 + idx * 7), TODAY)
+        reviewed_at = created + timedelta(hours=4) if status in ("in_review", "approved", "sent") else None
+        approved_at = created + timedelta(hours=10) if status in ("approved", "sent") else None
+        sent_at = created + timedelta(hours=14) if status == "sent" else None
+        cid = uid()
+        add_row(
+            "client_communications",
+            [
+                "id",
+                "project_id",
+                "org_id",
+                "comm_type",
+                "subject",
+                "body_draft",
+                "body_approved",
+                "status",
+                "drafted_by_agent",
+                "reviewed_by",
+                "reviewed_at",
+                "approved_by",
+                "approved_at",
+                "sent_at",
+                "created_at",
+                "updated_at",
+            ],
+            [
+                cid,
+                p["id"],
+                p["org_id"],
+                "weekly_summary",
+                f"CI {status.replace('_', ' ').title()} Update — {p['name']}",
+                f"Client Interaction Agent draft for {p['name']}.",
+                (
+                    f"Approved Client Interaction Agent summary for {p['name']}."
+                    if status in ("approved", "sent")
+                    else None
+                ),
+                status,
+                "client_interaction_agent",
+                reviewer["id"],
+                reviewed_at,
+                reviewer["id"] if status in ("approved", "sent") else None,
+                approved_at,
+                sent_at,
+                created,
+                created,
+            ],
+        )
+        client_comm_count += 1
+
+# ---------------------------------------------------------------------------
 # 11. Client CSAT scores (monthly)
 # ---------------------------------------------------------------------------
 csat_count = 0
@@ -545,6 +603,49 @@ for u in random.sample(users, k=min(150, len(users))):
                 [qid, u["id"], u["org_id"], proj["id"] if proj else None, random.choice(AGENT_NAMES),
                  q, "Generated response summarizing the requested operational metrics.",
                  "claude-sonnet-4-6", random.randint(400, 4200), created])
+        agent_query_count += 1
+
+# ---------------------------------------------------------------------------
+# 14b. Client Interaction Agent queries (Client Intelligence KPI source)
+#      Additive only — does not replace other agent_name rows above.
+# ---------------------------------------------------------------------------
+CI_SAMPLE_QUERIES = [
+    "What is the current delivery confidence for this project?",
+    "Summarize open risks and mitigations for this project.",
+    "When is the next milestone forecast to complete?",
+]
+for p in projects:
+    asker = pick_manager(p["org_id"])
+    for idx, q in enumerate(CI_SAMPLE_QUERIES):
+        created = min(p["start_date"] + timedelta(days=10 + idx * 3), TODAY)
+        qid = uid()
+        add_row(
+            "agent_queries",
+            [
+                "id",
+                "user_id",
+                "org_id",
+                "project_id",
+                "agent_name",
+                "query_text",
+                "answer_text",
+                "model_used",
+                "latency_ms",
+                "created_at",
+            ],
+            [
+                qid,
+                asker["id"],
+                p["org_id"],
+                p["id"],
+                "client_interaction_agent",
+                q,
+                f"Generated Client Interaction Agent response for {p['name']}.",
+                "claude-sonnet-4-6",
+                random.randint(1800, 7200),
+                created,
+            ],
+        )
         agent_query_count += 1
 
 # ---------------------------------------------------------------------------

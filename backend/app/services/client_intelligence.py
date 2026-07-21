@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID
@@ -28,8 +29,10 @@ from app.agents.client_intelligence.risk_transparency import (
     RiskTransparencyIntegrityError,
     assess_risk_transparency,
 )
+from app.core.config import get_settings
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
+from app.db.session import _uses_session_pooler
 from app.db.models import (
     AgentQuery,
     AgentQueryEvidenceLink,
@@ -512,10 +515,38 @@ async def build_client_intelligence_summary(
             limitations=[LIMITATION_NO_AUTHORIZED_PROJECTS],
         )
 
-    delivery_confidence = await _aggregate_delivery_confidence(session, project_ids)
-    reports = await _aggregate_reports(session, project_ids)
-    query_response = await _aggregate_query_response(session, project_ids)
-    csat = await _aggregate_csat(session, project_ids)
+    settings = get_settings()
+    if _uses_session_pooler(settings.async_database_url):
+        delivery_confidence = await _aggregate_delivery_confidence(session, project_ids)
+        reports = await _aggregate_reports(session, project_ids)
+        query_response = await _aggregate_query_response(session, project_ids)
+        csat = await _aggregate_csat(session, project_ids)
+    else:
+        from app.db.session import AsyncSessionLocal
+
+        async def _confidence():
+            async with AsyncSessionLocal() as aggregate_session:
+                return await _aggregate_delivery_confidence(aggregate_session, project_ids)
+
+        async def _reports():
+            async with AsyncSessionLocal() as aggregate_session:
+                return await _aggregate_reports(aggregate_session, project_ids)
+
+        async def _queries():
+            async with AsyncSessionLocal() as aggregate_session:
+                return await _aggregate_query_response(aggregate_session, project_ids)
+
+        async def _csat():
+            async with AsyncSessionLocal() as aggregate_session:
+                return await _aggregate_csat(aggregate_session, project_ids)
+
+        delivery_confidence, reports, query_response, csat = await asyncio.gather(
+            _confidence(),
+            _reports(),
+            _queries(),
+            _csat(),
+        )
+
     return ClientIntelligenceSummaryRead(
         delivery_confidence=delivery_confidence,
         reports=reports,

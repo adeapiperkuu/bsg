@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 from datetime import UTC, date, datetime, time
+from time import monotonic
 from uuid import UUID
 
 from sqlalchemy import select
@@ -52,6 +55,7 @@ from app.agents.client_intelligence.visibility import (
     load_client_visibility_policy,
 )
 from app.agents.client_intelligence.workforce_adapter import load_workforce_evidence
+from app.core.config import get_settings
 from app.core.security import CurrentUser
 from app.db.models import (
     AlertStatus,
@@ -64,6 +68,7 @@ from app.db.models import (
     RiskAlert,
     ThroughputSnapshot,
 )
+from app.db.session import AsyncSessionLocal, _uses_session_pooler
 from app.services.scoping import get_visible_project
 
 _MAX_MILESTONES = 50
@@ -77,9 +82,78 @@ _HISTORICAL_STATUS_LIMITATION = (
     "reconstruct historical open/closed state. Status history is not claimed."
 )
 
+# Short in-process memoization for repeat overview/draft/Q&A within the same window.
+_PACK_CACHE_TTL_S = 20.0
+_PACK_CACHE_MAX = 64
+_pack_cache: dict[tuple[str, ...], tuple[float, ClientEvidencePack]] = {}
+
 
 def _as_of_end_utc(as_of: date) -> datetime:
     return datetime.combine(as_of, time.max, tzinfo=UTC)
+
+
+def _pack_cache_enabled() -> bool:
+    # Avoid stale packs across mutating pytest cases in the same process.
+    return os.getenv("PYTEST_CURRENT_TEST") is None
+
+
+def _pack_cache_key(
+    current_user: CurrentUser,
+    project_id: UUID,
+    *,
+    as_of: date,
+    mode: EvidenceVisibility,
+) -> tuple[str, ...]:
+    return (
+        str(current_user.org_id),
+        str(current_user.id),
+        str(current_user.role.value),
+        str(project_id),
+        as_of.isoformat(),
+        mode.value,
+    )
+
+
+def _pack_cache_get(key: tuple[str, ...]) -> ClientEvidencePack | None:
+    entry = _pack_cache.get(key)
+    if entry is None:
+        return None
+    expires_at, pack = entry
+    if monotonic() > expires_at:
+        _pack_cache.pop(key, None)
+        return None
+    return pack.model_copy(deep=True)
+
+
+def _pack_cache_set(key: tuple[str, ...], pack: ClientEvidencePack) -> None:
+    if len(_pack_cache) >= _PACK_CACHE_MAX and key not in _pack_cache:
+        now = monotonic()
+        for cache_key, (expires_at, _) in list(_pack_cache.items()):
+            if expires_at <= now:
+                del _pack_cache[cache_key]
+        if len(_pack_cache) >= _PACK_CACHE_MAX:
+            for cache_key in list(_pack_cache.keys())[: max(1, _PACK_CACHE_MAX // 4)]:
+                del _pack_cache[cache_key]
+    _pack_cache[key] = (monotonic() + _PACK_CACHE_TTL_S, pack.model_copy(deep=True))
+
+
+def invalidate_client_evidence_pack_cache(
+    *,
+    org_id: UUID | None = None,
+    project_id: UUID | None = None,
+) -> None:
+    """Drop cached packs for an org and/or project (or clear all)."""
+    if org_id is None and project_id is None:
+        _pack_cache.clear()
+        return
+    org_key = str(org_id) if org_id is not None else None
+    project_key = str(project_id) if project_id is not None else None
+    for cache_key in list(_pack_cache):
+        if org_key is not None and cache_key[0] != org_key:
+            continue
+        if project_key is not None and cache_key[3] != project_key:
+            continue
+        del _pack_cache[cache_key]
 
 
 def _enum_str(value: object) -> str:
@@ -180,6 +254,17 @@ async def build_client_evidence_pack(
     project = await get_visible_project(session, project_id, current_user)
     effective_as_of = as_of or datetime.now(UTC).date()
     mode = _resolve_visibility_mode(current_user, visibility_mode)
+    cache_key = _pack_cache_key(
+        current_user,
+        project.id,
+        as_of=effective_as_of,
+        mode=mode,
+    )
+    if _pack_cache_enabled():
+        cached = _pack_cache_get(cache_key)
+        if cached is not None:
+            return cached
+
     reporting_period = resolve_reporting_period(effective_as_of)
     as_of_end = _as_of_end_utc(effective_as_of)
     today = datetime.now(UTC).date()
@@ -213,69 +298,46 @@ async def build_client_evidence_pack(
         quality_data_issues,
         quality_visibility_limitations,
         quality_limitations,
-    ) = await load_quality_evidence(
+        workforce,
+        workforce_evidence,
+        workforce_data_issues,
+        workforce_visibility_limitations,
+        workforce_limitations,
+        governance,
+        governance_evidence,
+        governance_data_issues,
+        governance_visibility_limitations,
+        governance_limitations,
+        knowledge,
+        knowledge_evidence,
+        knowledge_data_issues,
+        knowledge_visibility_limitations,
+        knowledge_limitations,
+    ) = await _load_structured_adapters(
         session,
-        project.id,
-        reporting_period,
+        project_id=project.id,
+        org_id=project.org_id,
+        project_name=project.name,
+        reporting_period=reporting_period,
         visibility_mode=mode,
         policy=policy,
+        role=current_user.role,
     )
     evidence.extend(quality_evidence)
     quality_issues.extend(quality_data_issues)
     visibility_limitations.extend(quality_visibility_limitations)
     limitations.extend(quality_limitations)
 
-    (
-        workforce,
-        workforce_evidence,
-        workforce_data_issues,
-        workforce_visibility_limitations,
-        workforce_limitations,
-    ) = await load_workforce_evidence(
-        session,
-        project.id,
-        project.org_id,
-        reporting_period,
-        visibility_mode=mode,
-    )
     evidence.extend(workforce_evidence)
     quality_issues.extend(workforce_data_issues)
     visibility_limitations.extend(workforce_visibility_limitations)
     limitations.extend(workforce_limitations)
 
-    (
-        governance,
-        governance_evidence,
-        governance_data_issues,
-        governance_visibility_limitations,
-        governance_limitations,
-    ) = await load_governance_evidence(
-        session,
-        project.id,
-        project.org_id,
-        reporting_period,
-        visibility_mode=mode,
-    )
     evidence.extend(governance_evidence)
     quality_issues.extend(governance_data_issues)
     visibility_limitations.extend(governance_visibility_limitations)
     limitations.extend(governance_limitations)
 
-    (
-        knowledge,
-        knowledge_evidence,
-        knowledge_data_issues,
-        knowledge_visibility_limitations,
-        knowledge_limitations,
-    ) = await load_knowledge_evidence(
-        session,
-        project.id,
-        project.org_id,
-        project.name,
-        reporting_period,
-        visibility_mode=mode,
-        role=current_user.role,
-    )
     evidence.extend(knowledge_evidence)
     quality_issues.extend(knowledge_data_issues)
     visibility_limitations.extend(knowledge_visibility_limitations)
@@ -355,8 +417,116 @@ async def build_client_evidence_pack(
     validation = validate_client_evidence_pack(pack, role=current_user.role)
     if not validation.is_valid:
         raise EvidencePackIntegrityError(validation)
+    if _pack_cache_enabled():
+        _pack_cache_set(cache_key, pack)
     return pack
 
+
+async def _load_structured_adapters(
+    session: AsyncSession,
+    *,
+    project_id: UUID,
+    org_id: UUID,
+    project_name: str,
+    reporting_period: ReportingPeriod,
+    visibility_mode: EvidenceVisibility,
+    policy: ClientVisibilityPolicy | None,
+    role: AppRole,
+) -> tuple:
+    """Load quality/workforce/governance/knowledge adapters.
+
+    Uses parallel DB sessions when the pooler allows it; otherwise stays sequential
+    on the request session to avoid Supabase session-mode connection exhaustion.
+    """
+    settings = get_settings()
+    if _uses_session_pooler(settings.async_database_url):
+        quality_result = await load_quality_evidence(
+            session,
+            project_id,
+            reporting_period,
+            visibility_mode=visibility_mode,
+            policy=policy,
+        )
+        workforce_result = await load_workforce_evidence(
+            session,
+            project_id,
+            org_id,
+            reporting_period,
+            visibility_mode=visibility_mode,
+        )
+        governance_result = await load_governance_evidence(
+            session,
+            project_id,
+            org_id,
+            reporting_period,
+            visibility_mode=visibility_mode,
+        )
+        knowledge_result = await load_knowledge_evidence(
+            session,
+            project_id,
+            org_id,
+            project_name,
+            reporting_period,
+            visibility_mode=visibility_mode,
+            role=role,
+        )
+    else:
+
+        async def _quality():
+            async with AsyncSessionLocal() as adapter_session:
+                return await load_quality_evidence(
+                    adapter_session,
+                    project_id,
+                    reporting_period,
+                    visibility_mode=visibility_mode,
+                    policy=policy,
+                )
+
+        async def _workforce():
+            async with AsyncSessionLocal() as adapter_session:
+                return await load_workforce_evidence(
+                    adapter_session,
+                    project_id,
+                    org_id,
+                    reporting_period,
+                    visibility_mode=visibility_mode,
+                )
+
+        async def _governance():
+            async with AsyncSessionLocal() as adapter_session:
+                return await load_governance_evidence(
+                    adapter_session,
+                    project_id,
+                    org_id,
+                    reporting_period,
+                    visibility_mode=visibility_mode,
+                )
+
+        async def _knowledge():
+            async with AsyncSessionLocal() as adapter_session:
+                return await load_knowledge_evidence(
+                    adapter_session,
+                    project_id,
+                    org_id,
+                    project_name,
+                    reporting_period,
+                    visibility_mode=visibility_mode,
+                    role=role,
+                )
+
+        quality_result, workforce_result, governance_result, knowledge_result = await asyncio.gather(
+            _quality(),
+            _workforce(),
+            _governance(),
+            _knowledge(),
+        )
+
+    return (
+        *quality_result,
+        *workforce_result,
+        *governance_result,
+        *knowledge_result,
+    )
 
 async def _load_delivery_facts(
     session: AsyncSession,

@@ -33,6 +33,10 @@ import {
   useClientIntelligenceSummaryQuery,
   useCreateClientIntelligenceQueryMutation,
 } from "@/lib/queries/client-intelligence";
+import {
+  cancelClientIntelligenceProjectPrefetch,
+  scheduleClientIntelligenceProjectPrefetch,
+} from "@/lib/queries/client-intelligence-prefetch";
 import { projectsQueryOptions, useProjectsQuery } from "@/lib/queries/delivery";
 import { queryKeys } from "@/lib/queries/keys";
 import type {
@@ -140,6 +144,14 @@ function availabilityLabel(availability: SummaryMetricAvailability): string {
   return "Available";
 }
 
+/** Approved share of drafted reports, clamped to 0–100. Zero drafted → 0%. */
+function reportsApprovedPercentage(draftedCount: number, approvedCount: number): string {
+  if (!Number.isFinite(draftedCount) || draftedCount <= 0) return "0%";
+  if (!Number.isFinite(approvedCount) || approvedCount <= 0) return "0%";
+  const raw = Math.round((approvedCount / draftedCount) * 100);
+  return `${Math.min(100, Math.max(0, raw))}%`;
+}
+
 function Status({ value }: { value: string }) {
   return <StatusPill status={labelToken(value)} />;
 }
@@ -238,8 +250,8 @@ function ConfidenceHistorySparkline({
 
   if (!selected) {
     return (
-      <div className="h-6 w-[76px]" aria-label="Select a project to view confidence history.">
-        <span className="sr-only">Select a project to view confidence history.</span>
+      <div className="h-6 w-[76px]" aria-label="Confidence history unavailable.">
+        <span className="sr-only">Confidence history unavailable.</span>
       </div>
     );
   }
@@ -344,6 +356,7 @@ function DeliveryConfidenceCard({
   history,
   historyLoading,
   historyError,
+  historyEnabled,
 }: {
   overview: ClientIntelligenceOverview | undefined;
   selectedProjectName: string | undefined;
@@ -355,6 +368,7 @@ function DeliveryConfidenceCard({
   history: DeliveryConfidenceHistory | undefined;
   historyLoading: boolean;
   historyError: boolean;
+  historyEnabled: boolean;
 }) {
   const confidence = overview?.delivery_confidence;
   const hasSelection = Boolean(selectedProjectName);
@@ -394,27 +408,25 @@ function DeliveryConfidenceCard({
   }
 
   return (
-    <Card className="min-h-[148px]">
+    <Card>
       <div className="text-xs uppercase tracking-wider text-muted-foreground">
         Delivery Confidence
       </div>
-      <div className="mt-3 flex items-center justify-between gap-4">
-        <div>
-          <div className="text-2xl font-semibold">{value}</div>
-          <div className="sr-only">{state}</div>
-          {limitations.length > 0 && (
-            <div className="sr-only">
-              <LimitationItems values={limitations} />
-            </div>
-          )}
-        </div>
+      <div className="mt-2 flex items-center justify-between">
+        <div className="text-2xl font-semibold">{value}</div>
         <ConfidenceHistorySparkline
-          selected={hasSelection}
+          selected={historyEnabled}
           history={history}
           loading={historyLoading}
           error={historyError}
         />
       </div>
+      <div className="sr-only">{state}</div>
+      {limitations.length > 0 && (
+        <div className="sr-only">
+          <LimitationItems values={limitations} />
+        </div>
+      )}
     </Card>
   );
 }
@@ -490,27 +502,45 @@ function SummaryCapabilityCards({
             ? "No responses"
             : availabilityLabel(csat.availability)
         : "Not available";
-  const reportsTotal = reports ? Math.max(reports.drafted_count + reports.approved_count, 1) : 1;
-  const approvedWidth = reports
-    ? `${Math.round((reports.approved_count / reportsTotal) * 100)}%`
-    : "0%";
-  const numericCsat = csat?.average_score === null ? 0 : Number(csat?.average_score ?? 0);
+  const approvedWidth =
+    !loading &&
+    !error &&
+    reports &&
+    (reports.availability === "available" || reports.availability === "partial")
+      ? reportsApprovedPercentage(reports.drafted_count, reports.approved_count)
+      : "0%";
+  const hasCsatScore =
+    !loading &&
+    !error &&
+    Boolean(csat) &&
+    (csat!.availability === "available" || csat!.availability === "partial") &&
+    csat!.average_score !== null;
+  const numericCsat = hasCsatScore ? Number(csat!.average_score) : 0;
+  const filledStars = Number.isFinite(numericCsat) ? Math.floor(numericCsat) : 0;
+  const queryHasSample = !loading && !error && Boolean(query && query.sample_size > 0);
+  const querySecondary = queryHasSample
+    ? `${query!.sample_size} response${query!.sample_size === 1 ? "" : "s"}`
+    : queryValue === "No data" || queryValue === "Not available" || queryValue === "Loading…"
+      ? null
+      : queryAvailability;
+  const csatDetail = hasCsatScore
+    ? `${csat!.average_score} / ${csat!.scale_max} across ${csat!.sample_size} response${
+        csat!.sample_size === 1 ? "" : "s"
+      }`
+    : csatValue;
 
   return (
     <>
-      <Card className="min-h-[148px]">
+      <Card>
         <div className="text-xs uppercase tracking-wider text-muted-foreground">
           Reports Drafted vs Approved
         </div>
-        <div className="mt-3 text-sm">{reportsValue}</div>
+        <div className="mt-2 text-sm">{reportsValue}</div>
         <div
-          className="mt-3 h-2 overflow-hidden rounded-full bg-elevated"
+          className="mt-2 h-2 overflow-hidden rounded bg-elevated"
           aria-label={`Reports Drafted vs Approved availability: ${scopeLabel} · ${reportsAvailability}`}
         >
-          <div
-            className="h-full bg-[color:var(--brand)] transition-[width]"
-            style={{ width: approvedWidth }}
-          />
+          <div className="h-full bg-[color:var(--brand)]" style={{ width: approvedWidth }} />
         </div>
         <span className="sr-only">{`${scopeLabel} · ${reportsAvailability}`}</span>
         {!loading && !error && reports && reports.limitations.length > 0 && (
@@ -519,18 +549,18 @@ function SummaryCapabilityCards({
           </div>
         )}
       </Card>
-      <Card className="min-h-[148px]">
+      <Card>
         <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           Avg Query Response
         </div>
-        <div className="mt-3 text-2xl font-semibold text-foreground">{queryValue}</div>
+        <div className="mt-2 text-2xl font-semibold text-foreground">{queryValue}</div>
         <div
           aria-label={`Avg Query Response availability: ${scopeLabel} · ${queryAvailability}`}
-          className="mt-1 text-xs font-medium text-[color:var(--success)]"
+          className={`mt-1 text-xs font-medium ${
+            queryHasSample ? "text-[color:var(--success)]" : "text-muted-foreground"
+          }`}
         >
-          {!loading && !error && query && query.sample_size > 0
-            ? `${query.sample_size} response${query.sample_size === 1 ? "" : "s"}`
-            : queryAvailability}
+          {querySecondary}
         </div>
         <span className="sr-only">{`${scopeLabel} · ${queryAvailability}`}</span>
         {!loading && !error && query && query.limitations.length > 0 && (
@@ -539,37 +569,21 @@ function SummaryCapabilityCards({
           </div>
         )}
       </Card>
-      <Card className="min-h-[148px]">
+      <Card>
         <div className="text-xs uppercase tracking-wider text-muted-foreground">Avg CSAT</div>
-        {!loading &&
-        !error &&
-        csat &&
-        (csat.availability === "available" || csat.availability === "partial") &&
-        csat.average_score !== null ? (
-          <>
-            <div className="mt-2 flex gap-0.5" aria-label={`${csatValue} average CSAT`}>
-              {[1, 2, 3, 4, 5].map((star) => (
-                <Star
-                  key={star}
-                  className={`h-5 w-5 ${
-                    numericCsat >= star - 0.25
-                      ? "fill-[color:var(--warning)] text-[color:var(--warning)]"
-                      : "text-muted-foreground/50"
-                  }`}
-                />
-              ))}
-            </div>
-            <div className="mt-1 text-[11px] text-muted-foreground">
-              <span>{csatValue}</span>
-              {" across "}
-              <span>
-                {csat.sample_size} CSAT response{csat.sample_size === 1 ? "" : "s"}
-              </span>
-            </div>
-          </>
-        ) : (
-          <div className="mt-3 text-sm">{csatValue}</div>
-        )}
+        <div className="mt-2 flex gap-0.5" aria-label={`${csatValue} average CSAT`}>
+          {[1, 2, 3, 4, 5].map((star) => (
+            <Star
+              key={star}
+              className={`h-5 w-5 ${
+                star <= filledStars
+                  ? "fill-[color:var(--warning)] text-[color:var(--warning)]"
+                  : "text-muted-foreground/40"
+              }`}
+            />
+          ))}
+        </div>
+        <div className="mt-1 text-[11px] text-muted-foreground">{csatDetail}</div>
         <div className="sr-only">
           <span>{`${scopeLabel} · ${csatAvailability}`}</span>
           <span aria-label={`Avg CSAT availability: ${scopeLabel} · ${csatAvailability}`}>
@@ -611,6 +625,7 @@ function ProjectTable({
   draftingProjectId: string | null;
   onRefresh: () => void;
 }) {
+  const queryClient = useQueryClient();
   const filteredProjects = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return projects;
@@ -669,7 +684,14 @@ function ProjectTable({
                     className={`cursor-pointer border-b border-border/50 hover:bg-elevated ${
                       selected ? "bg-elevated" : ""
                     }`}
-                    onClick={() => onSelect(project.id)}
+                    onClick={() => {
+                      cancelClientIntelligenceProjectPrefetch(project.id);
+                      onSelect(project.id);
+                    }}
+                    onMouseEnter={() =>
+                      scheduleClientIntelligenceProjectPrefetch(queryClient, project.id)
+                    }
+                    onMouseLeave={() => cancelClientIntelligenceProjectPrefetch(project.id)}
                   >
                     <td className="py-2.5 pr-3 font-medium">{project.name}</td>
                     <td className="py-2.5 pr-3">{master?.project_count ?? 1}</td>
@@ -779,16 +801,461 @@ function ProjectListState({
   return null;
 }
 
+function healthStatusLabel(status: string): string {
+  if (status === "green") return "On Track";
+  if (status === "amber") return "At Risk";
+  if (status === "red") return "Critical";
+  if (status === "insufficient") return "Insufficient";
+  return labelToken(status);
+}
+
+function healthTrendLabel(trend: string): string {
+  if (trend === "improving") return "Improving";
+  if (trend === "stable") return "Stable";
+  if (trend === "deteriorating") return "Getting worse";
+  return "Not enough history yet";
+}
+
+function confidenceTrendLabel(trend: string): string {
+  if (trend === "increased") return "Improving";
+  if (trend === "decreased") return "Declining";
+  if (trend === "stable") return "Stable";
+  return "Not enough history yet";
+}
+
+function confidenceBandLabel(band: string | null): string {
+  if (!band) return "Not available yet";
+  if (band === "on_track") return "On track";
+  if (band === "at_risk") return "At risk";
+  if (band === "critical") return "Critical";
+  return labelToken(band);
+}
+
+function dataQualityPlainLabel(quality: string): string {
+  if (quality === "complete") return "Complete";
+  if (quality === "partial") return "Partial";
+  if (quality === "stale") return "Out of date";
+  if (quality === "conflicting") return "Conflicting";
+  if (quality === "unavailable") return "Not available";
+  return labelToken(quality);
+}
+
+const LIMITATION_FRIENDLY_LABELS: Record<string, string> = {
+  PROJECT_HEALTH_POLICY_UNAVAILABLE: "Project health rules are not configured yet",
+  PREVIOUS_ASSESSMENT_UNAVAILABLE: "No previous health assessment is available",
+  EXPLANATION_POLICY_UNAVAILABLE: "Confidence explanation rules are not configured yet",
+  RISK_POLICY_UNAVAILABLE: "Risk policy is not configured yet",
+  CLIENT_VISIBILITY_POLICY_UNAVAILABLE: "Client visibility rules for risks are not configured yet",
+  BUSINESS_IMPACT_POLICY_UNRESOLVED: "Business-impact rules for risks are not resolved yet",
+  MITIGATION_EVIDENCE_UNAVAILABLE: "Mitigation evidence is not available yet",
+  WORKFLOW_STATUS_UNAVAILABLE: "Workflow status data is not connected yet",
+  BACKLOG_QUEUE_UNAVAILABLE: "Backlog queue data is not connected yet",
+  CLIENT_COMMUNICATION_NOTES_UNAVAILABLE: "Client communication notes are not available yet",
+  PLAN_SERIES_UNAVAILABLE: "Plan progress data is not available yet",
+  DEVIATION_POLICY_UNAVAILABLE: "Delivery deviation rules are not configured yet",
+  FRESHNESS_SLA_UNRESOLVED: "Data freshness rules are not configured yet",
+};
+
+function limitationCodeKey(raw: string): string | null {
+  const trimmed = raw.trim();
+  const leading = trimmed.match(/^([A-Z][A-Z0-9_]{2,})\b/);
+  if (leading) return leading[1];
+  if (/^[A-Z][A-Z0-9_]+$/.test(trimmed)) return trimmed;
+  return null;
+}
+
+function isTechnicalLimitationText(raw: string): boolean {
+  const text = raw.toLowerCase();
+  return (
+    /ci-d\d+/i.test(raw) ||
+    text.includes("knowledgesourcetype") ||
+    text.includes("knowledge source type") ||
+    text.includes("phase 1 blocker") ||
+    text.includes("knowledgedocument") ||
+    text.includes("clientcommunication") ||
+    text.includes("lesson_learned") ||
+    text.includes("uuid project") ||
+    text.includes("source contract") ||
+    text.includes("normalized project-name") ||
+    text.includes("stale-data threshold") ||
+    text.includes("retrieval-ready")
+  );
+}
+
+function friendlyLimitationLabel(raw: string): string {
+  const trimmed = raw.trim();
+  const code = limitationCodeKey(trimmed);
+  if (code && LIMITATION_FRIENDLY_LABELS[code]) return LIMITATION_FRIENDLY_LABELS[code];
+  if (code && /^[A-Z][A-Z0-9_]+$/.test(trimmed)) return labelToken(trimmed);
+  if (isTechnicalLimitationText(trimmed)) {
+    if (/communication notes/i.test(trimmed)) {
+      return "Client communication notes are not available yet";
+    }
+    if (/backlog/i.test(trimmed)) return "Backlog queue data is not connected yet";
+    if (/workflow status/i.test(trimmed)) return "Workflow status data is not connected yet";
+    if (/freshness|stale/i.test(trimmed)) return "Data freshness rules are not configured yet";
+    if (/knowledge/i.test(trimmed)) {
+      return "Some knowledge sources are not available for this project";
+    }
+    if (/charter/i.test(trimmed)) return "No project charter was found for this date";
+    return "Some supporting data is not available yet";
+  }
+  return trimmed;
+}
+
+function friendlyDataQualitySource(source: string): string {
+  const key = source.trim().toLowerCase().replace(/-/g, "_");
+  const map: Record<string, string> = {
+    throughput_snapshots: "Delivery throughput",
+    delivery_confidence_scores: "Delivery confidence scores",
+    delivery: "Delivery evidence",
+    freshness_sla: "Data freshness rules",
+    bottlenecks: "Bottlenecks",
+    risk_alerts: "Risk alerts",
+    milestones: "Milestones",
+    quality_snapshots: "Quality snapshots",
+    workforce: "Workforce",
+    utilization_snapshots: "Utilization",
+    project_skill_requirements: "Skill requirements",
+    capability_gaps: "Capability gaps",
+    knowledge_visibility: "Knowledge visibility",
+    governance_actions: "Governance actions",
+    governance_dependencies: "Governance dependencies",
+    governance_escalations: "Governance escalations",
+    governance_scope: "Governance scope",
+    governance_charter: "Project charter",
+    projects: "Project record",
+    overall_data_quality: "Overall data quality",
+    source_fingerprint: "Source fingerprint",
+    policy_fingerprint: "Policy fingerprint",
+    reporting_period: "Reporting period",
+    generated_at: "Generated timestamp",
+    evidence: "Evidence links",
+    data_quality: "Data quality checks",
+    visibility_limitations: "Visibility checks",
+    limitations: "Limitation checks",
+    visibility_mode: "Visibility mode",
+    operational_knowledge: "Operational knowledge",
+    ci_d07: "Workflow status",
+    dq_ci_d07: "Workflow status",
+    ci_d09: "Backlog queue",
+    dq_ci_d09: "Backlog queue",
+    ci_d14: "Client communication notes",
+    dq_ci_d14: "Client communication notes",
+    knowledge_ci_d11: "SOP documents",
+    knowledge_ci_d12: "Training documents",
+    knowledge_ci_d13: "Project charter documents",
+    knowledge_ci_d14: "Client communication notes",
+  };
+  if (map[key]) return map[key];
+
+  const ciMatch = key.match(/(?:^|_)(?:dq_)?ci_d(\d+)$/);
+  if (ciMatch) {
+    const ciLabels: Record<string, string> = {
+      "07": "Workflow status",
+      "09": "Backlog queue",
+      "11": "SOP documents",
+      "12": "Training documents",
+      "13": "Project charter documents",
+      "14": "Client communication notes",
+    };
+    if (ciLabels[ciMatch[1]]) return ciLabels[ciMatch[1]];
+  }
+
+  return labelToken(source);
+}
+
+function friendlyDataQualityDetail(detail: string): string {
+  const trimmed = detail.trim();
+  if (!isTechnicalLimitationText(trimmed) && trimmed.length < 160) return trimmed;
+  return friendlyLimitationLabel(trimmed);
+}
+
+type DataQualityCategory =
+  | "Delivery"
+  | "Risks & blockers"
+  | "Documents & knowledge"
+  | "Governance"
+  | "Team"
+  | "Other";
+
+const DATA_QUALITY_CATEGORY_ORDER: DataQualityCategory[] = [
+  "Delivery",
+  "Risks & blockers",
+  "Documents & knowledge",
+  "Governance",
+  "Team",
+  "Other",
+];
+
+const DATA_QUALITY_STATE_PRIORITY: Record<string, number> = {
+  unavailable: 0,
+  conflicting: 1,
+  stale: 2,
+  partial: 3,
+};
+
+const DATA_QUALITY_VISIBLE_LIMIT = 5;
+
+type FriendlyDataQualityRow = {
+  key: string;
+  source: string;
+  sourceLabel: string;
+  state: string;
+  stateLabel: string;
+  category: DataQualityCategory;
+  detailLabel: string | null;
+};
+
+function dataQualityCategory(source: string): DataQualityCategory {
+  const key = source.trim().toLowerCase().replace(/-/g, "_");
+  if (
+    [
+      "throughput_snapshots",
+      "delivery_confidence_scores",
+      "delivery",
+      "milestones",
+      "freshness_sla",
+      "ci_d07",
+      "dq_ci_d07",
+      "ci_d09",
+      "dq_ci_d09",
+    ].includes(key) ||
+    /(?:^|_)(?:dq_)?ci_d0[79]$/.test(key)
+  ) {
+    return "Delivery";
+  }
+  if (["risk_alerts", "bottlenecks"].includes(key)) return "Risks & blockers";
+  if (
+    key.startsWith("knowledge") ||
+    key === "operational_knowledge" ||
+    ["ci_d14", "dq_ci_d14"].includes(key) ||
+    /(?:^|_)(?:dq_)?ci_d1[1-4]$/.test(key)
+  ) {
+    return "Documents & knowledge";
+  }
+  if (key.startsWith("governance")) return "Governance";
+  if (
+    ["workforce", "utilization_snapshots", "project_skill_requirements", "capability_gaps"].includes(
+      key,
+    )
+  ) {
+    return "Team";
+  }
+  return "Other";
+}
+
+function userFacingDataQualityProblems(
+  issues: ClientIntelligenceOverview["data_quality"],
+): FriendlyDataQualityRow[] {
+  const rows: FriendlyDataQualityRow[] = [];
+  const seen = new Set<string>();
+
+  for (const issue of issues) {
+    const state = issue.state.trim().toLowerCase();
+    if (state === "complete") continue;
+
+    const sourceLabel = friendlyDataQualitySource(issue.source);
+    const stateLabel = dataQualityPlainLabel(issue.state);
+    const detailIsTechnical = isTechnicalLimitationText(issue.detail);
+    let detailLabel = detailIsTechnical
+      ? friendlyLimitationLabel(issue.detail)
+      : friendlyDataQualityDetail(issue.detail);
+    if (
+      !detailLabel ||
+      detailLabel.length > 120 ||
+      detailLabel.toLowerCase() === stateLabel.toLowerCase() ||
+      detailLabel.toLowerCase() === "some supporting data is not available yet"
+    ) {
+      detailLabel = "";
+    }
+
+    const dedupeKey = `${sourceLabel}|${state}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    rows.push({
+      key: `${issue.source}:${issue.state}`,
+      source: issue.source,
+      sourceLabel,
+      state,
+      stateLabel,
+      category: dataQualityCategory(issue.source),
+      detailLabel: detailLabel || null,
+    });
+  }
+
+  return rows.sort((a, b) => {
+    const stateDiff =
+      (DATA_QUALITY_STATE_PRIORITY[a.state] ?? 99) - (DATA_QUALITY_STATE_PRIORITY[b.state] ?? 99);
+    if (stateDiff !== 0) return stateDiff;
+    const categoryDiff =
+      DATA_QUALITY_CATEGORY_ORDER.indexOf(a.category) -
+      DATA_QUALITY_CATEGORY_ORDER.indexOf(b.category);
+    if (categoryDiff !== 0) return categoryDiff;
+    return a.sourceLabel.localeCompare(b.sourceLabel);
+  });
+}
+
+type DataQualityGroupSummary = {
+  category: DataQualityCategory;
+  worstStateLabel: string;
+  rows: FriendlyDataQualityRow[];
+};
+
+function summarizeStateCounts(rows: FriendlyDataQualityRow[]): string {
+  const labelOrder = ["Not available", "Conflicting", "Out of date", "Partial"];
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    counts.set(row.stateLabel, (counts.get(row.stateLabel) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => {
+      const ai = labelOrder.indexOf(a[0]);
+      const bi = labelOrder.indexOf(b[0]);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    })
+    .map(([label, count]) => (count === 1 ? label : `${count} ${label.toLowerCase()}`))
+    .join(", ");
+}
+
+function groupDataQualityProblems(rows: FriendlyDataQualityRow[]): DataQualityGroupSummary[] {
+  const byCategory = new Map<DataQualityCategory, FriendlyDataQualityRow[]>();
+  for (const row of rows) {
+    const list = byCategory.get(row.category) ?? [];
+    list.push(row);
+    byCategory.set(row.category, list);
+  }
+
+  return DATA_QUALITY_CATEGORY_ORDER.filter((category) => byCategory.has(category)).map(
+    (category) => {
+      const groupRows = byCategory.get(category) ?? [];
+      return {
+        category,
+        worstStateLabel: groupRows[0]?.stateLabel ?? "Partial",
+        rows: groupRows,
+      };
+    },
+  );
+}
+
+function DataQualitySummary({
+  overall,
+  issues,
+}: {
+  overall: string;
+  issues: ClientIntelligenceOverview["data_quality"];
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const problems = userFacingDataQualityProblems(issues);
+  const groups = groupDataQualityProblems(problems);
+  const visibleGroups = showAll ? groups : groups.slice(0, DATA_QUALITY_VISIBLE_LIMIT);
+  const hasCollapsedSources = groups.some((group) => group.rows.length > 1);
+  const hasHiddenGroups = groups.length > DATA_QUALITY_VISIBLE_LIMIT;
+  const totalSources = problems.length;
+
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between">
+        <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Data quality
+        </h4>
+        <Status value={dataQualityPlainLabel(overall)} />
+      </div>
+      {problems.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground">
+          {overall === "complete"
+            ? "All checked sources look complete for this snapshot."
+            : "No data-quality issues were flagged for this snapshot."}
+        </p>
+      ) : (
+        <div className="space-y-2">
+          <ul className="space-y-1.5 text-[11px] text-muted-foreground">
+            {visibleGroups.map((group) => (
+              <li key={group.category}>
+                <div className="flex items-start justify-between gap-2">
+                  <p className="min-w-0 break-words">
+                    {group.rows.length === 1 ? (
+                      <>
+                        <span className="font-medium text-foreground">
+                          {group.rows[0].sourceLabel}
+                        </span>
+                        {" · "}
+                        {group.rows[0].stateLabel}
+                        {group.rows[0].detailLabel ? (
+                          <>
+                            {" · "}
+                            {group.rows[0].detailLabel}
+                          </>
+                        ) : null}
+                      </>
+                    ) : (
+                      <>
+                        <span className="font-medium text-foreground">{group.category}</span>
+                        {" · "}
+                        {summarizeStateCounts(group.rows)}
+                      </>
+                    )}
+                  </p>
+                  {group.rows.length > 1 && <Status value={group.worstStateLabel} />}
+                </div>
+                {showAll && group.rows.length > 1 && (
+                  <ul className="mt-1 space-y-0.5 border-l border-border pl-2">
+                    {group.rows.map((row) => (
+                      <li key={row.key}>
+                        {row.sourceLabel} · {row.stateLabel}
+                        {row.detailLabel ? ` · ${row.detailLabel}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </li>
+            ))}
+          </ul>
+          {!showAll && (hasCollapsedSources || hasHiddenGroups) && (
+            <button
+              type="button"
+              className="text-[11px] font-medium text-foreground underline-offset-2 hover:underline"
+              onClick={() => setShowAll(true)}
+            >
+              Show all sources ({totalSources})
+            </button>
+          )}
+          {showAll && (hasCollapsedSources || hasHiddenGroups) && (
+            <button
+              type="button"
+              className="text-[11px] font-medium text-foreground underline-offset-2 hover:underline"
+              onClick={() => setShowAll(false)}
+            >
+              Show less
+            </button>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function userFacingLimitations(values: string[]): string[] {
+  return exactUnique(
+    values
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .filter((value) => !isTechnicalLimitationText(value) || Boolean(limitationCodeKey(value)))
+      .map((value) => friendlyLimitationLabel(value)),
+  );
+}
+
 function EngineSection({
   title,
   status,
+  statusLabel,
   children,
-  limitations,
 }: {
   title: string;
   status: string;
+  statusLabel?: string;
   children?: ReactNode;
-  limitations: string[];
 }) {
   return (
     <section className="rounded border border-border bg-elevated p-2.5">
@@ -796,11 +1263,33 @@ function EngineSection({
         <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           {title}
         </h4>
-        <Status value={status} />
+        <Status value={statusLabel ?? status} />
       </div>
-      {children && <div className="mt-1.5 text-xs leading-5">{children}</div>}
-      <LimitationItems values={limitations} />
+      {children && <div className="mt-1.5 space-y-1 text-xs leading-5 text-foreground">{children}</div>}
     </section>
+  );
+}
+
+function FriendlyLimitationList({ values }: { values: string[] }) {
+  const items = userFacingLimitations(values);
+  if (items.length === 0) return null;
+  return (
+    <ul className="mt-1 space-y-1 text-[11px] text-muted-foreground">
+      {items.map((item) => (
+        <li key={item} className="break-words">
+          {item}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function DetailLine({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <p>
+      <span className="text-muted-foreground">{label}: </span>
+      {children}
+    </p>
   );
 }
 
@@ -810,11 +1299,30 @@ function CompactOverview({ overview }: { overview: ClientIntelligenceOverview })
   const risk = overview.risk_transparency;
   const trend = overview.delivery_trend;
   const latestPoint = trend.trend_points.at(-1);
-  const engineLimitations = exactUnique([
+  const engineLimitationCodes = exactUnique([
     ...health.limitations,
     ...confidence.limitations,
     ...risk.limitations,
     ...trend.limitations,
+    ...confidence.source_limitations,
+    ...risk.source_limitations,
+    ...trend.source_limitations,
+  ]);
+  const confidenceScore =
+    confidence.score_pct === null ? "No score" : `${confidence.score_pct}%`;
+  const previousHealth = health.history.previous_status;
+  const engineLimitationItems = userFacingLimitations(engineLimitationCodes);
+  const technicalLimitationDump = exactUnique([
+    ...[
+      ...engineLimitationCodes,
+      ...overview.source_limitations,
+      ...overview.visibility_limitations.map(
+        (item) => `${item.source}: ${item.reason}: ${item.detail}`,
+      ),
+    ].filter(
+      (item) => isTechnicalLimitationText(item) || /^[A-Z][A-Z0-9_]+$/.test(item.trim()),
+    ),
+    ...overview.data_quality.map((issue) => `${issue.source}: ${issue.state}: ${issue.detail}`),
   ]);
 
   return (
@@ -824,20 +1332,17 @@ function CompactOverview({ overview }: { overview: ClientIntelligenceOverview })
           <span className="font-medium">{overview.project.project_name}</span>
           <Status value={overview.project.project_status} />
         </div>
-        <div className="mt-1 grid grid-cols-2 gap-x-3 text-[11px] text-muted-foreground">
-          <span>As of {formatDate(overview.as_of)}</span>
-          <span>Generated {formatDateTime(overview.generated_at)}</span>
-          <span>
-            Period {formatDate(overview.reporting_period.start_date)} –{" "}
+        <div className="mt-1.5 space-y-0.5 text-[11px] text-muted-foreground">
+          <p>Snapshot as of {formatDate(overview.as_of)}</p>
+          <p>Last refreshed {formatDateTime(overview.generated_at)}</p>
+          <p>
+            Reporting period {formatDate(overview.reporting_period.start_date)} –{" "}
             {formatDate(overview.reporting_period.end_date)}
-          </span>
-          <span>Visibility {labelToken(overview.visibility_mode)}</span>
-        </div>
-        <div
-          className="mt-1 truncate font-mono text-[10px] text-muted-foreground"
-          title={overview.source_fingerprint}
-        >
-          Source {overview.source_fingerprint.slice(0, 12)}…
+          </p>
+          <p>
+            Audience:{" "}
+            {overview.visibility_mode === "client_safe" ? "Client-safe view" : "Internal team view"}
+          </p>
         </div>
       </div>
 
@@ -845,109 +1350,97 @@ function CompactOverview({ overview }: { overview: ClientIntelligenceOverview })
         <EngineSection
           title="Project Health"
           status={health.status}
-          limitations={health.limitations}
+          statusLabel={healthStatusLabel(health.status)}
         >
-          Data quality: {labelToken(health.overall_data_quality)}
-          {health.history.previous_status && (
-            <>
-              <br />
-              Previous: {labelToken(health.history.previous_status)} ·{" "}
-              {labelToken(health.history.trend)}
-            </>
+          <DetailLine label="Overall status">{healthStatusLabel(health.status)}</DetailLine>
+          <DetailLine label="Supporting data">
+            {dataQualityPlainLabel(health.overall_data_quality)}
+          </DetailLine>
+          {previousHealth ? (
+            <DetailLine label="Compared with last period">
+              {healthStatusLabel(previousHealth)} · {healthTrendLabel(health.history.trend)}
+            </DetailLine>
+          ) : (
+            <DetailLine label="Compared with last period">No previous assessment yet</DetailLine>
           )}
         </EngineSection>
 
-        <EngineSection
-          title="Delivery Confidence"
-          status={confidence.availability}
-          limitations={[...confidence.limitations, ...confidence.source_limitations]}
-        >
-          Score: {confidence.score_pct === null ? "No score" : `${confidence.score_pct}%`}
-          <br />
-          Band:{" "}
-          {confidence.confidence_band === null
-            ? "Not available"
-            : labelToken(confidence.confidence_band)}
-          <br />
-          Trend: {labelToken(confidence.trend)}
-          {confidence.current_milestone && (
-            <>
-              <br />
-              Milestone: {confidence.current_milestone.name}
-            </>
+        <EngineSection title="Delivery Confidence" status={confidence.availability}>
+          <DetailLine label="Schedule confidence">{confidenceScore}</DetailLine>
+          <DetailLine label="Confidence level">
+            {confidenceBandLabel(confidence.confidence_band)}
+          </DetailLine>
+          <DetailLine label="Direction">{confidenceTrendLabel(confidence.trend)}</DetailLine>
+          {confidence.previous_score_pct !== null && (
+            <DetailLine label="Previous score">{confidence.previous_score_pct}%</DetailLine>
           )}
-          {confidence.forecast_completion_date && (
-            <>
-              <br />
-              Forecast completion: {formatDate(confidence.forecast_completion_date)}
-            </>
+          {confidence.current_milestone ? (
+            <DetailLine label="Current milestone">{confidence.current_milestone.name}</DetailLine>
+          ) : (
+            <DetailLine label="Current milestone">Not available</DetailLine>
+          )}
+          {confidence.forecast_completion_date ? (
+            <DetailLine label="Forecast completion">
+              {formatDate(confidence.forecast_completion_date)}
+            </DetailLine>
+          ) : (
+            <DetailLine label="Forecast completion">Not available</DetailLine>
           )}
         </EngineSection>
 
-        <EngineSection
-          title="Risk Transparency"
-          status={risk.availability}
-          limitations={[...risk.limitations, ...risk.source_limitations]}
-        >
-          Published items: {risk.risk_items.length}
+        <EngineSection title="Risk Transparency" status={risk.availability}>
+          <DetailLine label="Open items in this view">{risk.risk_items.length}</DetailLine>
           {risk.risk_items.slice(0, 2).map((item) => (
-            <div key={`${item.source_type}:${item.source_row_id}`}>
-              {labelToken(item.source_type)} · {labelToken(item.category)} ·{" "}
-              {labelToken(item.status)}
-            </div>
+            <p key={`${item.source_type}:${item.source_row_id}`} className="text-muted-foreground">
+              {labelToken(item.category)} · {labelToken(item.status)}
+              {item.risk_tier ? ` · ${labelToken(item.risk_tier)} priority` : ""}
+            </p>
           ))}
           {risk.risk_items.length === 0 && risk.availability !== "available" && (
-            <div className="text-[11px] text-muted-foreground">
+            <p className="text-[11px] text-muted-foreground">
               No items are published for this assessment state.
-            </div>
+            </p>
+          )}
+          {risk.risk_items.length === 0 && risk.availability === "available" && (
+            <p className="text-[11px] text-muted-foreground">
+              No open risk items are currently listed for this project.
+            </p>
           )}
         </EngineSection>
 
-        <EngineSection
-          title="Delivery Trend"
-          status={trend.availability}
-          limitations={[...trend.limitations, ...trend.source_limitations]}
-        >
-          Points: {trend.trend_points.length} · Grain: {labelToken(trend.grain)}
-          {latestPoint && (
-            <>
-              <br />
+        <EngineSection title="Delivery Trend" status={trend.availability}>
+          <DetailLine label="Progress snapshots">
+            {trend.trend_points.length} · {labelToken(trend.grain)} view
+          </DetailLine>
+          {latestPoint ? (
+            <p>
               Latest {formatDate(latestPoint.snapshot_date)} · Actual{" "}
               {latestPoint.actual_units ?? labelToken(latestPoint.actual_state)} · Plan{" "}
               {latestPoint.plan_units ?? labelToken(latestPoint.plan_state)} · Forecast{" "}
               {latestPoint.forecast_units ?? labelToken(latestPoint.forecast_state)}
-            </>
+            </p>
+          ) : (
+            <p className="text-[11px] text-muted-foreground">
+              No recent progress snapshot is available yet.
+            </p>
           )}
         </EngineSection>
       </div>
 
-      <section>
-        <div className="mb-2 flex items-center justify-between">
-          <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Data quality
-          </h4>
-          <Status value={overview.overall_data_quality} />
-        </div>
-        {overview.data_quality.length > 0 ? (
-          <ul className="space-y-1 text-[11px] text-muted-foreground">
-            {overview.data_quality.map((issue, index) => (
-              <li key={`${issue.source}:${issue.state}:${index}`}>
-                <span className="font-medium text-foreground">{issue.source}</span> ·{" "}
-                {labelToken(issue.state)} · {issue.detail}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-[11px] text-muted-foreground">No data-quality issues returned.</p>
-        )}
-      </section>
+      <DataQualitySummary
+        overall={overview.overall_data_quality}
+        issues={overview.data_quality}
+      />
 
       <section className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
         <div>
           <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
             Source limitations
           </h4>
-          <LimitationItems values={overview.source_limitations} />
+          <FriendlyLimitationList values={overview.source_limitations} />
+          {userFacingLimitations(overview.source_limitations).length === 0 && (
+            <p className="mt-1 text-[11px] text-muted-foreground">No source gaps reported.</p>
+          )}
         </div>
         <div>
           <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -957,7 +1450,8 @@ function CompactOverview({ overview }: { overview: ClientIntelligenceOverview })
             <ul className="mt-1 space-y-1 text-[11px] text-muted-foreground">
               {overview.visibility_limitations.map((limitation, index) => (
                 <li key={`${limitation.source}:${limitation.reason}:${index}`}>
-                  {limitation.source} · {labelToken(limitation.reason)} · {limitation.detail}
+                  {friendlyDataQualitySource(limitation.source)} ·{" "}
+                  {labelToken(limitation.reason)} · {friendlyDataQualityDetail(limitation.detail)}
                 </li>
               ))}
             </ul>
@@ -969,13 +1463,26 @@ function CompactOverview({ overview }: { overview: ClientIntelligenceOverview })
         </div>
       </section>
 
-      {engineLimitations.length > 0 && (
-        <section>
-          <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Engine limitations
-          </h4>
-          <LimitationItems values={engineLimitations} />
-        </section>
+      {engineLimitationItems.length > 0 && (
+        <details className="rounded border border-border bg-elevated/40 px-3 py-2 text-[11px] text-muted-foreground">
+          <summary className="cursor-pointer select-none font-medium text-foreground">
+            Engine limitations ({engineLimitationItems.length})
+          </summary>
+          <FriendlyLimitationList values={engineLimitationCodes} />
+        </details>
+      )}
+
+      {technicalLimitationDump.length > 0 && (
+        <details className="rounded border border-border bg-elevated/40 px-3 py-2 text-[11px] text-muted-foreground">
+          <summary className="cursor-pointer select-none font-medium text-foreground">
+            Technical details
+          </summary>
+          <ul className="mt-2 space-y-1 break-words">
+            {technicalLimitationDump.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </details>
       )}
     </div>
   );
@@ -2334,9 +2841,12 @@ export function ClientIntelligenceDashboard() {
   }, [effectiveProjectId, selectedProjectId]);
 
   const selectedProject = projects.find((project) => project.id === effectiveProjectId);
+  // Sparkline uses the selected project when set; otherwise the first authorized project
+  // so the Delivery Confidence card keeps the historical value+chart layout with real history.
+  const sparklineProjectId = effectiveProjectId ?? projects[0]?.id ?? null;
   const overviewQuery = useClientIntelligenceOverviewQuery(effectiveProjectId);
   const confidenceHistoryQuery =
-    useClientIntelligenceDeliveryConfidenceHistoryQuery(effectiveProjectId);
+    useClientIntelligenceDeliveryConfidenceHistoryQuery(sparklineProjectId);
   const communicationsQuery = useClientIntelligenceCommunicationsQuery(effectiveProjectId);
   const selectedSummaryQuery = useClientIntelligenceProjectSummaryQuery(effectiveProjectId);
   const activeCapabilitySummary = effectiveProjectId
@@ -2394,8 +2904,9 @@ export function ClientIntelligenceDashboard() {
           summaryLoading={summaryQuery.isLoading}
           summaryError={summaryQuery.isError}
           history={confidenceHistoryQuery.isError ? undefined : confidenceHistoryQuery.data}
-          historyLoading={confidenceHistoryQuery.isLoading && Boolean(effectiveProjectId)}
+          historyLoading={confidenceHistoryQuery.isLoading && Boolean(sparklineProjectId)}
           historyError={confidenceHistoryQuery.isError}
+          historyEnabled={Boolean(sparklineProjectId)}
         />
         <SummaryCapabilityCards
           summary={activeCapabilitySummary}

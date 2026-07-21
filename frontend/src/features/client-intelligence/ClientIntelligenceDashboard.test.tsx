@@ -32,6 +32,7 @@ import {
   clientIntelligenceProjectSummaryQueryOptions,
   clientIntelligenceSummaryQueryOptions,
 } from "@/lib/queries/client-intelligence";
+import { clearClientIntelligenceProjectPrefetchTimers } from "@/lib/queries/client-intelligence-prefetch";
 import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
 import type { MeUser } from "@/types/auth";
 import type {
@@ -662,6 +663,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearClientIntelligenceProjectPrefetchTimers();
   useAuthStore.getState().setUser(null);
   vi.clearAllMocks();
 });
@@ -689,6 +691,201 @@ describe("ClientIntelligenceDashboard", () => {
     expect(main.children[1]).toHaveClass("lg:col-span-2");
   });
 
+  it("restores the historical KPI card presentation without custom card shells", async () => {
+    mockedFetchSummary.mockResolvedValueOnce({
+      ...populatedSummary(),
+      reports: {
+        availability: "available",
+        drafted_count: 12,
+        approved_count: 9,
+        eligible_record_count: 12,
+        limitations: [],
+      },
+      query_response: {
+        availability: "available",
+        average_latency_ms: 12_240_000,
+        sample_size: 6,
+        limitations: [],
+      },
+    });
+    renderDashboard();
+
+    const summary = screen.getByTestId("client-intelligence-summary-grid");
+    expect(summary).toHaveClass("grid-cols-2", "gap-4", "lg:grid-cols-4");
+    expect(summary.children).toHaveLength(4);
+
+    const cards = Array.from(summary.children) as HTMLElement[];
+    for (const card of cards) {
+      expect(card.className).toMatch(/rounded-lg/);
+      expect(card.className).toMatch(/\bp-5\b/);
+      expect(card.className).not.toMatch(/min-h-\[148px\]/);
+      expect(card.className).not.toMatch(/\bh-\[/);
+      expect(card.className).not.toMatch(/\bh-full\b/);
+      expect(card.className).not.toMatch(/flex-col/);
+      expect(card.className).not.toMatch(/min-h-/);
+    }
+
+    const deliveryCard = within(summary).getByText("Delivery Confidence").parentElement!;
+    const reportsCard = within(summary).getByText("Reports Drafted vs Approved").parentElement!;
+    const queryCard = within(summary).getByText("Avg Query Response").parentElement!;
+    const csatCard = within(summary).getByText("Avg CSAT").parentElement!;
+
+    expect(within(summary).getByText("Delivery Confidence")).toHaveClass(
+      "text-xs",
+      "uppercase",
+      "tracking-wider",
+      "text-muted-foreground",
+    );
+    expect(within(summary).getByText("Delivery Confidence").className).not.toMatch(/font-medium/);
+    expect(await within(deliveryCard).findByText("87.50%")).toHaveClass(
+      "text-2xl",
+      "font-semibold",
+    );
+    const deliveryRow = within(deliveryCard).getByText("87.50%").parentElement!;
+    expect(deliveryRow).toHaveClass("mt-2", "flex", "items-center", "justify-between");
+    expect(deliveryRow.className).not.toMatch(/\bgap-4\b/);
+    const sparkline = await within(deliveryCard).findByRole("img", { name: /2 points/ });
+    expect(sparkline).toHaveClass("h-6", "w-[76px]");
+    expect(sparkline.querySelector("polyline")).not.toBeNull();
+
+    expect(within(summary).getByText("Reports Drafted vs Approved")).toHaveClass(
+      "text-xs",
+      "uppercase",
+      "tracking-wider",
+      "text-muted-foreground",
+    );
+    expect(within(summary).getByText("Reports Drafted vs Approved").className).not.toMatch(
+      /font-medium/,
+    );
+    expect(await within(reportsCard).findByText("12 drafted · 9 approved")).toHaveClass(
+      "mt-2",
+      "text-sm",
+    );
+    const progressTrack = within(reportsCard).getByLabelText(
+      /Reports Drafted vs Approved availability/,
+    );
+    expect(progressTrack).toHaveClass("mt-2", "h-2", "overflow-hidden", "rounded", "bg-elevated");
+    expect(progressTrack.className).not.toMatch(/rounded-full/);
+    expect(progressTrack.firstElementChild).toHaveStyle({ width: "75%" });
+    expect(progressTrack.firstElementChild).toHaveClass("h-full", "bg-[color:var(--brand)]");
+
+    expect(within(summary).getByText("Avg Query Response")).toHaveClass(
+      "text-xs",
+      "font-medium",
+      "uppercase",
+      "tracking-wider",
+      "text-muted-foreground",
+    );
+    expect(await within(queryCard).findByText("3.4 h")).toHaveClass(
+      "mt-2",
+      "text-2xl",
+      "font-semibold",
+      "text-foreground",
+    );
+    expect(within(queryCard).getByText("6 responses")).toHaveClass(
+      "mt-1",
+      "text-xs",
+      "font-medium",
+      "text-[color:var(--success)]",
+    );
+
+    expect(within(summary).getByText("Avg CSAT")).toHaveClass(
+      "text-xs",
+      "uppercase",
+      "tracking-wider",
+      "text-muted-foreground",
+    );
+    expect(within(summary).getByText("Avg CSAT").className).not.toMatch(/font-medium/);
+    const stars = within(csatCard).getByLabelText(/average CSAT/);
+    expect(stars).toHaveClass("mt-2", "flex", "gap-0.5");
+    const starIcons = stars.querySelectorAll("svg");
+    expect(starIcons).toHaveLength(5);
+    for (const star of Array.from(starIcons)) {
+      expect(star).toHaveClass("h-5", "w-5");
+      expect(star.getAttribute("class") ?? "").not.toMatch(/\bh-6\b/);
+    }
+    expect(starIcons[0]).toHaveClass("fill-[color:var(--warning)]", "text-[color:var(--warning)]");
+    expect(starIcons[3]).toHaveClass("fill-[color:var(--warning)]", "text-[color:var(--warning)]");
+    expect(starIcons[4]).toHaveClass("text-muted-foreground/40");
+    expect(starIcons[4].getAttribute("class") ?? "").not.toMatch(/fill-\[color:var\(--warning\)\]/);
+    expect(within(csatCard).getByText("4.5 / 5 across 8 responses")).toHaveClass(
+      "mt-1",
+      "text-[11px]",
+      "text-muted-foreground",
+    );
+  });
+
+  it("clamps report approval percentage and keeps zero-drafted bars empty", async () => {
+    mockedFetchSummary
+      .mockResolvedValueOnce({
+        ...populatedSummary(),
+        reports: {
+          availability: "available",
+          drafted_count: 2,
+          approved_count: 5,
+          eligible_record_count: 5,
+          limitations: [],
+        },
+      })
+      .mockResolvedValueOnce({
+        ...emptySummary(),
+        reports: {
+          availability: "available",
+          drafted_count: 0,
+          approved_count: 0,
+          eligible_record_count: 0,
+          limitations: [],
+        },
+      });
+
+    const { unmount } = renderDashboard();
+    const summary = screen.getByTestId("client-intelligence-summary-grid");
+    const reportsCard = within(summary).getByText("Reports Drafted vs Approved").parentElement!;
+    expect(await within(reportsCard).findByText("2 drafted · 5 approved")).toBeInTheDocument();
+    expect(
+      within(reportsCard).getByLabelText(/Reports Drafted vs Approved availability/)
+        .firstElementChild,
+    ).toHaveStyle({ width: "100%" });
+    unmount();
+
+    renderDashboard();
+    const emptySummaryGrid = screen.getByTestId("client-intelligence-summary-grid");
+    const emptyReportsCard = within(emptySummaryGrid).getByText(
+      "Reports Drafted vs Approved",
+    ).parentElement!;
+    expect(await within(emptyReportsCard).findByText("0 drafted · 0 approved")).toBeInTheDocument();
+    expect(
+      within(emptyReportsCard).getByLabelText(/Reports Drafted vs Approved availability/)
+        .firstElementChild,
+    ).toHaveStyle({ width: "0%" });
+  });
+
+  it("keeps query no-data secondary muted and CSAT outline stars when empty", async () => {
+    renderDashboard();
+
+    const summary = screen.getByTestId("client-intelligence-summary-grid");
+    const queryCard = within(summary).getByText("Avg Query Response").parentElement!;
+    const csatCard = within(summary).getByText("Avg CSAT").parentElement!;
+
+    expect(await within(queryCard).findByText("No data")).toBeInTheDocument();
+    const querySecondary = within(queryCard).getByLabelText(/Avg Query Response availability/);
+    expect(querySecondary).toHaveClass("text-muted-foreground");
+    expect(querySecondary.className).not.toMatch(/--success/);
+    expect(querySecondary).toBeEmptyDOMElement();
+
+    const stars = within(csatCard).getByLabelText(/average CSAT/);
+    expect(stars.querySelectorAll("svg")).toHaveLength(5);
+    for (const star of Array.from(stars.querySelectorAll("svg"))) {
+      expect(star).toHaveClass("h-5", "w-5", "text-muted-foreground/40");
+      expect(star.getAttribute("class") ?? "").not.toMatch(/fill-\[color:var\(--warning\)\]/);
+    }
+    expect(within(csatCard).getByText("No responses")).toHaveClass(
+      "mt-1",
+      "text-[11px]",
+      "text-muted-foreground",
+    );
+  });
+
   it("requests summary without selecting a project and does not request overview", async () => {
     renderDashboard();
 
@@ -711,7 +908,9 @@ describe("ClientIntelligenceDashboard", () => {
     expect(within(table).getByText("Atlas Delivery")).toBeInTheDocument();
     expect(within(table).getByText("Borealis Review")).toBeInTheDocument();
     expect(mockedFetchOverview).not.toHaveBeenCalled();
-    expect(mockedFetchConfidenceHistory).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(mockedFetchConfidenceHistory).toHaveBeenCalledWith(projects[0].id),
+    );
     expect(within(table).getByText("Atlas Delivery").closest("tr")).toHaveAttribute(
       "aria-selected",
       "false",
@@ -723,9 +922,7 @@ describe("ClientIntelligenceDashboard", () => {
     expect(
       screen.getByText("Select a project row to view governed Client Intelligence."),
     ).toBeInTheDocument();
-    expect(
-      screen.getByLabelText("Select a project to view confidence history."),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("img", { name: /2 points/ })).toBeInTheDocument();
     expect(screen.queryByText("2,17 15,13 27,16 40,10 53,12 65,7 74,8")).not.toBeInTheDocument();
     const summary = screen.getByTestId("client-intelligence-summary-grid");
     expect(within(summary).getByText("No score")).toBeInTheDocument();
@@ -978,8 +1175,7 @@ describe("ClientIntelligenceDashboard", () => {
     expect(within(summary).getByText("Available · 2 of 2 projects")).toBeInTheDocument();
     expect(await within(summary).findByText("2 drafted · 5 approved")).toBeInTheDocument();
     expect(within(summary).getByText("850 ms")).toBeInTheDocument();
-    expect(within(summary).getByText("4.5 / 5")).toBeInTheDocument();
-    expect(within(summary).getByText("8 CSAT responses")).toBeInTheDocument();
+    expect(within(summary).getByText("4.5 / 5 across 8 responses")).toBeInTheDocument();
   });
 
   it("switches from authorized-scope confidence to the exact selected project score", async () => {
@@ -1006,7 +1202,7 @@ describe("ClientIntelligenceDashboard", () => {
     expect(within(summary).queryByText("Available · 2 of 2 projects")).not.toBeInTheDocument();
     expect(within(summary).getByText("1 drafted · 2 approved")).toBeInTheDocument();
     expect(within(summary).getByText("5 s")).toBeInTheDocument();
-    expect(within(summary).getByText("3.8 / 5")).toBeInTheDocument();
+    expect(within(summary).getByText("3.8 / 5 across 2 responses")).toBeInTheDocument();
     expect(within(summary).getByText("2 responses")).toBeInTheDocument();
     expect(within(summary).getAllByText("Borealis Review · Available")).toHaveLength(3);
     expect(mockedFetchSummary).toHaveBeenCalledWith(projects[1].id);
@@ -1065,8 +1261,7 @@ describe("ClientIntelligenceDashboard", () => {
     expect(within(queryCard).getByText("2.4 s")).toBeInTheDocument();
     expect(within(queryCard).getByText("Authorized scope · Partial")).toBeInTheDocument();
     expect(within(queryCard).getByText("Query Latency Missing Or Invalid")).toBeInTheDocument();
-    expect(within(csatCard).getByText("4.2 / 5")).toBeInTheDocument();
-    expect(within(csatCard).getByText("4 CSAT responses")).toBeInTheDocument();
+    expect(within(csatCard).getByText("4.2 / 5 across 4 responses")).toBeInTheDocument();
     expect(within(csatCard).getByText("Authorized scope · Partial")).toBeInTheDocument();
     expect(within(csatCard).getByText("Csat Score Out Of Range")).toBeInTheDocument();
   });
@@ -1249,7 +1444,9 @@ describe("ClientIntelligenceDashboard", () => {
     await selectProject();
     await screen.findByText("Atlas Delivery · Detail");
 
-    expect(screen.getAllByText("Project Health Policy Unavailable").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText("Project health rules are not configured yet"),
+    ).toBeInTheDocument();
     expect(
       screen.getByText("No items are published for this assessment state."),
     ).toBeInTheDocument();
@@ -1295,14 +1492,129 @@ describe("ClientIntelligenceDashboard", () => {
     await screen.findByText("Atlas Delivery · Detail");
 
     expect(screen.getByText("Data quality")).toBeInTheDocument();
-    expect(screen.getByText(/Forecast coverage is incomplete\./)).toBeInTheDocument();
+    expect(screen.getByText("Delivery throughput")).toBeInTheDocument();
+    expect(screen.getByText(/Partial · Forecast coverage is incomplete\./)).toBeInTheDocument();
     expect(screen.getByText("Source limitations")).toBeInTheDocument();
     expect(screen.getByText("Historical delivery confidence is unavailable.")).toBeInTheDocument();
     expect(screen.getByText("Visibility limitations")).toBeInTheDocument();
     expect(
       screen.getByText(/Knowledge evidence was not visible in this projection\./),
     ).toBeInTheDocument();
-    expect(screen.getByText("Engine limitations")).toBeInTheDocument();
+    expect(screen.getByText(/Engine limitations/)).toBeInTheDocument();
+    expect(screen.getByText("Technical details")).toBeInTheDocument();
+  });
+
+  it("shows friendly data-quality labels and keeps raw detail under Technical details", async () => {
+    mockedFetchOverview.mockResolvedValueOnce(
+      overviewFor(projects[0], {
+        data_quality: [
+          {
+            source: "ci_d07",
+            state: "unavailable",
+            detail:
+              "CI-D07 Workflow Status is a Phase 1 blocker: KnowledgeSourceType has no source contract.",
+            observed_at: "2026-07-15T00:00:00Z",
+          },
+          {
+            source: "throughput_snapshots",
+            state: "partial",
+            detail: "Forecast coverage is incomplete.",
+            observed_at: "2026-07-15T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    renderDashboard();
+    await selectProject();
+    await screen.findByText("Atlas Delivery · Detail");
+
+    const dataQualitySection = screen.getByText("Data quality").closest("section");
+    expect(dataQualitySection).not.toBeNull();
+    expect(dataQualitySection).toHaveTextContent("Delivery");
+    expect(dataQualitySection).not.toHaveTextContent("KnowledgeSourceType");
+    expect(dataQualitySection).not.toHaveTextContent(/Dq Ci D07/i);
+
+    await screen.getByRole("button", { name: /Show all sources \(2\)/i }).click();
+    expect(dataQualitySection).toHaveTextContent("Workflow status");
+    expect(dataQualitySection).toHaveTextContent("Delivery throughput");
+
+    const technical = screen.getByText("Technical details").closest("details");
+    expect(technical).not.toBeNull();
+    expect(technical).toHaveTextContent(/KnowledgeSourceType/);
+    expect(technical).toHaveTextContent(/ci_d07/);
+  });
+
+  it("groups and collapses dense data-quality issues behind Show all sources", async () => {
+    mockedFetchOverview.mockResolvedValueOnce(
+      overviewFor(projects[0], {
+        overall_data_quality: "partial",
+        data_quality: [
+          {
+            source: "throughput_snapshots",
+            state: "partial",
+            detail: "Forecast coverage is incomplete.",
+            observed_at: null,
+          },
+          {
+            source: "ci_d07",
+            state: "unavailable",
+            detail: "CI-D07 Workflow Status Phase 1 blocker KnowledgeSourceType",
+            observed_at: null,
+          },
+          {
+            source: "knowledge_ci_d11",
+            state: "unavailable",
+            detail: "CI-D11 SOP KnowledgeSourceType missing",
+            observed_at: null,
+          },
+          {
+            source: "knowledge_ci_d12",
+            state: "unavailable",
+            detail: "CI-D12 training KnowledgeSourceType missing",
+            observed_at: null,
+          },
+          {
+            source: "knowledge_ci_d13",
+            state: "unavailable",
+            detail: "CI-D13 charter KnowledgeSourceType missing",
+            observed_at: null,
+          },
+          {
+            source: "governance_actions",
+            state: "unavailable",
+            detail: "No governance actions for as_of",
+            observed_at: null,
+          },
+          {
+            source: "governance_scope",
+            state: "partial",
+            detail: "Scope notes incomplete",
+            observed_at: null,
+          },
+          {
+            source: "quality_snapshots",
+            state: "complete",
+            detail: "Complete quality snapshot",
+            observed_at: null,
+          },
+        ],
+      }),
+    );
+    renderDashboard();
+    await selectProject();
+    await screen.findByText("Atlas Delivery · Detail");
+
+    const dataQualitySection = screen.getByText("Data quality").closest("section");
+    expect(dataQualitySection).not.toBeNull();
+    expect(dataQualitySection).toHaveTextContent("Documents & knowledge");
+    expect(dataQualitySection).toHaveTextContent("Governance");
+    expect(dataQualitySection).not.toHaveTextContent("Quality snapshots");
+    expect(dataQualitySection).not.toHaveTextContent("KnowledgeSourceType");
+
+    await screen.getByRole("button", { name: /Show all sources \(7\)/i }).click();
+    expect(dataQualitySection).toHaveTextContent("SOP documents");
+    expect(dataQualitySection).toHaveTextContent("Training documents");
+    expect(screen.getByRole("button", { name: /Show less/i })).toBeInTheDocument();
   });
 
   it("keeps the navigator visible while a selected overview is loading", async () => {
@@ -1645,11 +1957,9 @@ describe("ClientIntelligenceDashboard", () => {
     await user.click(screen.getByRole("button", { name: "Refresh projects" }));
 
     await waitFor(() =>
-      expect(
-        screen.getByLabelText("Select a project to view confidence history."),
-      ).toBeInTheDocument(),
+      expect(screen.getByRole("img", { name: /2 points/ })).toBeInTheDocument(),
     );
-    expect(screen.queryByRole("img", { name: /2 points/ })).not.toBeInTheDocument();
+    expect(mockedFetchConfidenceHistory).toHaveBeenCalledWith(projects[1].id);
   });
 
   it("does not keep a stale cross-project sparkline while history loads", async () => {
