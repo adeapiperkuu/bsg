@@ -45,10 +45,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   } else if (status === "anonymous" && !isPublicPath) {
     redirectTo = "/login";
   }
-    }
-  } else if (status === "anonymous" && !isPublicPath) {
-    redirectTo = "/login";
-  }
 
   useEffect(() => {
     if (!redirectTo) return;
