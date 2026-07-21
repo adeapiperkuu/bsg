@@ -2,11 +2,15 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from app.agents.delivery.schemas.dashboard_schema import DashboardResponse, DeliveryPortfolioResponse
 from app.agents.delivery.services.dashboard_service import get_dashboard_data, get_portfolio_data
+from app.agents.delivery.services.operational_briefing_service import (
+    attach_operational_briefing_to_dashboard,
+)
 from app.api.deps import SessionDep, UserDep
+from app.db.models import AppRole
 
 router = APIRouter(tags=["delivery"])
 
@@ -26,15 +30,30 @@ async def get_delivery_dashboard(
     project_id: UUID,
     session: SessionDep,
     current_user: UserDep,
+    with_ai_briefing: bool = Query(
+        default=True,
+        description="When true, attach Phase 15.4 operational briefing (AI narrative fail-open).",
+    ),
 ) -> DashboardResponse:
-    """Return the aggregated Delivery Performance dashboard for one project without AI work."""
+    """Return the aggregated Delivery Performance dashboard for one project.
+
+    Portfolio remains AI-free. Project dashboards optionally attach the grounded
+    operational briefing and set ``daily_summary`` from its narrative.
+    """
     dashboard_data = await get_dashboard_data(
         session=session,
         project_id=project_id,
         current_user=current_user,
     )
-    # TODO(cleanup): daily_summary is always forced to None — app.agents.delivery.ai.summary_service
-    # (generate_daily_summary) is never called from this route. Either wire it up or remove the
-    # field/service; left as-is since deciding which is a product call, not a hardening fix.
-    dashboard_data["daily_summary"] = None
+    if with_ai_briefing and current_user.role != AppRole.CLIENT:
+        await attach_operational_briefing_to_dashboard(
+            session,
+            project_id=project_id,
+            current_user=current_user,
+            dashboard_data=dashboard_data,
+            with_ai=True,
+        )
+    else:
+        dashboard_data["daily_summary"] = None
+        dashboard_data["operational_briefing"] = None
     return DashboardResponse.model_validate(dashboard_data)

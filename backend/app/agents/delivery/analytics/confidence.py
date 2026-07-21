@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from datetime import date, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 
 ConfidenceStatus = Literal["on_track", "at_risk"]
@@ -77,10 +77,15 @@ def calculate_confidence(
     rolling_7day_units: int | None,
     daily_target_units: int | None,
     rolling_windows: Sequence[int | None] = (),
+    *,
+    flat_tolerance_pct: Decimal = Decimal("5.00"),
 ) -> Decimal:
     """Calculate delivery confidence from recent throughput and target pace."""
     variance_ratio = calculate_variance_ratio(rolling_7day_units, daily_target_units)
-    trend_direction = calculate_trend_direction(rolling_windows)
+    trend_direction = calculate_trend_direction(
+        rolling_windows,
+        flat_tolerance_pct=flat_tolerance_pct,
+    )
     base_score = variance_ratio * PERCENT
     return clamp_percent(base_score + trend_adjustment_pct(trend_direction))
 

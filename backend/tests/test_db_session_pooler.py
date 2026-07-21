@@ -47,6 +47,6 @@ def test_session_pooler_warning_does_not_log_database_url_or_password(caplog) ->
 
     assert kwargs["poolclass"] is NullPool
     messages = "\n".join(record.getMessage() for record in caplog.records)
-    assert "session pooler" in messages
+    assert "session pooler" in messages.lower()
     assert "super-secret" not in messages
     assert database_url not in messages

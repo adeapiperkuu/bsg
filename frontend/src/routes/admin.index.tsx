@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { UserCheck, UserX, Users } from "lucide-react";
 
 import { Card, SectionHeader } from "@/components/bsg/widgets";
+import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import { formatRole, roles } from "@/lib/admin-shared";
 import { listOrganisations, listUsers } from "@/lib/api";
 import type { AppRole, OrganisationRead, UserRead } from "@/types/auth";
@@ -12,7 +13,7 @@ export const Route = createFileRoute("/admin/")({ component: AdminConsole });
 function AdminConsole() {
   const [users, setUsers] = useState<UserRead[]>([]);
   const [orgs, setOrgs] = useState<OrganisationRead[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const activeUsers = users.filter((row) => row.is_active).length;
@@ -45,6 +46,10 @@ function AdminConsole() {
   useEffect(() => {
     void load();
   }, []);
+
+  if (loading && users.length === 0 && orgs.length === 0 && !error) {
+    return <PageLoadingScreen />;
+  }
 
   return (
     <div className="space-y-5">

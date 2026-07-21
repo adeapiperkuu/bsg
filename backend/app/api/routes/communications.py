@@ -1,7 +1,9 @@
+import logging
 from datetime import UTC, datetime
+from time import perf_counter
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 
 from app.api.deps import SessionDep, UserDep
@@ -22,29 +24,101 @@ from app.db.models import (
 from app.schemas.common import DataResponse, EvidenceLinkRead, ListResponse, Pagination
 from app.schemas.domain import (
     CommunicationApprove,
+    CommunicationContentUpdate,
     CommunicationDraftCreate,
     CommunicationDraftEdit,
+    CommunicationListItem,
     CommunicationRead,
     CommunicationReject,
     CommunicationReview,
 )
 from app.services.communications import (
+    COMMUNICATIONS_LIST_DEFAULT_LIMIT,
+    COMMUNICATIONS_LIST_MAX_LIMIT,
     approve,
     create_draft,
     edit_draft,
     generate_comms_draft_body,
     get_visible_communication,
+    list_client_sent_communications,
+    list_org_communications,
     move_to_review,
     reject,
     send,
+    update_communication_content,
 )
 from app.services.evidence import EvidenceInput
 from app.services.quality import generate_quality_summary
 from app.services.scoping import get_visible_project
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["communications"])
 
+PM_LIST_ROLES = (AppRole.DELIVERY_MANAGER, AppRole.BSG_LEADERSHIP, AppRole.SUPER_ADMIN)
+
 _MutatorDep = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN))
+
+
+def _list_pagination(*, total: int, limit: int, offset: int, item_count: int) -> Pagination:
+    return Pagination(
+        limit=limit,
+        offset=offset,
+        total=total,
+        items=item_count,
+        has_more=offset + item_count < total,
+    )
+
+
+@router.get("/communications", response_model=ListResponse[CommunicationListItem])
+async def list_org_scoped_communications(
+    session: SessionDep,
+    current_user=Depends(require_role(*PM_LIST_ROLES)),
+    status: CommunicationStatus | None = Query(default=None),
+    project_id: UUID | None = Query(default=None),
+    limit: int = Query(default=COMMUNICATIONS_LIST_DEFAULT_LIMIT, ge=1, le=COMMUNICATIONS_LIST_MAX_LIMIT),
+    offset: int = Query(default=0, ge=0),
+) -> ListResponse[CommunicationListItem]:
+    """PM inbox: lightweight org-scoped communications list (no bodies).
+
+    Clients must use project-scoped `/projects/{id}/communications` (sent only)
+    or the client portal — they cannot call this endpoint.
+    """
+    started = perf_counter()
+    page = await list_org_communications(
+        session,
+        current_user,
+        status=status,
+        project_id=project_id,
+        limit=limit,
+        offset=offset,
+    )
+    serialization_started = perf_counter()
+    payload = ListResponse(
+        data=page.items,
+        pagination=_list_pagination(
+            total=page.total,
+            limit=page.limit,
+            offset=page.offset,
+            item_count=len(page.items),
+        ),
+    )
+    serialization_ms = (perf_counter() - serialization_started) * 1000
+    total_ms = (perf_counter() - started) * 1000
+    logger.info(
+        "communications_list_timing route=GET /communications role=%s org_id=%s "
+        "status_filter=%s project_filter=%s row_count=%s db_ms=%.1f "
+        "serialization_ms=%.1f total_ms=%.1f",
+        current_user.role.value,
+        current_user.org_id,
+        status.value if status is not None else None,
+        project_id,
+        len(page.items),
+        page.db_ms,
+        serialization_ms,
+        total_ms,
+    )
+    return payload
 
 
 @router.get("/projects/{project_id}/communications", response_model=ListResponse[CommunicationRead])
@@ -52,11 +126,28 @@ async def list_communications(
     project_id: UUID,
     session: SessionDep,
     current_user: UserDep,
+    status: CommunicationStatus | None = Query(
+        default=None,
+        description="Ignored for clients; clients always receive sent-only rows.",
+    ),
 ) -> ListResponse[CommunicationRead]:
+    """Project-scoped communications list.
+
+    Clients always receive `sent` only. A client-supplied status other than `sent`
+    is rejected so drafts/approved-unsent cannot be requested.
+    """
     project = await get_visible_project(session, project_id, current_user)
     query = select(ClientCommunication).where(ClientCommunication.project_id == project.id)
     if current_user.role == AppRole.CLIENT:
+        if status is not None and status != CommunicationStatus.SENT:
+            raise ApiError(
+                400,
+                "VALIDATION_ERROR",
+                "Clients can only list sent communications.",
+            )
         query = query.where(ClientCommunication.status == CommunicationStatus.SENT)
+    elif status is not None:
+        query = query.where(ClientCommunication.status == status)
     rows = list(
         (
             await session.execute(
@@ -67,22 +158,60 @@ async def list_communications(
             )
         ).scalars()
     )
+    include_provenance = current_user.role != AppRole.CLIENT
     evidence_by_communication = await _evidence_links_by_communication_id(
         session,
         [row.id for row in rows],
-        include_provenance=current_user.role != AppRole.CLIENT,
+        include_provenance=include_provenance,
     )
     return ListResponse(
         data=[
             _communication_read_with_links(
                 row,
                 evidence_by_communication.get(row.id, []),
-                include_provenance=current_user.role != AppRole.CLIENT,
+                include_provenance=include_provenance,
             )
             for row in rows
         ],
         pagination=Pagination(limit=50),
     )
+
+
+@router.get("/client/communications", response_model=ListResponse[CommunicationListItem])
+async def list_client_archive_communications(
+    session: SessionDep,
+    current_user=Depends(require_role(AppRole.CLIENT)),
+    limit: int = Query(default=COMMUNICATIONS_LIST_DEFAULT_LIMIT, ge=1, le=COMMUNICATIONS_LIST_MAX_LIMIT),
+    offset: int = Query(default=0, ge=0),
+) -> ListResponse[CommunicationListItem]:
+    """Client published archive: org-scoped sent communications only (no bodies)."""
+    started = perf_counter()
+    page = await list_client_sent_communications(
+        session,
+        current_user,
+        limit=limit,
+        offset=offset,
+    )
+    payload = ListResponse(
+        data=page.items,
+        pagination=_list_pagination(
+            total=page.total,
+            limit=page.limit,
+            offset=page.offset,
+            item_count=len(page.items),
+        ),
+    )
+    total_ms = (perf_counter() - started) * 1000
+    logger.info(
+        "client_communications_list_timing route=GET /client/communications role=%s org_id=%s "
+        "row_count=%s db_ms=%.1f total_ms=%.1f",
+        current_user.role.value,
+        current_user.org_id,
+        len(page.items),
+        page.db_ms,
+        total_ms,
+    )
+    return payload
 
 
 @router.post("/projects/{project_id}/communications/draft", response_model=DataResponse[CommunicationRead])
@@ -96,6 +225,7 @@ async def draft_communication(
     from app.agents.client_intelligence.evidence_pack import build_client_evidence_pack
     from app.services.evidence import ERROR_EVIDENCE_PROVENANCE_UNMATCHED
 
+    started = perf_counter()
     project = await get_visible_project(session, project_id, current_user)
 
     # Fail closed: new CI drafts require a governed pack fingerprint.
@@ -225,14 +355,19 @@ async def draft_communication(
         for alert in drift_alerts:
             evidence.append(_from_pack_ref("risk_alerts", alert.id))
 
-    body = await generate_comms_draft_body(
+    generated = await generate_comms_draft_body(
         project,
         latest_throughput,
         payload.comm_type,
         quality_summary=quality_summary,
         quality_snaps=quality_snaps,
         drift_alerts=drift_alerts,
+        instructions=payload.instructions,
     )
+    if isinstance(generated, tuple):
+        body, generation_mode, generation_warning, llm_ms = generated
+    else:
+        body, generation_mode, generation_warning, llm_ms = generated, "ai", None, 0.0
     try:
         communication = await create_draft(
             session,
@@ -242,15 +377,32 @@ async def draft_communication(
             payload.comm_type,
             evidence,
             evidence_source_fingerprint=pack.source_fingerprint,
+            generation_mode=generation_mode,
+            generation_warning=generation_warning,
         )
         await session.commit()
     except Exception:
         await session.rollback()
         raise
     await session.refresh(communication)
-    return DataResponse(
-        data=await _communication_read(session, communication, current_user)
+    data = await _communication_read(session, communication, current_user)
+    # Ensure response reflects generation metadata even if ORM refresh races.
+    data.generation_mode = generation_mode
+    data.generation_warning = generation_warning
+    logger.info(
+        "communications_draft_timing route=POST /projects/{id}/communications/draft "
+        "role=%s org_id=%s project_id=%s comm_type=%s generation_mode=%s "
+        "evidence_link_count=%s llm_ms=%.1f total_ms=%.1f",
+        current_user.role.value,
+        current_user.org_id,
+        project_id,
+        payload.comm_type.value,
+        generation_mode,
+        len(evidence),
+        llm_ms,
+        (perf_counter() - started) * 1000,
     )
+    return DataResponse(data=data)
 
 
 @router.get("/communications/{communication_id}", response_model=DataResponse[CommunicationRead])
@@ -260,6 +412,26 @@ async def get_communication(
     current_user: UserDep,
 ) -> DataResponse[CommunicationRead]:
     communication = await get_visible_communication(session, communication_id, current_user)
+    return DataResponse(data=await _communication_read(session, communication, current_user))
+
+
+@router.patch("/communications/{communication_id}", response_model=DataResponse[CommunicationRead])
+async def update_communication(
+    communication_id: UUID,
+    payload: CommunicationContentUpdate,
+    session: SessionDep,
+    current_user=_MutatorDep,
+) -> DataResponse[CommunicationRead]:
+    """Save subject/body edits without changing lifecycle status (draft | in_review)."""
+    communication = await get_visible_communication(session, communication_id, current_user)
+    communication = await update_communication_content(
+        session,
+        communication,
+        subject=payload.subject,
+        body=payload.body,
+    )
+    await session.commit()
+    await session.refresh(communication)
     return DataResponse(data=await _communication_read(session, communication, current_user))
 
 
@@ -287,6 +459,7 @@ async def review_communication(
     session: SessionDep,
     current_user=_MutatorDep,
 ) -> DataResponse[CommunicationRead]:
+    """Submit content for review (draft → in_review)."""
     communication = await get_visible_communication(session, communication_id, current_user)
     communication = await move_to_review(session, communication, payload, current_user)
     await session.commit()
@@ -434,9 +607,14 @@ def _communication_read_with_links(
     data.evidence_provenance_complete = complete
     data.evidence_provenance_state = state
     if not include_provenance:
+        # Clients do not receive internal integrity or generation diagnostics.
         data.evidence_source_fingerprint = None
         data.evidence_provenance_complete = None
         data.evidence_provenance_state = None
+        data.generation_mode = None
+        data.generation_warning = None
+        if data.body_approved and data.body_approved.strip():
+            data.body_draft = data.body_approved
     return data
 
 
@@ -446,7 +624,7 @@ async def _communication_read(
     current_user: UserDep | None = None,
 ) -> CommunicationRead:
     include_provenance = True
-    if current_user is not None and current_user.role == AppRole.CLIENT:
+    if current_user is not None and getattr(current_user, "role", None) == AppRole.CLIENT:
         include_provenance = False
     grouped = await _evidence_links_by_communication_id(
         session,

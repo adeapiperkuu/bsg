@@ -1,4 +1,5 @@
 import { currentAuthGeneration, notifySessionInvalidated } from "@/lib/auth-session";
+import type { DeliveryTrafficLight } from "@/lib/delivery-traffic-light";
 import type {
   AppRole,
   AuthSession,
@@ -32,6 +33,7 @@ import type {
   KnowledgeLibraryHealthApi,
   KnowledgeRelatedKnowledgeApi,
   KnowledgeRetrievalSettingsApi,
+  KnowledgeSuggestionApi,
   KnowledgeVersionCompareApi,
 } from "@/types/knowledge";
 import type {
@@ -40,6 +42,12 @@ import type {
   DeliveryChatRequest,
   DeliveryChatSource,
 } from "@/types/delivery-chat";
+import type {
+  CommunicationDetail,
+  CommunicationListItem,
+  ListCommunicationsParams,
+  ListCommunicationsResult,
+} from "@/types/communications";
 import type {
   ClientCommunicationDraft,
   ClientIntelligenceOverview,
@@ -350,6 +358,7 @@ export type ProjectStatus = "active" | "ramping" | "paused" | "completed" | "can
 export type ProjectRead = {
   id: string;
   org_id: string;
+  program_id: string | null;
   name: string;
   description: string | null;
   vertical: string;
@@ -371,6 +380,7 @@ export type ProjectCreatePayload = {
   target_end_date: string;
   daily_target_units?: number | null;
   org_id?: string | null;
+  program_id?: string | null;
 };
 
 export type ProjectUpdatePayload = {
@@ -380,6 +390,28 @@ export type ProjectUpdatePayload = {
   target_end_date?: string;
   actual_end_date?: string | null;
   daily_target_units?: number | null;
+  program_id?: string | null;
+};
+
+export type ProgramRead = {
+  id: string;
+  org_id: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+  scope_count: number;
+};
+
+export type ProgramCreatePayload = {
+  name: string;
+  description?: string | null;
+  org_id?: string | null;
+};
+
+export type ProgramUpdatePayload = {
+  name?: string;
+  description?: string | null;
 };
 
 export async function listProjects(): Promise<ProjectRead[]> {
@@ -582,6 +614,30 @@ export async function createProject(payload: ProjectCreatePayload): Promise<Proj
   return body.data;
 }
 
+export async function listPrograms(): Promise<ProgramRead[]> {
+  const body = await apiFetch<{ data: ProgramRead[] }>("/programs?limit=100");
+  return body.data;
+}
+
+export async function createProgram(payload: ProgramCreatePayload): Promise<ProgramRead> {
+  const body = await apiFetch<{ data: ProgramRead }>("/programs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
+export async function updateProgram(
+  programId: string,
+  payload: ProgramUpdatePayload,
+): Promise<ProgramRead> {
+  const body = await apiFetch<{ data: ProgramRead }>(`/programs/${programId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+  return body.data;
+}
+
 export async function updateProject(
   projectId: string,
   payload: ProjectUpdatePayload,
@@ -593,14 +649,164 @@ export async function updateProject(
   return body.data;
 }
 
+export type { ListCommunicationsParams, ListCommunicationsResult };
+
+export async function listCommunications(
+  params: ListCommunicationsParams = {},
+): Promise<ListCommunicationsResult> {
+  const qs = new URLSearchParams();
+  if (params.status) qs.set("status", params.status);
+  if (params.project_id) qs.set("project_id", params.project_id);
+  qs.set("limit", String(params.limit ?? 30));
+  qs.set("offset", String(params.offset ?? 0));
+  const query = qs.toString();
+  const body = await apiFetch<{
+    data: CommunicationListItem[];
+    pagination: ListCommunicationsResult["pagination"];
+  }>(`/communications?${query}`);
+  return {
+    data: body.data,
+    pagination: body.pagination ?? {
+      limit: params.limit ?? 30,
+      offset: params.offset ?? 0,
+      total: body.data.length,
+      items: body.data.length,
+      has_more: false,
+    },
+  };
+}
+
+/** Client archive: sent-only org list (`GET /client/communications`). No status filter accepted. */
+export async function listClientCommunications(
+  params: { limit?: number; offset?: number } = {},
+): Promise<ListCommunicationsResult> {
+  const qs = new URLSearchParams();
+  qs.set("limit", String(params.limit ?? 30));
+  qs.set("offset", String(params.offset ?? 0));
+  const body = await apiFetch<{
+    data: CommunicationListItem[];
+    pagination: ListCommunicationsResult["pagination"];
+  }>(`/client/communications?${qs.toString()}`);
+  return {
+    data: body.data,
+    pagination: body.pagination ?? {
+      limit: params.limit ?? 30,
+      offset: params.offset ?? 0,
+      total: body.data.length,
+      items: body.data.length,
+      has_more: false,
+    },
+  };
+}
+
+export async function getCommunication(communicationId: string): Promise<CommunicationDetail> {
+  const body = await apiFetch<{ data: CommunicationDetail }>(
+    `/communications/${communicationId}`,
+  );
+  return body.data;
+}
+
+/** Save subject/body without status change (`PATCH /communications/{id}`). */
+export async function updateCommunication(
+  communicationId: string,
+  payload: { subject?: string; body?: string },
+): Promise<CommunicationDetail> {
+  const body = await apiFetch<{ data: CommunicationDetail }>(
+    `/communications/${communicationId}`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+  return body.data;
+}
+
+/** Submit for review (`PATCH /communications/{id}/review`). */
+export async function reviewCommunication(
+  communicationId: string,
+  payload: { body_approved: string; status?: string },
+): Promise<CommunicationDetail> {
+  const body = await apiFetch<{ data: CommunicationDetail }>(
+    `/communications/${communicationId}/review`,
+    { method: "PATCH", body: JSON.stringify(payload) },
+  );
+  return body.data;
+}
+
+/** Approve without sending (`POST /communications/{id}/approve`). */
+export async function approveCommunication(
+  communicationId: string,
+  payload?: { body_approved?: string | null },
+): Promise<CommunicationDetail> {
+  const body = await apiFetch<{ data: CommunicationDetail }>(
+    `/communications/${communicationId}/approve`,
+    { method: "POST", body: JSON.stringify(payload ?? {}) },
+  );
+  return body.data;
+}
+
+/** Reject in_review (`POST /communications/{id}/reject`). Backend requires a rejection reason. */
+export async function rejectCommunication(
+  communicationId: string,
+  rejectionReason = "Rejected during human review.",
+): Promise<CommunicationDetail> {
+  const body = await apiFetch<{ data: CommunicationDetail }>(
+    `/communications/${communicationId}/reject`,
+    { method: "POST", body: JSON.stringify({ rejection_reason: rejectionReason }) },
+  );
+  return body.data;
+}
+
+/** Publish approved report to clients (`POST /communications/{id}/send`). */
+export async function sendCommunication(communicationId: string): Promise<CommunicationDetail> {
+  const body = await apiFetch<{ data: CommunicationDetail }>(
+    `/communications/${communicationId}/send`,
+    { method: "POST" },
+  );
+  return body.data;
+}
+
+/** Synchronous AI draft: one POST creates, persists, and returns full CommunicationDetail. */
+export async function createCommunicationDraft(
+  projectId: string,
+  payload: {
+    comm_type: string;
+    subject: string;
+    instructions?: string | null;
+  },
+): Promise<CommunicationDetail> {
+  const body = await apiFetch<{ data: CommunicationDetail }>(
+    `/projects/${projectId}/communications/draft`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+  return body.data;
+}
+
+export type DeliveryBottleneckSeverity = "low" | "medium" | "high" | "critical";
+
+export type DeliveryStructuredSummary = {
+  status: DeliveryTrafficLight;
+  headline: string;
+  key_facts: string[];
+  risks: string[];
+  delivery_changes: string[];
+  bottleneck_summary: {
+    active_count: number;
+    highest_severity: DeliveryBottleneckSeverity | null;
+  };
+  data_quality: string[];
+  generated_at: string;
+};
+
 export type DeliveryDashboardResponse = {
   overview: Record<string, unknown>;
   milestones: Array<Record<string, unknown>>;
   confidence: number;
   risks: Array<Record<string, unknown>>;
   bottlenecks: Array<Record<string, unknown>>;
-  traffic_light: "green" | "yellow" | "red";
+  traffic_light: DeliveryTrafficLight;
   daily_summary: string | null;
+  /** Deterministic facts; additive Phase 3 field. Absent on legacy fixtures only. */
+  structured_summary?: DeliveryStructuredSummary | null;
+  /** Phase 15.4 grounded morning briefing. Absent on portfolio / client payloads. */
+  operational_briefing?: OperationalBriefing | null;
 };
 
 export async function fetchDeliveryDashboard(
@@ -688,6 +894,259 @@ export async function listProjectDeliveryConfidence(
 ): Promise<DeliveryConfidencePoint[]> {
   const body = await apiFetch<{ data: DeliveryConfidencePoint[] }>(
     `/projects/${projectId}/delivery-confidence?limit=100`,
+  );
+  return body.data;
+}
+
+export type RootCauseFactorRead = {
+  factor: string;
+  label: string;
+  impact_percent: number;
+  impact_points: number;
+  severity: "low" | "medium" | "high" | "critical";
+  explanation: string;
+  evidence_json?: Record<string, unknown> | null;
+};
+
+export type MainContributorRead = {
+  factor: string;
+  label: string;
+  impact_percent: number;
+};
+
+export type RootCauseSnapshotRead = {
+  id: string;
+  project_id: string;
+  org_id: string;
+  snapshot_date: string;
+  overall_confidence: number;
+  confidence_loss: number;
+  model_version: string;
+  generated_at: string | null;
+  factors: RootCauseFactorRead[];
+  main_contributors: MainContributorRead[];
+};
+
+export type ProjectRootCausesResponse = {
+  project_id: string;
+  as_of: string;
+  latest: RootCauseSnapshotRead | null;
+  history: RootCauseSnapshotRead[];
+  root_cause_summary: Record<string, unknown> | null;
+};
+
+export type RootCauseTrendFactorRead = {
+  factor: string;
+  label: string;
+  today: number | null;
+  last_week: number | null;
+  last_month: number | null;
+  trend_direction: "up" | "down" | "flat" | "insufficient_data";
+};
+
+export type RootCauseTrendsResponse = {
+  as_of: string;
+  project_id: string | null;
+  org_id: string | null;
+  factors: RootCauseTrendFactorRead[];
+};
+
+export async function fetchProjectRootCauses(
+  projectId: string,
+  params: { as_of?: string; history_days?: number } = {},
+): Promise<ProjectRootCausesResponse> {
+  const qs = new URLSearchParams();
+  if (params.as_of) qs.set("as_of", params.as_of);
+  if (params.history_days != null) qs.set("history_days", String(params.history_days));
+  const query = qs.toString();
+  const body = await apiFetch<{ data: ProjectRootCausesResponse }>(
+    `/delivery/projects/${projectId}/root-causes${query ? `?${query}` : ""}`,
+  );
+  return body.data;
+}
+
+export async function fetchRootCauseTrends(
+  params: { project_id?: string; org_id?: string } = {},
+): Promise<RootCauseTrendsResponse> {
+  const qs = new URLSearchParams();
+  if (params.project_id) qs.set("project_id", params.project_id);
+  if (params.org_id) qs.set("org_id", params.org_id);
+  const query = qs.toString();
+  const body = await apiFetch<{ data: RootCauseTrendsResponse }>(
+    `/delivery/root-causes/trends${query ? `?${query}` : ""}`,
+  );
+  return body.data;
+}
+
+export type OperationalBriefing = {
+  as_of: string;
+  traffic_light: DeliveryTrafficLight;
+  headline: string;
+  overnight_changes: string[];
+  confidence_movement: {
+    current: number;
+    previous: number | null;
+    delta: number | null;
+    direction: "up" | "down" | "flat" | "insufficient_data";
+    drivers: string[];
+  };
+  new_risks: string[];
+  top_priorities: string[];
+  milestones_due_soon: string[];
+  recommended_pm_actions: Array<{
+    rank: number;
+    title: string;
+    urgency: string;
+    estimated_impact_points: number;
+    due_date: string;
+    rationale: string;
+    root_cause_factor: string | null;
+  }>;
+  knowledge_evidence?: Array<{
+    document_id: string;
+    chunk_id?: string | null;
+    title: string;
+    source_type?: string;
+    excerpt?: string;
+    relevance_score?: number;
+  }>;
+  root_cause_summary: Record<string, unknown> | null;
+  narrative: string | null;
+  ai_generated: boolean;
+  model_version: string;
+  generated_at: string;
+};
+
+export async function fetchProjectOperationalBriefing(
+  projectId: string,
+  params: { with_ai?: boolean; as_of?: string } = {},
+): Promise<OperationalBriefing> {
+  const qs = new URLSearchParams();
+  if (params.with_ai != null) qs.set("with_ai", String(params.with_ai));
+  if (params.as_of) qs.set("as_of", params.as_of);
+  const query = qs.toString();
+  const body = await apiFetch<{ data: OperationalBriefing }>(
+    `/delivery/projects/${projectId}/operational-briefing${query ? `?${query}` : ""}`,
+  );
+  return body.data;
+}
+
+export async function generateProjectOperationalBriefing(
+  projectId: string,
+  payload: { with_ai?: boolean } = {},
+): Promise<OperationalBriefing> {
+  const body = await apiFetch<{ data: OperationalBriefing }>(
+    `/delivery/projects/${projectId}/operational-briefing/generate`,
+    { method: "POST", body: JSON.stringify({ with_ai: payload.with_ai ?? true }) },
+  );
+  return body.data;
+}
+
+export type KnowledgeEvidenceCitation = {
+  document_id: string;
+  chunk_id?: string | null;
+  title: string;
+  source_type?: string;
+  folder?: string | null;
+  section_title?: string | null;
+  page?: string | null;
+  version?: unknown;
+  relevance_score?: number;
+  excerpt?: string;
+  visibility?: string | null;
+};
+
+export type KnowledgeEvidenceResponse = {
+  project_id: string | null;
+  project_name: string | null;
+  query_text: string | null;
+  citations: KnowledgeEvidenceCitation[];
+  enabled: boolean;
+  empty_reason: string | null;
+};
+
+export async function fetchProjectKnowledgeEvidence(
+  projectId: string,
+  params: { focus?: string; max_sources?: number } = {},
+): Promise<KnowledgeEvidenceResponse> {
+  const qs = new URLSearchParams();
+  if (params.focus) qs.set("focus", params.focus);
+  if (params.max_sources != null) qs.set("max_sources", String(params.max_sources));
+  const query = qs.toString();
+  const body = await apiFetch<{ data: KnowledgeEvidenceResponse }>(
+    `/delivery/projects/${projectId}/knowledge-evidence${query ? `?${query}` : ""}`,
+  );
+  return body.data;
+}
+
+export type PmDailyActionRead = {
+  id: string;
+  project_id: string;
+  org_id: string;
+  plan_date: string;
+  rank: number;
+  title: string;
+  description: string | null;
+  deterministic_rationale: string;
+  ai_rationale: string | null;
+  urgency: "low" | "medium" | "high" | "critical";
+  estimated_impact_points: number;
+  due_date: string;
+  status: "todo" | "done" | "skipped" | "deferred";
+  source_type: "root_cause_factor" | "risk_alert" | "bottleneck" | "mitigation" | "milestone";
+  source_key: string;
+  root_cause_factor: string | null;
+  mitigation_recommendation_id: string | null;
+  evidence_json: Record<string, unknown>;
+  completed_at: string | null;
+  completed_by: string | null;
+  completion_note: string | null;
+  model_version: string | null;
+  generated_at: string | null;
+};
+
+export type PmDailyActionsResponse = {
+  project_id: string;
+  plan_date: string;
+  todays_focus: PmDailyActionRead[];
+  all_today: PmDailyActionRead[];
+  history: PmDailyActionRead[];
+  generated_at: string | null;
+};
+
+export async function fetchProjectDailyActions(
+  projectId: string,
+  params: { plan_date?: string; include_history?: boolean; history_days?: number } = {},
+): Promise<PmDailyActionsResponse> {
+  const qs = new URLSearchParams();
+  if (params.plan_date) qs.set("plan_date", params.plan_date);
+  if (params.include_history != null) qs.set("include_history", String(params.include_history));
+  if (params.history_days != null) qs.set("history_days", String(params.history_days));
+  const query = qs.toString();
+  const body = await apiFetch<{ data: PmDailyActionsResponse }>(
+    `/delivery/projects/${projectId}/daily-actions${query ? `?${query}` : ""}`,
+  );
+  return body.data;
+}
+
+export async function generateProjectDailyActions(
+  projectId: string,
+  payload: { plan_date?: string; with_ai_rationale?: boolean; limit?: number } = {},
+): Promise<PmDailyActionsResponse> {
+  const body = await apiFetch<{ data: PmDailyActionsResponse }>(
+    `/delivery/projects/${projectId}/daily-actions/generate`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+  return body.data;
+}
+
+export async function completeProjectDailyAction(
+  actionId: string,
+  payload: { status?: "done" | "skipped" | "deferred"; note?: string } = {},
+): Promise<PmDailyActionRead> {
+  const body = await apiFetch<{ data: PmDailyActionRead }>(
+    `/delivery/daily-actions/${actionId}/complete`,
+    { method: "POST", body: JSON.stringify(payload) },
   );
   return body.data;
 }
@@ -801,6 +1260,8 @@ export type AdminProject = {
   vertical: string;
   start_date: string;
   target_end_date: string;
+  program_id: string | null;
+  program_name: string | null;
   latest_iso_year: number | null;
   latest_iso_week: number | null;
   active_drift_alerts: number;
@@ -1104,7 +1565,7 @@ function isClientPortalPath(path: string): boolean {
 }
 
 export function canAccessPath(role: AppRole, path: string): boolean {
-  if (path === "/login" || path === "/unauthorized" || path === "/settings") return true;
+  if (path === "/login" || path === "/unauthorized") return true;
   if (path === "/client-intelligence") {
     return role === "delivery_manager" || role === "bsg_leadership" || role === "super_admin";
   }

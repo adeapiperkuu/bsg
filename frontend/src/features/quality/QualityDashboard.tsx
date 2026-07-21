@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
+import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import { KpiCard, SectionGroupHeading } from "@/components/bsg/widgets";
 import { resolveRiskAlert, type ProjectRead } from "@/lib/api";
 import { queryKeys } from "@/lib/queries/keys";
@@ -13,7 +14,6 @@ import { ErrorBreakdownChart } from "./ErrorBreakdownChart";
 import { fmtIaa, fmtPct, kpiTone } from "./format";
 import { NeedsAttentionBanner } from "./NeedsAttentionBanner";
 import { QualityNarrativeCard } from "./QualityNarrativeCard";
-import { QualityPageSkeleton } from "./QualityPageSkeleton";
 import { QualityToolbar } from "./QualityToolbar";
 import { QualityTrendChart } from "./QualityTrendChart";
 import { ReviewerScorecardsCard } from "./ReviewerScorecardsCard";
@@ -74,6 +74,8 @@ export function QualityDashboard({
     }
   };
 
+  const pageLoading = loadingProjects || (Boolean(activeProjectId) && isLoading);
+
   return (
     <div className="space-y-5">
       <QualityToolbar
@@ -84,14 +86,15 @@ export function QualityDashboard({
         disabled={loadingProjects || projects.length === 0}
       />
 
-      {isLoading && <QualityPageSkeleton />}
-      {isError && (
+      {pageLoading ? (
+        <PageLoadingScreen />
+      ) : isError ? (
         <p className="text-sm text-[color:var(--danger)]">
           {error instanceof Error ? error.message : "Failed to load quality data."}
         </p>
-      )}
+      ) : null}
 
-      {dashboard && (
+      {dashboard && !pageLoading && (
         <div
           className={cn(
             "space-y-5 transition-opacity",

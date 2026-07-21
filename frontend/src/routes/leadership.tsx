@@ -13,6 +13,7 @@ import {
   Legend,
 } from "recharts";
 import { Card, SectionHeader, KpiCard, AiBadge } from "@/components/bsg/widgets";
+import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import { healthDistribution } from "@/lib/bsg/data";
 import { fetchQualityPortfolio } from "@/lib/api";
 
@@ -48,6 +49,10 @@ function Leadership() {
     queryFn: fetchQualityPortfolio,
   });
 
+  if (qualityLoading) {
+    return <PageLoadingScreen />;
+  }
+
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -64,7 +69,7 @@ function Leadership() {
       <Card>
         <SectionHeader
           title="Quality Portfolio"
-          sub={qualityLoading ? "Loading…" : `Week ${qualityPortfolio?.portfolio_week ?? "—"} · live from Quality Intelligence`}
+          sub={`Week ${qualityPortfolio?.portfolio_week ?? "—"} · live from Quality Intelligence`}
         />
         {qualityPortfolio ? (
           <>

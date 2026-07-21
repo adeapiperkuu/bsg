@@ -84,6 +84,10 @@ python ../scripts/seed_dev_users.py
 
 The login page shows these accounts in development mode only.
 
+`client@bsg.dev` is assigned to every Northwind project so sent reports appear on
+`/client/reports` (RLS requires an active `project_assignments` row). Re-run the
+seed script after loading demo projects if the client archive looks empty.
+
 Disable public sign-up in the Supabase dashboard (Authentication → Providers).
 
 ## RLS note

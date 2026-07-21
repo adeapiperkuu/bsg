@@ -1,6 +1,5 @@
 import {
   Activity,
-  BarChart3,
   BookOpen,
   Bot,
   Briefcase,
@@ -10,7 +9,6 @@ import {
   FolderKanban,
   GitBranch,
   LayoutDashboard,
-  Settings,
   Settings2,
   ShieldCheck,
   Users,
@@ -44,17 +42,12 @@ const internalNav: NavSection[] = [
     items: [
       { to: "/knowledge", label: "Knowledge Agent", icon: BookOpen },
       { to: "/projects", label: "Projects", icon: FolderKanban },
-      { to: "/teams", label: "Teams", icon: Users },
     ],
   },
   {
     section: "Reporting",
-    items: [
-      { to: "/reports", label: "Reports", icon: FileText },
-      { to: "/analytics", label: "Analytics", icon: BarChart3 },
-    ],
+    items: [{ to: "/reports", label: "Reports", icon: FileText }],
   },
-  { section: "System", items: [{ to: "/settings", label: "Settings", icon: Settings }] },
 ];
 
 const clientNav: NavSection[] = [

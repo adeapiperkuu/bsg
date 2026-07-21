@@ -7,6 +7,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.agents.delivery.contracts import DeliveryTrafficLight
+from app.agents.delivery.schemas.operational_briefing import OperationalBriefingSchema
+
+BottleneckSeverity = Literal["low", "medium", "high", "critical"]
+
 
 class MilestoneSchema(BaseModel):
     """Matches the payload shape produced by dashboard_service._milestone_payload."""
@@ -52,8 +57,29 @@ class BottleneckSchema(BaseModel):
     title: str
     detail: str
     status: str
+    severity: BottleneckSeverity | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class BottleneckSummarySchema(BaseModel):
+    """Client-safe aggregate bottleneck facts for structured_summary."""
+
+    active_count: int
+    highest_severity: BottleneckSeverity | None = None
+
+
+class StructuredSummarySchema(BaseModel):
+    """Deterministic delivery facts. Never includes team, headcount, evidence, or audit fields."""
+
+    status: DeliveryTrafficLight
+    headline: str
+    key_facts: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    delivery_changes: list[str] = Field(default_factory=list)
+    bottleneck_summary: BottleneckSummarySchema
+    data_quality: list[str] = Field(default_factory=list)
+    generated_at: datetime
 
 
 class ProjectOverviewSchema(BaseModel):
@@ -123,8 +149,10 @@ class DashboardResponse(BaseModel):
     confidence: float
     risks: list[RiskSchema]
     bottlenecks: list[BottleneckSchema]
-    traffic_light: Literal["green", "yellow", "red"]
+    traffic_light: DeliveryTrafficLight
     daily_summary: str | None = None
+    structured_summary: StructuredSummarySchema | None = None
+    operational_briefing: OperationalBriefingSchema | None = None
 
 
 class DeliveryPortfolioProject(BaseModel):

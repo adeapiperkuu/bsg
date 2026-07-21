@@ -2,15 +2,39 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import LimitQuery, SessionDep, UserDep
+from app.core.exceptions import ApiError
 from app.core.security import require_role
-from app.db.models import AppRole, Milestone, Project
+from app.db.models import AppRole, Milestone, Program, Project
 from app.schemas.common import DataResponse, ListResponse, Pagination
 from app.schemas.domain import MilestoneRead, ProjectCreate, ProjectRead, ProjectUpdate
 from app.services.scoping import get_visible_project, scoped_project_query
 
 router = APIRouter(tags=["projects"])
+
+
+async def _resolve_program_for_org(
+    session: AsyncSession,
+    *,
+    program_id: UUID | None,
+    org_id: UUID,
+) -> UUID | None:
+    if program_id is None:
+        return None
+    program = (
+        await session.execute(
+            select(Program).where(
+                Program.id == program_id,
+                Program.org_id == org_id,
+                Program.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if program is None:
+        raise ApiError(400, "VALIDATION_ERROR", "Selected project was not found in this organisation.")
+    return program.id
 
 
 @router.get("/projects", response_model=ListResponse[ProjectRead])
@@ -34,10 +58,14 @@ async def list_projects(session: SessionDep, current_user: UserDep, limit: Limit
 async def create_project(
     payload: ProjectCreate,
     session: SessionDep,
-    current_user = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
 ) -> DataResponse[ProjectRead]:
     org_id = payload.org_id if current_user.role == AppRole.SUPER_ADMIN and payload.org_id else current_user.org_id
-    project = Project(org_id=org_id, **payload.model_dump(exclude={"org_id"}))
+    data = payload.model_dump(exclude={"org_id"})
+    data["program_id"] = await _resolve_program_for_org(
+        session, program_id=payload.program_id, org_id=org_id
+    )
+    project = Project(org_id=org_id, **data)
     session.add(project)
     await session.commit()
     await session.refresh(project)
@@ -54,10 +82,15 @@ async def update_project(
     project_id: UUID,
     payload: ProjectUpdate,
     session: SessionDep,
-    current_user = Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
+    current_user=Depends(require_role(AppRole.DELIVERY_MANAGER, AppRole.SUPER_ADMIN)),
 ) -> DataResponse[ProjectRead]:
     project = await get_visible_project(session, project_id, current_user)
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    if "program_id" in data:
+        data["program_id"] = await _resolve_program_for_org(
+            session, program_id=data["program_id"], org_id=project.org_id
+        )
+    for key, value in data.items():
         setattr(project, key, value)
     await session.commit()
     await session.refresh(project)

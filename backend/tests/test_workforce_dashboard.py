@@ -169,7 +169,16 @@ async def test_get_project_workforce_dashboard_assembles_sections() -> None:
     )
     session = FakeSession(utilization=[snapshot])
 
+    async def _run_on_fake_session(_user, builder):
+        # The real _run_section opens a fresh pooled DB session per dashboard
+        # section; in unit tests every section must run on the FakeSession.
+        return await builder(session)
+
     with (
+        patch(
+            "app.services.workforce_dashboard._run_section",
+            new=_run_on_fake_session,
+        ),
         patch(
             "app.services.workforce_dashboard.get_project_workforce_summary",
             new=AsyncMock(return_value=summary),

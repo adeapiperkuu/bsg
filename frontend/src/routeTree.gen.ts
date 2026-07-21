@@ -11,8 +11,6 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WorkforceRouteImport } from './routes/workforce'
 import { Route as UnauthorizedRouteImport } from './routes/unauthorized'
-import { Route as TeamsRouteImport } from './routes/teams'
-import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as QualityRouteImport } from './routes/quality'
 import { Route as ProjectsRouteImport } from './routes/projects'
@@ -25,7 +23,6 @@ import { Route as DocumentsRouteImport } from './routes/documents'
 import { Route as DeliveryRouteImport } from './routes/delivery'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as ClientIntelligenceRouteImport } from './routes/client-intelligence'
-import { Route as AnalyticsRouteImport } from './routes/analytics'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ClientIndexRouteImport } from './routes/client.index'
@@ -46,16 +43,6 @@ const WorkforceRoute = WorkforceRouteImport.update({
 const UnauthorizedRoute = UnauthorizedRouteImport.update({
   id: '/unauthorized',
   path: '/unauthorized',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const TeamsRoute = TeamsRouteImport.update({
-  id: '/teams',
-  path: '/teams',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const SettingsRoute = SettingsRouteImport.update({
-  id: '/settings',
-  path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ReportsRoute = ReportsRouteImport.update({
@@ -118,11 +105,6 @@ const ClientIntelligenceRoute = ClientIntelligenceRouteImport.update({
   path: '/client-intelligence',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AnalyticsRoute = AnalyticsRouteImport.update({
-  id: '/analytics',
-  path: '/analytics',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const AdminRoute = AdminRouteImport.update({
   id: '/admin',
   path: '/admin',
@@ -182,7 +164,6 @@ const AdminAgentRunsRoute = AdminAgentRunsRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/admin': typeof AdminRouteWithChildren
-  '/analytics': typeof AnalyticsRoute
   '/client-intelligence': typeof ClientIntelligenceRoute
   '/dashboard': typeof DashboardRoute
   '/delivery': typeof DeliveryRoute
@@ -195,8 +176,6 @@ export interface FileRoutesByFullPath {
   '/projects': typeof ProjectsRoute
   '/quality': typeof QualityRoute
   '/reports': typeof ReportsRoute
-  '/settings': typeof SettingsRoute
-  '/teams': typeof TeamsRoute
   '/unauthorized': typeof UnauthorizedRoute
   '/workforce': typeof WorkforceRoute
   '/admin/agent-runs': typeof AdminAgentRunsRoute
@@ -211,7 +190,6 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/analytics': typeof AnalyticsRoute
   '/client-intelligence': typeof ClientIntelligenceRoute
   '/dashboard': typeof DashboardRoute
   '/delivery': typeof DeliveryRoute
@@ -224,8 +202,6 @@ export interface FileRoutesByTo {
   '/projects': typeof ProjectsRoute
   '/quality': typeof QualityRoute
   '/reports': typeof ReportsRoute
-  '/settings': typeof SettingsRoute
-  '/teams': typeof TeamsRoute
   '/unauthorized': typeof UnauthorizedRoute
   '/workforce': typeof WorkforceRoute
   '/admin/agent-runs': typeof AdminAgentRunsRoute
@@ -242,7 +218,6 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/admin': typeof AdminRouteWithChildren
-  '/analytics': typeof AnalyticsRoute
   '/client-intelligence': typeof ClientIntelligenceRoute
   '/dashboard': typeof DashboardRoute
   '/delivery': typeof DeliveryRoute
@@ -255,8 +230,6 @@ export interface FileRoutesById {
   '/projects': typeof ProjectsRoute
   '/quality': typeof QualityRoute
   '/reports': typeof ReportsRoute
-  '/settings': typeof SettingsRoute
-  '/teams': typeof TeamsRoute
   '/unauthorized': typeof UnauthorizedRoute
   '/workforce': typeof WorkforceRoute
   '/admin/agent-runs': typeof AdminAgentRunsRoute
@@ -274,7 +247,6 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/admin'
-    | '/analytics'
     | '/client-intelligence'
     | '/dashboard'
     | '/delivery'
@@ -287,8 +259,6 @@ export interface FileRouteTypes {
     | '/projects'
     | '/quality'
     | '/reports'
-    | '/settings'
-    | '/teams'
     | '/unauthorized'
     | '/workforce'
     | '/admin/agent-runs'
@@ -303,7 +273,6 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/analytics'
     | '/client-intelligence'
     | '/dashboard'
     | '/delivery'
@@ -316,8 +285,6 @@ export interface FileRouteTypes {
     | '/projects'
     | '/quality'
     | '/reports'
-    | '/settings'
-    | '/teams'
     | '/unauthorized'
     | '/workforce'
     | '/admin/agent-runs'
@@ -333,7 +300,6 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/admin'
-    | '/analytics'
     | '/client-intelligence'
     | '/dashboard'
     | '/delivery'
@@ -346,8 +312,6 @@ export interface FileRouteTypes {
     | '/projects'
     | '/quality'
     | '/reports'
-    | '/settings'
-    | '/teams'
     | '/unauthorized'
     | '/workforce'
     | '/admin/agent-runs'
@@ -364,7 +328,6 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdminRoute: typeof AdminRouteWithChildren
-  AnalyticsRoute: typeof AnalyticsRoute
   ClientIntelligenceRoute: typeof ClientIntelligenceRoute
   DashboardRoute: typeof DashboardRoute
   DeliveryRoute: typeof DeliveryRoute
@@ -377,8 +340,6 @@ export interface RootRouteChildren {
   ProjectsRoute: typeof ProjectsRoute
   QualityRoute: typeof QualityRoute
   ReportsRoute: typeof ReportsRoute
-  SettingsRoute: typeof SettingsRoute
-  TeamsRoute: typeof TeamsRoute
   UnauthorizedRoute: typeof UnauthorizedRoute
   WorkforceRoute: typeof WorkforceRoute
   ClientAskRoute: typeof ClientAskRoute
@@ -401,20 +362,6 @@ declare module '@tanstack/react-router' {
       path: '/unauthorized'
       fullPath: '/unauthorized'
       preLoaderRoute: typeof UnauthorizedRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/teams': {
-      id: '/teams'
-      path: '/teams'
-      fullPath: '/teams'
-      preLoaderRoute: typeof TeamsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/settings': {
-      id: '/settings'
-      path: '/settings'
-      fullPath: '/settings'
-      preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/reports': {
@@ -499,13 +446,6 @@ declare module '@tanstack/react-router' {
       path: '/client-intelligence'
       fullPath: '/client-intelligence'
       preLoaderRoute: typeof ClientIntelligenceRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/analytics': {
-      id: '/analytics'
-      path: '/analytics'
-      fullPath: '/analytics'
-      preLoaderRoute: typeof AnalyticsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/admin': {
@@ -609,7 +549,6 @@ const AdminRouteWithChildren = AdminRoute._addFileChildren(AdminRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdminRoute: AdminRouteWithChildren,
-  AnalyticsRoute: AnalyticsRoute,
   ClientIntelligenceRoute: ClientIntelligenceRoute,
   DashboardRoute: DashboardRoute,
   DeliveryRoute: DeliveryRoute,
@@ -622,8 +561,6 @@ const rootRouteChildren: RootRouteChildren = {
   ProjectsRoute: ProjectsRoute,
   QualityRoute: QualityRoute,
   ReportsRoute: ReportsRoute,
-  SettingsRoute: SettingsRoute,
-  TeamsRoute: TeamsRoute,
   UnauthorizedRoute: UnauthorizedRoute,
   WorkforceRoute: WorkforceRoute,
   ClientAskRoute: ClientAskRoute,

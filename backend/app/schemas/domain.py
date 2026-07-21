@@ -162,6 +162,7 @@ class MeRead(UserRead):
 class ProjectRead(ORMModel):
     id: UUID
     org_id: UUID
+    program_id: UUID | None = None
     name: str
     description: str | None
     vertical: str
@@ -183,6 +184,7 @@ class ProjectCreate(BaseModel):
     target_end_date: date
     daily_target_units: int | None = Field(default=None, ge=0)
     org_id: UUID | None = None
+    program_id: UUID | None = None
 
 
 class ProjectUpdate(BaseModel):
@@ -192,6 +194,28 @@ class ProjectUpdate(BaseModel):
     target_end_date: date | None = None
     actual_end_date: date | None = None
     daily_target_units: int | None = Field(default=None, ge=0)
+    program_id: UUID | None = None
+
+
+class ProgramRead(ORMModel):
+    id: UUID
+    org_id: UUID
+    name: str
+    description: str | None
+    created_at: datetime
+    updated_at: datetime
+    scope_count: int = 0
+
+
+class ProgramCreate(BaseModel):
+    name: str
+    description: str | None = None
+    org_id: UUID | None = None
+
+
+class ProgramUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
 
 
 class MilestoneRead(ORMModel):
@@ -822,8 +846,15 @@ class AgentQueryRead(ORMModel):
 
 class CommunicationDraftCreate(BaseModel):
     comm_type: CommunicationType
-    subject: str
-    instructions: str | None = None
+    subject: str = Field(min_length=1, max_length=500)
+    instructions: str | None = Field(default=None, max_length=2000)
+
+
+class CommunicationContentUpdate(BaseModel):
+    """Save edits without changing lifecycle status (draft | in_review only)."""
+
+    subject: str | None = Field(default=None, min_length=1, max_length=500)
+    body: str | None = Field(default=None, min_length=1)
 
 
 class CommunicationDraftEdit(BaseModel):
@@ -840,7 +871,10 @@ class CommunicationDraftEdit(BaseModel):
 
 
 class CommunicationReview(BaseModel):
+    """Submit (or re-save) content into review. Always lands in `in_review`."""
+
     body_approved: str = Field(min_length=1, max_length=50000)
+    status: CommunicationStatus = CommunicationStatus.IN_REVIEW
 
     @field_validator("body_approved")
     @classmethod
@@ -875,6 +909,25 @@ class CommunicationReject(BaseModel):
         return trimmed
 
 
+class CommunicationListItem(BaseModel):
+    """Lightweight org-scoped inbox row. Excludes bodies and full evidence."""
+
+    id: UUID
+    project_id: UUID
+    project_name: str
+    program_id: UUID | None = None
+    program_name: str | None = None
+    org_id: UUID
+    org_name: str
+    comm_type: CommunicationType
+    subject: str
+    status: CommunicationStatus
+    created_at: datetime
+    updated_at: datetime
+    sent_at: datetime | None = None
+    evidence_link_count: int = 0
+
+
 class CommunicationRead(ORMModel):
     id: UUID
     project_id: UUID
@@ -895,6 +948,8 @@ class CommunicationRead(ORMModel):
     created_at: datetime
     updated_at: datetime
     evidence_links: list[EvidenceLinkRead] = []
+    generation_mode: str | None = None
+    generation_warning: str | None = None
     # Internal-only integrity fields; Client responses omit fingerprints/state.
     evidence_source_fingerprint: str | None = None
     evidence_provenance_state: str | None = None
@@ -903,6 +958,7 @@ class CommunicationRead(ORMModel):
 
 class MetricConfigurationRead(ORMModel):
     id: UUID
+    org_id: UUID | None = None
     metric_key: str
     display_label: str
     is_client_visible: bool
@@ -912,11 +968,13 @@ class MetricConfigurationRead(ORMModel):
 
 
 class MetricConfigurationCreate(BaseModel):
+    org_id: UUID | None = None
     metric_key: str
     display_label: str
     is_client_visible: bool = False
     display_order: int = 0
     description: str | None = None
+    threshold_config: dict | None = None
 
 
 class MetricConfigurationUpdate(BaseModel):
@@ -1018,6 +1076,8 @@ class AdminProjectRead(BaseModel):
     vertical: str
     start_date: date
     target_end_date: date
+    program_id: UUID | None = None
+    program_name: str | None = None
     latest_iso_year: int | None = None
     latest_iso_week: int | None = None
     active_drift_alerts: int = 0

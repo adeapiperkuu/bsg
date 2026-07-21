@@ -1,0 +1,496 @@
+﻿diff --git a/backend/app/services/communications.py b/backend/app/services/communications.py
+index af85bae..03d4395 100644
+--- a/backend/app/services/communications.py
++++ b/backend/app/services/communications.py
+@@ -1,10 +1,12 @@
+-from datetime import datetime, timezone
+ import json
++from datetime import UTC, datetime
++from typing import Any
+ from uuid import UUID
+ 
+ from sqlalchemy import select
+ from sqlalchemy.ext.asyncio import AsyncSession
+ 
++from app.agents.delivery.audit.audit_logger import AuditLogger
+ from app.agents.quality_intelligence.comms_prompts import COMMS_SYSTEM_PROMPT
+ from app.core.config import get_settings
+ from app.core.exceptions import ApiError
+@@ -20,8 +22,18 @@ from app.db.models import (
+     RiskAlert,
+     ThroughputSnapshot,
+ )
+-from app.schemas.domain import CommunicationApprove, CommunicationReview, QualitySummaryRead
+-from app.services.evidence import EvidenceInput, require_evidence
++from app.schemas.domain import (
++    CommunicationApprove,
++    CommunicationDraftEdit,
++    CommunicationReject,
++    CommunicationReview,
++    QualitySummaryRead,
++)
++from app.services.evidence import (
++    EvidenceInput,
++    dedupe_evidence_inputs,
++    require_complete_evidence_provenance,
++)
+ from app.services.llm.client import LLMClient
+ 
+ COMMS_PLACEHOLDER_BODY = (
+@@ -29,6 +41,36 @@ COMMS_PLACEHOLDER_BODY = (
+     "This placeholder is evidence-backed and must be reviewed before sending."
+ )
+ 
++ERROR_INVALID_TRANSITION = "INVALID_COMMUNICATION_STATUS_TRANSITION"
++ERROR_NO_COMMUNICATION_CHANGES = "NO_COMMUNICATION_CHANGES"
++ERROR_COMMUNICATION_EVIDENCE_CHANGED = "COMMUNICATION_EVIDENCE_CHANGED"
++LIMITATION_LEGACY_EVIDENCE_FINGERPRINT_MISSING = "LEGACY_EVIDENCE_FINGERPRINT_MISSING"
++
++# action -> allowed current statuses
++_ALLOWED_TRANSITIONS: dict[str, frozenset[CommunicationStatus]] = {
++    "edit": frozenset({CommunicationStatus.DRAFT, CommunicationStatus.REJECTED}),
++    "submit_for_review": frozenset({CommunicationStatus.DRAFT}),
++    "approve": frozenset({CommunicationStatus.IN_REVIEW}),
++    "reject": frozenset({CommunicationStatus.IN_REVIEW}),
++    "send": frozenset({CommunicationStatus.APPROVED}),
++}
++
++_ACTION_TARGET_STATUS: dict[str, CommunicationStatus] = {
++    "edit": CommunicationStatus.DRAFT,
++    "submit_for_review": CommunicationStatus.IN_REVIEW,
++    "approve": CommunicationStatus.APPROVED,
++    "reject": CommunicationStatus.REJECTED,
++    "send": CommunicationStatus.SENT,
++}
++
++_AUDIT_EVENT_BY_ACTION: dict[str, str] = {
++    "edit": "client_communication.edited",
++    "submit_for_review": "client_communication.submitted_for_review",
++    "approve": "client_communication.approved",
++    "reject": "client_communication.rejected",
++    "send": "client_communication.sent",
++}
++
+ 
+ def build_comms_context(
+     throughput_snap: ThroughputSnapshot,
+@@ -79,7 +121,13 @@ def build_comms_context(
+         for alert in drift_alerts or []:
+             parts.append(
+                 json.dumps(
+-                    {"drift_alert": {"title": alert.title, "detail": alert.detail, "risk_tier": alert.risk_tier.value}},
++                    {
++                        "drift_alert": {
++                            "title": alert.title,
++                            "detail": alert.detail,
++                            "risk_tier": alert.risk_tier.value,
++                        }
++                    },
+                     default=str,
+                 )
+             )
+@@ -137,6 +185,58 @@ async def get_visible_communication(
+     return communication
+ 
+ 
++def _require_transition(
++    communication: ClientCommunication,
++    action: str,
++) -> CommunicationStatus:
++    allowed = _ALLOWED_TRANSITIONS.get(action)
++    if allowed is None:
++        raise ApiError(500, "INTERNAL_ERROR", "Unknown communication lifecycle action.")
++    if communication.status not in allowed:
++        raise ApiError(
++            409,
++            ERROR_INVALID_TRANSITION,
++            "Communication cannot perform this action from its current status.",
++            {
++                "communication_id": str(communication.id),
++                "current_status": communication.status.value,
++                "requested_action": action,
++            },
++        )
++    return _ACTION_TARGET_STATUS[action]
++
++
++async def _append_lifecycle_audit(
++    session: AsyncSession,
++    *,
++    communication: ClientCommunication,
++    actor_id: UUID,
++    action: str,
++    previous_status: CommunicationStatus,
++    new_status: CommunicationStatus,
++    changed_fields: list[str] | None = None,
++    rejection_reason_recorded: bool = False,
++) -> None:
++    payload: dict[str, Any] = {
++        "communication_id": str(communication.id),
++        "project_id": str(communication.project_id),
++        "actor_user_id": str(actor_id),
++        "previous_status": previous_status.value,
++        "new_status": new_status.value,
++        "action": action,
++    }
++    if changed_fields:
++        payload["changed_fields"] = changed_fields
++    if rejection_reason_recorded:
++        payload["rejection_reason_recorded"] = True
++    await AuditLogger(session).log(
++        event_type=_AUDIT_EVENT_BY_ACTION[action],
++        org_id=communication.org_id,
++        project_id=communication.project_id,
++        payload=payload,
++    )
++
++
+ async def create_draft(
+     session: AsyncSession,
+     project: Project,
+@@ -144,8 +244,36 @@ async def create_draft(
+     body_draft: str,
+     comm_type: str,
+     evidence: list[EvidenceInput],
++    *,
++    evidence_source_fingerprint: str,
+ ) -> ClientCommunication:
+-    require_evidence(evidence)
++    """Create a Client Intelligence draft with complete governed evidence provenance.
++
++    ``evidence_source_fingerprint`` is required for new drafts. Null fingerprints
++    exist only on genuine pre-migration legacy rows and must never be written here.
++    """
++    if (
++        len(evidence_source_fingerprint) != 64
++        or any(ch not in "0123456789abcdef" for ch in evidence_source_fingerprint)
++    ):
++        raise ApiError(
++            422,
++            "VALIDATION_ERROR",
++            "evidence_source_fingerprint must be a 64-character lowercase SHA-256 hex digest.",
++        )
++    deduped = dedupe_evidence_inputs(evidence)
++    require_complete_evidence_provenance(deduped)
++    for item in deduped:
++        if item.pack_source_fingerprint != evidence_source_fingerprint:
++            raise ApiError(
++                409,
++                "EVIDENCE_FINGERPRINT_MISMATCH",
++                "Evidence link pack fingerprint must match the communication fingerprint.",
++                {
++                    "source_table": item.source_table,
++                    "source_row_id": str(item.source_row_id),
++                },
++            )
+     communication = ClientCommunication(
+         project_id=project.id,
+         org_id=project.org_id,
+@@ -154,33 +282,173 @@ async def create_draft(
+         body_draft=body_draft,
+         status=CommunicationStatus.DRAFT,
+         drafted_by_agent="client_interaction_agent",
++        evidence_source_fingerprint=evidence_source_fingerprint,
+     )
+     session.add(communication)
+     await session.flush()
+-    for item in evidence:
++    for item in deduped:
+         session.add(
+             CommunicationEvidenceLink(
+                 communication_id=communication.id,
+                 source_table=item.source_table,
+                 source_row_id=item.source_row_id,
+                 description=item.description,
++                visibility=item.visibility,
++                observed_at=item.observed_at,
++                claim_keys=list(item.claim_keys or ()),
++                pack_source_fingerprint=item.pack_source_fingerprint,
+             )
+         )
+     return communication
+ 
+ 
++async def _current_evidence_fingerprint(
++    session: AsyncSession,
++    communication: ClientCommunication,
++    current_user: CurrentUser,
++) -> str:
++    from app.agents.client_intelligence.contracts import EvidenceVisibility
++    from app.agents.client_intelligence.evidence_pack import build_client_evidence_pack
++
++    pack = await build_client_evidence_pack(
++        session,
++        current_user,
++        communication.project_id,
++        visibility_mode=EvidenceVisibility.INTERNAL,
++    )
++    return pack.source_fingerprint
++
++
++async def _assert_evidence_fingerprint_for_lifecycle(
++    session: AsyncSession,
++    communication: ClientCommunication,
++    current_user: CurrentUser,
++    *,
++    action: str,
++) -> str | None:
++    """Compare stored pack fingerprint to current governed evidence.
++
++    Legacy rows without a fingerprint are disclosed (not fabricated) and allowed
++    to proceed. Changed fingerprints block Approve/Send.
++    """
++    stored = communication.evidence_source_fingerprint
++    if not stored:
++        return LIMITATION_LEGACY_EVIDENCE_FINGERPRINT_MISSING
++    current = await _current_evidence_fingerprint(session, communication, current_user)
++    if current != stored:
++        raise ApiError(
++            409,
++            ERROR_COMMUNICATION_EVIDENCE_CHANGED,
++            (
++                "Governed evidence changed after this communication was reviewed. "
++                "Regenerate or revise the draft and submit for human review again."
++            ),
++            {
++                "communication_id": str(communication.id),
++                "project_id": str(communication.project_id),
++                "requested_action": action,
++                "stored_evidence_source_fingerprint": stored,
++                "current_evidence_source_fingerprint": current,
++            },
++        )
++    return None
++
++
++async def edit_draft(
++    session: AsyncSession,
++    communication: ClientCommunication,
++    payload: CommunicationDraftEdit,
++    current_user: CurrentUser,
++) -> ClientCommunication:
++    previous_status = communication.status
++    _require_transition(communication, "edit")
++
++    changed_fields: list[str] = []
++    if communication.subject != payload.subject:
++        changed_fields.append("subject")
++    if communication.body_draft != payload.body_draft:
++        changed_fields.append("body_draft")
++
++    if previous_status == CommunicationStatus.DRAFT and not changed_fields:
++        raise ApiError(
++            409,
++            ERROR_NO_COMMUNICATION_CHANGES,
++            "Draft subject and body are unchanged.",
++            {
++                "communication_id": str(communication.id),
++                "current_status": previous_status.value,
++                "requested_action": "edit",
++            },
++        )
++
++    communication.subject = payload.subject
++    communication.body_draft = payload.body_draft
++    communication.status = CommunicationStatus.DRAFT
++
++    if previous_status == CommunicationStatus.REJECTED:
++        communication.rejection_reason = None
++        communication.rejected_by = None
++        communication.rejected_at = None
++        communication.body_approved = None
++        communication.reviewed_by = None
++        communication.reviewed_at = None
++        communication.approved_by = None
++        communication.approved_at = None
++        communication.sent_at = None
++        for field in (
++            "rejection_reason",
++            "rejected_by",
++            "rejected_at",
++            "body_approved",
++            "reviewed_by",
++            "reviewed_at",
++            "approved_by",
++            "approved_at",
++            "sent_at",
++            "status",
++        ):
++            if field not in changed_fields:
++                changed_fields.append(field)
++
++    await _append_lifecycle_audit(
++        session,
++        communication=communication,
++        actor_id=current_user.id,
++        action="edit",
++        previous_status=previous_status,
++        new_status=CommunicationStatus.DRAFT,
++        changed_fields=changed_fields,
++    )
++    await session.flush()
++    return communication
++
++
+ async def move_to_review(
+     session: AsyncSession,
+     communication: ClientCommunication,
+     payload: CommunicationReview,
+     current_user: CurrentUser,
+ ) -> ClientCommunication:
+-    if communication.status not in {CommunicationStatus.DRAFT, CommunicationStatus.IN_REVIEW}:
+-        raise ApiError(400, "INVALID_STATUS_TRANSITION", "Communication cannot move to review from its current state.")
++    previous_status = communication.status
++    _require_transition(communication, "submit_for_review")
+     communication.status = CommunicationStatus.IN_REVIEW
+     communication.body_approved = payload.body_approved
+     communication.reviewed_by = current_user.id
+-    communication.reviewed_at = datetime.now(timezone.utc)
++    communication.reviewed_at = datetime.now(UTC)
++    communication.approved_by = None
++    communication.approved_at = None
++    communication.sent_at = None
++    communication.rejection_reason = None
++    communication.rejected_by = None
++    communication.rejected_at = None
++    await _append_lifecycle_audit(
++        session,
++        communication=communication,
++        actor_id=current_user.id,
++        action="submit_for_review",
++        previous_status=previous_status,
++        new_status=CommunicationStatus.IN_REVIEW,
++    )
+     await session.flush()
+     return communication
+ 
+@@ -191,32 +459,119 @@ async def approve(
+     payload: CommunicationApprove,
+     current_user: CurrentUser,
+ ) -> ClientCommunication:
+-    body_approved = payload.body_approved or communication.body_approved
+-    if not body_approved:
+-        raise ApiError(400, "VALIDATION_ERROR", "Approved body is required.")
+-    communication.body_approved = body_approved
++    previous_status = communication.status
++    _require_transition(communication, "approve")
++    reviewed = (communication.body_approved or "").strip()
++    if not reviewed:
++        raise ApiError(
++            422,
++            "VALIDATION_ERROR",
++            "Reviewed body is required before approval.",
++            {"communication_id": str(communication.id)},
++        )
++    if payload.body_approved is not None and payload.body_approved != reviewed:
++        raise ApiError(
++            409,
++            ERROR_INVALID_TRANSITION,
++            "Approval cannot replace reviewed content. Edit and resubmit for review.",
++            {
++                "communication_id": str(communication.id),
++                "current_status": previous_status.value,
++                "requested_action": "approve",
++            },
++        )
++    fingerprint_limitation = await _assert_evidence_fingerprint_for_lifecycle(
++        session,
++        communication,
++        current_user,
++        action="approve",
++    )
+     communication.status = CommunicationStatus.APPROVED
+     communication.approved_by = current_user.id
+-    communication.approved_at = datetime.now(timezone.utc)
++    communication.approved_at = datetime.now(UTC)
++    await _append_lifecycle_audit(
++        session,
++        communication=communication,
++        actor_id=current_user.id,
++        action="approve",
++        previous_status=previous_status,
++        new_status=CommunicationStatus.APPROVED,
++        changed_fields=(
++            ["evidence_fingerprint_legacy_missing"]
++            if fingerprint_limitation == LIMITATION_LEGACY_EVIDENCE_FINGERPRINT_MISSING
++            else None
++        ),
++    )
+     await session.flush()
+     return communication
+ 
+ 
+-async def reject(session: AsyncSession, communication: ClientCommunication) -> ClientCommunication:
++async def reject(
++    session: AsyncSession,
++    communication: ClientCommunication,
++    payload: CommunicationReject,
++    current_user: CurrentUser,
++) -> ClientCommunication:
++    previous_status = communication.status
++    _require_transition(communication, "reject")
+     communication.status = CommunicationStatus.REJECTED
++    communication.rejection_reason = payload.rejection_reason
++    communication.rejected_by = current_user.id
++    communication.rejected_at = datetime.now(UTC)
++    communication.approved_by = None
++    communication.approved_at = None
++    communication.sent_at = None
++    await _append_lifecycle_audit(
++        session,
++        communication=communication,
++        actor_id=current_user.id,
++        action="reject",
++        previous_status=previous_status,
++        new_status=CommunicationStatus.REJECTED,
++        rejection_reason_recorded=True,
++    )
+     await session.flush()
+     return communication
+ 
+ 
+-async def send(session: AsyncSession, communication: ClientCommunication) -> ClientCommunication:
+-    if communication.status != CommunicationStatus.APPROVED or communication.approved_by is None:
++async def send(
++    session: AsyncSession,
++    communication: ClientCommunication,
++    current_user: CurrentUser,
++) -> ClientCommunication:
++    previous_status = communication.status
++    _require_transition(communication, "send")
++    if (
++        communication.approved_by is None
++        or communication.approved_at is None
++        or not (communication.body_approved or "").strip()
++    ):
+         raise ApiError(
+             409,
+             "COMMUNICATION_APPROVAL_REQUIRED",
+-            "Communication must be approved before it can be sent.",
++            "Communication must be fully approved before it can be sent.",
+             {"communication_id": str(communication.id)},
+         )
++    fingerprint_limitation = await _assert_evidence_fingerprint_for_lifecycle(
++        session,
++        communication,
++        current_user,
++        action="send",
++    )
+     communication.status = CommunicationStatus.SENT
+-    communication.sent_at = datetime.now(timezone.utc)
++    communication.sent_at = datetime.now(UTC)
++    await _append_lifecycle_audit(
++        session,
++        communication=communication,
++        actor_id=current_user.id,
++        action="send",
++        previous_status=previous_status,
++        new_status=CommunicationStatus.SENT,
++        changed_fields=(
++            ["evidence_fingerprint_legacy_missing"]
++            if fingerprint_limitation == LIMITATION_LEGACY_EVIDENCE_FINGERPRINT_MISSING
++            else None
++        ),
++    )
+     await session.flush()
+     return communication

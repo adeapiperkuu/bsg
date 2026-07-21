@@ -4,6 +4,7 @@ import { prefetchDeliveryNav } from "@/lib/queries/delivery-prefetch";
 import { adminProjectsQueryOptions } from "@/lib/queries/delivery";
 import { prefetchGovernanceNav } from "@/features/governance/governance-prefetch";
 import { prefetchKnowledgeNav } from "@/lib/queries/knowledge-prefetch";
+import { prefetchReportsNav } from "@/features/reports/reports-prefetch";
 
 /**
  * Sidebar nav prefetch coordinator.
@@ -14,7 +15,12 @@ import { prefetchKnowledgeNav } from "@/lib/queries/knowledge-prefetch";
 const HOVER_LINGER_MS = 450;
 const SAME_ROUTE_COOLDOWN_MS = 2_500;
 
-type PrefetchPath = "/delivery" | "/governance" | "/knowledge" | "/admin/projects";
+type PrefetchPath =
+  | "/delivery"
+  | "/governance"
+  | "/knowledge"
+  | "/admin/projects"
+  | "/reports";
 
 type Prefetcher = (queryClient: QueryClient, signal: AbortSignal) => Promise<void>;
 
@@ -23,6 +29,7 @@ const PREFETCHERS: Record<PrefetchPath, Prefetcher> = {
   "/governance": (qc, signal) => prefetchGovernanceNav(qc, signal),
   "/knowledge": (qc, signal) => prefetchKnowledgeNav(qc, signal),
   "/admin/projects": (qc) => qc.prefetchQuery(adminProjectsQueryOptions),
+  "/reports": (qc, signal) => prefetchReportsNav(qc, signal),
 };
 
 let lingerTimer: ReturnType<typeof setTimeout> | null = null;

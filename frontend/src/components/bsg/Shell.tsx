@@ -93,7 +93,7 @@ export function Shell({ children }: { children: ReactNode }) {
                 {sec.section}
               </div>
             )}
-            <ul className="space-y-0.5">
+            <ul className="flex flex-col gap-0.5">
               {sec.items.map((item) => {
                 const active =
                   item.to === "/admin"
@@ -101,7 +101,7 @@ export function Shell({ children }: { children: ReactNode }) {
                     : pathname === item.to;
                 const Icon = item.icon;
                 return (
-                  <li key={item.to}>
+                  <li key={item.to} className="w-full">
                     <Link
                       to={item.to}
                       title={!mobile && collapsed ? item.label : undefined}
@@ -113,14 +113,15 @@ export function Shell({ children }: { children: ReactNode }) {
                         if (mobile) setMobileNavOpen(false);
                       }}
                       className={cn(
-                        "group relative flex items-center gap-2.5 rounded-md px-2 py-2 text-sm transition-colors",
+                        "group relative flex w-full min-h-9 cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-sm transition-colors touch-manipulation",
+                        collapsed && !mobile && "justify-center px-2",
                         active
                           ? "bg-sidebar-accent text-sidebar-accent-foreground"
                           : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
                       )}
                     >
                       {active && (
-                        <span className="absolute inset-y-1 left-0 w-0.5 rounded-r bg-[color:var(--brand)]" />
+                        <span className="pointer-events-none absolute inset-y-1 left-0 w-0.5 rounded-r bg-[color:var(--brand)]" />
                       )}
                       <Icon className="h-4 w-4 shrink-0" />
                       {(!collapsed || mobile) && <span className="truncate">{item.label}</span>}

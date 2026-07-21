@@ -3,6 +3,7 @@ import { Fragment, useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, Clock, Play, RefreshCw, User } from "lucide-react";
 
 import { Card } from "@/components/bsg/widgets";
+import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { listQualityScanRuns, triggerQualityScan, type QualityScanRun } from "@/lib/api";
@@ -25,7 +26,7 @@ function statusClass(status: QualityScanRun["status"]): string {
 
 function AdminAgentRunsPage() {
   const [runs, setRuns] = useState<QualityScanRun[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -58,6 +59,10 @@ function AdminAgentRunsPage() {
       setScanning(false);
     }
   };
+
+  if (loading && runs.length === 0 && !error) {
+    return <PageLoadingScreen />;
+  }
 
   return (
     <div className="space-y-5">
@@ -100,13 +105,6 @@ function AdminAgentRunsPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {loading && runs.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={10} className="text-center text-muted-foreground">
-                  Loading scan runs…
-                </TableCell>
-              </TableRow>
-            )}
             {!loading && runs.length === 0 && (
               <TableRow>
                 <TableCell colSpan={10} className="text-center text-muted-foreground">

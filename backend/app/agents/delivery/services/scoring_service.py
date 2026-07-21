@@ -3,25 +3,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.delivery.analytics.confidence import (
-    ON_TRACK_THRESHOLD,
     ConfidenceStatus,
     calculate_confidence,
     classify_confidence_status,
     forecast_completion_date,
     has_sufficient_throughput_data,
 )
-from app.agents.delivery.analytics.milestones import resolve_milestone_status, select_current_milestone
+from app.agents.delivery.analytics.milestones import (
+    resolve_milestone_status,
+    select_current_milestone,
+)
 from app.agents.delivery.analytics.risk import (
-    WARNING_WINDOW_DAYS,
     build_contributing_causes,
     calculate_risk,
     classify_risk_tier,
@@ -31,6 +32,11 @@ from app.agents.delivery.analytics.throughput import (
     latest_rolling_units,
     rolling_windows_from_snapshots,
     throughput_decline_pct,
+)
+from app.agents.delivery.configuration import (
+    DEFAULT_DELIVERY_SCORING_THRESHOLDS,
+    DeliveryScoringThresholds,
+    load_delivery_scoring_thresholds,
 )
 from app.agents.delivery.events.domain_events import (
     DeliveryScoredEvent,
@@ -44,6 +50,7 @@ from app.agents.delivery.events.handlers import (
     register_delivery_handlers,
     risk_alert_snapshot_from_row,
 )
+from app.agents.delivery.services.summary_service import build_structured_summary_payload
 from app.db.models import AlertType, Project
 
 
@@ -67,9 +74,15 @@ class ScoringContext:
     open_bottleneck_count: int
     has_quality_drift: bool
     rework_rate_pct: Decimal | None
+    thresholds: DeliveryScoringThresholds
 
     @classmethod
-    def from_raw_data(cls, raw_data: dict[str, Any]) -> ScoringContext:
+    def from_raw_data(
+        cls,
+        raw_data: dict[str, Any],
+        *,
+        thresholds: DeliveryScoringThresholds = DEFAULT_DELIVERY_SCORING_THRESHOLDS,
+    ) -> ScoringContext:
         """Build a scoring context from aggregated delivery raw data."""
         snapshots = raw_data["throughput_snapshots"]
         milestones = raw_data["milestones"]
@@ -91,7 +104,7 @@ class ScoringContext:
             rolling_windows=rolling_windows,
             latest_rolling_units=latest_rolling_units(snapshots),
             throughput_decline_pct=decline_pct,
-            is_throughput_declining=decline_pct > Decimal("0.00"),
+            is_throughput_declining=(decline_pct > thresholds.risk.throughput_decline_tolerance),
             current_milestone=dict(current_milestone) if current_milestone is not None else None,
             days_until_milestone=(
                 (current_milestone["planned_date"] - as_of_date).days
@@ -101,10 +114,9 @@ class ScoringContext:
             open_bottleneck_count=len(raw_data["bottlenecks"]),
             has_quality_drift=bool(quality_snapshot and quality_snapshot.get("has_drift_alert")),
             rework_rate_pct=(
-                Decimal(str(rework_rate_pct))
-                if rework_rate_pct is not None
-                else None
+                Decimal(str(rework_rate_pct)) if rework_rate_pct is not None else None
             ),
+            thresholds=thresholds,
         )
 
 
@@ -157,6 +169,7 @@ def compute_delivery_scores(context: ScoringContext) -> DeliveryScores:
         context.latest_rolling_units,
         context.project.get("daily_target_units"),
         context.rolling_windows,
+        flat_tolerance_pct=context.thresholds.risk.trend_tolerance,
     )
     risk = calculate_risk(
         confidence_score_pct=confidence,
@@ -166,8 +179,8 @@ def compute_delivery_scores(context: ScoringContext) -> DeliveryScores:
         open_bottleneck_count=context.open_bottleneck_count,
         has_quality_drift=context.has_quality_drift,
         rework_rate_pct=context.rework_rate_pct,
-        on_track_threshold=ON_TRACK_THRESHOLD,
-        warning_window_days=WARNING_WINDOW_DAYS,
+        on_track_threshold=context.thresholds.confidence.on_track,
+        warning_window_days=context.thresholds.risk.milestone_warning_window_days,
     )
     traffic_light = calculate_status(
         confidence=confidence,
@@ -179,7 +192,20 @@ def compute_delivery_scores(context: ScoringContext) -> DeliveryScores:
             else None
         ),
         open_risk_tiers=[risk_item["risk_tier"] for risk_item in context.risks],
-        yellow_confidence_threshold=ON_TRACK_THRESHOLD,
+        yellow_confidence_threshold=context.thresholds.confidence.on_track,
+        red_confidence_threshold=context.thresholds.confidence.critical,
+        yellow_risk_threshold=context.thresholds.risk.medium,
+        red_risk_threshold=context.thresholds.risk.critical,
+        red_on_critical_confidence=(context.thresholds.traffic_light.red_on_critical_confidence),
+        red_on_critical_risk=context.thresholds.traffic_light.red_on_critical_risk,
+        red_on_critical_open_risk=(context.thresholds.traffic_light.red_on_critical_open_risk),
+        red_on_missed_milestone=context.thresholds.traffic_light.red_on_missed_milestone,
+        yellow_on_warning_confidence=(
+            context.thresholds.traffic_light.yellow_on_warning_confidence
+        ),
+        yellow_on_warning_risk=context.thresholds.traffic_light.yellow_on_warning_risk,
+        yellow_on_warning_open_risk=(context.thresholds.traffic_light.yellow_on_warning_open_risk),
+        yellow_on_open_bottleneck=(context.thresholds.traffic_light.yellow_on_open_bottleneck),
     )
     contributing_causes = build_contributing_causes(
         confidence_score_pct=confidence,
@@ -189,15 +215,24 @@ def compute_delivery_scores(context: ScoringContext) -> DeliveryScores:
         open_bottleneck_count=context.open_bottleneck_count,
         has_quality_drift=context.has_quality_drift,
         rework_rate_pct=context.rework_rate_pct,
-        on_track_threshold=ON_TRACK_THRESHOLD,
+        on_track_threshold=context.thresholds.confidence.on_track,
+        warning_window_days=context.thresholds.risk.milestone_warning_window_days,
     )
-    confidence_status = classify_confidence_status(confidence)
+    confidence_status = classify_confidence_status(
+        confidence,
+        on_track_threshold=context.thresholds.confidence.on_track,
+    )
     forecast = _forecast_completion_date(context)
     return DeliveryScores(
         confidence=confidence,
         risk=risk,
         traffic_light=traffic_light,
-        risk_tier=classify_risk_tier(risk),
+        risk_tier=classify_risk_tier(
+            risk,
+            medium_threshold=context.thresholds.risk.medium,
+            high_threshold=context.thresholds.risk.high,
+            critical_threshold=context.thresholds.risk.critical,
+        ),
         contributing_causes=contributing_causes,
         confidence_status=confidence_status,
         forecast_completion_date=forecast,
@@ -221,6 +256,7 @@ def compute_milestone_status_updates(
             actual_date=milestone.get("actual_date"),
             as_of_date=context.as_of_date,
             confidence_score_pct=scores.confidence,
+            on_track_threshold=context.thresholds.confidence.on_track,
         )
         if resolved_status == previous_status:
             continue
@@ -235,13 +271,15 @@ def compute_milestone_status_updates(
     return tuple(updates)
 
 
-def build_dashboard_response(raw_data: dict[str, Any]) -> dict[str, Any]:
+def build_dashboard_response(
+    raw_data: dict[str, Any],
+    *,
+    thresholds: DeliveryScoringThresholds = DEFAULT_DELIVERY_SCORING_THRESHOLDS,
+) -> dict[str, Any]:
     """Prepare the final deterministic dashboard payload."""
-    context = ScoringContext.from_raw_data(raw_data)
+    context = ScoringContext.from_raw_data(raw_data, thresholds=thresholds)
     scores = compute_delivery_scores(context)
-    latest_snapshot = (
-        context.throughput_snapshots[0] if context.throughput_snapshots else None
-    )
+    latest_snapshot = context.throughput_snapshots[0] if context.throughput_snapshots else None
 
     overview = {
         "project": context.project,
@@ -268,6 +306,7 @@ def build_dashboard_response(raw_data: dict[str, Any]) -> dict[str, Any]:
         "bottlenecks": context.bottlenecks,
         "traffic_light": scores.traffic_light,
         "daily_summary": None,
+        "structured_summary": build_structured_summary_payload(context, scores),
     }
 
 
@@ -277,6 +316,7 @@ async def run_delivery_scoring(
     project_id: UUID,
     as_of_date: date | None = None,
     project: Project | None = None,
+    thresholds: DeliveryScoringThresholds | None = None,
 ) -> DeliveryScoringRunResult:
     """Orchestrate a delivery scoring run with safe transaction boundaries.
 
@@ -293,14 +333,22 @@ async def run_delivery_scoring(
 
     if session.in_transaction():
         compute_result = await _compute_scoring_event(
-            session, project_id=project_id, as_of_date=effective_date, project=project
+            session,
+            project_id=project_id,
+            as_of_date=effective_date,
+            project=project,
+            thresholds=thresholds,
         )
         handler_results = await emit_event(session, compute_result.event)
     else:
         # Phase 1: reads + pure computation only — no DB writes.
         async with session.begin():
             compute_result = await _compute_scoring_event(
-                session, project_id=project_id, as_of_date=effective_date, project=project
+                session,
+                project_id=project_id,
+                as_of_date=effective_date,
+                project=project,
+                thresholds=thresholds,
             )
         # Phase 1 committed. The event is built from a stable, committed snapshot.
 
@@ -317,6 +365,7 @@ async def _compute_scoring_event(
     project_id: UUID,
     as_of_date: date,
     project: Project | None,
+    thresholds: DeliveryScoringThresholds | None = None,
 ) -> _ScoringComputeResult:
     """Load scoring inputs and build the delivery event. Pure reads and computation."""
     from app.agents.delivery.services.dashboard_service import load_project_scoring_inputs
@@ -330,7 +379,11 @@ async def _compute_scoring_event(
         resolved_project,
         as_of_date=as_of_date,
     )
-    context = ScoringContext.from_raw_data(inputs.raw_data)
+    resolved_thresholds = thresholds or await load_delivery_scoring_thresholds(
+        session,
+        resolved_project.org_id,
+    )
+    context = ScoringContext.from_raw_data(inputs.raw_data, thresholds=resolved_thresholds)
     scores = compute_delivery_scores(context)
     milestone_updates = compute_milestone_status_updates(
         inputs.raw_data["milestones"],
@@ -360,7 +413,7 @@ async def _compute_scoring_event(
         org_id=resolved_project.org_id,
         project_name=resolved_project.name,
         as_of_date=as_of_date,
-        occurred_at=datetime.now(timezone.utc),
+        occurred_at=datetime.now(UTC),
         scores=_scores_snapshot(scores),
         current_milestone_id=current_milestone.id if current_milestone is not None else None,
         milestone_updates=milestone_updates,
@@ -432,11 +485,10 @@ def _forecast_completion_date(context: ScoringContext) -> date | None:
     if context.current_milestone is None:
         return None
 
-    days_until_planned = (
-        context.current_milestone["planned_date"] - context.as_of_date
-    ).days
+    planned_date = cast(date, context.current_milestone["planned_date"])
+    days_until_planned = (planned_date - context.as_of_date).days
     if days_until_planned <= 0:
-        return context.current_milestone["planned_date"]
+        return planned_date
 
     daily_target = context.project.get("daily_target_units")
     if daily_target is None or daily_target <= 0:

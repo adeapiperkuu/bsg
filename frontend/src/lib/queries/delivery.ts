@@ -2,9 +2,14 @@ import { queryOptions, useQuery } from "@tanstack/react-query";
 import {
   fetchDeliveryDashboard,
   fetchDeliveryPortfolio,
+  fetchProjectDailyActions,
+  fetchProjectOperationalBriefing,
+  fetchProjectRootCauses,
+  fetchRootCauseTrends,
   listAdminProjects,
   listDeliveryConversations,
   listOrganisations,
+  listPrograms,
   listProjectDeliveryConfidence,
   listProjects,
 } from "@/lib/api";
@@ -13,6 +18,12 @@ import { ADMIN_LIST_GC_TIME_MS, queryKeys, STALE_TIME_MS } from "@/lib/queries/k
 export const projectsQueryOptions = queryOptions({
   queryKey: queryKeys.projects,
   queryFn: listProjects,
+  staleTime: STALE_TIME_MS,
+});
+
+export const programsQueryOptions = queryOptions({
+  queryKey: queryKeys.programs,
+  queryFn: listPrograms,
   staleTime: STALE_TIME_MS,
 });
 
@@ -62,8 +73,30 @@ export function projectDeliveryConfidenceQueryOptions(projectId: string | null) 
   });
 }
 
+export function projectRootCausesQueryOptions(projectId: string | null) {
+  return queryOptions({
+    queryKey: queryKeys.projectRootCauses(projectId ?? ""),
+    queryFn: () => fetchProjectRootCauses(projectId!),
+    enabled: Boolean(projectId),
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function rootCauseTrendsQueryOptions(projectId: string | null) {
+  return queryOptions({
+    queryKey: queryKeys.rootCauseTrends(projectId),
+    queryFn: () => fetchRootCauseTrends(projectId ? { project_id: projectId } : {}),
+    enabled: Boolean(projectId),
+    staleTime: STALE_TIME_MS,
+  });
+}
+
 export function useProjectsQuery() {
   return useQuery(projectsQueryOptions);
+}
+
+export function useProgramsQuery() {
+  return useQuery(programsQueryOptions);
 }
 
 export function useOrganisationsQuery() {
@@ -87,4 +120,48 @@ export function useDeliveryConversationsQuery(projectId: string | null, enabled 
 
 export function useProjectDeliveryConfidenceQuery(projectId: string | null) {
   return useQuery(projectDeliveryConfidenceQueryOptions(projectId));
+}
+
+export function useProjectRootCausesQuery(projectId: string | null) {
+  return useQuery(projectRootCausesQueryOptions(projectId));
+}
+
+export function useRootCauseTrendsQuery(projectId: string | null, enabled = true) {
+  return useQuery({
+    ...rootCauseTrendsQueryOptions(projectId),
+    enabled: Boolean(projectId) && enabled,
+  });
+}
+
+export function projectDailyActionsQueryOptions(projectId: string | null) {
+  return queryOptions({
+    queryKey: queryKeys.projectDailyActions(projectId ?? ""),
+    queryFn: () => fetchProjectDailyActions(projectId!, { include_history: true }),
+    enabled: Boolean(projectId),
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function useProjectDailyActionsQuery(projectId: string | null, enabled = true) {
+  return useQuery({
+    ...projectDailyActionsQueryOptions(projectId),
+    enabled: Boolean(projectId) && enabled,
+  });
+}
+
+export function projectOperationalBriefingQueryOptions(projectId: string | null) {
+  return queryOptions({
+    queryKey: queryKeys.projectOperationalBriefing(projectId ?? ""),
+    // Default without AI for snappy panel load; operators can regenerate with AI.
+    queryFn: () => fetchProjectOperationalBriefing(projectId!, { with_ai: false }),
+    enabled: Boolean(projectId),
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function useProjectOperationalBriefingQuery(projectId: string | null, enabled = true) {
+  return useQuery({
+    ...projectOperationalBriefingQueryOptions(projectId),
+    enabled: Boolean(projectId) && enabled,
+  });
 }

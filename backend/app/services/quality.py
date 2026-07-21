@@ -42,6 +42,7 @@ from app.db.models import (
     InterAgentSignal,
     OnboardingRecord,
     Organisation,
+    Program,
     Project,
     ProjectStatus,
     QualityErrorEntry,
@@ -572,11 +573,14 @@ async def list_admin_projects(session: AsyncSession) -> list[AdminProjectRead]:
                 Project.vertical,
                 Project.start_date,
                 Project.target_end_date,
+                Project.program_id,
                 Organisation.name.label("org_name"),
+                Program.name.label("program_name"),
             )
             .join(Organisation, Project.org_id == Organisation.id)
+            .outerjoin(Program, Project.program_id == Program.id)
             .where(Project.deleted_at.is_(None))
-            .order_by(Project.name)
+            .order_by(Organisation.name, Program.name.nulls_last(), Project.name)
         )
     ).all()
 
@@ -641,6 +645,8 @@ async def list_admin_projects(session: AsyncSession) -> list[AdminProjectRead]:
                 vertical=project.vertical,
                 start_date=project.start_date,
                 target_end_date=project.target_end_date,
+                program_id=project.program_id,
+                program_name=project.program_name,
                 latest_iso_year=latest_year,
                 latest_iso_week=latest_week,
                 active_drift_alerts=drift_by_project.get(project.id, 0),

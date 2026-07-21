@@ -90,6 +90,7 @@ const projects: ProjectRead[] = [
   {
     id: "11111111-1111-1111-1111-111111111111",
     org_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    program_id: null,
     name: "Atlas Delivery",
     description: null,
     vertical: "Data Operations",
@@ -104,6 +105,7 @@ const projects: ProjectRead[] = [
   {
     id: "22222222-2222-2222-2222-222222222222",
     org_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    program_id: null,
     name: "Borealis Review",
     description: null,
     vertical: "Quality",
@@ -603,6 +605,7 @@ async function selectProject(projectName = "Atlas Delivery") {
 }
 
 function userFor(role: MeUser["role"]): MeUser {
+  const isInternal = role !== "client";
   return {
     id: "99999999-9999-9999-9999-999999999999",
     org_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
@@ -610,6 +613,15 @@ function userFor(role: MeUser["role"]): MeUser {
     full_name: role,
     role,
     is_active: true,
+    organisation: null,
+    permissions: {
+      can_manage_projects: isInternal,
+      can_approve_communications: isInternal,
+      can_manage_metric_configurations: isInternal,
+      can_view_cross_client_portfolio: role === "bsg_leadership" || role === "super_admin",
+      can_manage_users: role === "super_admin",
+      can_manage_organisations: role === "super_admin",
+    },
   };
 }
 

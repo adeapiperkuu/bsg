@@ -29,13 +29,20 @@ from app.agents.delivery.services.conversation_service import (
     load_llm_history_from_conversation,
     resolve_conversation_for_turn,
 )
-from app.agents.delivery.services.dashboard_service import get_dashboard_data, get_portfolio_data
+from app.agents.delivery.services.dashboard_service import (
+    PORTFOLIO_PROJECT_LIMIT,
+    get_dashboard_data,
+    get_portfolio_data,
+)
+from app.agents.delivery.services.delivery_knowledge_evidence_service import (
+    retrieve_delivery_knowledge_evidence_for_dashboard,
+)
 from app.core.config import get_settings
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
-from app.db.models import AgentQuery, AgentQueryEvidenceLink, AppRole, DeliveryConversation
+from app.db.models import AgentQuery, AgentQueryEvidenceLink, AppRole, DeliveryConversation, Project
 from app.services.llm.client import LLMClient
-from app.services.scoping import get_visible_project
+from app.services.scoping import get_visible_project, scoped_project_query
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +57,7 @@ EVIDENCE_SOURCE_TABLE_BY_TYPE = {
     "risk": "risk_alerts",
     "bottleneck": "bottlenecks",
     "milestone": "milestones",
+    "knowledge": "knowledge_documents",
 }
 EVIDENCE_TYPE_BY_SOURCE_TABLE = {table: kind for kind, table in EVIDENCE_SOURCE_TABLE_BY_TYPE.items()}
 
@@ -731,16 +739,32 @@ class _ChatRequestContext:
     delivery_conversation: DeliveryConversation | None
     anchor: AgentQuery | None
     available_projects: list[_AvailableProject]
+    # Project-reference resolution outcome, computed during preparation. None when the
+    # client already sent a project_id (the reference is resolved at the UI/API level
+    # and re-checking would only produce false positives) or no projects are visible.
+    resolution: _ProjectMatchResult | None = None
 
 
-def _resolve_chat_project_reference(
-    message: str,
-    prepared: _ChatRequestContext,
-) -> _ProjectMatchResult | None:
-    """Resolve project references when the client did not send project_id."""
-    if prepared.resolved_project_id is not None or not prepared.available_projects:
-        return None
-    return _resolve_project_references(message, prepared.available_projects)
+async def _fetch_available_project_stubs(
+    session: AsyncSession,
+    current_user: CurrentUser,
+) -> list[_AvailableProject]:
+    """Load only (id, name) for every visible project.
+
+    Project-name resolution needs nothing more, so single-project questions avoid
+    loading and scoring the entire portfolio just to match a name.
+    """
+    rows = await session.execute(
+        scoped_project_query(current_user)
+        .with_only_columns(Project.id, Project.name)
+        .order_by(Project.name.asc(), Project.id.asc())
+        .limit(PORTFOLIO_PROJECT_LIMIT)
+    )
+    return [
+        _AvailableProject(name=name.strip(), project_id=project_id)
+        for project_id, name in rows.all()
+        if isinstance(name, str) and name.strip()
+    ]
 
 
 def _early_exit_answer_for_resolution(
@@ -787,12 +811,44 @@ async def _prepare_chat_request(
             current_user=current_user,
         )
 
-    # Project-scoped questions already have the focused project's dashboard above —
-    # avoid recomputing the full portfolio (all-projects scoring) on every chat turn.
-    if question_scope == "portfolio" or resolved_project_id is None:
+    portfolio: dict[str, Any] = {"projects": []}
+    resolution: _ProjectMatchResult | None = None
+    available_projects: list[_AvailableProject] = []
+
+    if question_scope == "portfolio":
+        # Portfolio questions genuinely need the full scored portfolio.
         portfolio = await get_portfolio_data(session=session, current_user=current_user)
+        available_projects = _list_available_projects(portfolio, project_dashboard, resolved_project_id)
+        if resolved_project_id is None and available_projects:
+            resolution = _resolve_project_references(message, available_projects)
+    elif resolved_project_id is None:
+        # Project-scoped question without a project_id: resolve the name reference
+        # against a cheap (id, name) list instead of loading and scoring every project.
+        available_projects = await _fetch_available_project_stubs(session, current_user)
+        if available_projects:
+            resolution = _resolve_project_references(message, available_projects)
+
+        matched_stub: _AvailableProject | None = None
+        if resolution is not None and resolution.status in {"exact", "fuzzy"}:
+            matched_stub = next(
+                (p for p in available_projects if p.name == resolution.matched_project),
+                None,
+            )
+        if matched_stub is not None and matched_stub.project_id is not None:
+            project_dashboard = await get_dashboard_data(
+                session=session,
+                project_id=matched_stub.project_id,
+                current_user=current_user,
+            )
+        elif resolution is None or resolution.status == "no_reference":
+            # No identifiable project reference ("summarize this project") — fall back
+            # to portfolio grounding, as before this optimization.
+            portfolio = await get_portfolio_data(session=session, current_user=current_user)
+            available_projects = _list_available_projects(portfolio, None, None)
     else:
-        portfolio = {"projects": []}
+        # Project-scoped question with the dashboard already loaded above — avoid
+        # recomputing the full portfolio (all-projects scoring) on every chat turn.
+        available_projects = _list_available_projects(portfolio, project_dashboard, resolved_project_id)
 
     context = _build_context(
         project_dashboard=project_dashboard,
@@ -803,6 +859,40 @@ async def _prepare_chat_request(
     evidence_catalog: list[DeliveryChatSource] = []
     if project_dashboard is not None:
         evidence_catalog = _collect_sources(project_dashboard)
+        if (
+            current_user.role != AppRole.CLIENT
+            and resolved_project_id is not None
+            and get_settings().delivery_knowledge_evidence_enabled
+        ):
+            try:
+                knowledge = await retrieve_delivery_knowledge_evidence_for_dashboard(
+                    session,
+                    current_user,
+                    project_id=resolved_project_id,
+                    dashboard=project_dashboard,
+                    max_sources=3,
+                )
+                for citation in knowledge.get("citations") or []:
+                    if not isinstance(citation, dict):
+                        continue
+                    doc_id = citation.get("document_id")
+                    try:
+                        source_id = UUID(str(doc_id)) if doc_id else None
+                    except ValueError:
+                        source_id = None
+                    evidence_catalog.append(
+                        DeliveryChatSource(
+                            title=str(citation.get("title") or "Knowledge document"),
+                            type="knowledge",
+                            id=source_id,
+                            description=str(citation.get("excerpt") or "")[:280] or None,
+                        )
+                    )
+            except Exception:
+                logger.exception(
+                    "event=delivery_chat_knowledge_evidence_failed project_id=%s",
+                    resolved_project_id,
+                )
     for entry in portfolio.get("projects") or []:
         if len(evidence_catalog) >= 20:
             break
@@ -816,7 +906,6 @@ async def _prepare_chat_request(
         history = await load_llm_history_from_conversation(session, delivery_conversation.id)
     else:
         history = await _load_conversation_history(session, current_user, anchor)
-    available_projects = _list_available_projects(portfolio, project_dashboard, resolved_project_id)
 
     return _ChatRequestContext(
         resolved_project_id=resolved_project_id,
@@ -826,6 +915,7 @@ async def _prepare_chat_request(
         delivery_conversation=delivery_conversation,
         anchor=anchor,
         available_projects=available_projects,
+        resolution=resolution,
     )
 
 
@@ -908,10 +998,10 @@ async def answer_delivery_chat(
         session, current_user, message=message, project_id=project_id, conversation_id=conversation_id,
     )
 
-    # Resolve project references before calling the LLM.
-    # Skip when a project_id was already provided — the reference is already
-    # resolved at the UI/API level and re-checking would only produce false positives.
-    resolution = _resolve_chat_project_reference(message, prepared)
+    # Project references were resolved during preparation (skipped when a project_id
+    # was already provided — the reference is resolved at the UI/API level and
+    # re-checking would only produce false positives).
+    resolution = prepared.resolution
     if resolution is not None:
         early_answer = _early_exit_answer_for_resolution(resolution, prepared.available_projects)
         if early_answer is not None:
@@ -1015,8 +1105,9 @@ async def stream_delivery_chat(
         session, current_user, message=message, project_id=project_id, conversation_id=conversation_id,
     )
 
-    # Resolve project references before streaming — same rules as the non-streaming path.
-    resolution = _resolve_chat_project_reference(message, prepared)
+    # Project references were resolved during preparation — same rules as the
+    # non-streaming path.
+    resolution = prepared.resolution
     if resolution is not None:
         early_answer = _early_exit_answer_for_resolution(resolution, prepared.available_projects)
         if early_answer is not None:

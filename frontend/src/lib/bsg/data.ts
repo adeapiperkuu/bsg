@@ -173,12 +173,6 @@ export const rootCauses = [
   { cause: "Resource overload (Nimbus)", impact: 18 },
 ];
 
-export const confidenceForecast = Array.from({ length: 20 }, (_, i) => ({
-  week: `W${i + 9}`,
-  confidence: i < 16 ? 78 + Math.round(Math.sin(i / 2) * 6) : null,
-  forecast: i >= 15 ? 78 + Math.round(Math.sin(i / 2) * 6) - (i - 15) * 2 : null,
-}));
-
 export const errorCategories = [
   { cat: "Boundary Precision", count: 142, delta: "+12%" },
   { cat: "Class Confusion", count: 98, delta: "-4%" },

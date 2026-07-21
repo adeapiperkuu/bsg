@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -68,6 +68,9 @@ class FakeResult:
     def scalars(self) -> FakeScalars:
         return FakeScalars(self._items)
 
+    def all(self) -> list[Any]:
+        return self._items
+
 
 class FakeSession:
     """Minimal async session for HTTP tests; returns empty / not-found DB results."""
@@ -86,6 +89,37 @@ class FakeSession:
 
     async def flush(self) -> None:
         return None
+
+    async def rollback(self) -> None:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _force_sequential_evidence_pack(monkeypatch: pytest.MonkeyPatch):
+    """Unit tests inject FakeSessions, but the evidence pack's parallel branch
+    (taken when DATABASE_URL points at the transaction pooler) opens real pooled
+    DB connections via AsyncSessionLocal. Those connections outlive the per-test
+    event loop and make the suite flaky/network-dependent, so force the
+    sequential single-session path during tests."""
+    from app.agents.client_intelligence import evidence_pack
+    from app.services import client_intelligence as client_intelligence_service
+
+    monkeypatch.setattr(evidence_pack, "_uses_session_pooler", lambda _url: True)
+    monkeypatch.setattr(client_intelligence_service, "_uses_session_pooler", lambda _url: True)
+
+
+@pytest.fixture(autouse=True)
+def _clear_delivery_portfolio_cache():
+    """Delivery portfolio reads are cached in-process; user/org fixture ids are reused
+    across tests, so a stale entry from one test could leak into the next."""
+    from app.agents.delivery.configuration import (
+        invalidate_delivery_scoring_thresholds_cache,
+    )
+    from app.agents.delivery.services.dashboard_service import clear_delivery_portfolio_cache
+
+    clear_delivery_portfolio_cache()
+    invalidate_delivery_scoring_thresholds_cache()
+    yield
 
 
 @pytest.fixture

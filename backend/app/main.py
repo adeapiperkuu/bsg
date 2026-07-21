@@ -29,6 +29,7 @@ from app.api.routes import (
     me,
     metrics,
     organisations,
+    programs,
     projects,
     quality,
     system,
@@ -196,6 +197,7 @@ def create_app() -> FastAPI:
     app.include_router(me.router, prefix=api_prefix)
     app.include_router(organisations.router, prefix=api_prefix)
     app.include_router(users.router, prefix=api_prefix)
+    app.include_router(programs.router, prefix=api_prefix)
     app.include_router(projects.router, prefix=api_prefix)
     app.include_router(dashboard.router, prefix=api_prefix)
     app.include_router(delivery.router, prefix=api_prefix)
