@@ -90,7 +90,7 @@ export function WorkforceRecommendationsPanel({
     <Card>
       <SectionHeader
         title="Workforce Recommendations"
-        sub="Generated mitigations for detected capability gaps"
+        sub="Mitigations aligned to each capability gap (hire, SME coverage, or capacity)"
       />
       {isLoading ? (
         <div className="space-y-2">

@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.delivery.services.recommendation_service import (
+    RecommendationRow,
     group_recommendations_by_title,
     grouped_recommendation_to_read,
     list_project_recommendations,
@@ -21,6 +22,7 @@ from app.db.models import AlertType, Project, UtilizationSnapshot
 from app.db.rls import set_rls_context
 from app.db.session import session_scope
 from app.schemas.common import Pagination
+from app.core.field_permissions import authorize_fields
 from app.schemas.domain import (
     CapabilityGapRead,
     GroupedMitigationRecommendationRead,
@@ -30,7 +32,12 @@ from app.schemas.domain import (
     UtilizationSnapshotRead,
 )
 from app.services.workforce import assert_can_read_annotators, get_project_workforce_summary
-from app.services.workforce_gaps import list_project_capability_gaps
+from app.services.workforce_gaps import (
+    list_project_capability_gaps,
+    project_can_rebalance_from_utilization,
+    workforce_mitigation_copy_for_gap,
+)
+from app.services.workforce_optimization import build_workforce_optimization
 from app.services.workforce_skills import build_project_skill_matrix
 from app.services.workforce_training import build_project_training_gaps
 
@@ -79,6 +86,35 @@ async def _list_project_utilization_snapshots(
     return list(rows)
 
 
+def _latest_team_utilization(
+    snapshots: list[UtilizationSnapshot],
+) -> dict:
+    latest: dict = {}
+    for snap in snapshots:
+        if snap.team_id is None or snap.annotator_id is not None:
+            continue
+        latest.setdefault(snap.team_id, snap)
+    return latest
+
+
+def _align_workforce_recommendation_rows(
+    rows: list[RecommendationRow],
+    gaps: list,
+    *,
+    can_rebalance: bool,
+) -> list[RecommendationRow]:
+    """Rewrite mitigation titles/descriptions so they match gap type + Optimization."""
+    gaps_by_title = {gap.title: gap for gap in gaps}
+    for row in rows:
+        gap = gaps_by_title.get(row.source_risk_title or "")
+        if gap is None:
+            continue
+        title, description = workforce_mitigation_copy_for_gap(gap, can_rebalance=can_rebalance)
+        row.recommendation.title = title
+        row.recommendation.description = description
+    return rows
+
+
 async def get_project_workforce_dashboard(
     session: AsyncSession,
     project: Project,
@@ -105,6 +141,7 @@ async def get_project_workforce_dashboard(
         training_gaps,
         capability_gap_rows,
         recommendations_result,
+        optimization,
     ) = await asyncio.gather(
         _run_section(current_user, lambda s: get_project_workforce_summary(s, project, current_user)),
         _run_section(
@@ -118,6 +155,10 @@ async def get_project_workforce_dashboard(
             current_user,
             lambda s: list_project_recommendations(s, project_id=project.id, org_id=project.org_id),
         ),
+        _run_section(
+            current_user,
+            lambda s: build_workforce_optimization(s, project, current_user),
+        ),
     )
 
     capability_gaps = [
@@ -125,9 +166,14 @@ async def get_project_workforce_dashboard(
     ]
 
     recommendation_rows, owners = recommendations_result
-    workforce_rows = [
-        row for row in recommendation_rows if row.source_risk_type == WORKFORCE_RISK_TYPE
-    ]
+    can_rebalance = project_can_rebalance_from_utilization(
+        _latest_team_utilization(utilization_rows),
+    )
+    workforce_rows = _align_workforce_recommendation_rows(
+        [row for row in recommendation_rows if row.source_risk_type == WORKFORCE_RISK_TYPE],
+        capability_gap_rows[:capability_gaps_limit],
+        can_rebalance=can_rebalance,
+    )
     grouped = group_recommendations_by_title(workforce_rows)
     recommendations = ProjectRecommendationsResponse(
         data=[
@@ -145,7 +191,7 @@ async def get_project_workforce_dashboard(
         pagination=Pagination(limit=100),
     )
 
-    return ProjectWorkforceDashboardRead(
+    dashboard = ProjectWorkforceDashboardRead(
         project_id=project.id,
         summary=summary,
         utilization=[UtilizationSnapshotRead.model_validate(row) for row in utilization_rows],
@@ -153,4 +199,8 @@ async def get_project_workforce_dashboard(
         training_gaps=training_gaps,
         capability_gaps=capability_gaps,
         recommendations=recommendations,
+        optimization=optimization,
     )
+    # Phase 19.1 — never send unauthorized top-level fields to the client.
+    filtered = authorize_fields(dashboard, current_user.role, domain="workforce")
+    return ProjectWorkforceDashboardRead.model_validate(filtered)

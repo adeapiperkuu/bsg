@@ -12,6 +12,7 @@ import { TrainingGapsSection } from "@/components/bsg/workforce/TrainingGapsSect
 import { WorkforceUtilizationSection } from "@/components/bsg/workforce/WorkforceUtilizationSection";
 import { WorkforceAgentSection } from "@/components/bsg/workforce/agent/WorkforceAgentSection";
 import { WorkforceKpiStrip } from "@/components/bsg/workforce/WorkforceKpiStrip";
+import { WorkforceOptimizationPanel } from "@/components/bsg/workforce/WorkforceOptimizationPanel";
 import { WorkforceRecommendationsPanel } from "@/components/bsg/WorkforceRecommendationsPanel";
 import { useProjectsQuery } from "@/lib/queries/delivery";
 import {
@@ -466,6 +467,14 @@ function WorkforcePage() {
             trainingGapsDelta={trainingGapsDelta}
             trainingGapsTone={trainingGapsTone}
           />
+
+          {canReadInternalWorkforce ? (
+            <WorkforceOptimizationPanel
+              optimization={dashboard?.optimization}
+              loading={dashboardQuery.isLoading}
+              error={dashboardQuery.isError}
+            />
+          ) : null}
 
           <SkillCoverageMatrixSection
             canReadInternalWorkforce={canReadInternalWorkforce}
