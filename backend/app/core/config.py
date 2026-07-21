@@ -118,6 +118,9 @@ class Settings(BaseSettings):
     # Phase 14 — publish approved Project Charters into Operational Knowledge.
     governance_charter_knowledge_publish_enabled: bool = True
     auto_publish_approved_charters: bool = True
+    # Phase 15.5 — Delivery retrieves Knowledge evidence via existing RAG (fail-open).
+    delivery_knowledge_evidence_enabled: bool = True
+    delivery_knowledge_evidence_max_sources: int = 5
 
     model_config = SettingsConfigDict(
         env_file=(

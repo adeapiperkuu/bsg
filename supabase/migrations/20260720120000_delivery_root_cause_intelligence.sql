@@ -1,6 +1,11 @@
 -- Delivery Performance Agent Phase 15.1: deterministic root-cause intelligence.
 -- Explains confidence loss; does not replace scoring. No client RLS on raw tables.
 
+-- Composite FK (project_id, org_id) needs unique (id, org_id). Idempotent if Phase 2
+-- (team throughput) already created this index.
+CREATE UNIQUE INDEX IF NOT EXISTS projects_id_org_uidx
+  ON projects (id, org_id);
+
 CREATE TABLE delivery_root_cause_snapshots (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organisations (id) ON DELETE RESTRICT,

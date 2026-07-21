@@ -20,6 +20,10 @@ export const queryKeys = {
     ["delivery", "root-causes", "project", projectId] as const,
   rootCauseTrends: (projectId: string | null) =>
     ["delivery", "root-causes", "trends", projectId ?? "__org__"] as const,
+  projectDailyActions: (projectId: string) =>
+    ["delivery", "daily-actions", projectId] as const,
+  projectOperationalBriefing: (projectId: string) =>
+    ["delivery", "operational-briefing", projectId] as const,
   projectThroughput: (projectId: string) => ["projects", projectId, "throughput"] as const,
   projectRecommendations: (projectId: string) =>
     ["projects", projectId, "recommendations"] as const,

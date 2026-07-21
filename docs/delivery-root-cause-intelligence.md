@@ -1,7 +1,7 @@
 # Delivery Performance Agent — Root Cause Intelligence
 
-**Status:** Implemented in Phase 15.1  
-**Scope:** Deterministic explanation of delivery confidence loss with configurable weights, snapshot persistence, APIs, and dashboard Main Contributors. No timesheet/absenteeism ingestion, PM action planner, AI briefing wiring, knowledge RAG, or full dashboard redesign.
+**Status:** Implemented in Phase 15.1 (engine) + Phase 15.2 (operational inputs)  
+**Scope:** Deterministic explanation of delivery confidence loss with configurable weights, snapshot persistence, APIs, and dashboard Main Contributors. Operational tables feed the engine; AI still must not invent causes.
 
 ## Architecture
 
@@ -36,7 +36,7 @@ sequenceDiagram
   RCA-->>API: Main Contributors payload
 ```
 
-AI modules must ground narratives in stored causes (`root_cause_summary`). They never invent causes. Optional AI `daily_summary` remains unwired (Phase 15.4).
+AI modules must ground narratives in stored causes (`root_cause_summary`). They never invent causes. Optional AI `daily_summary` is wired in Phase 15.4 — see [delivery-agent-operational-briefing.md](delivery-agent-operational-briefing.md).
 
 ## Formulas
 
@@ -51,20 +51,20 @@ impact_percent_i = 100 × |impact_points_i| / confidence_loss
 
 Severity bands use configurable point thresholds (`severity_medium_points`, `severity_high_points`, `severity_critical_points`).
 
-## Cause taxonomy (15.1 signal mapping)
+## Cause taxonomy (15.1 + 15.2 signal mapping)
 
-| Factor | Evidence today | Phase 15.2 |
+| Factor | Evidence | Notes |
 |---|---|---|
-| review_turnaround | Review/queue-titled bottlenecks | Review queue metrics |
-| rework | Quality rework rate | Dedicated rework sheets |
-| capacity | Team headcount decline vs throughput | Capacity snapshots |
-| absenteeism | Unavailable (`data_available=false`) | Absenteeism series |
-| queue | Open bottlenecks + target shortfall | Backlog queue analytics |
-| blocked_work | Active bottleneck severity ranks | Richer blocker ages |
-| dependency_delays | Unavailable | Dependency graph |
+| review_turnaround | Review queue snapshots (15.2) else review-titled bottlenecks | Ops override wins |
+| rework | Quality rework rate | Unchanged |
+| capacity | Capacity + team availability + timesheet underfill (15.2) else headcount decline | Ops override wins |
+| absenteeism | Absenteeism snapshots (15.2) | Was unavailable in 15.1 |
+| queue | Backlog queue snapshots (15.2) else bottlenecks + shortfall | Ops override wins |
+| blocked_work | Active bottleneck severity ranks | Unchanged |
+| dependency_delays | Unavailable until dependency graph | Provider stub |
 | milestone_slippage | Overdue / warning-window milestones | Unchanged |
-| quality_regression | Drift flag / elevated rework | Deeper quality series |
-| scope_volatility | Unavailable | Scope change events |
+| quality_regression | Drift flag / elevated rework | Unchanged |
+| scope_volatility | Unavailable until scope events | Provider stub |
 
 Default weights (normalized to 1.0 at load): review 0.25, rework 0.20, capacity 0.15, queue 0.10, blocked_work 0.10, milestone_slippage 0.08, quality_regression 0.07, absenteeism 0.03, dependency_delays 0.01, scope_volatility 0.01.
 
@@ -112,22 +112,21 @@ Wired into `/delivery` in place of the prior risk `contributing_causes` bar list
 
 1. Load scoring thresholds + root-cause weights for the org
 2. Load project scoring inputs (same path as Delivery scoring)
-3. Merge optional Phase 15.2 operational stubs (`operational_signals.py` — all return `None` today)
+3. Merge Phase 15.2 operational signals via `DbOperationalSignalProvider` (fallback to 15.1 proxies when absent)
 4. Build factor severity signals
 5. Allocate confidence loss; persist snapshot + factors
 6. Dashboard/API read snapshot; AI may consume `root_cause_summary` only
 
-## Deferred (15.2–15.6)
+## Deferred (15.6)
 
 | Phase | Item |
 |---|---|
-| 15.2 | Timesheets, absenteeism, review queue, backlog queue, capacity history ingestion |
-| 15.3 | PM Daily Action Planner |
-| 15.4 | Wire `generate_daily_summary` using root-cause grounding |
-| 15.5 | Knowledge Agent retrieval into Delivery evidence |
 | 15.6 | Full Delivery dashboard redesign beyond Main Contributors |
 
-Stub hook module: `backend/app/agents/delivery/services/operational_signals.py`.
+Phase 15.2 operational ingestion: [delivery-agent-operational-data-sources.md](delivery-agent-operational-data-sources.md).  
+Phase 15.3 PM daily actions: [delivery-agent-pm-daily-action-planner.md](delivery-agent-pm-daily-action-planner.md).  
+Phase 15.4 operational briefing: [delivery-agent-operational-briefing.md](delivery-agent-operational-briefing.md).  
+Phase 15.5 knowledge evidence: [delivery-agent-knowledge-evidence.md](delivery-agent-knowledge-evidence.md).
 
 ## Compatibility
 

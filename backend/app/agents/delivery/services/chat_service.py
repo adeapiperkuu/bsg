@@ -34,6 +34,9 @@ from app.agents.delivery.services.dashboard_service import (
     get_dashboard_data,
     get_portfolio_data,
 )
+from app.agents.delivery.services.delivery_knowledge_evidence_service import (
+    retrieve_delivery_knowledge_evidence_for_dashboard,
+)
 from app.core.config import get_settings
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
@@ -54,6 +57,7 @@ EVIDENCE_SOURCE_TABLE_BY_TYPE = {
     "risk": "risk_alerts",
     "bottleneck": "bottlenecks",
     "milestone": "milestones",
+    "knowledge": "knowledge_documents",
 }
 EVIDENCE_TYPE_BY_SOURCE_TABLE = {table: kind for kind, table in EVIDENCE_SOURCE_TABLE_BY_TYPE.items()}
 
@@ -855,6 +859,40 @@ async def _prepare_chat_request(
     evidence_catalog: list[DeliveryChatSource] = []
     if project_dashboard is not None:
         evidence_catalog = _collect_sources(project_dashboard)
+        if (
+            current_user.role != AppRole.CLIENT
+            and resolved_project_id is not None
+            and get_settings().delivery_knowledge_evidence_enabled
+        ):
+            try:
+                knowledge = await retrieve_delivery_knowledge_evidence_for_dashboard(
+                    session,
+                    current_user,
+                    project_id=resolved_project_id,
+                    dashboard=project_dashboard,
+                    max_sources=3,
+                )
+                for citation in knowledge.get("citations") or []:
+                    if not isinstance(citation, dict):
+                        continue
+                    doc_id = citation.get("document_id")
+                    try:
+                        source_id = UUID(str(doc_id)) if doc_id else None
+                    except ValueError:
+                        source_id = None
+                    evidence_catalog.append(
+                        DeliveryChatSource(
+                            title=str(citation.get("title") or "Knowledge document"),
+                            type="knowledge",
+                            id=source_id,
+                            description=str(citation.get("excerpt") or "")[:280] or None,
+                        )
+                    )
+            except Exception:
+                logger.exception(
+                    "event=delivery_chat_knowledge_evidence_failed project_id=%s",
+                    resolved_project_id,
+                )
     for entry in portfolio.get("projects") or []:
         if len(evidence_catalog) >= 20:
             break

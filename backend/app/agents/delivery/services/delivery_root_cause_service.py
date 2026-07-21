@@ -110,9 +110,35 @@ async def recalculate_root_causes(
     shortfall = _throughput_shortfall_pct(inputs.raw_data)
     overdue_count = _overdue_milestone_count(inputs.raw_data.get("milestones") or [], as_of)
 
-    absenteeism = await signal_provider.get_absenteeism_signal(session, project_id=project_id)
-    dependency = await signal_provider.get_dependency_delay_signal(session, project_id=project_id)
-    scope = await signal_provider.get_scope_volatility_signal(session, project_id=project_id)
+    absenteeism = await signal_provider.get_absenteeism_signal(
+        session, project_id=project_id, as_of=as_of
+    )
+    review = await signal_provider.get_review_queue_signal(
+        session, project_id=project_id, as_of=as_of
+    )
+    backlog = await signal_provider.get_backlog_queue_signal(
+        session, project_id=project_id, as_of=as_of
+    )
+    capacity_ops = await signal_provider.get_capacity_snapshot_signal(
+        session, project_id=project_id, as_of=as_of
+    )
+    timesheet = await signal_provider.get_timesheet_signal(
+        session, project_id=project_id, as_of=as_of
+    )
+    dependency = await signal_provider.get_dependency_delay_signal(
+        session, project_id=project_id, as_of=as_of
+    )
+    scope = await signal_provider.get_scope_volatility_signal(
+        session, project_id=project_id, as_of=as_of
+    )
+
+    # Timesheet underfill reinforces capacity pressure when capacity tables are sparse.
+    capacity_override = capacity_ops.value if capacity_ops else None
+    if timesheet is not None:
+        if capacity_override is None:
+            capacity_override = timesheet.value
+        else:
+            capacity_override = max(capacity_override, timesheet.value)
 
     signals = build_factor_signals(
         bottlenecks=bottlenecks,
@@ -127,6 +153,9 @@ async def recalculate_root_causes(
         absenteeism_signal=absenteeism.value if absenteeism else None,
         dependency_signal=dependency.value if dependency else None,
         scope_signal=scope.value if scope else None,
+        review_turnaround_signal=review.value if review else None,
+        queue_signal=backlog.value if backlog else None,
+        capacity_signal=capacity_override,
     )
     breakdown = allocate_confidence_loss(
         overall_confidence=confidence,

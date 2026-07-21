@@ -22,6 +22,31 @@ from app.agents.delivery.schemas.root_cause import (
     RootCauseSnapshotRead,
     RootCauseTrendsResponse,
 )
+from app.agents.delivery.schemas.operational_data import (
+    AbsenteeismSnapshotCreate,
+    AbsenteeismSnapshotResponse,
+    BacklogQueueSnapshotCreate,
+    BacklogQueueSnapshotResponse,
+    CapacitySnapshotCreate,
+    CapacitySnapshotResponse,
+    ReviewQueueSnapshotCreate,
+    ReviewQueueSnapshotResponse,
+    TeamAvailabilitySnapshotCreate,
+    TeamAvailabilitySnapshotResponse,
+    TimesheetEntryCreate,
+    TimesheetEntryResponse,
+)
+from app.agents.delivery.schemas.pm_actions import (
+    PmDailyActionCompleteRequest,
+    PmDailyActionGenerateRequest,
+    PmDailyActionRead,
+    PmDailyActionsResponse,
+)
+from app.agents.delivery.schemas.operational_briefing import (
+    OperationalBriefingGenerateRequest,
+    OperationalBriefingSchema,
+)
+from app.agents.delivery.schemas.knowledge_evidence import KnowledgeEvidenceResponse
 from app.agents.delivery.services.bottleneck_service import (
     acknowledge_bottleneck,
     detect_project_bottlenecks,
@@ -34,6 +59,26 @@ from app.agents.delivery.services.delivery_root_cause_service import (
     get_project_root_causes,
     get_root_cause_trends,
     recalculate_root_causes,
+)
+from app.agents.delivery.services.operational_ingestion_service import (
+    upsert_absenteeism_snapshot,
+    upsert_backlog_queue_snapshot,
+    upsert_capacity_snapshot,
+    upsert_review_queue_snapshot,
+    upsert_team_availability_snapshot,
+    upsert_timesheet_entry,
+)
+from app.agents.delivery.services.pm_daily_action_service import (
+    action_to_payload,
+    complete_daily_action,
+    generate_daily_actions,
+    list_daily_actions,
+)
+from app.agents.delivery.services.operational_briefing_service import (
+    build_project_operational_briefing,
+)
+from app.agents.delivery.services.delivery_knowledge_evidence_service import (
+    retrieve_delivery_knowledge_evidence,
 )
 from app.agents.delivery.services.recommendation_service import (
     fetch_recommendation_row,
@@ -56,9 +101,16 @@ from app.db.models import (
     AlertStatus,
     AppRole,
     Bottleneck,
+    DeliveryAbsenteeismSnapshot,
+    DeliveryBacklogQueueSnapshot,
+    DeliveryCapacitySnapshot,
     DeliveryConfidenceScore,
+    DeliveryReviewQueueSnapshot,
+    DeliveryTeamAvailabilitySnapshot,
+    DeliveryTimesheetEntry,
     MilestoneStatus,
     OwnerType,
+    PmDailyActionStatus,
     RecommendationStatus,
     RiskAlert,
     RiskTier,
@@ -786,3 +838,522 @@ async def recalculate_project_root_causes(
             recalculated=True,
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 15.2 — Operational data sources (internal only)
+# ---------------------------------------------------------------------------
+
+
+def _timesheet_response(row: DeliveryTimesheetEntry, *, created=False, corrected=False) -> TimesheetEntryResponse:
+    response = TimesheetEntryResponse.model_validate(row)
+    response.created = created
+    response.corrected = corrected
+    return response
+
+
+def _absenteeism_response(
+    row: DeliveryAbsenteeismSnapshot, *, created=False, corrected=False
+) -> AbsenteeismSnapshotResponse:
+    response = AbsenteeismSnapshotResponse.model_validate(row)
+    response.created = created
+    response.corrected = corrected
+    return response
+
+
+def _review_response(
+    row: DeliveryReviewQueueSnapshot, *, created=False, corrected=False
+) -> ReviewQueueSnapshotResponse:
+    response = ReviewQueueSnapshotResponse.model_validate(row)
+    response.created = created
+    response.corrected = corrected
+    return response
+
+
+def _backlog_response(
+    row: DeliveryBacklogQueueSnapshot, *, created=False, corrected=False
+) -> BacklogQueueSnapshotResponse:
+    response = BacklogQueueSnapshotResponse.model_validate(row)
+    response.created = created
+    response.corrected = corrected
+    return response
+
+
+def _capacity_response(
+    row: DeliveryCapacitySnapshot, *, created=False, corrected=False
+) -> CapacitySnapshotResponse:
+    response = CapacitySnapshotResponse.model_validate(row)
+    response.created = created
+    response.corrected = corrected
+    return response
+
+
+def _availability_response(
+    row: DeliveryTeamAvailabilitySnapshot, *, created=False, corrected=False
+) -> TeamAvailabilitySnapshotResponse:
+    response = TeamAvailabilitySnapshotResponse.model_validate(row)
+    response.created = created
+    response.corrected = corrected
+    return response
+
+
+@router.get(
+    "/delivery/projects/{project_id}/timesheets",
+    response_model=ListResponse[TimesheetEntryResponse],
+)
+async def list_project_timesheets(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = InternalDeliveryUser,
+    team_id: UUID | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    limit: LimitQuery = 100,
+    offset: int = Query(default=0, ge=0, le=10_000),
+) -> ListResponse[TimesheetEntryResponse]:
+    await get_visible_project(session, project_id, current_user)
+    stmt = select(DeliveryTimesheetEntry).where(DeliveryTimesheetEntry.project_id == project_id)
+    if team_id is not None:
+        stmt = stmt.where(DeliveryTimesheetEntry.team_id == team_id)
+    if date_from is not None:
+        stmt = stmt.where(DeliveryTimesheetEntry.snapshot_date >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(DeliveryTimesheetEntry.snapshot_date <= date_to)
+    rows = (
+        await session.execute(
+            stmt.order_by(DeliveryTimesheetEntry.snapshot_date.desc()).offset(offset).limit(limit)
+        )
+    ).scalars()
+    data = [_timesheet_response(row) for row in rows]
+    return ListResponse(
+        data=data,
+        pagination=Pagination(limit=limit, offset=offset, items=len(data), has_more=len(data) == limit),
+    )
+
+
+@router.post(
+    "/delivery/projects/{project_id}/timesheets",
+    response_model=DataResponse[TimesheetEntryResponse],
+)
+async def create_project_timesheet(
+    project_id: UUID,
+    payload: TimesheetEntryCreate,
+    session: SessionDep,
+    current_user: CurrentUser = DeliveryOperator,
+) -> DataResponse[TimesheetEntryResponse]:
+    project = await get_visible_project(session, project_id, current_user)
+    result = await upsert_timesheet_entry(
+        session, project=project, actor=current_user, payload=payload
+    )
+    await session.commit()
+    await session.refresh(result.row)
+    return DataResponse(
+        data=_timesheet_response(result.row, created=result.created, corrected=result.corrected)
+    )
+
+
+@router.get(
+    "/delivery/projects/{project_id}/absenteeism",
+    response_model=ListResponse[AbsenteeismSnapshotResponse],
+)
+async def list_project_absenteeism(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = InternalDeliveryUser,
+    limit: LimitQuery = 100,
+    offset: int = Query(default=0, ge=0, le=10_000),
+) -> ListResponse[AbsenteeismSnapshotResponse]:
+    await get_visible_project(session, project_id, current_user)
+    rows = (
+        await session.execute(
+            select(DeliveryAbsenteeismSnapshot)
+            .where(DeliveryAbsenteeismSnapshot.project_id == project_id)
+            .order_by(DeliveryAbsenteeismSnapshot.snapshot_date.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+    ).scalars()
+    data = [_absenteeism_response(row) for row in rows]
+    return ListResponse(
+        data=data,
+        pagination=Pagination(limit=limit, offset=offset, items=len(data), has_more=len(data) == limit),
+    )
+
+
+@router.post(
+    "/delivery/projects/{project_id}/absenteeism",
+    response_model=DataResponse[AbsenteeismSnapshotResponse],
+)
+async def create_project_absenteeism(
+    project_id: UUID,
+    payload: AbsenteeismSnapshotCreate,
+    session: SessionDep,
+    current_user: CurrentUser = DeliveryOperator,
+) -> DataResponse[AbsenteeismSnapshotResponse]:
+    project = await get_visible_project(session, project_id, current_user)
+    result = await upsert_absenteeism_snapshot(
+        session, project=project, actor=current_user, payload=payload
+    )
+    await session.commit()
+    await session.refresh(result.row)
+    return DataResponse(
+        data=_absenteeism_response(result.row, created=result.created, corrected=result.corrected)
+    )
+
+
+@router.get(
+    "/delivery/projects/{project_id}/review-queue",
+    response_model=ListResponse[ReviewQueueSnapshotResponse],
+)
+async def list_project_review_queue(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = InternalDeliveryUser,
+    limit: LimitQuery = 100,
+    offset: int = Query(default=0, ge=0, le=10_000),
+) -> ListResponse[ReviewQueueSnapshotResponse]:
+    await get_visible_project(session, project_id, current_user)
+    rows = (
+        await session.execute(
+            select(DeliveryReviewQueueSnapshot)
+            .where(DeliveryReviewQueueSnapshot.project_id == project_id)
+            .order_by(DeliveryReviewQueueSnapshot.snapshot_date.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+    ).scalars()
+    data = [_review_response(row) for row in rows]
+    return ListResponse(
+        data=data,
+        pagination=Pagination(limit=limit, offset=offset, items=len(data), has_more=len(data) == limit),
+    )
+
+
+@router.post(
+    "/delivery/projects/{project_id}/review-queue",
+    response_model=DataResponse[ReviewQueueSnapshotResponse],
+)
+async def create_project_review_queue(
+    project_id: UUID,
+    payload: ReviewQueueSnapshotCreate,
+    session: SessionDep,
+    current_user: CurrentUser = DeliveryOperator,
+) -> DataResponse[ReviewQueueSnapshotResponse]:
+    project = await get_visible_project(session, project_id, current_user)
+    result = await upsert_review_queue_snapshot(
+        session, project=project, actor=current_user, payload=payload
+    )
+    await session.commit()
+    await session.refresh(result.row)
+    return DataResponse(
+        data=_review_response(result.row, created=result.created, corrected=result.corrected)
+    )
+
+
+@router.get(
+    "/delivery/projects/{project_id}/backlog-queue",
+    response_model=ListResponse[BacklogQueueSnapshotResponse],
+)
+async def list_project_backlog_queue(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = InternalDeliveryUser,
+    limit: LimitQuery = 100,
+    offset: int = Query(default=0, ge=0, le=10_000),
+) -> ListResponse[BacklogQueueSnapshotResponse]:
+    await get_visible_project(session, project_id, current_user)
+    rows = (
+        await session.execute(
+            select(DeliveryBacklogQueueSnapshot)
+            .where(DeliveryBacklogQueueSnapshot.project_id == project_id)
+            .order_by(DeliveryBacklogQueueSnapshot.snapshot_date.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+    ).scalars()
+    data = [_backlog_response(row) for row in rows]
+    return ListResponse(
+        data=data,
+        pagination=Pagination(limit=limit, offset=offset, items=len(data), has_more=len(data) == limit),
+    )
+
+
+@router.post(
+    "/delivery/projects/{project_id}/backlog-queue",
+    response_model=DataResponse[BacklogQueueSnapshotResponse],
+)
+async def create_project_backlog_queue(
+    project_id: UUID,
+    payload: BacklogQueueSnapshotCreate,
+    session: SessionDep,
+    current_user: CurrentUser = DeliveryOperator,
+) -> DataResponse[BacklogQueueSnapshotResponse]:
+    project = await get_visible_project(session, project_id, current_user)
+    result = await upsert_backlog_queue_snapshot(
+        session, project=project, actor=current_user, payload=payload
+    )
+    await session.commit()
+    await session.refresh(result.row)
+    return DataResponse(
+        data=_backlog_response(result.row, created=result.created, corrected=result.corrected)
+    )
+
+
+@router.get(
+    "/delivery/projects/{project_id}/capacity",
+    response_model=ListResponse[CapacitySnapshotResponse],
+)
+async def list_project_capacity(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = InternalDeliveryUser,
+    limit: LimitQuery = 100,
+    offset: int = Query(default=0, ge=0, le=10_000),
+) -> ListResponse[CapacitySnapshotResponse]:
+    await get_visible_project(session, project_id, current_user)
+    rows = (
+        await session.execute(
+            select(DeliveryCapacitySnapshot)
+            .where(DeliveryCapacitySnapshot.project_id == project_id)
+            .order_by(DeliveryCapacitySnapshot.snapshot_date.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+    ).scalars()
+    data = [_capacity_response(row) for row in rows]
+    return ListResponse(
+        data=data,
+        pagination=Pagination(limit=limit, offset=offset, items=len(data), has_more=len(data) == limit),
+    )
+
+
+@router.post(
+    "/delivery/projects/{project_id}/capacity",
+    response_model=DataResponse[CapacitySnapshotResponse],
+)
+async def create_project_capacity(
+    project_id: UUID,
+    payload: CapacitySnapshotCreate,
+    session: SessionDep,
+    current_user: CurrentUser = DeliveryOperator,
+) -> DataResponse[CapacitySnapshotResponse]:
+    project = await get_visible_project(session, project_id, current_user)
+    result = await upsert_capacity_snapshot(
+        session, project=project, actor=current_user, payload=payload
+    )
+    await session.commit()
+    await session.refresh(result.row)
+    return DataResponse(
+        data=_capacity_response(result.row, created=result.created, corrected=result.corrected)
+    )
+
+
+@router.get(
+    "/delivery/projects/{project_id}/team-availability",
+    response_model=ListResponse[TeamAvailabilitySnapshotResponse],
+)
+async def list_project_team_availability(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = InternalDeliveryUser,
+    team_id: UUID | None = None,
+    limit: LimitQuery = 100,
+    offset: int = Query(default=0, ge=0, le=10_000),
+) -> ListResponse[TeamAvailabilitySnapshotResponse]:
+    await get_visible_project(session, project_id, current_user)
+    stmt = select(DeliveryTeamAvailabilitySnapshot).where(
+        DeliveryTeamAvailabilitySnapshot.project_id == project_id
+    )
+    if team_id is not None:
+        stmt = stmt.where(DeliveryTeamAvailabilitySnapshot.team_id == team_id)
+    rows = (
+        await session.execute(
+            stmt.order_by(DeliveryTeamAvailabilitySnapshot.snapshot_date.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+    ).scalars()
+    data = [_availability_response(row) for row in rows]
+    return ListResponse(
+        data=data,
+        pagination=Pagination(limit=limit, offset=offset, items=len(data), has_more=len(data) == limit),
+    )
+
+
+@router.post(
+    "/delivery/projects/{project_id}/team-availability",
+    response_model=DataResponse[TeamAvailabilitySnapshotResponse],
+)
+async def create_project_team_availability(
+    project_id: UUID,
+    payload: TeamAvailabilitySnapshotCreate,
+    session: SessionDep,
+    current_user: CurrentUser = DeliveryOperator,
+) -> DataResponse[TeamAvailabilitySnapshotResponse]:
+    project = await get_visible_project(session, project_id, current_user)
+    result = await upsert_team_availability_snapshot(
+        session, project=project, actor=current_user, payload=payload
+    )
+    await session.commit()
+    await session.refresh(result.row)
+    return DataResponse(
+        data=_availability_response(result.row, created=result.created, corrected=result.corrected)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 15.3 — PM Daily Action Planner
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/delivery/projects/{project_id}/daily-actions",
+    response_model=DataResponse[PmDailyActionsResponse],
+)
+async def get_project_daily_actions(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = InternalDeliveryUser,
+    plan_date: date | None = None,
+    include_history: bool = Query(default=True),
+    history_days: int = Query(default=14, ge=1, le=90),
+) -> DataResponse[PmDailyActionsResponse]:
+    await get_visible_project(session, project_id, current_user)
+    payload = await list_daily_actions(
+        session,
+        project_id=project_id,
+        plan_date=plan_date,
+        include_history=include_history,
+        history_days=history_days,
+    )
+    return DataResponse(data=PmDailyActionsResponse.model_validate(payload))
+
+
+@router.post(
+    "/delivery/projects/{project_id}/daily-actions/generate",
+    response_model=DataResponse[PmDailyActionsResponse],
+)
+async def generate_project_daily_actions(
+    project_id: UUID,
+    session: SessionDep,
+    payload: PmDailyActionGenerateRequest | None = None,
+    current_user: CurrentUser = DeliveryOperator,
+) -> DataResponse[PmDailyActionsResponse]:
+    project = await get_visible_project(session, project_id, current_user)
+    request = payload or PmDailyActionGenerateRequest()
+    try:
+        await generate_daily_actions(
+            session,
+            project_id=project.id,
+            org_id=project.org_id,
+            plan_date=request.plan_date,
+            with_ai_rationale=request.with_ai_rationale,
+            limit=request.limit,
+        )
+    except ValueError as exc:
+        raise ApiError(404, "NOT_FOUND", str(exc)) from exc
+    await session.commit()
+    result = await list_daily_actions(
+        session,
+        project_id=project.id,
+        plan_date=request.plan_date,
+        include_history=True,
+    )
+    return DataResponse(data=PmDailyActionsResponse.model_validate(result))
+
+
+@router.post(
+    "/delivery/daily-actions/{action_id}/complete",
+    response_model=DataResponse[PmDailyActionRead],
+)
+async def complete_project_daily_action(
+    action_id: UUID,
+    payload: PmDailyActionCompleteRequest,
+    session: SessionDep,
+    current_user: CurrentUser = DeliveryOperator,
+) -> DataResponse[PmDailyActionRead]:
+    row = await complete_daily_action(
+        session,
+        action_id=action_id,
+        actor=current_user,
+        status=PmDailyActionStatus(payload.status),
+        note=payload.note,
+    )
+    await session.commit()
+    await session.refresh(row)
+    return DataResponse(data=PmDailyActionRead.model_validate(action_to_payload(row)))
+
+
+# ---------------------------------------------------------------------------
+# Phase 15.4 — AI Daily Operational Briefing
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/delivery/projects/{project_id}/operational-briefing",
+    response_model=DataResponse[OperationalBriefingSchema],
+)
+async def get_project_operational_briefing(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = InternalDeliveryUser,
+    with_ai: bool = Query(default=True),
+    as_of: date | None = None,
+) -> DataResponse[OperationalBriefingSchema]:
+    await get_visible_project(session, project_id, current_user)
+    payload = await build_project_operational_briefing(
+        session,
+        project_id=project_id,
+        current_user=current_user,
+        as_of=as_of,
+        with_ai=with_ai,
+    )
+    return DataResponse(data=OperationalBriefingSchema.model_validate(payload))
+
+
+@router.post(
+    "/delivery/projects/{project_id}/operational-briefing/generate",
+    response_model=DataResponse[OperationalBriefingSchema],
+)
+async def generate_project_operational_briefing(
+    project_id: UUID,
+    payload: OperationalBriefingGenerateRequest,
+    session: SessionDep,
+    current_user: CurrentUser = DeliveryOperator,
+) -> DataResponse[OperationalBriefingSchema]:
+    await get_visible_project(session, project_id, current_user)
+    briefing = await build_project_operational_briefing(
+        session,
+        project_id=project_id,
+        current_user=current_user,
+        with_ai=payload.with_ai,
+    )
+    return DataResponse(data=OperationalBriefingSchema.model_validate(briefing))
+
+
+# ---------------------------------------------------------------------------
+# Phase 15.5 — Delivery Knowledge Integration (reuse Knowledge RAG)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/delivery/projects/{project_id}/knowledge-evidence",
+    response_model=DataResponse[KnowledgeEvidenceResponse],
+)
+async def get_project_knowledge_evidence(
+    project_id: UUID,
+    session: SessionDep,
+    current_user: CurrentUser = InternalDeliveryUser,
+    focus: str | None = Query(default=None, max_length=500),
+    max_sources: int = Query(default=5, ge=1, le=10),
+) -> DataResponse[KnowledgeEvidenceResponse]:
+    """Retrieve approved Knowledge citations for a Delivery project (fail-open)."""
+    await get_visible_project(session, project_id, current_user)
+    payload = await retrieve_delivery_knowledge_evidence(
+        session,
+        current_user,
+        project_id=project_id,
+        focus=focus,
+        max_sources=max_sources,
+    )
+    return DataResponse(data=KnowledgeEvidenceResponse.model_validate(payload))

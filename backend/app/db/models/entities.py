@@ -40,6 +40,14 @@ class BottleneckSourceType(StrEnum):
     DETECTOR = "detector"
 
 
+class OperationalDataSourceType(StrEnum):
+    MANUAL = "manual"
+    IMPORT = "import"
+    EVENT = "event"
+    DERIVED = "derived"
+    CORRECTION = "correction"
+
+
 class ProjectStatus(StrEnum):
     ACTIVE = "active"
     RAMPING = "ramping"
@@ -87,6 +95,28 @@ class RecommendationStatus(StrEnum):
     PENDING = "pending"
     ACCEPTED = "accepted"
     REJECTED = "rejected"
+
+
+class PmDailyActionStatus(StrEnum):
+    TODO = "todo"
+    DONE = "done"
+    SKIPPED = "skipped"
+    DEFERRED = "deferred"
+
+
+class PmDailyActionSourceType(StrEnum):
+    ROOT_CAUSE_FACTOR = "root_cause_factor"
+    RISK_ALERT = "risk_alert"
+    BOTTLENECK = "bottleneck"
+    MITIGATION = "mitigation"
+    MILESTONE = "milestone"
+
+
+class PmDailyActionUrgency(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
 
 
 class OwnerType(StrEnum):
@@ -547,6 +577,11 @@ bottleneck_source_type = Enum(
     name="bottleneck_source_type",
     values_callable=lambda x: [e.value for e in x],
 )
+operational_data_source_type = Enum(
+    OperationalDataSourceType,
+    name="operational_data_source_type",
+    values_callable=lambda x: [e.value for e in x],
+)
 project_status = Enum(ProjectStatus, name="project_status", values_callable=lambda x: [e.value for e in x])
 milestone_status = Enum(MilestoneStatus, name="milestone_status", values_callable=lambda x: [e.value for e in x])
 risk_tier = Enum(RiskTier, name="risk_tier", values_callable=lambda x: [e.value for e in x])
@@ -560,6 +595,21 @@ recommendation_severity = Enum(
 recommendation_status = Enum(
     RecommendationStatus,
     name="recommendation_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+pm_daily_action_status = Enum(
+    PmDailyActionStatus,
+    name="pm_daily_action_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+pm_daily_action_source_type = Enum(
+    PmDailyActionSourceType,
+    name="pm_daily_action_source_type",
+    values_callable=lambda x: [e.value for e in x],
+)
+pm_daily_action_urgency = Enum(
+    PmDailyActionUrgency,
+    name="pm_daily_action_urgency",
     values_callable=lambda x: [e.value for e in x],
 )
 owner_type = Enum(OwnerType, name="owner_type", values_callable=lambda x: [e.value for e in x])
@@ -1296,6 +1346,51 @@ class MitigationRecommendation(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftD
     )
 
 
+class DeliveryPmDailyAction(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "delivery_pm_daily_actions"
+    __table_args__ = (
+        Index("delivery_pm_daily_actions_org_plan_date_idx", "org_id", desc("plan_date")),
+        Index("delivery_pm_daily_actions_project_plan_date_idx", "project_id", "plan_date", "rank"),
+        Index(
+            "delivery_pm_daily_actions_open_source_uidx",
+            "project_id",
+            "plan_date",
+            "source_key",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL AND status = 'todo'"),
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    plan_date: Mapped[date] = mapped_column(Date)
+    rank: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    deterministic_rationale: Mapped[str] = mapped_column(Text)
+    ai_rationale: Mapped[str | None] = mapped_column(Text)
+    urgency: Mapped[PmDailyActionUrgency] = mapped_column(
+        pm_daily_action_urgency, default=PmDailyActionUrgency.MEDIUM
+    )
+    estimated_impact_points: Mapped[Decimal] = mapped_column(Numeric(6, 2), default=Decimal("0"))
+    due_date: Mapped[date] = mapped_column(Date)
+    status: Mapped[PmDailyActionStatus] = mapped_column(
+        pm_daily_action_status, default=PmDailyActionStatus.TODO
+    )
+    source_type: Mapped[PmDailyActionSourceType] = mapped_column(pm_daily_action_source_type)
+    source_key: Mapped[str] = mapped_column(Text)
+    root_cause_factor: Mapped[str | None] = mapped_column(Text)
+    mitigation_recommendation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("mitigation_recommendations.id", ondelete="SET NULL")
+    )
+    evidence_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    completion_note: Mapped[str | None] = mapped_column(Text)
+    model_version: Mapped[str] = mapped_column(Text, default="pm_daily_action_v1")
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class Bottleneck(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
     __tablename__ = "bottlenecks"
     __table_args__ = (
@@ -1541,6 +1636,155 @@ class DeliveryRootCauseFactor(Base, UuidPrimaryKey, CreatedAt):
     severity: Mapped[RiskTier] = mapped_column(risk_tier, default=RiskTier.LOW)
     explanation: Mapped[str] = mapped_column(Text)
     evidence_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class DeliveryTimesheetEntry(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "delivery_timesheet_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "project_id",
+            "team_id",
+            "snapshot_date",
+            name="delivery_timesheet_entries_org_project_team_date_key",
+        ),
+        Index("delivery_timesheet_entries_org_project_date_idx", "org_id", "project_id", desc("snapshot_date")),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id", ondelete="RESTRICT"), index=True)
+    snapshot_date: Mapped[date] = mapped_column(Date)
+    hours_logged: Mapped[Decimal] = mapped_column(Numeric(8, 2))
+    expected_hours: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    source_type: Mapped[OperationalDataSourceType] = mapped_column(
+        operational_data_source_type, default=OperationalDataSourceType.MANUAL
+    )
+    source_reference: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class DeliveryAbsenteeismSnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "delivery_absenteeism_snapshots"
+    __table_args__ = (
+        UniqueConstraint("project_id", "snapshot_date", name="delivery_absenteeism_snapshots_project_date_key"),
+        Index("delivery_absenteeism_snapshots_org_date_idx", "org_id", desc("snapshot_date")),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    snapshot_date: Mapped[date] = mapped_column(Date)
+    absent_fte: Mapped[Decimal] = mapped_column(Numeric(8, 2))
+    planned_fte: Mapped[Decimal] = mapped_column(Numeric(8, 2))
+    absence_rate_pct: Mapped[Decimal] = mapped_column(Numeric(5, 2))
+    source_type: Mapped[OperationalDataSourceType] = mapped_column(
+        operational_data_source_type, default=OperationalDataSourceType.MANUAL
+    )
+    source_reference: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class DeliveryReviewQueueSnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "delivery_review_queue_snapshots"
+    __table_args__ = (
+        UniqueConstraint("project_id", "snapshot_date", name="delivery_review_queue_snapshots_project_date_key"),
+        Index("delivery_review_queue_snapshots_org_date_idx", "org_id", desc("snapshot_date")),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    snapshot_date: Mapped[date] = mapped_column(Date)
+    pending_count: Mapped[int] = mapped_column(Integer)
+    avg_turnaround_hours: Mapped[Decimal] = mapped_column(Numeric(8, 2))
+    sla_breach_count: Mapped[int] = mapped_column(Integer, default=0)
+    source_type: Mapped[OperationalDataSourceType] = mapped_column(
+        operational_data_source_type, default=OperationalDataSourceType.MANUAL
+    )
+    source_reference: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class DeliveryBacklogQueueSnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "delivery_backlog_queue_snapshots"
+    __table_args__ = (
+        UniqueConstraint("project_id", "snapshot_date", name="delivery_backlog_queue_snapshots_project_date_key"),
+        Index("delivery_backlog_queue_snapshots_org_date_idx", "org_id", desc("snapshot_date")),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    snapshot_date: Mapped[date] = mapped_column(Date)
+    item_count: Mapped[int] = mapped_column(Integer)
+    aging_item_count: Mapped[int] = mapped_column(Integer, default=0)
+    oldest_item_age_days: Mapped[int] = mapped_column(Integer, default=0)
+    source_type: Mapped[OperationalDataSourceType] = mapped_column(
+        operational_data_source_type, default=OperationalDataSourceType.MANUAL
+    )
+    source_reference: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class DeliveryCapacitySnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "delivery_capacity_snapshots"
+    __table_args__ = (
+        UniqueConstraint("project_id", "snapshot_date", name="delivery_capacity_snapshots_project_date_key"),
+        Index("delivery_capacity_snapshots_org_date_idx", "org_id", desc("snapshot_date")),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    snapshot_date: Mapped[date] = mapped_column(Date)
+    planned_capacity_hours: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    available_capacity_hours: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    source_type: Mapped[OperationalDataSourceType] = mapped_column(
+        operational_data_source_type, default=OperationalDataSourceType.MANUAL
+    )
+    source_reference: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class DeliveryTeamAvailabilitySnapshot(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "delivery_team_availability_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "project_id",
+            "team_id",
+            "snapshot_date",
+            name="delivery_team_availability_snapshots_org_project_team_date_key",
+        ),
+        Index(
+            "delivery_team_availability_snapshots_org_project_date_idx",
+            "org_id",
+            "project_id",
+            desc("snapshot_date"),
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"), index=True)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    team_id: Mapped[UUID] = mapped_column(ForeignKey("teams.id", ondelete="RESTRICT"), index=True)
+    snapshot_date: Mapped[date] = mapped_column(Date)
+    available_headcount: Mapped[int] = mapped_column(Integer)
+    planned_headcount: Mapped[int] = mapped_column(Integer)
+    available_fte: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    source_type: Mapped[OperationalDataSourceType] = mapped_column(
+        operational_data_source_type, default=OperationalDataSourceType.MANUAL
+    )
+    source_reference: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
 
 
 class Notification(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):

@@ -5,7 +5,7 @@
 
 ## Contract
 
-Project and portfolio dashboard responses now include an additive `structured_summary` object. `daily_summary` remains nullable prose and is still forced to `None` by the dashboard route until optional AI wiring is approved.
+Project and portfolio dashboard responses now include an additive `structured_summary` object. Project dashboards may also attach Phase 15.4 `operational_briefing` / `daily_summary` (see [delivery-agent-operational-briefing.md](delivery-agent-operational-briefing.md)). Portfolio aggregation remains AI-free.
 
 ```json
 {

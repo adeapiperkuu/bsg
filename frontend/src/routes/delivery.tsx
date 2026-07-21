@@ -8,14 +8,21 @@ import {
   CartesianGrid,
   Tooltip,
 } from "recharts";
-import { useEffect, useMemo, useRef } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
-import { Card, SectionHeader, KpiCard, StatusPill } from "@/components/bsg/widgets";
+import {
+  Card,
+  SectionGroupHeading,
+  SectionHeader,
+  KpiCard,
+  StatusPill,
+} from "@/components/bsg/widgets";
 import { TablePagination } from "@/components/bsg/TablePagination";
 import { usePagination } from "@/hooks/usePagination";
 import {
   useDeliveryPortfolioQuery,
   useOrganisationsQuery,
+  useProjectDailyActionsQuery,
   useProjectDeliveryConfidenceQuery,
   useProjectRootCausesQuery,
   useRootCauseTrendsQuery,
@@ -29,7 +36,23 @@ import {
   sortByPriority,
   toPortfolioEntries,
 } from "@/features/delivery/portfolio";
+import {
+  buildOperationalTimeline,
+  deriveActiveBottlenecks,
+  deriveDeliveryInsights,
+  deriveTrafficDistribution,
+  milestoneHitRateFor,
+  trafficLightLabel,
+} from "@/features/delivery/insights";
+import {
+  DeliveryInsightsPanel,
+  OperationalTimelinePanel,
+  PortfolioHealthBar,
+  TeamBottlenecksPanel,
+} from "@/features/delivery/DashboardSections";
 import { DeliveryRootCauseSection } from "@/features/delivery/root-cause";
+import { OperationalBriefingPanel } from "@/features/delivery/briefing/OperationalBriefingPanel";
+import { TodaysFocusPanel } from "@/features/delivery/pm-actions/TodaysFocusPanel";
 import { flushNavPrefetch } from "@/lib/queries/nav-prefetch";
 import { cn } from "@/lib/utils";
 import { MitigationRecommendationsPanel } from "@/features/mitigation-recommendations/components/MitigationRecommendationsPanel";
@@ -94,7 +117,7 @@ function riskLabel(tier?: string): string {
   return "Unknown";
 }
 
-/** Rows per page for the Project Performance table. */
+/** Rows per page for the Drill-Down Analytics table. */
 const PROJECTS_PER_PAGE = 25;
 
 function buildConfidenceChart(
@@ -106,7 +129,7 @@ function buildConfidenceChart(
 
   if (sorted.length === 0) return [];
 
-  const chart = sorted.map((point, index) => {
+  const chart = sorted.map((point) => {
     const date = new Date(point.created_at);
     const week = `W${Math.ceil(
       (date.getTime() - new Date(date.getFullYear(), 0, 1).getTime()) / 604_800_000,
@@ -127,7 +150,7 @@ function DeliveryPage() {
   const { projectId: urlProjectId } = Route.useSearch();
   const syncedProjectIdRef = useRef<string | null>(null);
   const userRole = useAuthStore((s) => s.user?.role);
-  const canViewRootCauseTrends = userRole !== "client";
+  const isInternalUser = userRole !== "client";
 
   const organisationsQuery = useOrganisationsQuery();
   const portfolioQuery = useDeliveryPortfolioQuery();
@@ -159,10 +182,10 @@ function DeliveryPage() {
 
   const confidenceQuery = useProjectDeliveryConfidenceQuery(resolvedProjectId);
   const rootCausesQuery = useProjectRootCausesQuery(resolvedProjectId);
-  const rootCauseTrendsQuery = useRootCauseTrendsQuery(
-    resolvedProjectId,
-    canViewRootCauseTrends,
-  );
+  const rootCauseTrendsQuery = useRootCauseTrendsQuery(resolvedProjectId, isInternalUser);
+  // Same query key as TodaysFocusPanel — React Query dedupes, so this costs no extra
+  // request. The timeline reads completed-action history from it.
+  const dailyActionsQuery = useProjectDailyActionsQuery(resolvedProjectId, isInternalUser);
 
   const orgById = useMemo(
     () => new Map(organisations.map((org) => [org.id, org.name])),
@@ -177,14 +200,8 @@ function DeliveryPage() {
     [portfolioQuery.data?.milestones],
   );
 
-  // The per-project /delivery/dashboard fallback is gone: it existed only to cover a
-  // resolvedProjectId that the portfolio did not contain, which was possible when the
-  // id came from the separately-limited /projects list. Selection is now drawn from the
-  // portfolio itself, so that case cannot arise.
-  //
-  // Sections still wait only on the queries they read, but the project universe now
-  // comes from the portfolio, so the table and selector wait on it rather than on the
-  // faster /projects call.
+  // Sections wait only on the queries they read; the project universe comes from the
+  // portfolio, so the table and selector wait on it.
   const orgsLoading = organisationsQuery.isLoading;
   const portfolioLoading = portfolioQuery.isLoading;
   const confidenceLoading = portfolioLoading || confidenceQuery.isLoading;
@@ -198,14 +215,22 @@ function DeliveryPage() {
 
   // Computed from the full entry list, never the current page: pagination is a view
   // window over the same universe the KPIs summarise, so paging must not move them.
-  //
-  // No delta is shown for either KPI: the portfolio payload carries only current values,
-  // so there is no prior period to compare against. `confidenceDelta` used to report
-  // (last project - first project) over a name-ordered list, which KpiCard renders as a
-  // change-over-time indicator. That compared two unrelated projects.
   const portfolioKpis = useMemo(
     () => computePortfolioKpis(entries, portfolioMilestones),
     [entries, portfolioMilestones],
+  );
+  const trafficDistribution = useMemo(() => deriveTrafficDistribution(entries), [entries]);
+  const deliveryInsights = useMemo(
+    () => deriveDeliveryInsights(entries, rootCauseTrendsQuery.data),
+    [entries, rootCauseTrendsQuery.data],
+  );
+  const activeBottlenecks = useMemo(
+    () => deriveActiveBottlenecks(selectedDashboard),
+    [selectedDashboard],
+  );
+  const timelineEvents = useMemo(
+    () => buildOperationalTimeline(selectedDashboard, dailyActionsQuery.data?.history ?? []),
+    [selectedDashboard, dailyActionsQuery.data?.history],
   );
 
   const confidenceChart = buildConfidenceChart(confidenceQuery.data ?? []);
@@ -213,6 +238,9 @@ function DeliveryPage() {
   const selectProject = (projectId: string) => {
     navigate({ search: { projectId } });
   };
+
+  // Drill-down row expansion for the analytics table.
+  const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
 
   // Paginate the ranked list so the highest-priority projects occupy page 1. Reset to
   // page 1 only when the portfolio itself changes, not when the focused project does.
@@ -261,169 +289,322 @@ function DeliveryPage() {
           </select>
         </div>
 
-        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          {/* No delta on either card: the portfolio payload carries only current values,
-              so there is no prior period to compare against. */}
-          <KpiCard
-            label="Throughput (7-day avg)"
-            value={`${formatNumber(portfolioKpis.totalThroughput)}/d`}
-            tone="success"
-          />
-          <KpiCard
-            label="Schedule Confidence"
-            value={`${portfolioKpis.avgConfidence}%`}
-            tone="warning"
-          />
-          <KpiCard
-            label="At-Risk Projects"
-            value={portfolioKpis.atRiskProjects}
-            tone="danger"
-          />
-          <KpiCard
-            label="Milestone Hit Rate"
-            value={
-              portfolioKpis.milestoneHitRate === null
-                ? "—"
-                : `${portfolioKpis.milestoneHitRate}%`
-            }
-            tone="success"
+        {/* ------------------------------------------------------------------ */}
+        {/* Executive delivery overview                                         */}
+        {/* ------------------------------------------------------------------ */}
+        <div id="overview" className="space-y-4">
+          <SectionGroupHeading title="Executive Delivery Overview" />
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            {/* No delta on either card: the portfolio payload carries only current
+                values, so there is no prior period to compare against. */}
+            <KpiCard
+              label="Throughput (7-day avg)"
+              value={`${formatNumber(portfolioKpis.totalThroughput)}/d`}
+              tone="success"
+            />
+            <KpiCard
+              label="Schedule Confidence"
+              value={`${portfolioKpis.avgConfidence}%`}
+              tone="warning"
+            />
+            <KpiCard
+              label="At-Risk Projects"
+              value={portfolioKpis.atRiskProjects}
+              tone="danger"
+            />
+            <KpiCard
+              label="Milestone Hit Rate"
+              value={
+                portfolioKpis.milestoneHitRate === null
+                  ? "—"
+                  : `${portfolioKpis.milestoneHitRate}%`
+              }
+              tone="success"
+            />
+          </div>
+          <PortfolioHealthBar distribution={trafficDistribution} />
+        </div>
+
+        {/* ------------------------------------------------------------------ */}
+        {/* Daily operational briefing (15.4)                                   */}
+        {/* ------------------------------------------------------------------ */}
+        <div id="briefing" className="space-y-4">
+          <SectionGroupHeading title="Daily Operational Briefing" />
+          <OperationalBriefingPanel
+            projectId={resolvedProjectId}
+            projectName={selectedProject?.name}
           />
         </div>
 
-        <DeliveryRootCauseSection
-          projectName={selectedProject?.name}
-          rootCauses={rootCausesQuery.data}
-          trends={rootCauseTrendsQuery.data}
-          loading={rootCausesLoading}
-          trendsLoading={rootCauseTrendsLoading}
-          fallbackConfidence={selectedDashboard?.confidence ?? null}
-        />
-
-        <MitigationRecommendationsPanel projectId={resolvedProjectId} />
-        <Card>
-          <SectionHeader
-            title="Confidence Trend & 4-Week Forecast"
-            sub="Schedule confidence · historical + forecast"
+        {/* ------------------------------------------------------------------ */}
+        {/* Root-cause analysis (15.1/15.2)                                     */}
+        {/* ------------------------------------------------------------------ */}
+        <div id="root-cause" className="space-y-4">
+          <SectionGroupHeading title="Root-Cause Analysis" />
+          <DeliveryRootCauseSection
+            projectName={selectedProject?.name}
+            rootCauses={rootCausesQuery.data}
+            trends={rootCauseTrendsQuery.data}
+            loading={rootCausesLoading}
+            trendsLoading={rootCauseTrendsLoading}
+            fallbackConfidence={selectedDashboard?.confidence ?? null}
           />
-          {confidenceLoading ? (
-            <div className="h-[240px] animate-pulse rounded bg-elevated" />
-          ) : confidenceChart.length > 0 ? (
-            <ResponsiveContainer width="100%" height={240}>
-              <LineChart data={confidenceChart}>
-                <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" />
-                <XAxis dataKey="week" {...axis} />
-                {/* Full 0-100: a domain floored at 50 clipped the low-confidence
-                    projects that most need looking at straight off the chart. */}
-                <YAxis {...axis} domain={[0, 100]} />
-                <Tooltip contentStyle={tip} />
-                <Line
-                  dataKey="confidence"
-                  stroke="#00c9a7"
-                  strokeWidth={2}
-                  dot={false}
-                  name="Confidence"
-                  connectNulls={false}
-                />
-                <Line
-                  dataKey="forecast"
-                  stroke="#00c9a7"
-                  strokeWidth={2}
-                  strokeDasharray="5 5"
-                  dot={false}
-                  name="Forecast"
-                  connectNulls={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          ) : (
-            <p className="text-sm text-muted-foreground">No confidence history available yet.</p>
-          )}
-        </Card>
+        </div>
 
-        <Card>
-          <SectionHeader
-            title="Project Performance"
-            sub={
-              portfolioLoading
-                ? undefined
-                : `Ordered by attention needed · showing ${pagination.rangeStart}-${pagination.rangeEnd} of ${pagination.total}`
-            }
+        {/* ------------------------------------------------------------------ */}
+        {/* PM action planner (15.3) + mitigations                              */}
+        {/* ------------------------------------------------------------------ */}
+        <div id="actions" className="space-y-4">
+          <SectionGroupHeading title="PM Action Planner" />
+          <TodaysFocusPanel
+            projectId={resolvedProjectId}
+            projectName={selectedProject?.name}
           />
-          {truncatedCount > 0 && (
-            <p className="mb-3 rounded border border-[color:var(--warning)]/30 bg-[color:var(--warning)]/10 px-3 py-2 text-xs text-[color:var(--warning)]">
-              Showing {entries.length} of {totalVisibleProjects} projects. The KPIs above cover only
-              these {entries.length}; {truncatedCount} more are not included.
-            </p>
-          )}
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead className="text-left text-muted-foreground">
-                <tr className="border-b border-border">
-                  <th className="py-2 pr-3 font-medium">Project</th>
-                  <th className="py-2 pr-3 font-medium">Client</th>
-                  <th className="py-2 pr-3 font-medium">Throughput (7d avg)</th>
-                  <th className="py-2 pr-3 font-medium">Confidence</th>
-                  <th className="py-2 pr-3 font-medium">Risk</th>
-                  <th className="py-2 pr-3 font-medium">Updated</th>
-                  <th className="py-2 pr-3 font-medium"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {portfolioLoading
-                  ? Array.from({ length: 3 }).map((_, index) => (
-                      <tr key={index} className="border-b border-border/50">
-                        <td colSpan={7} className="py-2.5">
-                          <div className="h-4 animate-pulse rounded bg-elevated" />
-                        </td>
-                      </tr>
-                    ))
-                  : pagination.pageItems.map(({ project, dashboard }) => (
-                      <tr
-                        key={project.id}
-                        className={cn(
-                          "border-b border-border/50",
-                          project.id === resolvedProjectId && "bg-elevated",
-                        )}
-                      >
-                        <td className="py-2.5 pr-3 font-medium">{project.name}</td>
-                        <td className="py-2.5 pr-3 text-muted-foreground">
-                          {orgsLoading ? "—" : (orgById.get(project.org_id) ?? project.vertical)}
-                        </td>
-                        <td className="py-2.5 pr-3">
-                          {`${formatNumber(avgDailyThroughputUnits(dashboard))}/d`}
-                        </td>
-                        <td className="py-2.5 pr-3">
-                          {hasSufficientData(dashboard)
-                            ? `${Math.round(dashboard.confidence)}%`
-                            : "Insufficient data"}
-                        </td>
-                        <td className="py-2.5 pr-3">
-                          <StatusPill status={riskLabel(riskTier(dashboard))} />
-                        </td>
-                        <td className="py-2.5 pr-3 text-muted-foreground">
-                          {project.updated_at ? formatTimestamp(project.updated_at) : "—"}
-                        </td>
-                        <td className="py-2.5 pr-3">
-                          <button
-                            onClick={() => selectProject(project.id)}
-                            className="rounded border border-border px-2 py-0.5 text-[11px]"
-                          >
-                            Open
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-              </tbody>
-            </table>
-          </div>
-          {!portfolioLoading && pagination.totalPages > 1 && (
-            <TablePagination
-              currentPage={pagination.currentPage}
-              totalPages={pagination.totalPages}
-              onPageChange={pagination.setPage}
+          <MitigationRecommendationsPanel projectId={resolvedProjectId} />
+        </div>
+
+        {/* ------------------------------------------------------------------ */}
+        {/* Confidence trends                                                   */}
+        {/* ------------------------------------------------------------------ */}
+        <div id="confidence" className="space-y-4">
+          <SectionGroupHeading title="Confidence Trends" />
+          <Card>
+            <SectionHeader
+              title="Confidence Trend & 4-Week Forecast"
+              sub="Schedule confidence · historical + forecast"
             />
-          )}
-        </Card>
+            {confidenceLoading ? (
+              <div className="h-[240px] animate-pulse rounded bg-elevated" />
+            ) : confidenceChart.length > 0 ? (
+              <ResponsiveContainer width="100%" height={240}>
+                <LineChart data={confidenceChart}>
+                  <CartesianGrid stroke="#2a2d3a" strokeDasharray="3 3" />
+                  <XAxis dataKey="week" {...axis} />
+                  {/* Full 0-100: a domain floored at 50 clipped the low-confidence
+                      projects that most need looking at straight off the chart. */}
+                  <YAxis {...axis} domain={[0, 100]} />
+                  <Tooltip contentStyle={tip} />
+                  <Line
+                    dataKey="confidence"
+                    stroke="#00c9a7"
+                    strokeWidth={2}
+                    dot={false}
+                    name="Confidence"
+                    connectNulls={false}
+                  />
+                  <Line
+                    dataKey="forecast"
+                    stroke="#00c9a7"
+                    strokeWidth={2}
+                    strokeDasharray="5 5"
+                    dot={false}
+                    name="Forecast"
+                    connectNulls={false}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="text-sm text-muted-foreground">No confidence history available yet.</p>
+            )}
+          </Card>
+        </div>
+
+        {/* ------------------------------------------------------------------ */}
+        {/* Team bottlenecks                                                    */}
+        {/* ------------------------------------------------------------------ */}
+        <div className="space-y-4">
+          <SectionGroupHeading title="Team Bottlenecks" />
+          <TeamBottlenecksPanel
+            projectName={selectedProject?.name}
+            bottlenecks={activeBottlenecks}
+            loading={portfolioLoading}
+          />
+        </div>
+
+        {/* ------------------------------------------------------------------ */}
+        {/* Operational timeline                                                */}
+        {/* ------------------------------------------------------------------ */}
+        <div className="space-y-4">
+          <SectionGroupHeading title="Operational Timeline" />
+          <OperationalTimelinePanel
+            projectName={selectedProject?.name}
+            events={timelineEvents}
+            loading={portfolioLoading || dailyActionsQuery.isLoading}
+          />
+        </div>
+
+        {/* ------------------------------------------------------------------ */}
+        {/* Delivery insights                                                   */}
+        {/* ------------------------------------------------------------------ */}
+        <div className="space-y-4">
+          <SectionGroupHeading title="Delivery Insights" />
+          <DeliveryInsightsPanel
+            insights={deliveryInsights}
+            loading={portfolioLoading || rootCauseTrendsLoading}
+          />
+        </div>
+
+        {/* ------------------------------------------------------------------ */}
+        {/* Drill-down analytics                                                */}
+        {/* ------------------------------------------------------------------ */}
+        <div id="analytics" className="space-y-4">
+          <SectionGroupHeading title="Drill-Down Analytics" />
+          <Card>
+            <SectionHeader
+              title="Project Performance"
+              sub={
+                portfolioLoading
+                  ? undefined
+                  : `Ordered by attention needed · showing ${pagination.rangeStart}-${pagination.rangeEnd} of ${pagination.total}`
+              }
+            />
+            {truncatedCount > 0 && (
+              <p className="mb-3 rounded border border-[color:var(--warning)]/30 bg-[color:var(--warning)]/10 px-3 py-2 text-xs text-[color:var(--warning)]">
+                Showing {entries.length} of {totalVisibleProjects} projects. The KPIs above cover
+                only these {entries.length}; {truncatedCount} more are not included.
+              </p>
+            )}
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="text-left text-muted-foreground">
+                  <tr className="border-b border-border">
+                    <th className="py-2 pr-3 font-medium">Project</th>
+                    <th className="py-2 pr-3 font-medium">Client</th>
+                    <th className="py-2 pr-3 font-medium">Throughput (7d avg)</th>
+                    <th className="py-2 pr-3 font-medium">Confidence</th>
+                    <th className="py-2 pr-3 font-medium">Risk</th>
+                    <th className="py-2 pr-3 font-medium">Updated</th>
+                    <th className="py-2 pr-3 font-medium"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {portfolioLoading
+                    ? Array.from({ length: 3 }).map((_, index) => (
+                        <tr key={index} className="border-b border-border/50">
+                          <td colSpan={7} className="py-2.5">
+                            <div className="h-4 animate-pulse rounded bg-elevated" />
+                          </td>
+                        </tr>
+                      ))
+                    : pagination.pageItems.map(({ project, dashboard }) => (
+                        <Fragment key={project.id}>
+                          <tr
+                            className={cn(
+                              "border-b border-border/50",
+                              project.id === resolvedProjectId && "bg-elevated",
+                            )}
+                          >
+                            <td className="py-2.5 pr-3 font-medium">{project.name}</td>
+                            <td className="py-2.5 pr-3 text-muted-foreground">
+                              {orgsLoading
+                                ? "—"
+                                : (orgById.get(project.org_id) ?? project.vertical)}
+                            </td>
+                            <td className="py-2.5 pr-3">
+                              {`${formatNumber(avgDailyThroughputUnits(dashboard))}/d`}
+                            </td>
+                            <td className="py-2.5 pr-3">
+                              {hasSufficientData(dashboard)
+                                ? `${Math.round(dashboard.confidence)}%`
+                                : "Insufficient data"}
+                            </td>
+                            <td className="py-2.5 pr-3">
+                              <StatusPill status={riskLabel(riskTier(dashboard))} />
+                            </td>
+                            <td className="py-2.5 pr-3 text-muted-foreground">
+                              {project.updated_at ? formatTimestamp(project.updated_at) : "—"}
+                            </td>
+                            <td className="py-2.5 pr-3">
+                              <div className="flex gap-1.5">
+                                <button
+                                  onClick={() =>
+                                    setExpandedProjectId(
+                                      expandedProjectId === project.id ? null : project.id,
+                                    )
+                                  }
+                                  className="rounded border border-border px-2 py-0.5 text-[11px]"
+                                >
+                                  {expandedProjectId === project.id ? "Hide" : "Details"}
+                                </button>
+                                <button
+                                  onClick={() => selectProject(project.id)}
+                                  className="rounded border border-border px-2 py-0.5 text-[11px]"
+                                >
+                                  Focus
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                          {expandedProjectId === project.id && (
+                            <tr className="border-b border-border/50 bg-elevated/40">
+                              <td colSpan={7} className="px-3 py-3">
+                                <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-[11px] md:grid-cols-4">
+                                  <div>
+                                    <p className="uppercase tracking-wide text-muted-foreground">
+                                      Traffic light
+                                    </p>
+                                    <StatusPill status={trafficLightLabel(dashboard)} />
+                                  </div>
+                                  <div>
+                                    <p className="uppercase tracking-wide text-muted-foreground">
+                                      Open risks
+                                    </p>
+                                    <p className="text-sm text-foreground">
+                                      {(dashboard.risks ?? []).length}
+                                    </p>
+                                  </div>
+                                  <div>
+                                    <p className="uppercase tracking-wide text-muted-foreground">
+                                      Active bottlenecks
+                                    </p>
+                                    <p className="text-sm text-foreground">
+                                      {deriveActiveBottlenecks(dashboard).length}
+                                    </p>
+                                  </div>
+                                  <div>
+                                    <p className="uppercase tracking-wide text-muted-foreground">
+                                      Milestone hit rate
+                                    </p>
+                                    <p className="text-sm text-foreground">
+                                      {milestoneHitRateFor(dashboard)}
+                                    </p>
+                                  </div>
+                                  {(dashboard.risks ?? []).length > 0 && (
+                                    <div className="col-span-2 md:col-span-4">
+                                      <p className="uppercase tracking-wide text-muted-foreground">
+                                        Top risks
+                                      </p>
+                                      <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+                                        {(dashboard.risks ?? []).slice(0, 3).map((raw, index) => {
+                                          const risk = raw as Record<string, unknown>;
+                                          return (
+                                            <li key={String(risk.id ?? index)}>
+                                              · {String(risk.title ?? "Untitled risk")} (
+                                              {String(risk.risk_tier ?? "unknown")})
+                                            </li>
+                                          );
+                                        })}
+                                      </ul>
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      ))}
+                </tbody>
+              </table>
+            </div>
+            {!portfolioLoading && pagination.totalPages > 1 && (
+              <TablePagination
+                currentPage={pagination.currentPage}
+                totalPages={pagination.totalPages}
+                onPageChange={pagination.setPage}
+              />
+            )}
+          </Card>
+        </div>
       </div>
 
       <div className="lg:col-span-3">

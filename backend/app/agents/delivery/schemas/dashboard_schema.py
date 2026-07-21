@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.agents.delivery.contracts import DeliveryTrafficLight
+from app.agents.delivery.schemas.operational_briefing import OperationalBriefingSchema
 
 BottleneckSeverity = Literal["low", "medium", "high", "critical"]
 
@@ -151,6 +152,7 @@ class DashboardResponse(BaseModel):
     traffic_light: DeliveryTrafficLight
     daily_summary: str | None = None
     structured_summary: StructuredSummarySchema | None = None
+    operational_briefing: OperationalBriefingSchema | None = None
 
 
 class DeliveryPortfolioProject(BaseModel):

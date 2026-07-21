@@ -407,15 +407,63 @@ def build_factor_signals(
     absenteeism_signal: Decimal | None = None,
     dependency_signal: Decimal | None = None,
     scope_signal: Decimal | None = None,
+    review_turnaround_signal: Decimal | None = None,
+    queue_signal: Decimal | None = None,
+    capacity_signal: Decimal | None = None,
 ) -> tuple[FactorSignal, ...]:
-    """Build one signal per configured factor key (stable order)."""
-    signals = {
-        "review_turnaround": signal_review_turnaround(bottlenecks=bottlenecks),
-        "rework": signal_rework(rework_rate_pct=rework_rate_pct),
-        "capacity": signal_capacity(
+    """Build one signal per configured factor key (stable order).
+
+    Phase 15.2 operational overrides win over inferred proxies when present.
+    """
+    if review_turnaround_signal is not None:
+        review = FactorSignal(
+            factor="review_turnaround",
+            severity_signal=clamp_pct(review_turnaround_signal),
+            data_available=True,
+            why="Review queue operational metrics provided.",
+            calculation="severity = clamp(review_queue_signal)",
+            affected_kpis=("confidence", "risk", "throughput"),
+            inputs={"review_turnaround_signal": float(quantize_pct(review_turnaround_signal))},
+        )
+    else:
+        review = signal_review_turnaround(bottlenecks=bottlenecks)
+
+    if capacity_signal is not None:
+        capacity = FactorSignal(
+            factor="capacity",
+            severity_signal=clamp_pct(capacity_signal),
+            data_available=True,
+            why="Capacity / team-availability operational metrics provided.",
+            calculation="severity = clamp(capacity_signal)",
+            affected_kpis=("confidence", "throughput", "capacity"),
+            inputs={"capacity_signal": float(quantize_pct(capacity_signal))},
+        )
+    else:
+        capacity = signal_capacity(
             headcount_decline_pct=headcount_decline_pct,
             throughput_decline_pct=throughput_decline_pct,
-        ),
+        )
+
+    if queue_signal is not None:
+        queue = FactorSignal(
+            factor="queue",
+            severity_signal=clamp_pct(queue_signal),
+            data_available=True,
+            why="Backlog queue operational metrics provided.",
+            calculation="severity = clamp(backlog_queue_signal)",
+            affected_kpis=("confidence", "throughput", "risk"),
+            inputs={"queue_signal": float(quantize_pct(queue_signal))},
+        )
+    else:
+        queue = signal_queue(
+            open_bottleneck_count=len(bottlenecks),
+            throughput_shortfall_pct=throughput_shortfall_pct,
+        )
+
+    signals = {
+        "review_turnaround": review,
+        "rework": signal_rework(rework_rate_pct=rework_rate_pct),
+        "capacity": capacity,
         "absenteeism": (
             FactorSignal(
                 factor="absenteeism",
@@ -429,10 +477,7 @@ def build_factor_signals(
             if absenteeism_signal is not None
             else signal_absenteeism()
         ),
-        "queue": signal_queue(
-            open_bottleneck_count=len(bottlenecks),
-            throughput_shortfall_pct=throughput_shortfall_pct,
-        ),
+        "queue": queue,
         "blocked_work": signal_blocked_work(bottlenecks=bottlenecks),
         "dependency_delays": (
             FactorSignal(

@@ -2,6 +2,8 @@ import { queryOptions, useQuery } from "@tanstack/react-query";
 import {
   fetchDeliveryDashboard,
   fetchDeliveryPortfolio,
+  fetchProjectDailyActions,
+  fetchProjectOperationalBriefing,
   fetchProjectRootCauses,
   fetchRootCauseTrends,
   listAdminProjects,
@@ -127,6 +129,39 @@ export function useProjectRootCausesQuery(projectId: string | null) {
 export function useRootCauseTrendsQuery(projectId: string | null, enabled = true) {
   return useQuery({
     ...rootCauseTrendsQueryOptions(projectId),
+    enabled: Boolean(projectId) && enabled,
+  });
+}
+
+export function projectDailyActionsQueryOptions(projectId: string | null) {
+  return queryOptions({
+    queryKey: queryKeys.projectDailyActions(projectId ?? ""),
+    queryFn: () => fetchProjectDailyActions(projectId!, { include_history: true }),
+    enabled: Boolean(projectId),
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function useProjectDailyActionsQuery(projectId: string | null, enabled = true) {
+  return useQuery({
+    ...projectDailyActionsQueryOptions(projectId),
+    enabled: Boolean(projectId) && enabled,
+  });
+}
+
+export function projectOperationalBriefingQueryOptions(projectId: string | null) {
+  return queryOptions({
+    queryKey: queryKeys.projectOperationalBriefing(projectId ?? ""),
+    // Default without AI for snappy panel load; operators can regenerate with AI.
+    queryFn: () => fetchProjectOperationalBriefing(projectId!, { with_ai: false }),
+    enabled: Boolean(projectId),
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function useProjectOperationalBriefingQuery(projectId: string | null, enabled = true) {
+  return useQuery({
+    ...projectOperationalBriefingQueryOptions(projectId),
     enabled: Boolean(projectId) && enabled,
   });
 }

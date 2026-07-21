@@ -604,6 +604,8 @@ export type DeliveryDashboardResponse = {
   daily_summary: string | null;
   /** Deterministic facts; additive Phase 3 field. Absent on legacy fixtures only. */
   structured_summary?: DeliveryStructuredSummary | null;
+  /** Phase 15.4 grounded morning briefing. Absent on portfolio / client payloads. */
+  operational_briefing?: OperationalBriefing | null;
 };
 
 export async function fetchDeliveryDashboard(
@@ -771,6 +773,179 @@ export async function fetchRootCauseTrends(
   const query = qs.toString();
   const body = await apiFetch<{ data: RootCauseTrendsResponse }>(
     `/delivery/root-causes/trends${query ? `?${query}` : ""}`,
+  );
+  return body.data;
+}
+
+export type OperationalBriefing = {
+  as_of: string;
+  traffic_light: DeliveryTrafficLight;
+  headline: string;
+  overnight_changes: string[];
+  confidence_movement: {
+    current: number;
+    previous: number | null;
+    delta: number | null;
+    direction: "up" | "down" | "flat" | "insufficient_data";
+    drivers: string[];
+  };
+  new_risks: string[];
+  top_priorities: string[];
+  milestones_due_soon: string[];
+  recommended_pm_actions: Array<{
+    rank: number;
+    title: string;
+    urgency: string;
+    estimated_impact_points: number;
+    due_date: string;
+    rationale: string;
+    root_cause_factor: string | null;
+  }>;
+  knowledge_evidence?: Array<{
+    document_id: string;
+    chunk_id?: string | null;
+    title: string;
+    source_type?: string;
+    excerpt?: string;
+    relevance_score?: number;
+  }>;
+  root_cause_summary: Record<string, unknown> | null;
+  narrative: string | null;
+  ai_generated: boolean;
+  model_version: string;
+  generated_at: string;
+};
+
+export async function fetchProjectOperationalBriefing(
+  projectId: string,
+  params: { with_ai?: boolean; as_of?: string } = {},
+): Promise<OperationalBriefing> {
+  const qs = new URLSearchParams();
+  if (params.with_ai != null) qs.set("with_ai", String(params.with_ai));
+  if (params.as_of) qs.set("as_of", params.as_of);
+  const query = qs.toString();
+  const body = await apiFetch<{ data: OperationalBriefing }>(
+    `/delivery/projects/${projectId}/operational-briefing${query ? `?${query}` : ""}`,
+  );
+  return body.data;
+}
+
+export async function generateProjectOperationalBriefing(
+  projectId: string,
+  payload: { with_ai?: boolean } = {},
+): Promise<OperationalBriefing> {
+  const body = await apiFetch<{ data: OperationalBriefing }>(
+    `/delivery/projects/${projectId}/operational-briefing/generate`,
+    { method: "POST", body: JSON.stringify({ with_ai: payload.with_ai ?? true }) },
+  );
+  return body.data;
+}
+
+export type KnowledgeEvidenceCitation = {
+  document_id: string;
+  chunk_id?: string | null;
+  title: string;
+  source_type?: string;
+  folder?: string | null;
+  section_title?: string | null;
+  page?: string | null;
+  version?: unknown;
+  relevance_score?: number;
+  excerpt?: string;
+  visibility?: string | null;
+};
+
+export type KnowledgeEvidenceResponse = {
+  project_id: string | null;
+  project_name: string | null;
+  query_text: string | null;
+  citations: KnowledgeEvidenceCitation[];
+  enabled: boolean;
+  empty_reason: string | null;
+};
+
+export async function fetchProjectKnowledgeEvidence(
+  projectId: string,
+  params: { focus?: string; max_sources?: number } = {},
+): Promise<KnowledgeEvidenceResponse> {
+  const qs = new URLSearchParams();
+  if (params.focus) qs.set("focus", params.focus);
+  if (params.max_sources != null) qs.set("max_sources", String(params.max_sources));
+  const query = qs.toString();
+  const body = await apiFetch<{ data: KnowledgeEvidenceResponse }>(
+    `/delivery/projects/${projectId}/knowledge-evidence${query ? `?${query}` : ""}`,
+  );
+  return body.data;
+}
+
+export type PmDailyActionRead = {
+  id: string;
+  project_id: string;
+  org_id: string;
+  plan_date: string;
+  rank: number;
+  title: string;
+  description: string | null;
+  deterministic_rationale: string;
+  ai_rationale: string | null;
+  urgency: "low" | "medium" | "high" | "critical";
+  estimated_impact_points: number;
+  due_date: string;
+  status: "todo" | "done" | "skipped" | "deferred";
+  source_type: "root_cause_factor" | "risk_alert" | "bottleneck" | "mitigation" | "milestone";
+  source_key: string;
+  root_cause_factor: string | null;
+  mitigation_recommendation_id: string | null;
+  evidence_json: Record<string, unknown>;
+  completed_at: string | null;
+  completed_by: string | null;
+  completion_note: string | null;
+  model_version: string | null;
+  generated_at: string | null;
+};
+
+export type PmDailyActionsResponse = {
+  project_id: string;
+  plan_date: string;
+  todays_focus: PmDailyActionRead[];
+  all_today: PmDailyActionRead[];
+  history: PmDailyActionRead[];
+  generated_at: string | null;
+};
+
+export async function fetchProjectDailyActions(
+  projectId: string,
+  params: { plan_date?: string; include_history?: boolean; history_days?: number } = {},
+): Promise<PmDailyActionsResponse> {
+  const qs = new URLSearchParams();
+  if (params.plan_date) qs.set("plan_date", params.plan_date);
+  if (params.include_history != null) qs.set("include_history", String(params.include_history));
+  if (params.history_days != null) qs.set("history_days", String(params.history_days));
+  const query = qs.toString();
+  const body = await apiFetch<{ data: PmDailyActionsResponse }>(
+    `/delivery/projects/${projectId}/daily-actions${query ? `?${query}` : ""}`,
+  );
+  return body.data;
+}
+
+export async function generateProjectDailyActions(
+  projectId: string,
+  payload: { plan_date?: string; with_ai_rationale?: boolean; limit?: number } = {},
+): Promise<PmDailyActionsResponse> {
+  const body = await apiFetch<{ data: PmDailyActionsResponse }>(
+    `/delivery/projects/${projectId}/daily-actions/generate`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+  return body.data;
+}
+
+export async function completeProjectDailyAction(
+  actionId: string,
+  payload: { status?: "done" | "skipped" | "deferred"; note?: string } = {},
+): Promise<PmDailyActionRead> {
+  const body = await apiFetch<{ data: PmDailyActionRead }>(
+    `/delivery/daily-actions/${actionId}/complete`,
+    { method: "POST", body: JSON.stringify(payload) },
   );
   return body.data;
 }
