@@ -133,6 +133,9 @@ function WorkforcePage() {
     setDrawerOpen(false);
   }, [resolvedProjectId]);
 
+  // One bundled request that the backend fans out across the connection pool
+  // (app/services/workforce_dashboard.py runs the six sections concurrently), so the
+  // whole page loads on a single authenticated round trip instead of six.
   const queryClient = useQueryClient();
   const dashboardQuery = useProjectWorkforceDashboardQuery(
     resolvedProjectId,

@@ -20,6 +20,7 @@ from app.api.routes import (
     admin_audit,
     agents,
     auth,
+    client_intelligence,
     communications,
     csat,
     dashboard,
@@ -210,6 +211,7 @@ def create_app() -> FastAPI:
     app.include_router(csat.router, prefix=api_prefix)
     app.include_router(knowledge.router, prefix=api_prefix)
     app.include_router(governance_routes.router, prefix=api_prefix)
+    app.include_router(client_intelligence.router, prefix=api_prefix)
     app.include_router(admin_audit.router, prefix=api_prefix)
     return app
 

@@ -857,15 +857,56 @@ class CommunicationContentUpdate(BaseModel):
     body: str | None = Field(default=None, min_length=1)
 
 
+class CommunicationDraftEdit(BaseModel):
+    subject: str = Field(min_length=1, max_length=500)
+    body_draft: str = Field(min_length=1, max_length=50000)
+
+    @field_validator("subject", "body_draft")
+    @classmethod
+    def _trim_required(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("must be non-empty after trimming")
+        return trimmed
+
+
 class CommunicationReview(BaseModel):
     """Submit (or re-save) content into review. Always lands in `in_review`."""
 
-    body_approved: str = Field(min_length=1)
+    body_approved: str = Field(min_length=1, max_length=50000)
     status: CommunicationStatus = CommunicationStatus.IN_REVIEW
+
+    @field_validator("body_approved")
+    @classmethod
+    def _trim_reviewed_body(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("must be non-empty after trimming")
+        return trimmed
 
 
 class CommunicationApprove(BaseModel):
-    body_approved: str | None = None
+    body_approved: str | None = Field(default=None, max_length=50000)
+
+    @field_validator("body_approved")
+    @classmethod
+    def _trim_optional_body(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None
+
+
+class CommunicationReject(BaseModel):
+    rejection_reason: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("rejection_reason")
+    @classmethod
+    def _trim_reason(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("must be non-empty after trimming")
+        return trimmed
 
 
 class CommunicationListItem(BaseModel):
@@ -901,11 +942,18 @@ class CommunicationRead(ORMModel):
     approved_by: UUID | None
     approved_at: datetime | None
     sent_at: datetime | None
+    rejection_reason: str | None = None
+    rejected_by: UUID | None = None
+    rejected_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     evidence_links: list[EvidenceLinkRead] = []
     generation_mode: str | None = None
     generation_warning: str | None = None
+    # Internal-only integrity fields; Client responses omit fingerprints/state.
+    evidence_source_fingerprint: str | None = None
+    evidence_provenance_state: str | None = None
+    evidence_provenance_complete: bool | None = None
 
 
 class MetricConfigurationRead(ORMModel):

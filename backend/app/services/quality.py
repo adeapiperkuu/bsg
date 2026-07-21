@@ -6,7 +6,7 @@ from decimal import Decimal
 from time import perf_counter
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal
@@ -115,6 +115,192 @@ def _quality_page_step_end(project_id: UUID, step: str, started: float, **extra:
         step,
         elapsed_ms,
         suffix,
+    )
+
+
+def _uuid_or_none(value: str | None) -> UUID | None:
+    return UUID(value) if value is not None else None
+
+
+def _decimal_or_none(value: str | None) -> Decimal | None:
+    # Numeric columns are cast to ::text in _QUALITY_PAGE_COMBINED_SQL so the
+    # exact stored scale/precision round-trips through JSON (a bare numeric
+    # column would come back as a JSON number and lose trailing zeros /
+    # introduce float rounding when parsed, e.g. 94.50 -> 94.5).
+    return Decimal(value) if value is not None else None
+
+
+def _datetime_or_none(value: str | None) -> datetime | None:
+    return datetime.fromisoformat(value) if value is not None else None
+
+
+# Phase 2A (docs/PERF_IMPLEMENTATION_PLAN.md): collapse the five independent
+# per-table SELECTs `build_quality_page` used to issue sequentially
+# (snapshots, teams, open alerts, this week's reviewer scorecards, error
+# entries for the latest snapshot) into ONE round trip on the caller's
+# request-scoped `session` -- which already carries this request's RLS
+# context (app/db/rls.py), so no new connection/session is opened and RLS
+# stays enforced automatically, same as any other query on this session.
+#
+# Each dataset is built as a CTE and aggregated with json_agg(row_to_json(..)
+# ORDER BY ...) so the aggregate order is pinned explicitly (does not depend
+# on whether Postgres decides to materialize or inline the CTE feeding it).
+# Numeric columns are cast to ::text before aggregation (see
+# _decimal_or_none) to avoid float precision loss through JSON. SQLAlchemy's
+# asyncpg dialect registers a json/jsonb type codec on every connection
+# (sqlalchemy.dialects.postgresql.asyncpg.PGDialect_asyncpg.on_connect), so
+# each `..._json` column below is already a Python list of dicts by the time
+# it reaches this code -- no extra json.loads needed.
+_QUALITY_PAGE_COMBINED_SQL = text(
+    """
+    WITH snap AS (
+        SELECT
+            id, project_id, team_id, org_id, iso_year, iso_week,
+            gold_set_accuracy_pct::text AS gold_set_accuracy_pct,
+            iaa_krippendorff_alpha::text AS iaa_krippendorff_alpha,
+            rework_rate_pct::text AS rework_rate_pct,
+            evaluated_item_count, has_drift_alert, drift_alert_detail,
+            root_cause, confidence_level, created_at, updated_at
+        FROM quality_snapshots
+        WHERE project_id = :project_id
+    ),
+    team AS (
+        SELECT id, project_id, org_id, name, site, domain, is_active,
+               created_at, updated_at, deleted_at
+        FROM teams
+        WHERE project_id = :project_id
+    ),
+    first_snap AS (
+        SELECT id FROM quality_snapshots
+        WHERE project_id = :project_id
+        ORDER BY iso_year DESC, iso_week DESC
+        LIMIT 1
+    ),
+    alert AS (
+        SELECT
+            id, project_id, org_id, milestone_id, alert_type, risk_tier, title, detail,
+            slippage_probability::text AS slippage_probability,
+            contributing_causes, status, source_table, source_row_id,
+            resolved_at, resolved_by, created_at, updated_at, deleted_at
+        FROM risk_alerts
+        WHERE project_id = :project_id
+          AND deleted_at IS NULL
+          AND status IN (:status_open, :status_ack)
+    ),
+    scorecard AS (
+        SELECT
+            id, annotator_id, project_id, org_id, iso_year, iso_week,
+            items_evaluated, accuracy_pct::text AS accuracy_pct, error_breakdown,
+            created_at, updated_at
+        FROM reviewer_scorecards
+        WHERE project_id = :project_id AND iso_year = :iso_year AND iso_week = :iso_week
+    ),
+    error_entry AS (
+        SELECT id, quality_snapshot_id, org_id, error_category,
+               share_pct::text AS share_pct, recommended_action, created_at, updated_at
+        FROM quality_error_entries
+        WHERE quality_snapshot_id = (SELECT id FROM first_snap)
+    )
+    SELECT
+        (SELECT COALESCE(json_agg(row_to_json(s) ORDER BY s.iso_year DESC, s.iso_week DESC), '[]'::json)
+           FROM snap s) AS snapshots_json,
+        (SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json)
+           FROM team t) AS teams_json,
+        (SELECT COALESCE(json_agg(row_to_json(a) ORDER BY a.created_at DESC), '[]'::json)
+           FROM alert a) AS alerts_json,
+        (SELECT COALESCE(json_agg(row_to_json(sc) ORDER BY sc.iso_week DESC), '[]'::json)
+           FROM scorecard sc) AS scorecards_json,
+        (SELECT COALESCE(json_agg(row_to_json(ee)), '[]'::json)
+           FROM error_entry ee) AS error_entries_json
+    """
+)
+
+
+def _snapshot_from_row(row: dict) -> QualitySnapshot:
+    return QualitySnapshot(
+        id=_uuid_or_none(row["id"]),
+        project_id=_uuid_or_none(row["project_id"]),
+        team_id=_uuid_or_none(row["team_id"]),
+        org_id=_uuid_or_none(row["org_id"]),
+        iso_year=row["iso_year"],
+        iso_week=row["iso_week"],
+        gold_set_accuracy_pct=_decimal_or_none(row["gold_set_accuracy_pct"]),
+        iaa_krippendorff_alpha=_decimal_or_none(row["iaa_krippendorff_alpha"]),
+        rework_rate_pct=_decimal_or_none(row["rework_rate_pct"]),
+        evaluated_item_count=row["evaluated_item_count"],
+        has_drift_alert=row["has_drift_alert"],
+        drift_alert_detail=row["drift_alert_detail"],
+        root_cause=row["root_cause"],
+        confidence_level=row["confidence_level"],
+        created_at=_datetime_or_none(row["created_at"]),
+        updated_at=_datetime_or_none(row["updated_at"]),
+    )
+
+
+def _team_from_row(row: dict) -> Team:
+    return Team(
+        id=_uuid_or_none(row["id"]),
+        project_id=_uuid_or_none(row["project_id"]),
+        org_id=_uuid_or_none(row["org_id"]),
+        name=row["name"],
+        site=row["site"],
+        domain=row["domain"],
+        is_active=row["is_active"],
+        created_at=_datetime_or_none(row["created_at"]),
+        updated_at=_datetime_or_none(row["updated_at"]),
+        deleted_at=_datetime_or_none(row["deleted_at"]),
+    )
+
+
+def _alert_from_row(row: dict) -> RiskAlert:
+    return RiskAlert(
+        id=_uuid_or_none(row["id"]),
+        project_id=_uuid_or_none(row["project_id"]),
+        org_id=_uuid_or_none(row["org_id"]),
+        milestone_id=_uuid_or_none(row["milestone_id"]),
+        alert_type=row["alert_type"],
+        risk_tier=row["risk_tier"],
+        title=row["title"],
+        detail=row["detail"],
+        slippage_probability=_decimal_or_none(row["slippage_probability"]),
+        contributing_causes=row["contributing_causes"],
+        status=row["status"],
+        source_table=row["source_table"],
+        source_row_id=_uuid_or_none(row["source_row_id"]),
+        resolved_at=_datetime_or_none(row["resolved_at"]),
+        resolved_by=_uuid_or_none(row["resolved_by"]),
+        created_at=_datetime_or_none(row["created_at"]),
+        updated_at=_datetime_or_none(row["updated_at"]),
+        deleted_at=_datetime_or_none(row["deleted_at"]),
+    )
+
+
+def _scorecard_from_row(row: dict) -> ReviewerScorecard:
+    return ReviewerScorecard(
+        id=_uuid_or_none(row["id"]),
+        annotator_id=_uuid_or_none(row["annotator_id"]),
+        project_id=_uuid_or_none(row["project_id"]),
+        org_id=_uuid_or_none(row["org_id"]),
+        iso_year=row["iso_year"],
+        iso_week=row["iso_week"],
+        items_evaluated=row["items_evaluated"],
+        accuracy_pct=_decimal_or_none(row["accuracy_pct"]),
+        error_breakdown=row["error_breakdown"],
+        created_at=_datetime_or_none(row["created_at"]),
+        updated_at=_datetime_or_none(row["updated_at"]),
+    )
+
+
+def _error_entry_from_row(row: dict) -> QualityErrorEntry:
+    return QualityErrorEntry(
+        id=_uuid_or_none(row["id"]),
+        quality_snapshot_id=_uuid_or_none(row["quality_snapshot_id"]),
+        org_id=_uuid_or_none(row["org_id"]),
+        error_category=row["error_category"],
+        share_pct=_decimal_or_none(row["share_pct"]),
+        recommended_action=row["recommended_action"],
+        created_at=_datetime_or_none(row["created_at"]),
+        updated_at=_datetime_or_none(row["updated_at"]),
     )
 
 
@@ -707,25 +893,38 @@ async def build_quality_page(
     iso_year = cal[0]
     iso_week = cal[1]
 
+    # Phase 2A: snapshots, teams, open alerts, this week's reviewer
+    # scorecards, and error entries for the latest snapshot used to be five
+    # sequential SELECTs on this same session -- each a ~150ms round trip to
+    # the remote DB. They have no data dependency on one another (only
+    # error_entries depends on "the latest snapshot's id", which is resolved
+    # server-side via the first_snap CTE), so they are now issued as ONE
+    # round trip (_QUALITY_PAGE_COMBINED_SQL) and the per-dataset JSON arrays
+    # are mapped back into the exact same ORM objects the sequential loaders
+    # produced (see _snapshot_from_row etc.), so every downstream consumer
+    # (_assemble_quality_dashboard, calibration, sop_ambiguity, response
+    # assembly) is unchanged.
+    t = _quality_page_step_start(project.id, "load_combined")
+    combined_row = (
+        await session.execute(
+            _QUALITY_PAGE_COMBINED_SQL,
+            {
+                "project_id": project.id,
+                "iso_year": iso_year,
+                "iso_week": iso_week,
+                "status_open": AlertStatus.OPEN.value,
+                "status_ack": AlertStatus.ACKNOWLEDGED.value,
+            },
+        )
+    ).mappings().one()
+    _quality_page_step_end(project.id, "load_combined", t)
+
     t = _quality_page_step_start(project.id, "load_snapshots")
-    snapshots = list(
-        (
-            await session.execute(
-                select(QualitySnapshot)
-                .where(QualitySnapshot.project_id == project.id)
-                .order_by(QualitySnapshot.iso_year.desc(), QualitySnapshot.iso_week.desc())
-            )
-        ).scalars()
-    )
+    snapshots = [_snapshot_from_row(r) for r in combined_row["snapshots_json"]]
     _quality_page_step_end(project.id, "load_snapshots", t, rows=len(snapshots))
 
     t = _quality_page_step_start(project.id, "load_teams")
-    teams = {
-        team.id: team
-        for team in (
-            await session.execute(select(Team).where(Team.project_id == project.id))
-        ).scalars()
-    }
+    teams = {team.id: team for team in (_team_from_row(r) for r in combined_row["teams_json"])}
     _quality_page_step_end(project.id, "load_teams", t, rows=len(teams))
 
     t = _quality_page_step_start(project.id, "load_thresholds")
@@ -733,34 +932,11 @@ async def build_quality_page(
     _quality_page_step_end(project.id, "load_thresholds", t, metrics=len(thresholds))
 
     t = _quality_page_step_start(project.id, "load_open_alerts")
-    open_alerts = list(
-        (
-            await session.execute(
-                select(RiskAlert).where(
-                    RiskAlert.project_id == project.id,
-                    RiskAlert.deleted_at.is_(None),
-                    RiskAlert.status.in_([AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED]),
-                )
-                .order_by(RiskAlert.created_at.desc())
-            )
-        ).scalars()
-    )
+    open_alerts = [_alert_from_row(r) for r in combined_row["alerts_json"]]
     _quality_page_step_end(project.id, "load_open_alerts", t, rows=len(open_alerts))
 
     t = _quality_page_step_start(project.id, "load_week_scorecards")
-    week_scorecards = list(
-        (
-            await session.execute(
-                select(ReviewerScorecard)
-                .where(
-                    ReviewerScorecard.project_id == project.id,
-                    ReviewerScorecard.iso_year == iso_year,
-                    ReviewerScorecard.iso_week == iso_week,
-                )
-                .order_by(ReviewerScorecard.iso_week.desc())
-            )
-        ).scalars()
-    )
+    week_scorecards = [_scorecard_from_row(r) for r in combined_row["scorecards_json"]]
     _quality_page_step_end(
         project.id,
         "load_week_scorecards",
@@ -773,15 +949,7 @@ async def build_quality_page(
     error_entries: list[QualityErrorEntry] = []
     if snapshots:
         t = _quality_page_step_start(project.id, "load_error_entries")
-        error_entries = list(
-            (
-                await session.execute(
-                    select(QualityErrorEntry).where(
-                        QualityErrorEntry.quality_snapshot_id == snapshots[0].id
-                    )
-                )
-            ).scalars()
-        )
+        error_entries = [_error_entry_from_row(r) for r in combined_row["error_entries_json"]]
         _quality_page_step_end(project.id, "load_error_entries", t, rows=len(error_entries))
     else:
         logger.info(

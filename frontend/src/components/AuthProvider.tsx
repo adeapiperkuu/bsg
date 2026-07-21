@@ -1,7 +1,9 @@
 import { useEffect } from "react";
 import { useNavigate } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { canAccessPath, defaultRouteForRole } from "@/lib/api";
+import { projectsQueryOptions } from "@/lib/queries/delivery";
 import { useRenderedPathname } from "@/lib/use-rendered-pathname";
 import { useAuthStore } from "@/stores/useAuthStore";
 
@@ -17,16 +19,21 @@ function SessionLoadingScreen() {
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const pathname = useRenderedPathname();
   const status = useAuthStore((s) => s.status);
   const user = useAuthStore((s) => s.user);
   const bootstrap = useAuthStore((s) => s.bootstrap);
-
   const isPublicPath = PUBLIC_PATHS.includes(pathname);
 
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
+
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    void queryClient.prefetchQuery(projectsQueryOptions);
+  }, [status, queryClient]);
 
   let redirectTo: string | null = null;
   if (status === "authenticated" && user) {

@@ -7,9 +7,27 @@ except ImportError:
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, Enum, ForeignKey, ForeignKeyConstraint, Index, Integer, Numeric, Text, UniqueConstraint, desc, func, text
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID as PG_UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    Numeric,
+    Text,
+    UniqueConstraint,
+    desc,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import UserDefinedType
 
 from app.db.models.base import Base, CreatedAt, SoftDelete, UpdatedAt, UuidPrimaryKey
@@ -2618,6 +2636,180 @@ class ProjectCharter(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     publication_error: Mapped[str | None] = mapped_column(Text)
     publication_attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     last_publication_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+
+class ClientIntelligenceSnapshot(Base, UuidPrimaryKey, CreatedAt):
+    """Append-only validated ClientEvidencePack snapshot (Phase 1 substrate).
+
+    Readiness assessments, insights, recommendations, and narratives are deferred
+    (CI-DQ08 / Phase 2+). Future outputs may reference this snapshot by id.
+    """
+
+    __tablename__ = "client_intelligence_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "org_id",
+            "project_id",
+            "source_fingerprint",
+            name="client_intelligence_snapshots_link_identity_key",
+        ),
+        UniqueConstraint(
+            "org_id",
+            "project_id",
+            "visibility_mode",
+            "reporting_period_start",
+            "reporting_period_end",
+            "reporting_period_previous_start",
+            "reporting_period_previous_end",
+            "reporting_period_as_of",
+            "source_fingerprint",
+            "policy_fingerprint",
+            name="client_intelligence_snapshots_idempotency_key",
+            postgresql_nulls_not_distinct=True,
+        ),
+        CheckConstraint(
+            "visibility_mode IN ('internal', 'client_safe')",
+            name="client_intelligence_snapshots_visibility_mode_check",
+        ),
+        CheckConstraint(
+            "source_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="client_intelligence_snapshots_source_fingerprint_check",
+        ),
+        CheckConstraint(
+            "policy_fingerprint IS NULL OR policy_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="client_intelligence_snapshots_policy_fingerprint_check",
+        ),
+        CheckConstraint(
+            "overall_data_quality IN "
+            "('complete', 'partial', 'stale', 'conflicting', 'unavailable')",
+            name="client_intelligence_snapshots_overall_data_quality_check",
+        ),
+        Index("client_intelligence_snapshots_org_id_idx", "org_id"),
+        Index(
+            "client_intelligence_snapshots_project_id_idx",
+            "project_id",
+            text("created_at DESC"),
+        ),
+        Index(
+            "client_intelligence_snapshots_org_project_period_idx",
+            "org_id",
+            "project_id",
+            "reporting_period_as_of",
+            "visibility_mode",
+        ),
+        Index(
+            "client_intelligence_snapshots_fingerprint_idx",
+            "org_id",
+            "source_fingerprint",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organisations.id", ondelete="RESTRICT"),
+    )
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+    )
+    reporting_period_start: Mapped[date] = mapped_column(Date)
+    reporting_period_end: Mapped[date] = mapped_column(Date)
+    reporting_period_previous_start: Mapped[date] = mapped_column(Date)
+    reporting_period_previous_end: Mapped[date] = mapped_column(Date)
+    reporting_period_as_of: Mapped[date] = mapped_column(Date)
+    visibility_mode: Mapped[str] = mapped_column(Text)
+    source_fingerprint: Mapped[str] = mapped_column(Text)
+    policy_fingerprint: Mapped[str | None] = mapped_column(Text)
+    overall_data_quality: Mapped[str] = mapped_column(Text)
+    pack_payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+    evidence_links: Mapped[list["ClientIntelligenceEvidenceLink"]] = relationship(
+        back_populates="snapshot",
+        cascade="all, delete-orphan",
+    )
+
+
+class ClientIntelligenceEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
+    """Evidence reference belonging to one ClientIntelligenceSnapshot.
+
+    Snapshot-scoped only — no polymorphic Phase 2 target columns yet.
+    """
+
+    __tablename__ = "client_intelligence_evidence_links"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["snapshot_id", "org_id", "project_id", "source_fingerprint"],
+            [
+                "client_intelligence_snapshots.id",
+                "client_intelligence_snapshots.org_id",
+                "client_intelligence_snapshots.project_id",
+                "client_intelligence_snapshots.source_fingerprint",
+            ],
+            ondelete="CASCADE",
+            name="client_intelligence_evidence_links_snapshot_identity_fkey",
+        ),
+        UniqueConstraint(
+            "snapshot_id",
+            "source_agent",
+            "source_table",
+            "source_row_id",
+            "visibility",
+            name="client_intelligence_evidence_links_snapshot_source_key",
+        ),
+        CheckConstraint(
+            "source_agent IN ("
+            "'delivery_performance', 'quality_intelligence', "
+            "'workforce_capability', 'project_governance', "
+            "'operational_knowledge', 'client_intelligence')",
+            name="client_intelligence_evidence_links_source_agent_check",
+        ),
+        CheckConstraint(
+            "visibility IN ('internal', 'client_safe')",
+            name="client_intelligence_evidence_links_visibility_check",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(claim_keys) = 'array'",
+            name="client_intelligence_evidence_links_claim_keys_check",
+        ),
+        CheckConstraint(
+            "source_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="client_intelligence_evidence_links_source_fingerprint_check",
+        ),
+        Index("client_intelligence_evidence_links_org_idx", "org_id"),
+        Index("client_intelligence_evidence_links_project_idx", "project_id"),
+        Index("client_intelligence_evidence_links_snapshot_idx", "snapshot_id"),
+        Index(
+            "client_intelligence_evidence_links_source_idx",
+            "source_table",
+            "source_row_id",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organisations.id", ondelete="RESTRICT")
+    )
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE")
+    )
+    snapshot_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
+    source_agent: Mapped[str] = mapped_column(Text)
+    source_table: Mapped[str] = mapped_column(Text)
+    source_row_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
+    visibility: Mapped[str] = mapped_column(Text)
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claim_keys: Mapped[list[Any]] = mapped_column(
+        JSONB, default=list, server_default="[]"
+    )
+    description: Mapped[str] = mapped_column(Text)
+    source_fingerprint: Mapped[str] = mapped_column(Text)
+
+    snapshot: Mapped[ClientIntelligenceSnapshot] = relationship(
+        back_populates="evidence_links"
+    )
 
 
 class GovernanceCharterPublicationEvent(Base, UuidPrimaryKey, CreatedAt):

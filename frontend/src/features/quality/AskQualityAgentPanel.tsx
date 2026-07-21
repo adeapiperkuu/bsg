@@ -1,8 +1,17 @@
 import { Loader2, Send } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Card, EvidenceBadge, SectionHeader } from "@/components/bsg/widgets";
-import { useAgentQuery } from "@/hooks/useAgentQuery";
+import { useAgentQuery, type AgentQueryPhase } from "@/hooks/useAgentQuery";
 import { cn } from "@/lib/utils";
+
+const PHASE_LABELS: Record<AgentQueryPhase, string> = {
+  idle: "",
+  gathering_evidence: "Gathering evidence…",
+  reasoning: "Analyzing root cause…",
+  writing: "Writing the answer…",
+  done: "",
+  error: "",
+};
 
 const SUGGESTED_PROMPTS = [
   "Why is accuracy dropping this week?",
@@ -41,7 +50,7 @@ export function AskQualityAgentPanel({ projectId }: { projectId: string | undefi
   useEffect(() => {
     if (!scrollRef.current) return;
     scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages]);
+  }, [messages, mutation.phase, mutation.streamingText]);
 
   const send = async (text: string) => {
     if (!text.trim() || !projectId) return;
@@ -145,6 +154,21 @@ export function AskQualityAgentPanel({ projectId }: { projectId: string | undefi
               )}
             </div>
           ))}
+          {mutation.isPending && (
+            <div className="mr-8 rounded-md bg-elevated p-2.5">
+              <div className="mb-1 flex items-center gap-2">
+                <span className="font-medium text-muted-foreground">Agent</span>
+                <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" aria-hidden />
+              </div>
+              {mutation.streamingText ? (
+                <p className="whitespace-pre-wrap leading-5">{mutation.streamingText}</p>
+              ) : (
+                <p className="italic text-muted-foreground">
+                  {PHASE_LABELS[mutation.phase] || "Thinking…"}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       )}
 

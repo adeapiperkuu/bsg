@@ -69,6 +69,14 @@ export function WorkforceUtilizationSection({
         <WorkforcePlaceholder
           title="No utilization snapshots yet"
           reason="Add utilization snapshots for project teams to populate this chart."
+          actionLabel={
+            canManageWorkforce && resolvedProjectId && !showUtilizationManager
+              ? "Add utilization snapshots"
+              : undefined
+          }
+          onAction={
+            canManageWorkforce && resolvedProjectId ? onToggleUtilizationManager : undefined
+          }
         />
       ) : filteredTeamUtilization.length === 0 ? (
         <WorkforcePlaceholder

@@ -24,6 +24,22 @@ export const queryKeys = {
     ["delivery", "daily-actions", projectId] as const,
   projectOperationalBriefing: (projectId: string) =>
     ["delivery", "operational-briefing", projectId] as const,
+  clientIntelligenceOverview: (projectId: string, asOf?: string) =>
+    ["projects", projectId, "client-intelligence", "overview", asOf ?? "__current__"] as const,
+  clientIntelligenceDeliveryConfidenceHistory: (projectId: string) =>
+    ["projects", projectId, "client-intelligence", "delivery-confidence-history"] as const,
+  clientIntelligenceSummary: ["client-intelligence", "summary"] as const,
+  clientIntelligenceMaster: ["client-intelligence", "master"] as const,
+  clientIntelligenceCommunications: (projectId: string) =>
+    ["client-intelligence", "communications", projectId] as const,
+  clientIntelligenceReportHistory: (
+    projectId: string,
+    status: "all" | "approved" | "sent" = "all",
+  ) => ["client-intelligence", "reports", projectId, status] as const,
+  clientIntelligenceProjectSummary: (projectId: string) =>
+    ["client-intelligence", "summary", "project", projectId] as const,
+  clientIntelligenceQueryHistory: (projectId: string) =>
+    ["client-intelligence", "queries", projectId] as const,
   projectThroughput: (projectId: string) => ["projects", projectId, "throughput"] as const,
   projectRecommendations: (projectId: string) =>
     ["projects", projectId, "recommendations"] as const,

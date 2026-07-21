@@ -1,25 +1,37 @@
 from uuid import UUID
 
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
+from app.agents.quality_intelligence.query_handler import stream_quality_query
 from app.api.deps import LimitQuery, SessionDep, UserDep
 from app.core.exceptions import ApiError
 from app.db.models import AgentQuery, AgentQueryEvidenceLink, QualitySnapshot, ThroughputSnapshot
 from app.schemas.common import DataResponse, EvidenceLinkRead, ListResponse, Pagination
 from app.schemas.domain import AgentQueryCreate, AgentQueryRead
-from app.services.agent_queries import SUPPORTED_AGENTS, answer_query
+from app.services.agent_queries import (
+    CLIENT_INTERACTION_AGENT_NAME,
+    SUPPORTED_AGENTS,
+    answer_query,
+)
 from app.services.evidence import EvidenceInput
 from app.services.scoping import get_visible_project
 from app.services.workforce_agent import WORKFORCE_AGENT_NAME, answer_workforce_query
 
 router = APIRouter(tags=["agent queries"])
 
+QUALITY_INTELLIGENCE_AGENT_NAME = "quality_intelligence_agent"
+
 
 def _agent_query_read(row: AgentQuery) -> AgentQueryRead:
     data = AgentQueryRead.model_validate(row)
     params = row.retrieval_params or {}
-    data.confidence_level = params.get("confidence_level") if isinstance(params.get("confidence_level"), str) else None
+    data.confidence_level = (
+        params.get("confidence_level")
+        if isinstance(params.get("confidence_level"), str)
+        else None
+    )
     data.insufficient_evidence = bool(params.get("insufficient_evidence", False))
     related_records = params.get("related_records")
     data.related_records = related_records if isinstance(related_records, list) else []
@@ -37,6 +49,18 @@ async def create_agent_query(
 
     if payload.agent_name == WORKFORCE_AGENT_NAME:
         query = await answer_workforce_query(session, current_user, payload)
+        await session.commit()
+        await session.refresh(query)
+        data = _agent_query_read(query)
+        data.evidence_links = [
+            EvidenceLinkRead(**item.__dict__) for item in await _query_evidence(session, query.id)
+        ]
+        return DataResponse(data=data)
+
+    # Client Intelligence uses its own auth + evidence path; do not gather
+    # generic throughput evidence or short-circuit before the service role gate.
+    if payload.agent_name == CLIENT_INTERACTION_AGENT_NAME:
+        query = await answer_query(session, current_user, payload, [])
         await session.commit()
         await session.refresh(query)
         data = _agent_query_read(query)
@@ -65,7 +89,7 @@ async def create_agent_query(
                         description="Latest quality snapshot for the selected project.",
                     )
                 )
-        else:
+        elif payload.agent_name != CLIENT_INTERACTION_AGENT_NAME:
             snapshot = (
                 await session.execute(
                     select(ThroughputSnapshot)
@@ -86,49 +110,126 @@ async def create_agent_query(
     await session.commit()
     await session.refresh(query)
     data = _agent_query_read(query)
-    data.evidence_links = [EvidenceLinkRead(**item.__dict__) for item in await _query_evidence(session, query.id)]
+    data.evidence_links = [
+        EvidenceLinkRead(**item.__dict__) for item in await _query_evidence(session, query.id)
+    ]
     return DataResponse(data=data)
+
+
+@router.post("/agent-queries/stream")
+async def stream_agent_query(
+    payload: AgentQueryCreate, session: SessionDep, current_user: UserDep
+) -> StreamingResponse:
+    """SSE-streaming counterpart to POST /agent-queries.
+
+    Only the quality_intelligence_agent supports streaming today — the two-
+    call reasoning-then-synthesis flow it uses is the reason streaming has
+    perceived-latency value (see query_handler.py's stream_quality_query).
+    The other agents keep using the non-streaming endpoint above unchanged.
+    """
+    if payload.agent_name != QUALITY_INTELLIGENCE_AGENT_NAME:
+        raise ApiError(
+            400,
+            "VALIDATION_ERROR",
+            "Streaming is only supported for the quality intelligence agent.",
+        )
+
+    # Same explicit-evidence pre-lookup create_agent_query performs for this
+    # agent above — kept identical so the streamed `done` payload's evidence
+    # set matches what the non-streaming endpoint would return.
+    evidence: list[EvidenceInput] = []
+    if payload.project_id:
+        project = await get_visible_project(session, payload.project_id, current_user)
+        snapshot = (
+            await session.execute(
+                select(QualitySnapshot)
+                .where(QualitySnapshot.project_id == project.id)
+                .order_by(QualitySnapshot.iso_year.desc(), QualitySnapshot.iso_week.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if snapshot:
+            evidence.append(
+                EvidenceInput(
+                    source_table="quality_snapshots",
+                    source_row_id=snapshot.id,
+                    description="Latest quality snapshot for the selected project.",
+                )
+            )
+
+    async def _generate():
+        async for chunk in stream_quality_query(session, current_user, payload, evidence):
+            yield chunk
+        await session.commit()
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/agent-queries", response_model=ListResponse[AgentQueryRead])
 async def list_agent_queries(
     session: SessionDep, current_user: UserDep, limit: LimitQuery = 50
 ) -> ListResponse[AgentQueryRead]:
-    query = select(AgentQuery).order_by(AgentQuery.created_at.desc()).limit(limit)
+    # Client Intelligence Q&A history is project-scoped via dedicated CI endpoints only.
+    query = (
+        select(AgentQuery)
+        .where(AgentQuery.agent_name != CLIENT_INTERACTION_AGENT_NAME)
+        .order_by(AgentQuery.created_at.desc())
+        .limit(limit)
+    )
     if current_user.role.value == "client":
         query = query.where(AgentQuery.user_id == current_user.id)
-    elif current_user.role.value == "delivery_manager":
+    elif current_user.role.value in {"delivery_manager", "bsg_leadership"}:
         query = query.where(AgentQuery.org_id == current_user.org_id)
     rows = (await session.execute(query)).scalars()
-    return ListResponse(data=[_agent_query_read(row) for row in rows], pagination=Pagination(limit=limit))
+    return ListResponse(
+        data=[_agent_query_read(row) for row in rows],
+        pagination=Pagination(limit=limit),
+    )
 
 
 @router.get("/agent-queries/{query_id}", response_model=DataResponse[AgentQueryRead])
 async def get_agent_query(
     query_id: UUID, session: SessionDep, current_user: UserDep
 ) -> DataResponse[AgentQueryRead]:
-    query = select(AgentQuery).where(AgentQuery.id == query_id)
+    query = select(AgentQuery).where(
+        AgentQuery.id == query_id,
+        AgentQuery.agent_name != CLIENT_INTERACTION_AGENT_NAME,
+    )
     if current_user.role.value == "client":
         query = query.where(AgentQuery.user_id == current_user.id)
-    elif current_user.role.value == "delivery_manager":
+    elif current_user.role.value in {"delivery_manager", "bsg_leadership"}:
         query = query.where(AgentQuery.org_id == current_user.org_id)
     row = (await session.execute(query)).scalar_one_or_none()
-    # Double-check access for maximum compatibility with previous logic
     if row is None:
         raise ApiError(404, "NOT_FOUND", "Agent query was not found.")
-    # If using a superuser/admin role, allow access to any row (consistent with previous permissions)
-    return_row = row
-    # Defensive check for old logic if higher priv user tries to fetch not theirs (should be unreachable, but for parity)
     if current_user.role.value == "client" and row.user_id != current_user.id:
         raise ApiError(404, "NOT_FOUND", "Agent query was not found.")
-    if current_user.role.value == "delivery_manager" and row.org_id != current_user.org_id:
+    if (
+        current_user.role.value in {"delivery_manager", "bsg_leadership"}
+        and row.org_id != current_user.org_id
+    ):
         raise ApiError(404, "NOT_FOUND", "Agent query was not found.")
     data = _agent_query_read(row)
-    data.evidence_links = [EvidenceLinkRead(**item.__dict__) for item in await _query_evidence(session, row.id)]
+    data.evidence_links = [
+        EvidenceLinkRead(**item.__dict__) for item in await _query_evidence(session, row.id)
+    ]
     return DataResponse(data=data)
 
 
 async def _query_evidence(session: SessionDep, query_id: UUID) -> list[AgentQueryEvidenceLink]:
     return list(
-        (await session.execute(select(AgentQueryEvidenceLink).where(AgentQueryEvidenceLink.agent_query_id == query_id))).scalars()
+        (
+            await session.execute(
+                select(AgentQueryEvidenceLink).where(
+                    AgentQueryEvidenceLink.agent_query_id == query_id
+                )
+            )
+        ).scalars()
     )

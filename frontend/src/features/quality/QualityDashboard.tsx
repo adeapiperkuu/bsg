@@ -40,6 +40,7 @@ export function QualityDashboard({
     data: qualityPage,
     isLoading,
     isFetching,
+    isPlaceholderData,
     isError,
     error,
   } = useQualityPageQuery(activeProjectId);
@@ -48,7 +49,15 @@ export function QualityDashboard({
   const calibrationBrief = qualityPage?.calibration_brief;
   const sopFlags = qualityPage?.sop_ambiguity_flags ?? [];
   const reviewerScorecards = qualityPage?.reviewer_scorecards ?? [];
-  const isUpdating = isFetching && Boolean(qualityPage);
+  // `isPlaceholderData` (from `placeholderData: keepPreviousData` in
+  // qualityPageQueryOptions) is true for the entire window where the page
+  // is showing the PREVIOUS project's data standing in for the new one --
+  // i.e. exactly a project switch in progress -- and only flips back to
+  // false once the real data for the newly-selected project has arrived.
+  // `isFetching` alone covers the other "updating" case this indicator
+  // needs (a background revalidation of the SAME project's already-loaded
+  // data, e.g. after resolving an alert below invalidates this query).
+  const isUpdating = isPlaceholderData || (isFetching && Boolean(qualityPage));
 
   const handleResolveAlert = async (alertId: string) => {
     setResolvingId(alertId);

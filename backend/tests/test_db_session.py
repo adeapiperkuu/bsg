@@ -31,11 +31,12 @@ def test_supabase_transaction_pooler_reuses_connections_and_disables_statement_c
     assert kwargs["poolclass"] is AsyncAdaptedQueuePool
     assert kwargs["poolclass"] is not NullPool
     # Must clear the dashboard's 5-way parallel section fan-out without queuing.
-    assert kwargs["pool_size"] >= 5
+    assert kwargs["pool_size"] == 10
     assert kwargs["pool_pre_ping"] is True
     assert kwargs["connect_args"]["statement_cache_size"] == 0
     assert kwargs["connect_args"]["prepared_statement_cache_size"] == 0
-
+    assert kwargs["max_overflow"] == 10
+    assert kwargs["pool_recycle"] == 900
 
 def test_local_postgres_keeps_default_pool() -> None:
     url = "postgresql+asyncpg://user:pass@127.0.0.1:5432/bsg"
