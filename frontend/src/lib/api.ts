@@ -40,12 +40,27 @@ import type {
   DeliveryChatRequest,
   DeliveryChatSource,
 } from "@/types/delivery-chat";
+import type {
+  ClientCommunicationDraft,
+  ClientIntelligenceOverview,
+  ClientIntelligenceQueryHistory,
+  ClientIntelligenceQueryRead,
+  ClientIntelligenceReportHistory,
+  ClientIntelligenceSummary,
+  ClientMasterRow,
+  DeliveryConfidenceHistory,
+  ReportHistoryStatusFilter,
+} from "@/types/client-intelligence";
 
 function resolveApiBase(): string {
   const configured = import.meta.env.VITE_API_BASE_URL?.trim();
   if (import.meta.env.DEV) {
     // Always proxy in dev; localhost:8000 often hits Docker/WSL instead of the FastAPI app.
-    if (!configured || configured.includes("localhost:8000") || configured.includes("127.0.0.1:8000")) {
+    if (
+      !configured ||
+      configured.includes("localhost:8000") ||
+      configured.includes("127.0.0.1:8000")
+    ) {
       return "/api/v1";
     }
   }
@@ -377,6 +392,188 @@ export async function getProject(projectId: string): Promise<ProjectRead> {
   return body.data;
 }
 
+export async function fetchClientIntelligenceOverview(
+  projectId: string,
+  asOf?: string,
+): Promise<ClientIntelligenceOverview> {
+  const params = new URLSearchParams();
+  if (asOf !== undefined) params.set("as_of", asOf);
+  const query = params.toString();
+  const body = await apiFetch<{ data: ClientIntelligenceOverview }>(
+    `/projects/${projectId}/client-intelligence/overview${query ? `?${query}` : ""}`,
+  );
+  return body.data;
+}
+
+export async function fetchClientIntelligenceSummary(
+  projectId?: string,
+): Promise<ClientIntelligenceSummary> {
+  const params = new URLSearchParams();
+  if (projectId !== undefined) params.set("project_id", projectId);
+  const query = params.toString();
+  const body = await apiFetch<{ data: ClientIntelligenceSummary }>(
+    `/client-intelligence/summary${query ? `?${query}` : ""}`,
+  );
+  return body.data;
+}
+
+export async function fetchClientMaster(): Promise<ClientMasterRow[]> {
+  const body = await apiFetch<{ data: ClientMasterRow[] }>("/client-intelligence/master");
+  return body.data;
+}
+
+export async function fetchDeliveryConfidenceHistory(
+  projectId: string,
+): Promise<DeliveryConfidenceHistory> {
+  const body = await apiFetch<{ data: DeliveryConfidenceHistory }>(
+    `/projects/${projectId}/client-intelligence/delivery-confidence-history`,
+  );
+  return body.data;
+}
+
+export async function createClientIntelligenceDraft(
+  projectId: string,
+): Promise<ClientCommunicationDraft> {
+  const body = await apiFetch<{ data: ClientCommunicationDraft }>(
+    `/projects/${projectId}/communications/draft`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        comm_type: "weekly_summary",
+        subject: `Weekly Client Update · ${new Date().toISOString().slice(0, 10)}`,
+        instructions: "Create an evidence-backed weekly Client Intelligence update.",
+      }),
+    },
+  );
+  return body.data;
+}
+
+export async function listClientIntelligenceCommunications(
+  projectId: string,
+): Promise<ClientCommunicationDraft[]> {
+  const body = await apiFetch<{ data: ClientCommunicationDraft[] }>(
+    `/projects/${projectId}/communications`,
+  );
+  return body.data;
+}
+
+export async function fetchClientIntelligenceReportHistory(
+  projectId: string,
+  params: {
+    limit?: number;
+    offset?: number;
+    status?: ReportHistoryStatusFilter;
+  } = {},
+): Promise<ClientIntelligenceReportHistory> {
+  const search = new URLSearchParams();
+  if (params.limit != null) search.set("limit", String(params.limit));
+  if (params.offset != null) search.set("offset", String(params.offset));
+  if (params.status && params.status !== "all") search.set("status", params.status);
+  const qs = search.toString();
+  const body = await apiFetch<{ data: ClientIntelligenceReportHistory }>(
+    `/projects/${projectId}/client-intelligence/reports${qs ? `?${qs}` : ""}`,
+  );
+  return body.data;
+}
+
+export async function createClientIntelligenceQuery(
+  projectId: string,
+  question: string,
+): Promise<ClientIntelligenceQueryRead> {
+  const body = await apiFetch<{ data: ClientIntelligenceQueryRead }>(
+    `/projects/${projectId}/client-intelligence/queries`,
+    {
+      method: "POST",
+      body: JSON.stringify({ question }),
+    },
+  );
+  return body.data;
+}
+
+export async function fetchClientIntelligenceQueryHistory(
+  projectId: string,
+  params: {
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<ClientIntelligenceQueryHistory> {
+  const search = new URLSearchParams();
+  if (params.limit != null) search.set("limit", String(params.limit));
+  if (params.offset != null) search.set("offset", String(params.offset));
+  const qs = search.toString();
+  const body = await apiFetch<{ data: ClientIntelligenceQueryHistory }>(
+    `/projects/${projectId}/client-intelligence/queries${qs ? `?${qs}` : ""}`,
+  );
+  return body.data;
+}
+
+export async function editClientIntelligenceDraft(
+  communicationId: string,
+  payload: { subject: string; body_draft: string },
+): Promise<ClientCommunicationDraft> {
+  const body = await apiFetch<{ data: ClientCommunicationDraft }>(
+    `/communications/${communicationId}/draft`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+  );
+  return body.data;
+}
+
+export async function submitClientIntelligenceDraftForReview(
+  communicationId: string,
+  payload: { body_approved: string },
+): Promise<ClientCommunicationDraft> {
+  const body = await apiFetch<{ data: ClientCommunicationDraft }>(
+    `/communications/${communicationId}/review`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+  );
+  return body.data;
+}
+
+export async function approveClientIntelligenceCommunication(
+  communicationId: string,
+): Promise<ClientCommunicationDraft> {
+  const body = await apiFetch<{ data: ClientCommunicationDraft }>(
+    `/communications/${communicationId}/approve`,
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    },
+  );
+  return body.data;
+}
+
+export async function rejectClientIntelligenceCommunication(
+  communicationId: string,
+  payload: { rejection_reason: string },
+): Promise<ClientCommunicationDraft> {
+  const body = await apiFetch<{ data: ClientCommunicationDraft }>(
+    `/communications/${communicationId}/reject`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+  return body.data;
+}
+
+export async function sendClientIntelligenceCommunication(
+  communicationId: string,
+): Promise<ClientCommunicationDraft> {
+  const body = await apiFetch<{ data: ClientCommunicationDraft }>(
+    `/communications/${communicationId}/send`,
+    {
+      method: "POST",
+    },
+  );
+  return body.data;
+}
+
 export async function createProject(payload: ProjectCreatePayload): Promise<ProjectRead> {
   const body = await apiFetch<{ data: ProjectRead }>("/projects", {
     method: "POST",
@@ -654,7 +851,9 @@ export async function listQualityScanRuns(): Promise<QualityScanRun[]> {
 }
 
 export async function triggerQualityScan(): Promise<QualityScanRun> {
-  const body = await apiFetch<{ data: QualityScanRun }>("/internal/quality-scan", { method: "POST" });
+  const body = await apiFetch<{ data: QualityScanRun }>("/internal/quality-scan", {
+    method: "POST",
+  });
   return body.data;
 }
 
@@ -752,12 +951,16 @@ export async function fetchQualityPage(projectId: string): Promise<QualityPage> 
 }
 
 export async function fetchCalibrationBrief(projectId: string): Promise<CalibrationBrief> {
-  const body = await apiFetch<{ data: CalibrationBrief }>(`/projects/${projectId}/calibration-brief`);
+  const body = await apiFetch<{ data: CalibrationBrief }>(
+    `/projects/${projectId}/calibration-brief`,
+  );
   return body.data;
 }
 
 export async function fetchSopAmbiguityFlags(projectId: string): Promise<SopAmbiguityFlag[]> {
-  const body = await apiFetch<{ data: SopAmbiguityFlag[] }>(`/projects/${projectId}/sop-ambiguity-flags`);
+  const body = await apiFetch<{ data: SopAmbiguityFlag[] }>(
+    `/projects/${projectId}/sop-ambiguity-flags`,
+  );
   return body.data;
 }
 
@@ -776,7 +979,10 @@ export async function fetchReviewerScorecards(
   return body.data;
 }
 
-export async function resolveRiskAlert(alertId: string, resolutionSummary?: string): Promise<RiskAlertRead> {
+export async function resolveRiskAlert(
+  alertId: string,
+  resolutionSummary?: string,
+): Promise<RiskAlertRead> {
   const body = await apiFetch<{ data: RiskAlertRead }>(`/risk-alerts/${alertId}/resolve`, {
     method: "PATCH",
     body: JSON.stringify({ resolution_summary: resolutionSummary ?? null }),
@@ -785,7 +991,9 @@ export async function resolveRiskAlert(alertId: string, resolutionSummary?: stri
 }
 
 export async function fetchQualityDashboard(projectId: string): Promise<QualityDashboard> {
-  const body = await apiFetch<{ data: QualityDashboard }>(`/projects/${projectId}/quality-dashboard`);
+  const body = await apiFetch<{ data: QualityDashboard }>(
+    `/projects/${projectId}/quality-dashboard`,
+  );
   return body.data;
 }
 
@@ -897,6 +1105,9 @@ function isClientPortalPath(path: string): boolean {
 
 export function canAccessPath(role: AppRole, path: string): boolean {
   if (path === "/login" || path === "/unauthorized" || path === "/settings") return true;
+  if (path === "/client-intelligence") {
+    return role === "delivery_manager" || role === "bsg_leadership" || role === "super_admin";
+  }
   if (role === "super_admin") return path.startsWith("/admin");
   if (role === "client") return isClientPortalPath(path);
   if (role === "bsg_leadership") return path.startsWith("/leadership");
@@ -997,20 +1208,21 @@ function buildBootstrapFromDocuments(
         libraryHealth?.needs_review_count ??
         documents.filter((d) => d.workflow_state === "needs_review").length,
       expired_count:
-        libraryHealth?.expired_count ?? documents.filter((d) => d.workflow_state === "expired").length,
+        libraryHealth?.expired_count ??
+        documents.filter((d) => d.workflow_state === "expired").length,
       needs_reindex_count:
         libraryHealth?.needs_reindex_count ??
         documents.filter((d) => d.workflow_state === "needs_reindex").length,
       failed_processing_count:
         libraryHealth?.failed_processing_count ??
-        documents.filter(
-          (d) => d.processing_status === "failed" || d.indexing_status === "failed",
-        ).length,
+        documents.filter((d) => d.processing_status === "failed" || d.indexing_status === "failed")
+          .length,
       missing_metadata_count:
         libraryHealth?.missing_metadata_count ??
         documents.filter((d) => !d.owner_approver?.trim() || !d.effective_date).length,
       indexing_count: libraryHealth?.indexing_count ?? 0,
-      draft_count: libraryHealth?.draft_count ?? documents.filter((d) => d.status === "draft").length,
+      draft_count:
+        libraryHealth?.draft_count ?? documents.filter((d) => d.status === "draft").length,
       archived_count:
         libraryHealth?.archived_count ?? documents.filter((d) => d.status === "archived").length,
       approaching_expiry_count: libraryHealth?.approaching_expiry_count ?? 0,
@@ -1033,7 +1245,8 @@ function normalizeKnowledgeBootstrap(data: LegacyKnowledgeBootstrapApi): Knowled
       document_counts: data.document_counts,
       permissions: data.permissions ?? DEFAULT_KNOWLEDGE_PERMISSIONS,
       library_health: {
-        ready_count: data.library_health?.ready_for_retrieval_count ?? data.library_health?.ready_count ?? 0,
+        ready_count:
+          data.library_health?.ready_for_retrieval_count ?? data.library_health?.ready_count ?? 0,
         ready_for_retrieval_count:
           data.library_health?.ready_for_retrieval_count ?? data.library_health?.ready_count ?? 0,
         approved_and_indexed_count: data.library_health?.approved_and_indexed_count ?? 0,
@@ -1249,8 +1462,7 @@ export type KnowledgeAskOptions = {
   conversationId?: string | null;
 };
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function isUuid(value: string): boolean {
   return UUID_PATTERN.test(value);
@@ -1307,8 +1519,32 @@ export type KnowledgeStreamEvent =
   | { type: "delta"; text: string }
   | { type: "answer_delta"; text: string }
   | { type: "replace"; text: string }
-  | { type: "final"; query_id?: string | null; conversation_id?: string | null; answer_text: string; confidence_score: number; confidence_band?: string | null; confidence_reasons: string[]; next_step: string; structured_answer: KnowledgeAskResponseApi["structured_answer"]; model_used: string | null; retrieval_debug?: KnowledgeAskResponseApi["retrieval_debug"] }
-  | { type: "done"; query_id?: string | null; conversation_id?: string | null; answer_text: string; confidence_score: number; confidence_band?: string | null; confidence_reasons: string[]; next_step: string; structured_answer: KnowledgeAskResponseApi["structured_answer"]; model_used: string | null; retrieval_debug?: KnowledgeAskResponseApi["retrieval_debug"] }
+  | {
+      type: "final";
+      query_id?: string | null;
+      conversation_id?: string | null;
+      answer_text: string;
+      confidence_score: number;
+      confidence_band?: string | null;
+      confidence_reasons: string[];
+      next_step: string;
+      structured_answer: KnowledgeAskResponseApi["structured_answer"];
+      model_used: string | null;
+      retrieval_debug?: KnowledgeAskResponseApi["retrieval_debug"];
+    }
+  | {
+      type: "done";
+      query_id?: string | null;
+      conversation_id?: string | null;
+      answer_text: string;
+      confidence_score: number;
+      confidence_band?: string | null;
+      confidence_reasons: string[];
+      next_step: string;
+      structured_answer: KnowledgeAskResponseApi["structured_answer"];
+      model_used: string | null;
+      retrieval_debug?: KnowledgeAskResponseApi["retrieval_debug"];
+    }
   | { type: "error"; message: string; code?: string; retryable?: boolean };
 
 export async function* streamKnowledgeAsk(
@@ -1663,6 +1899,47 @@ export async function submitKnowledgeFeedback(
       feedback_reason: payload.feedback_reason ?? null,
     }),
   });
+  return body.data;
+}
+
+export async function listKnowledgeSuggestions(status?: string): Promise<KnowledgeSuggestionApi[]> {
+  const params = status ? `?status=${encodeURIComponent(status)}` : "";
+  const body = await apiFetch<{ data: KnowledgeSuggestionApi[] }>(
+    `/knowledge/suggestions${params}`,
+  );
+  return body.data;
+}
+
+export async function generateKnowledgeSuggestions(
+  documentId?: string,
+): Promise<KnowledgeSuggestionApi[]> {
+  const params = documentId ? `?document_id=${encodeURIComponent(documentId)}` : "";
+  const body = await apiFetch<{ data: KnowledgeSuggestionApi[] }>(
+    `/knowledge/suggestions/generate${params}`,
+    {
+      method: "POST",
+    },
+  );
+  return body.data;
+}
+
+export async function applyKnowledgeSuggestion(
+  suggestionId: string,
+): Promise<KnowledgeSuggestionApi> {
+  const body = await apiFetch<{ data: KnowledgeSuggestionApi }>(
+    `/knowledge/suggestions/${suggestionId}/apply`,
+    { method: "POST" },
+  );
+  return body.data;
+}
+
+export async function dismissKnowledgeSuggestion(
+  suggestionId: string,
+): Promise<KnowledgeSuggestionApi> {
+  const body = await apiFetch<{ data: KnowledgeSuggestionApi }>(
+    `/knowledge/suggestions/${suggestionId}/dismiss`,
+    { method: "POST" },
+  );
   return body.data;
 }
 

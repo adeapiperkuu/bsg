@@ -1,9 +1,8 @@
 from datetime import date, datetime
-from decimal import Decimal
 from typing import Generic, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 T = TypeVar("T")
 
@@ -36,6 +35,12 @@ class EvidenceLinkRead(ORMModel):
     source_row_id: UUID
     description: str
     created_at: datetime | None = None
+    # Provenance fields are internal-only; Client responses omit them.
+    visibility: str | None = None
+    observed_at: datetime | None = None
+    claim_keys: list[str] = Field(default_factory=list)
+    pack_source_fingerprint: str | None = None
+    evidence_provenance_complete: bool = False
 
 
 class DateRangeParams(BaseModel):
