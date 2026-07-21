@@ -59,6 +59,7 @@ export function WorkforceRecommendationsPanel({
   bundledRecommendations,
   bundledLoading = false,
   bundledError = false,
+  embedded = false,
 }: {
   projectId: string | null;
   canManage: boolean;
@@ -66,6 +67,7 @@ export function WorkforceRecommendationsPanel({
   bundledRecommendations?: ProjectRecommendationsResponse | null;
   bundledLoading?: boolean;
   bundledError?: boolean;
+  embedded?: boolean;
 }) {
   const useBundled = bundledRecommendations !== undefined;
   const query = useProjectRecommendationsQuery(projectId, !useBundled);
@@ -86,58 +88,59 @@ export function WorkforceRecommendationsPanel({
     [data?.data],
   );
 
+  const body =
+    isLoading ? (
+      <div className="space-y-2">
+        <div className="h-16 animate-pulse rounded-md bg-elevated" />
+        <div className="h-16 animate-pulse rounded-md bg-elevated" />
+      </div>
+    ) : isError ? (
+      <p className="text-sm text-[color:var(--danger)]">Unable to load workforce recommendations.</p>
+    ) : recommendations.length === 0 ? (
+      <div className="rounded-md border border-dashed border-border bg-elevated/50 px-3 py-3 text-center">
+        <p className="text-sm font-medium text-muted-foreground">No workforce recommendations yet</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {canManage
+            ? "Detect capability gaps, then generate mitigations."
+            : "No workforce recommendations have been generated for this project."}
+        </p>
+      </div>
+    ) : (
+      <div className="space-y-2">
+        {recommendations.map((recommendation) => {
+          const risk = actionableRisk(recommendation.risks);
+          return (
+            <WorkforceRecommendationCard
+              key={recommendation.title}
+              recommendation={recommendation}
+              canManage={canManage}
+              onAccept={() => risk && acceptMutation.mutate(risk.recommendation_id)}
+              onReject={() => risk && rejectMutation.mutate(risk.recommendation_id)}
+              isAccepting={
+                Boolean(risk) &&
+                acceptMutation.isPending &&
+                acceptMutation.variables === risk?.recommendation_id
+              }
+              isRejecting={
+                Boolean(risk) &&
+                rejectMutation.isPending &&
+                rejectMutation.variables === risk?.recommendation_id
+              }
+            />
+          );
+        })}
+      </div>
+    );
+
+  if (embedded) return body;
+
   return (
     <Card>
       <SectionHeader
         title="Workforce Recommendations"
-        sub="Generated mitigations for detected capability gaps"
+        sub="Mitigations aligned to each capability gap (hire, SME coverage, or capacity)"
       />
-      {isLoading ? (
-        <div className="space-y-2">
-          <div className="h-20 animate-pulse rounded-md bg-elevated" />
-          <div className="h-20 animate-pulse rounded-md bg-elevated" />
-        </div>
-      ) : isError ? (
-        <p className="text-sm text-[color:var(--danger)]">
-          Unable to load workforce recommendations.
-        </p>
-      ) : recommendations.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border bg-elevated/50 px-4 py-8 text-center">
-          <p className="text-sm font-medium text-muted-foreground">
-            No workforce recommendations yet
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {canManage
-              ? "Detect capability gaps, then use Generate recommendations to create mitigations."
-              : "No workforce recommendations have been generated for this project."}
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {recommendations.map((recommendation) => {
-            const risk = actionableRisk(recommendation.risks);
-            return (
-              <WorkforceRecommendationCard
-                key={recommendation.title}
-                recommendation={recommendation}
-                canManage={canManage}
-                onAccept={() => risk && acceptMutation.mutate(risk.recommendation_id)}
-                onReject={() => risk && rejectMutation.mutate(risk.recommendation_id)}
-                isAccepting={
-                  Boolean(risk) &&
-                  acceptMutation.isPending &&
-                  acceptMutation.variables === risk?.recommendation_id
-                }
-                isRejecting={
-                  Boolean(risk) &&
-                  rejectMutation.isPending &&
-                  rejectMutation.variables === risk?.recommendation_id
-                }
-              />
-            );
-          })}
-        </div>
-      )}
+      {body}
     </Card>
   );
 }

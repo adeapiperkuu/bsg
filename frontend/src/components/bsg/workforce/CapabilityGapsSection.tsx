@@ -25,6 +25,7 @@ export function CapabilityGapsSection({
   triggerDetectGaps,
   triggerGenerateRecommendations,
   handleGapStatusUpdate,
+  embedded = false,
 }: {
   canReadInternalWorkforce: boolean;
   canManageWorkforce: boolean;
@@ -43,37 +44,33 @@ export function CapabilityGapsSection({
   triggerDetectGaps: () => void;
   triggerGenerateRecommendations: () => void;
   handleGapStatusUpdate: (gapId: string, status: CapabilityGapStatus) => Promise<void>;
+  embedded?: boolean;
 }) {
-  return (
-    <Card>
-      <SectionHeader
-        title="Capability Gaps"
-        sub="Detected workforce skill, training, and utilization gaps"
-        right={
-          canManageWorkforce && resolvedProjectId ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={triggerDetectGaps}
-                disabled={detectGapsMutation.isPending || generateRecommendationsMutation.isPending}
-                className="rounded border border-border bg-elevated px-2.5 py-1 text-[11px] font-medium text-foreground hover:bg-card disabled:opacity-50"
-              >
-                {detectGapsMutation.isPending ? "Detecting..." : "Detect gaps"}
-              </button>
-              <button
-                type="button"
-                onClick={triggerGenerateRecommendations}
-                disabled={detectGapsMutation.isPending || generateRecommendationsMutation.isPending}
-                className="rounded border border-[color:var(--brand)]/30 bg-[color:var(--brand)]/10 px-2.5 py-1 text-[11px] font-medium text-[color:var(--brand)] hover:bg-[color:var(--brand)]/20 disabled:opacity-50"
-              >
-                {generateRecommendationsMutation.isPending
-                  ? "Generating..."
-                  : "Generate recommendations"}
-              </button>
-            </div>
-          ) : undefined
-        }
-      />
+  const actions =
+    canManageWorkforce && resolvedProjectId ? (
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={triggerDetectGaps}
+          disabled={detectGapsMutation.isPending || generateRecommendationsMutation.isPending}
+          className="rounded border border-border bg-elevated px-2.5 py-1 text-[11px] font-medium text-foreground hover:bg-card disabled:opacity-50"
+        >
+          {detectGapsMutation.isPending ? "Detecting..." : "Detect gaps"}
+        </button>
+        <button
+          type="button"
+          onClick={triggerGenerateRecommendations}
+          disabled={detectGapsMutation.isPending || generateRecommendationsMutation.isPending}
+          className="rounded border border-[color:var(--brand)]/30 bg-[color:var(--brand)]/10 px-2.5 py-1 text-[11px] font-medium text-[color:var(--brand)] hover:bg-[color:var(--brand)]/20 disabled:opacity-50"
+        >
+          {generateRecommendationsMutation.isPending ? "Generating..." : "Generate recommendations"}
+        </button>
+      </div>
+    ) : null;
+
+  const body = (
+    <>
+      {embedded && actions ? <div className="mb-3 flex justify-end">{actions}</div> : null}
       {!canReadInternalWorkforce ? (
         <WorkforcePlaceholder
           title="Capability gaps restricted"
@@ -163,6 +160,19 @@ export function CapabilityGapsSection({
           )}
         </>
       )}
+    </>
+  );
+
+  if (embedded) return body;
+
+  return (
+    <Card>
+      <SectionHeader
+        title="Capability Gaps"
+        sub="Detected workforce skill, training, and utilization gaps"
+        right={actions ?? undefined}
+      />
+      {body}
     </Card>
   );
 }

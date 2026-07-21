@@ -32,6 +32,7 @@ import type {
   UtilizationSnapshotCreatePayload,
   UtilizationSnapshotRead,
   UtilizationSnapshotUpdatePayload,
+  WorkforceOptimizationRead,
   WorkforceRecommendationGenerateResponse,
 } from "@/types/workforce";
 
@@ -54,6 +55,17 @@ export async function getProjectWorkforceDashboard(
 ): Promise<ProjectWorkforceDashboardRead> {
   const body = await apiFetch<{ data: ProjectWorkforceDashboardRead }>(
     `/projects/${projectId}/workforce-dashboard`,
+  );
+  return body.data;
+}
+
+export async function getProjectWorkforceOptimization(
+  projectId: string,
+  skillId?: string,
+): Promise<WorkforceOptimizationRead> {
+  const params = skillId ? `?skill_id=${encodeURIComponent(skillId)}` : "";
+  const body = await apiFetch<{ data: WorkforceOptimizationRead }>(
+    `/projects/${projectId}/workforce-optimization${params}`,
   );
   return body.data;
 }

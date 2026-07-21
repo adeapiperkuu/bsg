@@ -28,6 +28,7 @@ from app.schemas.domain import (
     ProjectWorkforceSummaryRead,
     SkillMatrixRead,
     TrainingGapSummaryRead,
+    WorkforceOptimizationRead,
 )
 from app.services.workforce_dashboard import get_project_workforce_dashboard
 from tests.conftest import ORG_A, client_a, override_user
@@ -225,6 +226,15 @@ async def test_get_project_workforce_dashboard_assembles_sections() -> None:
                 )
             ),
         ),
+        patch(
+            "app.services.workforce_dashboard.build_workforce_optimization",
+            new=AsyncMock(
+                return_value=WorkforceOptimizationRead(
+                    project_id=project.id,
+                    generated_at=now,
+                ),
+            ),
+        ),
     ):
         dashboard = await get_project_workforce_dashboard(session, project, user)
 
@@ -237,9 +247,11 @@ async def test_get_project_workforce_dashboard_assembles_sections() -> None:
     assert len(dashboard.capability_gaps) == 1
     assert dashboard.capability_gaps[0].title == "SME shortage"
     assert len(dashboard.recommendations.data) == 1
-    assert dashboard.recommendations.data[0].title == "Hire SMEs"
+    assert "SME" in dashboard.recommendations.data[0].title
     assert dashboard.recommendations.data[0].risks[0].source_risk_type == "workforce_imbalance"
     assert len(dashboard.recommendations.assignable_owners) == 1
+    assert dashboard.optimization is not None
+    assert dashboard.optimization.project_id == project.id
 
 
 @pytest.mark.asyncio

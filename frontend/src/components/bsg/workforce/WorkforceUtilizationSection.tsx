@@ -22,6 +22,7 @@ export function WorkforceUtilizationSection({
   onToggleUtilizationManager,
   teams,
   capacityThreshold,
+  embedded = false,
 }: {
   canReadInternalWorkforce: boolean;
   canManageWorkforce: boolean;
@@ -42,29 +43,28 @@ export function WorkforceUtilizationSection({
   onToggleUtilizationManager: () => void;
   teams: TeamRead[];
   capacityThreshold: number;
+  /** When true, render body only (parent fold provides the chrome). */
+  embedded?: boolean;
 }) {
-  return (
-    <Card>
-      <SectionHeader
-        title="Workforce Utilization"
-        sub={`By team / ${capacityThreshold}% capacity threshold`}
-        right={
-          canReadInternalWorkforce && resolvedProjectId ? (
-            <ManageToggleButton
-              active={showUtilizationManager}
-              onClick={onToggleUtilizationManager}
-              label={canManageWorkforce ? "Manage" : "Details"}
-            />
-          ) : undefined
-        }
+  const manageToggle =
+    canReadInternalWorkforce && resolvedProjectId ? (
+      <ManageToggleButton
+        active={showUtilizationManager}
+        onClick={onToggleUtilizationManager}
+        label={canManageWorkforce ? "Manage" : "Details"}
       />
+    ) : null;
+
+  const body = (
+    <>
+      {embedded && manageToggle ? <div className="mb-3 flex justify-end">{manageToggle}</div> : null}
       {!canReadInternalWorkforce ? (
         <WorkforcePlaceholder
           title="Utilization data restricted"
           reason="Internal workforce utilization is not available to client users."
         />
       ) : utilizationLoading ? (
-        <div className="h-60 animate-pulse rounded-md bg-elevated" />
+        <div className="h-48 animate-pulse rounded-md bg-elevated" />
       ) : teamUtilization.length === 0 ? (
         <WorkforcePlaceholder
           title="No utilization snapshots yet"
@@ -132,6 +132,19 @@ export function WorkforceUtilizationSection({
           canManage={canManageWorkforce}
         />
       ) : null}
+    </>
+  );
+
+  if (embedded) return body;
+
+  return (
+    <Card>
+      <SectionHeader
+        title="Workforce Utilization"
+        sub={`By team / ${capacityThreshold}% capacity threshold`}
+        right={manageToggle ?? undefined}
+      />
+      {body}
     </Card>
   );
 }

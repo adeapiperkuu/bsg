@@ -18,16 +18,18 @@ type WorkforceAgentSectionProps = {
   projectId: string | null;
   canReadInternalWorkforce: boolean;
   onAskingChange?: (asking: boolean) => void;
+  embedded?: boolean;
 };
 
 export function WorkforceAgentSection({
   projectId,
   canReadInternalWorkforce,
   onAskingChange,
+  embedded = false,
 }: WorkforceAgentSectionProps) {
   if (!canReadInternalWorkforce) {
     return (
-      <div className="rounded-lg border border-border bg-card p-5">
+      <div className={embedded ? undefined : "rounded-lg border border-border bg-card p-5"}>
         <PlaceholderPanel
           title="Workforce Agent restricted"
           reason="The Workforce Agent is available to internal roles only."
@@ -36,5 +38,11 @@ export function WorkforceAgentSection({
     );
   }
 
-  return <WorkforceAgentChat projectId={projectId} onAskingChange={onAskingChange} />;
+  return (
+    <WorkforceAgentChat
+      projectId={projectId}
+      onAskingChange={onAskingChange}
+      embedded={embedded}
+    />
+  );
 }

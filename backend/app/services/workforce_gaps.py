@@ -11,7 +11,6 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.delivery.services.recommendation_service import (
-    generate_mitigation_copy,
     recommendation_row_to_read,
     sync_recommendations_for_project,
 )
@@ -55,11 +54,118 @@ OPEN_GAP_STATUSES = (CapabilityGapStatus.OPEN, CapabilityGapStatus.ACKNOWLEDGED)
 OPEN_ALERT_STATUSES = (AlertStatus.OPEN, AlertStatus.ACKNOWLEDGED)
 HIGH_PRIORITY = frozenset({SkillRequirementPriority.HIGH, SkillRequirementPriority.CRITICAL})
 
+# Legacy mitigation title that incorrectly covered every workforce gap type.
+LEGACY_REBALANCE_TITLE = "Rebalance workforce allocation"
+
 
 def _enum_value(value) -> str | None:
     if value is None:
         return None
     return value.value if hasattr(value, "value") else str(value)
+
+
+def _skill_label_from_gap(gap: CapabilityGap) -> str:
+    evidence = gap.evidence if isinstance(gap.evidence, dict) else {}
+    skill_name = evidence.get("skill_name")
+    if skill_name:
+        return str(skill_name)
+    title = gap.title or "skill"
+    for prefix in (
+        "Skill shortage: ",
+        "Critical shortage: ",
+        "SME shortage: ",
+    ):
+        if title.startswith(prefix):
+            return title[len(prefix) :]
+    return title
+
+
+def project_can_rebalance_from_utilization(
+    latest_by_team: dict[UUID, UtilizationSnapshot],
+) -> bool:
+    """True when at least one overloaded and one underutilized team exist."""
+    if len(latest_by_team) < 2:
+        return False
+    has_overload = any(
+        snap.utilization_pct >= UTILIZATION_OVERLOAD_THRESHOLD for snap in latest_by_team.values()
+    )
+    has_underload = any(
+        snap.utilization_pct <= UTILIZATION_UNDERLOAD_THRESHOLD for snap in latest_by_team.values()
+    )
+    return has_overload and has_underload
+
+
+def workforce_mitigation_copy_for_gap(
+    gap: CapabilityGap,
+    *,
+    can_rebalance: bool,
+) -> tuple[str, str]:
+    """Gap-type-specific mitigation text aligned with the Optimization engine."""
+    gap_type = _enum_value(gap.gap_type)
+    skill = _skill_label_from_gap(gap)
+
+    if gap_type == CapabilityGapType.SKILL_SHORTAGE.value:
+        return (
+            f"Close skill gap: {skill}",
+            (
+                f"Coverage is below the required headcount for {skill}. "
+                "Hire or upskill annotators to the required proficiency; "
+                "do not rely on cross-team rebalancing alone when qualified capacity is missing."
+            ),
+        )
+    if gap_type == CapabilityGapType.SME_SHORTAGE.value:
+        return (
+            f"Strengthen SME coverage: {skill}",
+            (
+                f"Assign a backup SME and cross-train for {skill}. "
+                "Document critical knowledge and rotate ownership to remove single points of failure."
+            ),
+        )
+    if gap_type == CapabilityGapType.UTILIZATION_OVERLOAD.value:
+        if can_rebalance:
+            return (
+                "Rebalance workload across teams",
+                (
+                    "Transfer capacity from overloaded teams to underutilized teams to restore "
+                    "utilization within the sustainable band (below "
+                    f"{float(UTILIZATION_OVERLOAD_THRESHOLD):.0f}%)."
+                ),
+            )
+        return (
+            "Add capacity for overloaded utilization",
+            (
+                f"Utilization is at or above {float(UTILIZATION_OVERLOAD_THRESHOLD):.0f}% and no "
+                "underutilized destination team is available. Hire headcount or stand up an "
+                "additional team before transfer-based rebalancing can apply."
+            ),
+        )
+    if gap_type == CapabilityGapType.UTILIZATION_UNDERLOAD.value:
+        return (
+            "Absorb spare team capacity",
+            (
+                "Route additional work to the underutilized team or temporarily lend capacity "
+                "to overloaded teams when skills align."
+            ),
+        )
+    if gap_type == CapabilityGapType.TRAINING_GAP.value:
+        return (
+            "Close training gaps",
+            "Complete mandatory and overdue training so proficiency and certification targets stay achievable.",
+        )
+    if gap_type == CapabilityGapType.CERTIFICATION_GAP.value:
+        return (
+            "Resolve certification compliance",
+            "Renew expired certifications and clear pending reviews for SME and delivery readiness.",
+        )
+    return (
+        "Address workforce capability gap",
+        "Review staffing, SME coverage, and utilization to close the linked workforce gap.",
+    )
+
+
+async def project_can_rebalance(session: AsyncSession, project_id: UUID) -> bool:
+    latest = await _load_latest_team_utilization(session, project_id)
+    return project_can_rebalance_from_utilization(latest)
 
 
 @dataclass(frozen=True)
@@ -451,13 +557,15 @@ async def _ensure_workforce_risk_and_recommendation(
     *,
     risks_by_title: dict[str, RiskAlert],
     recommendations_by_risk_id: dict[UUID, MitigationRecommendation],
+    can_rebalance: bool,
 ) -> tuple[int, int]:
-    """Create risk/recommendation for a high/critical gap using preloaded caches."""
+    """Create/update risk/recommendation for a high/critical gap using preloaded caches."""
     if gap.severity not in {CapabilityGapSeverity.HIGH, CapabilityGapSeverity.CRITICAL}:
         return 0, 0
 
     risk_alerts_created = 0
     recommendations_created = 0
+    title, description = workforce_mitigation_copy_for_gap(gap, can_rebalance=can_rebalance)
 
     existing_risk = risks_by_title.get(gap.title)
     if existing_risk is None:
@@ -479,7 +587,6 @@ async def _ensure_workforce_risk_and_recommendation(
 
     existing_recommendation = recommendations_by_risk_id.get(existing_risk.id)
     if existing_recommendation is None:
-        title, description = generate_mitigation_copy(existing_risk)
         recommendation = MitigationRecommendation(
             project_id=project.id,
             org_id=project.org_id,
@@ -494,6 +601,18 @@ async def _ensure_workforce_risk_and_recommendation(
         await session.flush()
         recommendations_by_risk_id[existing_risk.id] = recommendation
         recommendations_created = 1
+    elif (
+        existing_recommendation.status == RecommendationStatus.PENDING
+        and (
+            existing_recommendation.title != title
+            or existing_recommendation.description != description
+            or existing_recommendation.title == LEGACY_REBALANCE_TITLE
+        )
+    ):
+        # Keep pending mitigations aligned with Optimization (esp. legacy rebalance copy).
+        existing_recommendation.title = title
+        existing_recommendation.description = description
+        existing_recommendation.severity = _gap_severity_to_recommendation_severity(gap.severity)
 
     return risk_alerts_created, recommendations_created
 
@@ -580,6 +699,7 @@ async def detect_and_persist_capability_gaps(
             if gap.severity in {CapabilityGapSeverity.HIGH, CapabilityGapSeverity.CRITICAL}
         ]
         if high_critical:
+            can_rebalance = await project_can_rebalance(session, project.id)
             risks_by_title = await _load_open_workforce_risks_by_title(session, project.id)
             recommendations_by_risk_id = await _load_recommendations_by_source_risk(
                 session,
@@ -593,6 +713,7 @@ async def detect_and_persist_capability_gaps(
                     gap,
                     risks_by_title=risks_by_title,
                     recommendations_by_risk_id=recommendations_by_risk_id,
+                    can_rebalance=can_rebalance,
                 )
                 risk_alerts_created += alerts
                 recommendations_created += recs
@@ -666,6 +787,7 @@ async def generate_workforce_recommendations(
 
     created = 0
     if gaps:
+        can_rebalance = await project_can_rebalance(session, project.id)
         risks_by_title = await _load_open_workforce_risks_by_title(session, project.id)
         recommendations_by_risk_id = await _load_recommendations_by_source_risk(
             session,
@@ -679,6 +801,7 @@ async def generate_workforce_recommendations(
                 gap,
                 risks_by_title=risks_by_title,
                 recommendations_by_risk_id=recommendations_by_risk_id,
+                can_rebalance=can_rebalance,
             )
             created += recs
 

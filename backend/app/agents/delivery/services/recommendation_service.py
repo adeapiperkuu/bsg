@@ -64,8 +64,8 @@ ALERT_ACTIONS: dict[AlertType, tuple[str, str]] = {
         "Re-sequence work to protect the milestone date and communicate trade-offs to stakeholders.",
     ),
     AlertType.WORKFORCE_IMBALANCE: (
-        "Rebalance workforce allocation",
-        "Shift annotator capacity across teams to remove imbalance and restore sustainable throughput.",
+        "Address workforce capability gap",
+        "Review staffing, SME coverage, and utilization to close the linked workforce gap.",
     ),
 }
 

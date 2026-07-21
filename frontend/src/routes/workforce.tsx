@@ -9,9 +9,11 @@ import { RegionalOverviewSection } from "@/components/bsg/workforce/RegionalOver
 import { SkillCoverageMatrixSection } from "@/components/bsg/workforce/SkillCoverageMatrixSection";
 import { TeamSummarySection } from "@/components/bsg/workforce/TeamSummarySection";
 import { TrainingGapsSection } from "@/components/bsg/workforce/TrainingGapsSection";
+import { WorkforceFold } from "@/components/bsg/workforce/WorkforceFold";
 import { WorkforceUtilizationSection } from "@/components/bsg/workforce/WorkforceUtilizationSection";
 import { WorkforceAgentSection } from "@/components/bsg/workforce/agent/WorkforceAgentSection";
 import { WorkforceKpiStrip } from "@/components/bsg/workforce/WorkforceKpiStrip";
+import { WorkforceOptimizationPanel } from "@/components/bsg/workforce/WorkforceOptimizationPanel";
 import { WorkforceRecommendationsPanel } from "@/components/bsg/WorkforceRecommendationsPanel";
 import { useProjectsQuery } from "@/lib/queries/delivery";
 import {
@@ -208,6 +210,13 @@ function WorkforcePage() {
   const bundledRecommendations = (
     canReadInternalWorkforce ? (dashboard?.recommendations ?? null) : undefined
   ) as ProjectRecommendationsResponse | null | undefined;
+
+  const bundledRecommendationCount = useMemo(() => {
+    if (!bundledRecommendations?.data) return 0;
+    return bundledRecommendations.data.filter((item) =>
+      item.risks.some((risk) => risk.source_risk_type === "workforce_imbalance"),
+    ).length;
+  }, [bundledRecommendations]);
 
   const {
     siteFilter,
@@ -448,7 +457,7 @@ function WorkforcePage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-5">
+      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-5">
         <div className="space-y-5 lg:col-span-3">
           {/* --- Live KPIs (teams + annotators API) --- */}
           <WorkforceKpiStrip
@@ -467,6 +476,14 @@ function WorkforcePage() {
             trainingGapsTone={trainingGapsTone}
           />
 
+          {canReadInternalWorkforce ? (
+            <WorkforceOptimizationPanel
+              optimization={dashboard?.optimization}
+              loading={dashboardQuery.isLoading}
+              error={dashboardQuery.isError}
+            />
+          ) : null}
+
           <SkillCoverageMatrixSection
             canReadInternalWorkforce={canReadInternalWorkforce}
             canManageWorkforce={canManageWorkforce}
@@ -483,70 +500,109 @@ function WorkforcePage() {
             }
           />
 
-          <WorkforceUtilizationSection
-            canReadInternalWorkforce={canReadInternalWorkforce}
-            canManageWorkforce={canManageWorkforce}
-            resolvedProjectId={resolvedProjectId}
-            utilizationLoading={utilizationLoading}
-            teamUtilization={teamUtilization}
-            filteredTeamUtilization={filteredTeamUtilization}
-            filteredUtilizationStats={filteredUtilizationStats}
-            filteredUtilizationYAxisMax={filteredUtilizationYAxisMax}
-            utilizationTrend={utilizationTrend}
-            showUtilizationManager={showUtilizationManager}
-            onToggleUtilizationManager={() => setShowUtilizationManager((value) => !value)}
-            teams={summary.teams}
-            capacityThreshold={UTILIZATION_CAPACITY_THRESHOLD}
-          />
+          <WorkforceFold
+            title="Utilization"
+            sub="Team capacity vs threshold and recent trend"
+            summary={
+              !canReadInternalWorkforce
+                ? "Internal only"
+                : utilizationLoading
+                  ? "Loading…"
+                  : filteredUtilizationStats.total === 0
+                    ? "No snapshots yet"
+                    : `${filteredUtilizationStats.overloaded} overloaded · ${filteredUtilizationStats.underutilized} underutilized`
+            }
+            badge={
+              filteredUtilizationStats.total > 0
+                ? `${filteredUtilizationStats.overloaded}/${filteredUtilizationStats.total} at capacity`
+                : undefined
+            }
+            defaultOpen={false}
+          >
+            <WorkforceUtilizationSection
+              embedded
+              canReadInternalWorkforce={canReadInternalWorkforce}
+              canManageWorkforce={canManageWorkforce}
+              resolvedProjectId={resolvedProjectId}
+              utilizationLoading={utilizationLoading}
+              teamUtilization={teamUtilization}
+              filteredTeamUtilization={filteredTeamUtilization}
+              filteredUtilizationStats={filteredUtilizationStats}
+              filteredUtilizationYAxisMax={filteredUtilizationYAxisMax}
+              utilizationTrend={utilizationTrend}
+              showUtilizationManager={showUtilizationManager}
+              onToggleUtilizationManager={() => setShowUtilizationManager((value) => !value)}
+              teams={summary.teams}
+              capacityThreshold={UTILIZATION_CAPACITY_THRESHOLD}
+            />
+          </WorkforceFold>
 
-          <CapabilityGapsSection
-            canReadInternalWorkforce={canReadInternalWorkforce}
-            canManageWorkforce={canManageWorkforce}
-            resolvedProjectId={resolvedProjectId}
-            capabilityGapsLoading={capabilityGapsLoading}
-            capabilityGapsError={capabilityGapsError}
-            capabilityGaps={capabilityGaps}
-            filteredCapabilityGaps={filteredCapabilityGaps}
-            filteredCapabilityGapsSummary={filteredCapabilityGapsSummary}
-            detectMessage={detectMessage}
-            recommendMessage={recommendMessage}
-            actionError={actionError}
-            updatingGapId={updatingGapId}
-            detectGapsMutation={detectGapsMutation}
-            generateRecommendationsMutation={generateRecommendationsMutation}
-            triggerDetectGaps={triggerDetectGaps}
-            triggerGenerateRecommendations={triggerGenerateRecommendations}
-            handleGapStatusUpdate={handleGapStatusUpdate}
-          />
+          <WorkforceFold
+            title="Capability gaps"
+            sub="Detected skill, capacity, and coverage gaps"
+            summary={
+              !canReadInternalWorkforce
+                ? "Internal only"
+                : capabilityGapsLoading
+                  ? "Loading…"
+                  : `${filteredCapabilityGapsSummary.openCount} open · ${filteredCapabilityGapsSummary.highCriticalCount} high/critical`
+            }
+            badge={
+              filteredCapabilityGapsSummary.openCount > 0
+                ? `${filteredCapabilityGapsSummary.openCount} open`
+                : "Clear"
+            }
+            defaultOpen={false}
+          >
+            <CapabilityGapsSection
+              embedded
+              canReadInternalWorkforce={canReadInternalWorkforce}
+              canManageWorkforce={canManageWorkforce}
+              resolvedProjectId={resolvedProjectId}
+              capabilityGapsLoading={capabilityGapsLoading}
+              capabilityGapsError={capabilityGapsError}
+              capabilityGaps={capabilityGaps}
+              filteredCapabilityGaps={filteredCapabilityGaps}
+              filteredCapabilityGapsSummary={filteredCapabilityGapsSummary}
+              detectMessage={detectMessage}
+              recommendMessage={recommendMessage}
+              actionError={actionError}
+              updatingGapId={updatingGapId}
+              detectGapsMutation={detectGapsMutation}
+              generateRecommendationsMutation={generateRecommendationsMutation}
+              triggerDetectGaps={triggerDetectGaps}
+              triggerGenerateRecommendations={triggerGenerateRecommendations}
+              handleGapStatusUpdate={handleGapStatusUpdate}
+            />
+          </WorkforceFold>
 
           {canReadInternalWorkforce ? (
-            <WorkforceRecommendationsPanel
-              projectId={resolvedProjectId}
-              canManage={canManageWorkforce}
-              bundledRecommendations={bundledRecommendations ?? null}
-              bundledLoading={dashboardQuery.isLoading}
-              bundledError={dashboardQuery.isError}
-            />
+            <WorkforceFold
+              title="Workforce recommendations"
+              sub="Mitigations generated from capability gaps"
+              summary={
+                dashboardQuery.isLoading
+                  ? "Loading…"
+                  : `${bundledRecommendationCount} recommendation${bundledRecommendationCount === 1 ? "" : "s"}`
+              }
+              badge={
+                bundledRecommendationCount > 0 ? String(bundledRecommendationCount) : undefined
+              }
+              defaultOpen={false}
+            >
+              <WorkforceRecommendationsPanel
+                embedded
+                projectId={resolvedProjectId}
+                canManage={canManageWorkforce}
+                bundledRecommendations={bundledRecommendations ?? null}
+                bundledLoading={dashboardQuery.isLoading}
+                bundledError={dashboardQuery.isError}
+              />
+            </WorkforceFold>
           ) : null}
-
-          <TeamSummarySection
-            workforceLoading={workforceLoading}
-            hasTeams={hasTeams}
-            canReadInternalWorkforce={canReadInternalWorkforce}
-            canManageWorkforce={canManageWorkforce}
-            resolvedProjectId={resolvedProjectId}
-            teams={summary.teams}
-            annotatorsByTeam={summary.annotatorsByTeam}
-            filteredTeams={filteredTeams}
-            expandedTeams={expandedTeams}
-            showTeamsManager={showTeamsManager}
-            onToggleTeamsManager={() => setShowTeamsManager((value) => !value)}
-            onToggleTeam={toggleTeamExpanded}
-            onSelectAnnotator={openAnnotatorProfile}
-          />
         </div>
 
-        <div className="space-y-5 lg:col-span-2">
+        <div className="space-y-5 lg:sticky lg:top-4 lg:col-span-2 lg:self-start">
           <RegionalOverviewSection
             view={view}
             onViewChange={setView}
@@ -563,21 +619,77 @@ function WorkforcePage() {
             filteredSkillMatrixRows={filteredSkillMatrixRows}
           />
 
-          <TrainingGapsSection
-            canReadInternalWorkforce={canReadInternalWorkforce}
-            trainingGapsLoading={trainingGapsLoading}
-            trainingGapsError={trainingGapsError}
-            trainingGaps={trainingGaps}
-            filteredTrainingGapRows={filteredTrainingGapRows}
-            trainingGapRowKey={trainingGapRowKey}
-            gapRowSubject={gapRowSubject}
-          />
+          <WorkforceFold
+            title="Team summary"
+            sub="Teams, headcount, and annotator profiles"
+            summary={
+              workforceLoading
+                ? "Loading…"
+                : `${filteredTeams.length} team${filteredTeams.length === 1 ? "" : "s"} · ${summary.activeAnnotatorCount} active`
+            }
+            badge={hasTeams ? String(filteredTeams.length) : undefined}
+            defaultOpen={false}
+          >
+            <TeamSummarySection
+              embedded
+              workforceLoading={workforceLoading}
+              hasTeams={hasTeams}
+              canReadInternalWorkforce={canReadInternalWorkforce}
+              canManageWorkforce={canManageWorkforce}
+              resolvedProjectId={resolvedProjectId}
+              teams={summary.teams}
+              annotatorsByTeam={summary.annotatorsByTeam}
+              filteredTeams={filteredTeams}
+              expandedTeams={expandedTeams}
+              showTeamsManager={showTeamsManager}
+              onToggleTeamsManager={() => setShowTeamsManager((value) => !value)}
+              onToggleTeam={toggleTeamExpanded}
+              onSelectAnnotator={openAnnotatorProfile}
+            />
+          </WorkforceFold>
 
-          <WorkforceAgentSection
-            canReadInternalWorkforce={canReadInternalWorkforce}
-            projectId={resolvedProjectId}
-            onAskingChange={setAgentAsking}
-          />
+          <WorkforceFold
+            title="Training gaps"
+            sub="Certification and training coverage gaps"
+            summary={
+              !canReadInternalWorkforce
+                ? "Internal only"
+                : trainingGapsLoading
+                  ? "Loading…"
+                  : (trainingGapsDelta ?? "No open gaps")
+            }
+            badge={
+              typeof trainingGapsValue === "number" && trainingGapsValue > 0
+                ? String(trainingGapsValue)
+                : undefined
+            }
+            defaultOpen={false}
+          >
+            <TrainingGapsSection
+              embedded
+              canReadInternalWorkforce={canReadInternalWorkforce}
+              trainingGapsLoading={trainingGapsLoading}
+              trainingGapsError={trainingGapsError}
+              trainingGaps={trainingGaps}
+              filteredTrainingGapRows={filteredTrainingGapRows}
+              trainingGapRowKey={trainingGapRowKey}
+              gapRowSubject={gapRowSubject}
+            />
+          </WorkforceFold>
+
+          <WorkforceFold
+            title="Workforce agent"
+            sub="Ask about coverage, utilization, and gaps"
+            summary="Q&A over live workforce data"
+            defaultOpen={false}
+          >
+            <WorkforceAgentSection
+              embedded
+              canReadInternalWorkforce={canReadInternalWorkforce}
+              projectId={resolvedProjectId}
+              onAskingChange={setAgentAsking}
+            />
+          </WorkforceFold>
         </div>
       </div>
 
