@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 
 import { AiBadge, Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
+import { WorkforceFold } from "@/components/bsg/workforce/WorkforceFold";
 import { cn } from "@/lib/utils";
 import type {
   RecommendationLineage,
@@ -461,40 +462,55 @@ export function WorkforceOptimizationPanel({
             shortages={optimization.skill_shortages}
           />
 
-          <div className="flex flex-wrap gap-1 border-b border-border pb-2">
-            {tabs.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setTab(item.id)}
-                className={cn(
-                  "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                  activeTab === item.id
-                    ? "bg-foreground text-background"
-                    : "text-muted-foreground hover:bg-elevated hover:text-foreground",
-                )}
-              >
-                {item.label}
-                {item.count > 0 ? (
-                  <span className="ml-1 opacity-70">({item.count})</span>
-                ) : null}
-              </button>
-            ))}
-          </div>
+          <WorkforceFold
+            title="Recommendation details"
+            sub="Hiring, skill match, SME succession, and rebalancing"
+            summary={tabs
+              .map((item) => `${item.label} ${item.count}`)
+              .join(" · ")}
+            badge={`${tabs.reduce((sum, item) => sum + item.count, 0)} items`}
+            defaultOpen={false}
+            plain
+          >
+            <div className="flex flex-wrap gap-1 border-b border-border pb-2">
+              {tabs.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setTab(item.id)}
+                  className={cn(
+                    "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                    activeTab === item.id
+                      ? "bg-foreground text-background"
+                      : "text-muted-foreground hover:bg-elevated hover:text-foreground",
+                  )}
+                >
+                  {item.label}
+                  {item.count > 0 ? (
+                    <span className="ml-1 opacity-70">({item.count})</span>
+                  ) : null}
+                </button>
+              ))}
+            </div>
 
-          {activeTab === "matching" ? (
-            <SkillMatchingSection rows={optimization.skill_matches} />
-          ) : null}
-          {activeTab === "rebalancing" ? (
-            <RebalancingSection
-              rows={optimization.rebalancing}
-              currentUtilization={currentUtilization}
-            />
-          ) : null}
-          {activeTab === "planning" ? (
-            <ResourcePlanningSection rows={optimization.resource_planning} />
-          ) : null}
-          {activeTab === "sme" ? <SmeCoverageSection rows={optimization.sme_coverage} /> : null}
+            <div className="mt-3">
+              {activeTab === "matching" ? (
+                <SkillMatchingSection rows={optimization.skill_matches} />
+              ) : null}
+              {activeTab === "rebalancing" ? (
+                <RebalancingSection
+                  rows={optimization.rebalancing}
+                  currentUtilization={currentUtilization}
+                />
+              ) : null}
+              {activeTab === "planning" ? (
+                <ResourcePlanningSection rows={optimization.resource_planning} />
+              ) : null}
+              {activeTab === "sme" ? (
+                <SmeCoverageSection rows={optimization.sme_coverage} />
+              ) : null}
+            </div>
+          </WorkforceFold>
         </div>
       )}
     </Card>

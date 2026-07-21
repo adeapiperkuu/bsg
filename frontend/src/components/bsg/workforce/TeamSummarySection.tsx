@@ -18,6 +18,7 @@ export function TeamSummarySection({
   onToggleTeamsManager,
   onToggleTeam,
   onSelectAnnotator,
+  embedded = false,
 }: {
   workforceLoading: boolean;
   hasTeams: boolean;
@@ -32,26 +33,20 @@ export function TeamSummarySection({
   onToggleTeamsManager: () => void;
   onToggleTeam: (teamId: string) => void;
   onSelectAnnotator: (annotator: AnnotatorRead) => void;
+  embedded?: boolean;
 }) {
-  return (
-    <Card>
-      <SectionHeader
-        title="Team Summary"
-        sub={
-          canReadInternalWorkforce
-            ? "Expand a team to open an employee profile"
-            : "Team structure (annotator details restricted)"
-        }
-        right={
-          canManageWorkforce && resolvedProjectId ? (
-            <ManageToggleButton
-              active={showTeamsManager}
-              onClick={onToggleTeamsManager}
-              label="Manage"
-            />
-          ) : undefined
-        }
+  const manageToggle =
+    canManageWorkforce && resolvedProjectId ? (
+      <ManageToggleButton
+        active={showTeamsManager}
+        onClick={onToggleTeamsManager}
+        label="Manage"
       />
+    ) : null;
+
+  const body = (
+    <>
+      {embedded && manageToggle ? <div className="mb-3 flex justify-end">{manageToggle}</div> : null}
       {workforceLoading ? (
         <div className="space-y-2">
           <div className="h-10 animate-pulse rounded-md bg-elevated" />
@@ -111,6 +106,23 @@ export function TeamSummarySection({
       {canManageWorkforce && resolvedProjectId && showTeamsManager ? (
         <TeamsManager projectId={resolvedProjectId} teams={teams} canManage={canManageWorkforce} />
       ) : null}
+    </>
+  );
+
+  if (embedded) return body;
+
+  return (
+    <Card>
+      <SectionHeader
+        title="Team Summary"
+        sub={
+          canReadInternalWorkforce
+            ? "Expand a team to open an employee profile"
+            : "Team structure (annotator details restricted)"
+        }
+        right={manageToggle ?? undefined}
+      />
+      {body}
     </Card>
   );
 }

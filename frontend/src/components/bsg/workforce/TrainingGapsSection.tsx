@@ -45,6 +45,7 @@ export function TrainingGapsSection({
   filteredTrainingGapRows,
   trainingGapRowKey,
   gapRowSubject,
+  embedded = false,
 }: {
   canReadInternalWorkforce: boolean;
   trainingGapsLoading: boolean;
@@ -53,6 +54,7 @@ export function TrainingGapsSection({
   filteredTrainingGapRows: TrainingGapRow[];
   trainingGapRowKey: (row: TrainingGapRow, index: number) => string;
   gapRowSubject: (row: TrainingGapRow) => string;
+  embedded?: boolean;
 }) {
   const [activeGapType, setActiveGapType] = useState<TrainingGapType | null>(null);
   const gapFilters = useMemo<TrainingGapFilter[]>(() => {
@@ -86,9 +88,8 @@ export function TrainingGapsSection({
     : filteredTrainingGapRows;
   const activeFilterLabel = gapFilters.find((filter) => filter.type === activeGapType)?.label;
 
-  return (
-    <Card>
-      <SectionHeader title="Training Gaps" sub="Certification and training coverage gaps" />
+  const body = (
+    <>
       {!canReadInternalWorkforce ? (
         <WorkforcePlaceholder
           title="Training gaps restricted"
@@ -97,7 +98,6 @@ export function TrainingGapsSection({
       ) : trainingGapsLoading ? (
         <div className="space-y-2">
           <div className="h-8 animate-pulse rounded-md bg-elevated" />
-          <div className="h-10 animate-pulse rounded-md bg-elevated" />
           <div className="h-10 animate-pulse rounded-md bg-elevated" />
         </div>
       ) : trainingGapsError ? (
@@ -168,6 +168,15 @@ export function TrainingGapsSection({
           )}
         </>
       )}
+    </>
+  );
+
+  if (embedded) return body;
+
+  return (
+    <Card>
+      <SectionHeader title="Training Gaps" sub="Certification and training coverage gaps" />
+      {body}
     </Card>
   );
 }
