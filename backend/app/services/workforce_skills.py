@@ -394,6 +394,9 @@ async def build_project_skill_matrix(
     session: AsyncSession,
     project: Project,
     current_user: CurrentUser,
+    *,
+    teams: list[Team] | None = None,
+    annotators: list[Annotator] | None = None,
 ) -> SkillMatrixRead:
     assert_can_read_annotators(current_user)
 
@@ -419,26 +422,32 @@ async def build_project_skill_matrix(
     ).scalars().all()
     skills_by_id = {skill.id: skill for skill in skills}
 
-    teams = (
-        await session.execute(
-            select(Team).where(
-                Team.project_id == project.id,
-                Team.deleted_at.is_(None),
-            ),
+    if teams is None:
+        teams = list(
+            (
+                await session.execute(
+                    select(Team).where(
+                        Team.project_id == project.id,
+                        Team.deleted_at.is_(None),
+                    ),
+                )
+            ).scalars().all(),
         )
-    ).scalars().all()
     team_ids = [team.id for team in teams]
 
-    annotators: list[Annotator] = []
-    if team_ids:
-        annotators = (
-            await session.execute(
-                select(Annotator).where(
-                    Annotator.team_id.in_(team_ids),
-                    Annotator.deleted_at.is_(None),
-                ),
+    if annotators is None:
+        annotators = []
+        if team_ids:
+            annotators = list(
+                (
+                    await session.execute(
+                        select(Annotator).where(
+                            Annotator.team_id.in_(team_ids),
+                            Annotator.deleted_at.is_(None),
+                        ),
+                    )
+                ).scalars().all(),
             )
-        ).scalars().all()
 
     annotator_ids = [annotator.id for annotator in annotators]
     assignments_by_annotator: dict[UUID, list[AnnotatorSkill]] = {}

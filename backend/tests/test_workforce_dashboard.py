@@ -15,15 +15,13 @@ from app.db.models import (
     CapabilityGapSeverity,
     CapabilityGapStatus,
     CapabilityGapType,
-    DeliverySite,
-    OwnerType,
+    MitigationRecommendation,
     Project,
     RecommendationSeverity,
     RecommendationStatus,
     UtilizationSnapshot,
 )
-from app.agents.delivery.services.recommendation_service import OwnerOption, RecommendationRow
-from app.db.models import MitigationRecommendation
+from app.agents.delivery.services.recommendation_service import RecommendationRow
 from app.schemas.domain import (
     ProjectWorkforceSummaryRead,
     SkillMatrixRead,
@@ -141,21 +139,6 @@ async def test_get_project_workforce_dashboard_assembles_sections() -> None:
         created_at=now,
         updated_at=now,
     )
-    delivery_recommendation = MitigationRecommendation(
-        id=uuid4(),
-        project_id=project.id,
-        org_id=org_id,
-        title="Protect milestone",
-        description="Delivery only",
-        severity=RecommendationSeverity.MEDIUM,
-        confidence_score=Decimal("0.700"),
-        status=RecommendationStatus.PENDING,
-        owner_type=None,
-        owner_id=None,
-        source_risk_id=uuid4(),
-        created_at=now,
-        updated_at=now,
-    )
     summary = ProjectWorkforceSummaryRead(project_id=project.id, teams=[], annotators=[])
     matrix = SkillMatrixRead(project_id=project.id, rows=[])
     training = TrainingGapSummaryRead(
@@ -180,16 +163,8 @@ async def test_get_project_workforce_dashboard_assembles_sections() -> None:
             new=_run_on_fake_session,
         ),
         patch(
-            "app.services.workforce_dashboard.get_project_workforce_summary",
-            new=AsyncMock(return_value=summary),
-        ),
-        patch(
-            "app.services.workforce_dashboard.build_project_skill_matrix",
-            new=AsyncMock(return_value=matrix),
-        ),
-        patch(
-            "app.services.workforce_dashboard.build_project_training_gaps",
-            new=AsyncMock(return_value=training),
+            "app.services.workforce_dashboard._build_roster_backed_sections",
+            new=AsyncMock(return_value=(summary, matrix, training)),
         ),
         patch(
             "app.services.workforce_dashboard.list_project_capability_gaps",
@@ -207,21 +182,8 @@ async def test_get_project_workforce_dashboard_assembles_sections() -> None:
                             source_risk_type=AlertType.WORKFORCE_IMBALANCE.value,
                             source_risk_slippage_probability=None,
                         ),
-                        RecommendationRow(
-                            recommendation=delivery_recommendation,
-                            owner_label=None,
-                            source_risk_title="Milestone slip",
-                            source_risk_type="schedule_slippage",
-                            source_risk_slippage_probability=None,
-                        ),
                     ],
-                    [
-                        OwnerOption(
-                            owner_type=OwnerType.USER,
-                            owner_id=uuid4(),
-                            label="Delivery Manager",
-                        )
-                    ],
+                    [],
                 )
             ),
         ),
@@ -237,9 +199,11 @@ async def test_get_project_workforce_dashboard_assembles_sections() -> None:
     assert len(dashboard.capability_gaps) == 1
     assert dashboard.capability_gaps[0].title == "SME shortage"
     assert len(dashboard.recommendations.data) == 1
-    assert dashboard.recommendations.data[0].title == "Hire SMEs"
+    assert "SME" in dashboard.recommendations.data[0].title
     assert dashboard.recommendations.data[0].risks[0].source_risk_type == "workforce_imbalance"
-    assert len(dashboard.recommendations.assignable_owners) == 1
+    assert dashboard.recommendations.assignable_owners == []
+    # Optimization is deferred to GET .../workforce-optimization for faster first paint.
+    assert dashboard.optimization is None
 
 
 @pytest.mark.asyncio

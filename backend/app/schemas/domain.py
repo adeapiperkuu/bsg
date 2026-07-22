@@ -808,8 +808,158 @@ class ProjectRecommendationsResponse(BaseModel):
     pagination: Pagination
 
 
+# ---------------------------------------------------------------------------
+# Phase 16 — Workforce Optimization (+ Phase 19.2 lineage)
+# ---------------------------------------------------------------------------
+
+from app.schemas.recommendation_lineage import RecommendationLineage  # noqa: E402
+
+
+class SkillMatchCandidate(BaseModel):
+    annotator_id: UUID
+    annotator_name: str
+    team_id: UUID
+    team_name: str | None = None
+    site: str
+    is_sme_certified: bool
+    match_score: float
+    confidence_score: float
+    strengths: list[str] = Field(default_factory=list)
+    missing_skills: list[str] = Field(default_factory=list)
+    reasoning: str
+    utilization_pct: float | None = None
+    proficiency_level: str | None = None
+    active_certification_count: int = 0
+    lineage: RecommendationLineage
+
+
+class SkillMatchRecommendation(BaseModel):
+    skill_id: UUID
+    skill_name: str
+    required_proficiency_level: str
+    required_headcount: int
+    required_sme_count: int
+    priority: str
+    headcount_shortfall: int
+    candidates: list[SkillMatchCandidate] = Field(default_factory=list)
+
+
+class WorkloadRebalanceRecommendation(BaseModel):
+    recommendation_id: str
+    annotator_id: UUID
+    annotator_name: str
+    source_team_id: UUID
+    source_team_name: str
+    source_utilization_pct: float
+    destination_team_id: UUID
+    destination_team_name: str
+    destination_utilization_pct: float
+    estimated_utilization_improvement: float
+    confidence_score: float
+    risks: list[str] = Field(default_factory=list)
+    expected_business_impact: str
+    reasoning: str
+    lineage: RecommendationLineage
+
+
+class ResourcePlanningRecommendation(BaseModel):
+    recommendation_id: str
+    role: str
+    skill_id: UUID | None = None
+    skill_name: str | None = None
+    estimated_headcount: float
+    hiring_priority: str
+    urgency: str
+    confidence_score: float
+    affected_projects: list[str] = Field(default_factory=list)
+    reasoning: str
+    required_proficiency_level: str | None = None
+    current_available: int = 0
+    current_shortfall: int = 0
+    sme_shortfall: int = 0
+    lineage: RecommendationLineage
+
+
+class SmeCoverageFinding(BaseModel):
+    finding_type: str
+    severity: str
+    summary: str
+    annotator_id: UUID | None = None
+    annotator_name: str | None = None
+
+
+class SmeCoverageRecommendation(BaseModel):
+    recommendation_id: str
+    skill_id: UUID
+    skill_name: str
+    severity: str
+    confidence_score: float
+    findings: list[SmeCoverageFinding] = Field(default_factory=list)
+    recommended_actions: list[str] = Field(default_factory=list)
+    sme_count: int
+    required_sme_count: int
+    backup_candidate_count: int
+    reasoning: str
+    lineage: RecommendationLineage
+
+
+class UtilizationForecastPoint(BaseModel):
+    week_offset: int
+    forecast_date: str
+    projected_utilization_pct: float
+    confidence_score: float
+
+
+class WorkforceSkillShortage(BaseModel):
+    skill_id: UUID
+    skill_name: str
+    required_headcount: int
+    available_headcount: int
+    shortfall: int
+    severity: str
+    priority: str
+
+
+class WorkforceInsight(BaseModel):
+    insight_id: str
+    category: str
+    urgency: str
+    title: str
+    detail: str
+    confidence_score: float
+    related_recommendation_ids: list[str] = Field(default_factory=list)
+
+
+class WorkforcePriorityAction(BaseModel):
+    action_id: str
+    title: str
+    detail: str
+    urgency: str
+    category: str
+    confidence_score: float
+
+
+class WorkforceOptimizationRead(BaseModel):
+    """AI-powered workforce planning payload (recommendations only)."""
+
+    project_id: UUID
+    generated_at: datetime
+    skill_matches: list[SkillMatchRecommendation] = Field(default_factory=list)
+    rebalancing: list[WorkloadRebalanceRecommendation] = Field(default_factory=list)
+    resource_planning: list[ResourcePlanningRecommendation] = Field(default_factory=list)
+    sme_coverage: list[SmeCoverageRecommendation] = Field(default_factory=list)
+    utilization_forecast: list[UtilizationForecastPoint] = Field(default_factory=list)
+    skill_shortages: list[WorkforceSkillShortage] = Field(default_factory=list)
+    insights: list[WorkforceInsight] = Field(default_factory=list)
+    priority_actions: list[WorkforcePriorityAction] = Field(default_factory=list)
+
+
 class ProjectWorkforceDashboardRead(BaseModel):
-    """Bundled Workforce page payload (one round-trip for initial load)."""
+    """Bundled Workforce page payload (one round-trip for initial load).
+
+    ``optimization`` is optional and normally omitted — loaded via the dedicated
+    workforce-optimization endpoint so first paint is not blocked by that engine.
+    """
 
     project_id: UUID
     summary: ProjectWorkforceSummaryRead
@@ -818,6 +968,7 @@ class ProjectWorkforceDashboardRead(BaseModel):
     training_gaps: TrainingGapSummaryRead
     capability_gaps: list[CapabilityGapRead]
     recommendations: ProjectRecommendationsResponse
+    optimization: WorkforceOptimizationRead | None = None
 
 
 class AgentQueryCreate(BaseModel):

@@ -266,6 +266,185 @@ export type ProjectWorkforceDashboardRead = {
     }>;
     pagination: { limit: number; next_cursor?: string | null };
   };
+  optimization?: WorkforceOptimizationRead | null;
+};
+
+export type RecommendationSourceEntity = {
+  source_table: string;
+  source_row_id: string | null;
+  label: string | null;
+  attributes?: Record<string, unknown>;
+};
+
+export type RecommendationCalculation = {
+  name: string;
+  description: string;
+  inputs?: Record<string, unknown>;
+  result?: unknown;
+  formula?: string | null;
+};
+
+export type RecommendationEvidenceItem = {
+  evidence_id: string;
+  summary: string;
+  source_entities: RecommendationSourceEntity[];
+  metric_keys: string[];
+  document_ids: string[];
+  observed_at: string | null;
+  visibility: "internal" | "client_safe";
+  attributes?: Record<string, unknown>;
+};
+
+export type RecommendationLineage = {
+  recommendation_id: string;
+  recommendation_type: string;
+  generated_at: string;
+  confidence_score: number;
+  evidence: RecommendationEvidenceItem[];
+  source_entities: RecommendationSourceEntity[];
+  calculations: RecommendationCalculation[];
+  metrics_involved: string[];
+  documents_referenced: string[];
+  related_entity_ids: Record<string, string[]>;
+  model_version: string;
+  notes: string | null;
+};
+
+export type SkillMatchCandidate = {
+  annotator_id: string;
+  annotator_name: string;
+  team_id: string;
+  team_name: string | null;
+  site: string;
+  is_sme_certified: boolean;
+  match_score: number;
+  confidence_score: number;
+  strengths: string[];
+  missing_skills: string[];
+  reasoning: string;
+  utilization_pct: number | null;
+  proficiency_level: string | null;
+  active_certification_count: number;
+  lineage: RecommendationLineage;
+};
+
+export type SkillMatchRecommendation = {
+  skill_id: string;
+  skill_name: string;
+  required_proficiency_level: string;
+  required_headcount: number;
+  required_sme_count: number;
+  priority: string;
+  headcount_shortfall: number;
+  candidates: SkillMatchCandidate[];
+};
+
+export type WorkloadRebalanceRecommendation = {
+  recommendation_id: string;
+  annotator_id: string;
+  annotator_name: string;
+  source_team_id: string;
+  source_team_name: string;
+  source_utilization_pct: number;
+  destination_team_id: string;
+  destination_team_name: string;
+  destination_utilization_pct: number;
+  estimated_utilization_improvement: number;
+  confidence_score: number;
+  risks: string[];
+  expected_business_impact: string;
+  reasoning: string;
+  lineage: RecommendationLineage;
+};
+
+export type ResourcePlanningRecommendation = {
+  recommendation_id: string;
+  role: string;
+  skill_id: string | null;
+  skill_name: string | null;
+  estimated_headcount: number;
+  hiring_priority: string;
+  urgency: string;
+  confidence_score: number;
+  affected_projects: string[];
+  reasoning: string;
+  required_proficiency_level: string | null;
+  current_available: number;
+  current_shortfall: number;
+  sme_shortfall: number;
+  lineage: RecommendationLineage;
+};
+
+export type SmeCoverageFinding = {
+  finding_type: string;
+  severity: string;
+  summary: string;
+  annotator_id: string | null;
+  annotator_name: string | null;
+};
+
+export type SmeCoverageRecommendation = {
+  recommendation_id: string;
+  skill_id: string;
+  skill_name: string;
+  severity: string;
+  confidence_score: number;
+  findings: SmeCoverageFinding[];
+  recommended_actions: string[];
+  sme_count: number;
+  required_sme_count: number;
+  backup_candidate_count: number;
+  reasoning: string;
+  lineage: RecommendationLineage;
+};
+
+export type UtilizationForecastPoint = {
+  week_offset: number;
+  forecast_date: string;
+  projected_utilization_pct: number;
+  confidence_score: number;
+};
+
+export type WorkforceSkillShortage = {
+  skill_id: string;
+  skill_name: string;
+  required_headcount: number;
+  available_headcount: number;
+  shortfall: number;
+  severity: string;
+  priority: string;
+};
+
+export type WorkforceInsight = {
+  insight_id: string;
+  category: string;
+  urgency: string;
+  title: string;
+  detail: string;
+  confidence_score: number;
+  related_recommendation_ids: string[];
+};
+
+export type WorkforcePriorityAction = {
+  action_id: string;
+  title: string;
+  detail: string;
+  urgency: string;
+  category: string;
+  confidence_score: number;
+};
+
+export type WorkforceOptimizationRead = {
+  project_id: string;
+  generated_at: string;
+  skill_matches: SkillMatchRecommendation[];
+  rebalancing: WorkloadRebalanceRecommendation[];
+  resource_planning: ResourcePlanningRecommendation[];
+  sme_coverage: SmeCoverageRecommendation[];
+  utilization_forecast: UtilizationForecastPoint[];
+  skill_shortages: WorkforceSkillShortage[];
+  insights: WorkforceInsight[];
+  priority_actions: WorkforcePriorityAction[];
 };
 
 export type CapabilityGapUpdatePayload = {

@@ -5,6 +5,7 @@ import {
   getProjectSkillMatrix,
   getProjectTrainingGaps,
   getProjectWorkforceDashboard,
+  getProjectWorkforceOptimization,
   getProjectWorkforceSummary,
   listAnnotatorCertifications,
   listAnnotatorSkills,
@@ -82,6 +83,28 @@ export function useProjectWorkforceDashboardQuery(
   return useQuery(projectWorkforceDashboardQueryOptions(projectId, canReadInternalWorkforce));
 }
 
+export function projectWorkforceOptimizationQueryOptions(
+  projectId: string | null,
+  enabled = true,
+) {
+  return queryOptions({
+    queryKey: queryKeys.projectWorkforceOptimization(projectId ?? ""),
+    queryFn: () => getProjectWorkforceOptimization(projectId!),
+    enabled: Boolean(projectId) && enabled,
+    staleTime: WORKFORCE_PROJECT_STALE_TIME_MS,
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useProjectWorkforceOptimizationQuery(
+  projectId: string | null,
+  canReadInternalWorkforce: boolean,
+) {
+  return useQuery(
+    projectWorkforceOptimizationQueryOptions(projectId, canReadInternalWorkforce),
+  );
+}
+
 /** Seed section caches from the bundled dashboard so managers/drawers avoid refetch. */
 export function seedWorkforceSectionCaches(
   queryClient: {
@@ -105,6 +128,12 @@ export function seedWorkforceSectionCaches(
   queryClient.setQueryData(queryKeys.projectTrainingGaps(projectId), dashboard.training_gaps);
   queryClient.setQueryData(queryKeys.projectCapabilityGaps(projectId), dashboard.capability_gaps);
   queryClient.setQueryData(queryKeys.projectRecommendations(projectId), dashboard.recommendations);
+  if (dashboard.optimization) {
+    queryClient.setQueryData(
+      queryKeys.projectWorkforceOptimization(projectId),
+      dashboard.optimization,
+    );
+  }
 }
 
 export function useProjectTeamsQuery(projectId: string | null) {

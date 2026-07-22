@@ -40,7 +40,9 @@ from app.services.workforce_gaps import (
     detect_gap_candidates,
     get_capability_gap_or_404,
     list_project_capability_gaps,
+    project_can_rebalance_from_utilization,
     update_capability_gap,
+    workforce_mitigation_copy_for_gap,
 )
 from tests.conftest import ORG_A, client_a, delivery_manager, override_user
 
@@ -667,3 +669,78 @@ async def test_leadership_cannot_generate_recommendations_http(api_client: Async
     override_user(leadership)
     response = await api_client.post(f"/api/v1/projects/{uuid4()}/workforce-recommendations/generate")
     assert response.status_code == 403
+
+
+def test_mitigation_copy_is_gap_specific_not_generic_rebalance() -> None:
+    org_id = uuid4()
+    project_id = uuid4()
+    skill_gap = CapabilityGap(
+        id=uuid4(),
+        org_id=org_id,
+        project_id=project_id,
+        gap_type=CapabilityGapType.SKILL_SHORTAGE,
+        severity=CapabilityGapSeverity.CRITICAL,
+        title="Critical shortage: Safety Policy Review",
+        detail="short",
+        evidence={"skill_name": "Safety Policy Review"},
+        status=CapabilityGapStatus.OPEN,
+        detected_at=datetime.now(timezone.utc),
+    )
+    title, description = workforce_mitigation_copy_for_gap(skill_gap, can_rebalance=False)
+    assert "Safety Policy Review" in title
+    assert "Rebalance workforce allocation" != title
+    assert "Hire" in description or "upskill" in description
+
+    overload = CapabilityGap(
+        id=uuid4(),
+        org_id=org_id,
+        project_id=project_id,
+        gap_type=CapabilityGapType.UTILIZATION_OVERLOAD,
+        severity=CapabilityGapSeverity.HIGH,
+        title="Utilization overload on Kosovo Delivery",
+        detail="over",
+        evidence={"utilization_pct": 107},
+        status=CapabilityGapStatus.OPEN,
+        detected_at=datetime.now(timezone.utc),
+    )
+    no_rebalance_title, no_rebalance_desc = workforce_mitigation_copy_for_gap(
+        overload,
+        can_rebalance=False,
+    )
+    assert "Add capacity" in no_rebalance_title
+    assert "rebalancing" in no_rebalance_desc.lower() or "Hire" in no_rebalance_desc
+
+    rebalance_title, _ = workforce_mitigation_copy_for_gap(overload, can_rebalance=True)
+    assert "Rebalance workload" in rebalance_title
+
+
+def test_can_rebalance_requires_overloaded_and_underutilized_teams() -> None:
+    project_id = uuid4()
+    org_id = uuid4()
+    overloaded = UtilizationSnapshot(
+        id=uuid4(),
+        org_id=org_id,
+        project_id=project_id,
+        team_id=uuid4(),
+        snapshot_date=date.today(),
+        allocated_hours=Decimal("40"),
+        available_hours=Decimal("40"),
+        utilization_pct=Decimal("107"),
+    )
+    under = UtilizationSnapshot(
+        id=uuid4(),
+        org_id=org_id,
+        project_id=project_id,
+        team_id=uuid4(),
+        snapshot_date=date.today(),
+        allocated_hours=Decimal("20"),
+        available_hours=Decimal("40"),
+        utilization_pct=Decimal("45"),
+    )
+    assert project_can_rebalance_from_utilization({overloaded.team_id: overloaded}) is False
+    assert (
+        project_can_rebalance_from_utilization(
+            {overloaded.team_id: overloaded, under.team_id: under},
+        )
+        is True
+    )

@@ -45,6 +45,7 @@ export function TrainingGapsSection({
   filteredTrainingGapRows,
   trainingGapRowKey,
   gapRowSubject,
+  embedded = false,
 }: {
   canReadInternalWorkforce: boolean;
   trainingGapsLoading: boolean;
@@ -53,6 +54,7 @@ export function TrainingGapsSection({
   filteredTrainingGapRows: TrainingGapRow[];
   trainingGapRowKey: (row: TrainingGapRow, index: number) => string;
   gapRowSubject: (row: TrainingGapRow) => string;
+  embedded?: boolean;
 }) {
   const [activeGapType, setActiveGapType] = useState<TrainingGapType | null>(null);
   const gapFilters = useMemo<TrainingGapFilter[]>(() => {
@@ -86,9 +88,8 @@ export function TrainingGapsSection({
     : filteredTrainingGapRows;
   const activeFilterLabel = gapFilters.find((filter) => filter.type === activeGapType)?.label;
 
-  return (
-    <Card>
-      <SectionHeader title="Training Gaps" sub="Certification and training coverage gaps" />
+  const body = (
+    <>
       {!canReadInternalWorkforce ? (
         <WorkforcePlaceholder
           title="Training gaps restricted"
@@ -98,15 +99,19 @@ export function TrainingGapsSection({
         <div className="space-y-2">
           <div className="h-8 animate-pulse rounded-md bg-elevated" />
           <div className="h-10 animate-pulse rounded-md bg-elevated" />
-          <div className="h-10 animate-pulse rounded-md bg-elevated" />
         </div>
       ) : trainingGapsError ? (
         <p className="text-sm text-[color:var(--danger)]">{trainingGapsError}</p>
       ) : (trainingGaps?.total_training_gaps ?? 0) === 0 ? (
-        <WorkforcePlaceholder
-          title="No open training gaps"
-          reason="Mandatory training, certifications, and training records are current for project teams."
-        />
+        <div className="flex items-start gap-3 rounded-md border border-[color:var(--success)]/25 bg-[color:var(--success)]/5 px-3 py-2.5">
+          <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-[color:var(--success)]" />
+          <div>
+            <p className="text-sm font-medium text-foreground">Training coverage is current</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              No mandatory, expired, or pending certification gaps for this project.
+            </p>
+          </div>
+        </div>
       ) : filteredTrainingGapRows.length === 0 ? (
         <WorkforcePlaceholder
           title="No training gaps match the current filters"
@@ -163,6 +168,15 @@ export function TrainingGapsSection({
           )}
         </>
       )}
+    </>
+  );
+
+  if (embedded) return body;
+
+  return (
+    <Card>
+      <SectionHeader title="Training Gaps" sub="Certification and training coverage gaps" />
+      {body}
     </Card>
   );
 }

@@ -2458,6 +2458,7 @@ export {
   getProjectSkillMatrix,
   getProjectTrainingGaps,
   getProjectWorkforceDashboard,
+  getProjectWorkforceOptimization,
   getProjectWorkforceSummary,
   listAnnotatorCertifications,
   listAnnotatorSkills,
