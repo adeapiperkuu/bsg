@@ -316,6 +316,261 @@ export type ClientIntelligenceOverview = {
   delivery_confidence: DeliveryConfidenceAssessment;
   risk_transparency: RiskTransparencyAssessment;
   delivery_trend: DeliveryTrendAssessment;
+  readiness?: ReadinessAssessment | null;
+  go_live?: GoLiveAssessment | null;
+  recommendations?: ReadinessRecommendationSet | null;
+};
+
+export type ReadinessStatus =
+  | "ready"
+  | "ready_with_minor_risks"
+  | "conditionally_ready"
+  | "not_ready"
+  | "insufficient_evidence";
+
+export type ReadinessCategoryKey =
+  | "resources"
+  | "planning"
+  | "risks"
+  | "dependencies"
+  | "documentation"
+  | "testing"
+  | "training"
+  | "governance";
+
+export type AiExplainability = {
+  why_generated: string;
+  supporting_evidence: Array<{
+    source_agent: string;
+    source_table: string;
+    source_row_id: string;
+    visibility: EvidenceVisibility;
+    claim_keys: string[];
+    summary?: string | null;
+    observed_at?: string | null;
+  }>;
+  confidence_score: string;
+  confidence_band: "high" | "medium" | "low" | "insufficient";
+  assumptions: string[];
+  affected_kpis: string[];
+  reasoning?: string | null;
+  model_version: string;
+};
+
+export type ReadinessCategoryScore = {
+  category: ReadinessCategoryKey;
+  score_pct: string | null;
+  availability: string;
+  weight: string;
+  missing_requirements: string[];
+  blockers: string[];
+  positive_findings: string[];
+  limitations: string[];
+  data_quality: DataQualityState;
+};
+
+export type ReadinessAssessment = {
+  org_id: string;
+  project_id: string;
+  as_of: string;
+  assessed_at: string;
+  availability: string;
+  overall_score_pct: string | null;
+  status: ReadinessStatus;
+  assessment_confidence: string;
+  categories: ReadinessCategoryScore[];
+  missing_requirements: string[];
+  major_blockers: string[];
+  positive_findings: string[];
+  limitations: string[];
+  source_fingerprint: string;
+  rules_version: string;
+  explainability?: AiExplainability | null;
+};
+
+export type GoLiveDecision = "go" | "go_with_conditions" | "no_go";
+
+export type GoLiveAssessment = {
+  org_id: string;
+  project_id: string;
+  as_of: string;
+  assessed_at: string;
+  availability: string;
+  decision: GoLiveDecision;
+  confidence_score: string;
+  reasons: string[];
+  blocking_items: string[];
+  required_actions: string[];
+  outstanding_defects: string[];
+  open_blockers: string[];
+  required_approvals: string[];
+  dependency_gaps: string[];
+  rollout_readiness_notes: string[];
+  limitations: string[];
+  source_fingerprint: string;
+  rules_version: string;
+  explainability?: AiExplainability | null;
+};
+
+export type ReadinessRecommendation = {
+  recommendation_id: string;
+  recommendation_type: string;
+  title: string;
+  priority: "critical" | "high" | "medium" | "low";
+  expected_business_impact: string;
+  confidence: string;
+  reasoning: string;
+  category?: ReadinessCategoryKey | null;
+  explainability: AiExplainability;
+};
+
+export type ReadinessRecommendationSet = {
+  org_id: string;
+  project_id: string;
+  assessed_at: string;
+  recommendations: ReadinessRecommendation[];
+  source_fingerprint: string;
+  rules_version: string;
+  limitations: string[];
+};
+
+export type ClientDashboard = {
+  project_id: string;
+  as_of: string;
+  generated_at: string;
+  readiness?: ReadinessAssessment | null;
+  go_live?: GoLiveAssessment | null;
+  recommendations?: ReadinessRecommendationSet | null;
+  project_health?: ProjectHealthAssessment | null;
+  reports_drafted_count: number;
+  reports_approved_count: number;
+  reports_published_count: number;
+  communications_pending_count: number;
+  open_approvals_count: number;
+  milestone_on_track_count: number;
+  milestone_at_risk_count: number;
+  widget_availability: Record<string, "available" | "partial" | "unavailable">;
+  limitations: string[];
+};
+
+export type ClientReportCadence = "weekly" | "monthly" | "quarterly" | "executive";
+
+export type ClientReportGovernanceStatus =
+  | "draft"
+  | "pending_manager"
+  | "pending_leadership"
+  | "pending_compliance"
+  | "published"
+  | "rejected";
+
+export type ClientReportDeliveryStatus = "pending" | "distributed" | "failed";
+
+export type ReportSectionKey =
+  | "executive_summary"
+  | "project_status"
+  | "risks"
+  | "milestones"
+  | "confidence"
+  | "timeline"
+  | "readiness"
+  | "go_live"
+  | "recommendations";
+
+export type ReportSectionConfig = {
+  section: ReportSectionKey;
+  enabled: boolean;
+};
+
+export type ClientReportSchedule = {
+  id: string;
+  org_id: string;
+  project_id: string;
+  cadence: ClientReportCadence;
+  enabled: boolean;
+  section_config: ReportSectionConfig[] | Array<Record<string, unknown>>;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_package_id: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ClientReportPackage = {
+  id: string;
+  org_id: string;
+  project_id: string;
+  schedule_id: string | null;
+  communication_id: string | null;
+  report_type: ClientReportCadence;
+  title: string;
+  body_markdown: string;
+  section_config: ReportSectionConfig[] | Array<Record<string, unknown>>;
+  version: number;
+  status: ClientReportGovernanceStatus;
+  source_fingerprint: string | null;
+  rejection_reason: string | null;
+  created_by: string | null;
+  updated_by: string | null;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ClientReportApproval = {
+  id: string;
+  org_id: string;
+  package_id: string;
+  from_status: ClientReportGovernanceStatus | null;
+  to_status: ClientReportGovernanceStatus;
+  actor_user_id: string | null;
+  comment: string | null;
+  rejection_reason: string | null;
+  created_at: string;
+};
+
+export type ClientReportDelivery = {
+  id: string;
+  org_id: string;
+  package_id: string;
+  channel: string;
+  status: ClientReportDeliveryStatus;
+  recipient_summary: string | null;
+  error_detail: string | null;
+  delivered_at: string | null;
+  created_at: string;
+};
+
+export type ReportGovernanceAction = "submit" | "approve" | "reject" | "resubmit";
+
+export type ReportExportFormat = "pdf" | "docx";
+
+export const REPORT_SECTION_OPTIONS: Array<{ key: ReportSectionKey; label: string }> = [
+  { key: "executive_summary", label: "Executive Summary" },
+  { key: "project_status", label: "Project Status" },
+  { key: "confidence", label: "Confidence" },
+  { key: "milestones", label: "Milestones" },
+  { key: "risks", label: "Risks" },
+  { key: "timeline", label: "Timeline" },
+  { key: "readiness", label: "Readiness" },
+  { key: "go_live", label: "Go-Live" },
+  { key: "recommendations", label: "Recommendations" },
+];
+
+export const REPORT_CADENCE_OPTIONS: Array<{ value: ClientReportCadence; label: string }> = [
+  { value: "weekly", label: "Weekly" },
+  { value: "monthly", label: "Monthly" },
+  { value: "quarterly", label: "Quarterly" },
+  { value: "executive", label: "Executive" },
+];
+
+export const GOVERNANCE_STATUS_LABELS: Record<ClientReportGovernanceStatus, string> = {
+  draft: "Draft",
+  pending_manager: "Manager Review",
+  pending_leadership: "Leadership Review",
+  pending_compliance: "Compliance Review",
+  published: "Published",
+  rejected: "Rejected",
 };
 
 export type SummaryMetricAvailability = "available" | "no_data" | "partial" | "unavailable";

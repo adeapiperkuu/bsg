@@ -9,6 +9,9 @@ import {
 
 import {
   createClientIntelligenceQuery,
+  draftClientReportPackage,
+  exportClientReportPackage,
+  fetchClientDashboard,
   fetchClientIntelligenceOverview,
   fetchClientIntelligenceQueryHistory,
   fetchClientIntelligenceReportHistory,
@@ -16,6 +19,14 @@ import {
   fetchClientMaster,
   fetchDeliveryConfidenceHistory,
   listClientIntelligenceCommunications,
+  listClientReportApprovals,
+  listClientReportDeliveries,
+  listClientReportPackages,
+  listClientReportSchedules,
+  runDueClientReportSchedules,
+  transitionClientReportGovernance,
+  updateClientReportSchedule,
+  upsertClientReportSchedule,
 } from "@/lib/api";
 import {
   insertPersistedQueryIntoHistoryCache,
@@ -27,7 +38,11 @@ import {
 import { queryKeys, STALE_TIME_MS } from "@/lib/queries/keys";
 import type {
   ClientIntelligenceQueryHistory,
+  ClientReportCadence,
+  ReportExportFormat,
+  ReportGovernanceAction,
   ReportHistoryStatusFilter,
+  ReportSectionConfig,
 } from "@/types/client-intelligence";
 
 export {
@@ -212,5 +227,189 @@ export function useCreateClientIntelligenceQueryMutation() {
         }),
       ]);
     },
+  });
+}
+
+export function clientIntelligenceDashboardQueryOptions(projectId: string | null) {
+  return queryOptions({
+    queryKey: queryKeys.clientIntelligenceDashboard(projectId ?? ""),
+    queryFn: () => fetchClientDashboard(projectId!),
+    enabled: Boolean(projectId),
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function useClientIntelligenceDashboardQuery(projectId: string | null) {
+  return useQuery(clientIntelligenceDashboardQueryOptions(projectId));
+}
+
+export function clientReportSchedulesQueryOptions(projectId: string | null) {
+  return queryOptions({
+    queryKey: queryKeys.clientIntelligenceReportSchedules(projectId ?? ""),
+    queryFn: () => listClientReportSchedules(projectId!),
+    enabled: Boolean(projectId),
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function useClientReportSchedulesQuery(projectId: string | null) {
+  return useQuery(clientReportSchedulesQueryOptions(projectId));
+}
+
+export function clientReportPackagesQueryOptions(projectId: string | null) {
+  return queryOptions({
+    queryKey: queryKeys.clientIntelligenceReportPackages(projectId ?? ""),
+    queryFn: () => listClientReportPackages(projectId!),
+    enabled: Boolean(projectId),
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function useClientReportPackagesQuery(projectId: string | null) {
+  return useQuery(clientReportPackagesQueryOptions(projectId));
+}
+
+export function useClientReportApprovalsQuery(packageId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.clientIntelligenceReportApprovals(packageId ?? ""),
+    queryFn: () => listClientReportApprovals(packageId!),
+    enabled: Boolean(packageId),
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+export function useClientReportDeliveriesQuery(packageId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.clientIntelligenceReportDeliveries(packageId ?? ""),
+    queryFn: () => listClientReportDeliveries(packageId!),
+    enabled: Boolean(packageId),
+    staleTime: STALE_TIME_MS,
+  });
+}
+
+function invalidateReportingReads(queryClient: ReturnType<typeof useQueryClient>, projectId: string) {
+  return Promise.all([
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.clientIntelligenceReportSchedules(projectId),
+      exact: true,
+    }),
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.clientIntelligenceReportPackages(projectId),
+      exact: true,
+    }),
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.clientIntelligenceDashboard(projectId),
+      exact: true,
+    }),
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.clientIntelligenceOverview(projectId),
+    }),
+  ]);
+}
+
+export function useUpsertClientReportScheduleMutation(projectId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: {
+      cadence: ClientReportCadence;
+      enabled?: boolean;
+      next_run_at?: string | null;
+      sections?: ReportSectionConfig[];
+    }) => upsertClientReportSchedule(projectId!, payload),
+    onSuccess: async () => {
+      if (projectId) await invalidateReportingReads(queryClient, projectId);
+    },
+  });
+}
+
+export function useUpdateClientReportScheduleMutation(projectId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      scheduleId,
+      payload,
+    }: {
+      scheduleId: string;
+      payload: {
+        enabled?: boolean;
+        next_run_at?: string | null;
+        sections?: ReportSectionConfig[];
+      };
+    }) => updateClientReportSchedule(scheduleId, payload),
+    onSuccess: async () => {
+      if (projectId) await invalidateReportingReads(queryClient, projectId);
+    },
+  });
+}
+
+export function useDraftClientReportPackageMutation(projectId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: {
+      cadence?: ClientReportCadence;
+      title?: string | null;
+      sections?: ReportSectionConfig[];
+      schedule_id?: string | null;
+    }) => draftClientReportPackage(projectId!, payload),
+    onSuccess: async () => {
+      if (projectId) await invalidateReportingReads(queryClient, projectId);
+    },
+  });
+}
+
+export function useRunDueClientReportSchedulesMutation(projectId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => runDueClientReportSchedules(projectId!),
+    onSuccess: async () => {
+      if (projectId) await invalidateReportingReads(queryClient, projectId);
+    },
+  });
+}
+
+export function useTransitionClientReportGovernanceMutation(projectId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      packageId,
+      action,
+      comment,
+      rejection_reason,
+    }: {
+      packageId: string;
+      action: ReportGovernanceAction;
+      comment?: string | null;
+      rejection_reason?: string | null;
+    }) =>
+      transitionClientReportGovernance(packageId, {
+        action,
+        comment,
+        rejection_reason,
+      }),
+    onSuccess: async (pkg) => {
+      if (projectId) await invalidateReportingReads(queryClient, projectId);
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.clientIntelligenceReportApprovals(pkg.id),
+          exact: true,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.clientIntelligenceReportDeliveries(pkg.id),
+          exact: true,
+        }),
+      ]);
+    },
+  });
+}
+
+export function useExportClientReportPackageMutation() {
+  return useMutation({
+    mutationFn: ({
+      packageId,
+      exportFormat,
+    }: {
+      packageId: string;
+      exportFormat: ReportExportFormat;
+    }) => exportClientReportPackage(packageId, exportFormat),
   });
 }

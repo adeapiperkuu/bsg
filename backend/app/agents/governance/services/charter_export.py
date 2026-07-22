@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import io
 import re
-import textwrap
 import zipfile
 from dataclasses import dataclass, field
 from xml.sax.saxutils import escape
@@ -106,11 +105,17 @@ def parse_delivery_markdown(markdown: str) -> list[RenderBlock]:
         if table_rows:
             flush_table()
 
+        h1_match = re.match(r"^#\s+(.+)$", trimmed)
         h2_match = re.match(r"^##\s+(.+)$", trimmed)
         h3_match = re.match(r"^###\s+(.+)$", trimmed)
         ordered_match = re.match(r"^(\d+)\.\s+(.+)$", trimmed)
         bullet_match = re.match(r"^[-*]\s+(.+)$", trimmed)
         nested_bullet_match = re.match(r"^\s{2,}[-*]\s+(.+)$", raw)
+
+        if h1_match:
+            flush_list()
+            blocks.append(RenderBlock(kind="heading1", text=h1_match.group(1).strip()))
+            continue
 
         if h2_match:
             flush_list()
@@ -227,6 +232,8 @@ def _render_blocks_to_docx_paragraphs(blocks: list[RenderBlock]) -> list[str]:
             paragraphs.append(_paragraph_xml("", size=8))
         elif block.kind == "hr":
             paragraphs.append(_paragraph_xml("—" * 24, size=18))
+        elif block.kind == "heading1":
+            paragraphs.append(_paragraph_xml(block.text, bold=True, size=30))
         elif block.kind == "heading2":
             paragraphs.append(_paragraph_xml(block.text, bold=True, size=26))
         elif block.kind == "heading3":
@@ -286,87 +293,446 @@ def generate_charter_docx(document: CharterExportDocument) -> bytes:
 
 
 def _escape_pdf_text(text: str) -> str:
-    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    """Escape PDF literal string and map common Unicode to WinAnsi octets."""
+    mapped = (
+        text.replace("\u2022", "\x95")  # bullet
+        .replace("\u00b7", "\xb7")  # middle dot
+        .replace("\u2013", "\x96")  # en dash
+        .replace("\u2014", "\x97")  # em dash
+        .replace("\u2026", "\x85")  # ellipsis
+        .replace("\u2018", "\x91")
+        .replace("\u2019", "\x92")
+        .replace("\u201c", "\x93")
+        .replace("\u201d", "\x94")
+    )
+    encoded = mapped.encode("latin-1", errors="replace").decode("latin-1")
+    return (
+        encoded.replace("\\", "\\\\")
+        .replace("(", "\\(")
+        .replace(")", "\\)")
+    )
 
 
-def _pdf_line_for_block(block: RenderBlock) -> tuple[int, str, bool]:
-    bold = False
-    if block.kind == "heading2":
-        return 15, _strip_inline_markdown(block.text), True
-    if block.kind == "heading3":
-        return 12, _strip_inline_markdown(block.text), True
-    if block.kind == "bullet":
-        return 10, f"- {_strip_inline_markdown(block.text)}", False
-    if block.kind == "nested_bullet":
-        return 10, f"  - {_strip_inline_markdown(block.text)}", False
-    if block.kind == "numbered":
-        return 10, _strip_inline_markdown(block.text), False
-    if block.kind == "hr":
-        return 10, "—" * 24, False
-    if block.kind == "table":
-        return 10, " | ".join(_strip_inline_markdown(cell) for cell in block.rows[0]), True
-    if block.kind == "blank":
-        return 10, "", False
-    return 10, _strip_inline_markdown(block.text), False
+def _approx_text_width(text: str, size: float) -> float:
+    # Helvetica average glyph width ~0.5em; good enough for wrapping.
+    return len(text) * size * 0.5
+
+
+def _wrap_pdf_text(text: str, *, size: float, max_width: float) -> list[str]:
+    if not text:
+        return [""]
+    words = text.split()
+    if not words:
+        return [""]
+    lines: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        candidate = f"{current} {word}"
+        if _approx_text_width(candidate, size) <= max_width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
+def _pdf_color(r: float, g: float, b: float) -> str:
+    return f"{r:.3f} {g:.3f} {b:.3f} rg"
+
+
+def _pdf_stroke(r: float, g: float, b: float) -> str:
+    return f"{r:.3f} {g:.3f} {b:.3f} RG"
+
+
+@dataclass(frozen=True)
+class _PdfFragment:
+    kind: str
+    text: str = ""
+    rows: tuple[tuple[str, ...], ...] = ()
+    height: float = 0.0
+    size: float = 10.0
+    bold: bool = False
+    indent: float = 0.0
+    gap_before: float = 0.0
+
+
+def _fragment_height(fragment: _PdfFragment) -> float:
+    return fragment.gap_before + fragment.height
+
+
+def _build_pdf_fragments(document: CharterExportDocument) -> list[_PdfFragment]:
+    content_width = 612 - 54 - 54
+    fragments: list[_PdfFragment] = [
+        _PdfFragment(kind="cover_rule", height=0, gap_before=0),
+        _PdfFragment(
+            kind="eyebrow",
+            text="BSG  \u00b7  GOVERNED REPORT",
+            size=8,
+            height=12,
+            gap_before=2,
+        ),
+        _PdfFragment(
+            kind="title",
+            text=document.title,
+            size=20,
+            bold=True,
+            height=26,
+            gap_before=4,
+        ),
+    ]
+
+    if document.metadata:
+        fragments.append(_PdfFragment(kind="spacer", height=6, gap_before=2))
+        for label, value in document.metadata:
+            lines = _wrap_pdf_text(
+                f"{label}:  {value}",
+                size=9,
+                max_width=content_width,
+            )
+            for index, line in enumerate(lines):
+                fragments.append(
+                    _PdfFragment(
+                        kind="meta",
+                        text=line,
+                        size=9,
+                        height=12,
+                        gap_before=1 if index == 0 else 0,
+                    )
+                )
+        fragments.append(_PdfFragment(kind="divider", height=10, gap_before=8))
+    else:
+        fragments.append(_PdfFragment(kind="divider", height=10, gap_before=10))
+
+    title_norm = document.title.strip().casefold()
+    blocks = parse_delivery_markdown(document.markdown)
+    while blocks and blocks[0].kind == "blank":
+        blocks = blocks[1:]
+    if (
+        blocks
+        and blocks[0].kind == "heading1"
+        and _strip_inline_markdown(blocks[0].text).casefold() == title_norm
+    ):
+        blocks = blocks[1:]
+        while blocks and blocks[0].kind == "blank":
+            blocks = blocks[1:]
+
+    previous_was_blank = False
+    for block in blocks:
+        if block.kind == "blank":
+            if previous_was_blank:
+                continue
+            fragments.append(_PdfFragment(kind="spacer", height=6, gap_before=0))
+            previous_was_blank = True
+            continue
+        previous_was_blank = False
+
+        if block.kind == "heading1":
+            text = _strip_inline_markdown(block.text)
+            for index, line in enumerate(
+                _wrap_pdf_text(text, size=16, max_width=content_width)
+            ):
+                fragments.append(
+                    _PdfFragment(
+                        kind="h1",
+                        text=line,
+                        size=16,
+                        bold=True,
+                        height=20,
+                        gap_before=14 if index == 0 else 2,
+                    )
+                )
+            fragments.append(_PdfFragment(kind="section_rule", height=8, gap_before=2))
+            continue
+
+        if block.kind == "heading2":
+            text = _strip_inline_markdown(block.text)
+            for index, line in enumerate(
+                _wrap_pdf_text(text, size=13, max_width=content_width)
+            ):
+                fragments.append(
+                    _PdfFragment(
+                        kind="h2",
+                        text=line,
+                        size=13,
+                        bold=True,
+                        height=17,
+                        gap_before=14 if index == 0 else 2,
+                    )
+                )
+            fragments.append(_PdfFragment(kind="section_rule", height=8, gap_before=2))
+            continue
+
+        if block.kind == "heading3":
+            text = _strip_inline_markdown(block.text)
+            for index, line in enumerate(
+                _wrap_pdf_text(text, size=11, max_width=content_width - 8)
+            ):
+                fragments.append(
+                    _PdfFragment(
+                        kind="h3",
+                        text=line,
+                        size=11,
+                        bold=True,
+                        height=14,
+                        gap_before=10 if index == 0 else 1,
+                    )
+                )
+            continue
+
+        if block.kind == "hr":
+            fragments.append(_PdfFragment(kind="divider", height=10, gap_before=6))
+            continue
+
+        if block.kind == "table":
+            rows = tuple(
+                tuple(_strip_inline_markdown(cell) for cell in row)
+                for row in block.rows
+            )
+            if not rows:
+                continue
+            row_h = 16
+            table_h = len(rows) * row_h + 6
+            fragments.append(
+                _PdfFragment(
+                    kind="table",
+                    rows=rows,
+                    height=float(table_h),
+                    gap_before=8,
+                    size=9,
+                )
+            )
+            continue
+
+        if block.kind in {"bullet", "nested_bullet", "numbered"}:
+            level = 1 if block.kind == "nested_bullet" else 0
+            if block.kind == "numbered":
+                prefix = ""
+                body = _strip_inline_markdown(block.text)
+            else:
+                prefix = "\u2022 "
+                body = _strip_inline_markdown(block.text)
+            indent = 12.0 + (level * 14.0)
+            wrap_width = content_width - indent - 10
+            lines = _wrap_pdf_text(f"{prefix}{body}", size=10, max_width=wrap_width)
+            for index, line in enumerate(lines):
+                line_indent = indent if index == 0 else indent + 10
+                fragments.append(
+                    _PdfFragment(
+                        kind="bullet",
+                        text=line,
+                        size=10,
+                        height=13,
+                        gap_before=3 if index == 0 else 1,
+                        indent=line_indent,
+                    )
+                )
+            continue
+
+        text = _strip_inline_markdown(block.text)
+        lines = _wrap_pdf_text(text, size=10, max_width=content_width)
+        for index, line in enumerate(lines):
+            fragments.append(
+                _PdfFragment(
+                    kind="paragraph",
+                    text=line,
+                    size=10,
+                    height=13,
+                    gap_before=4 if index == 0 else 1,
+                )
+            )
+
+    return fragments
+
+
+def _paginate_fragments(
+    fragments: list[_PdfFragment],
+    *,
+    first_page_top: float,
+    later_page_top: float,
+    bottom: float,
+) -> list[list[_PdfFragment]]:
+    pages: list[list[_PdfFragment]] = []
+    current: list[_PdfFragment] = []
+    y = first_page_top
+
+    for fragment in fragments:
+        needed = _fragment_height(fragment)
+        if fragment.kind in {"h1", "h2", "h3"} and y - needed < bottom + 36 and current:
+            pages.append(current)
+            current = []
+            y = later_page_top
+        if y - needed < bottom and current:
+            pages.append(current)
+            current = []
+            y = later_page_top
+        current.append(fragment)
+        y -= needed
+
+    pages.append(current or [_PdfFragment(kind="spacer", height=1)])
+    return pages
+
+
+def _draw_table(
+    ops: list[str],
+    *,
+    x: float,
+    y_top: float,
+    width: float,
+    rows: tuple[tuple[str, ...], ...],
+    size: float,
+) -> float:
+    if not rows:
+        return y_top
+    col_count = max(len(row) for row in rows)
+    col_w = width / col_count
+    row_h = 16.0
+    y = y_top
+
+    for row_index, row in enumerate(rows):
+        padded = list(row) + [""] * (col_count - len(row))
+        is_header = row_index == 0
+        box_bottom = y - row_h
+        if is_header:
+            ops.append(_pdf_color(0.93, 0.94, 0.96))
+            ops.append(f"{x:.2f} {box_bottom:.2f} {width:.2f} {row_h:.2f} re f")
+        ops.append(_pdf_stroke(0.80, 0.82, 0.85))
+        ops.append("0.6 w")
+        ops.append(f"{x:.2f} {box_bottom:.2f} {width:.2f} {row_h:.2f} re S")
+        ops.append("BT")
+        for col_index, cell in enumerate(padded):
+            cell_x = x + 6 + col_index * col_w
+            ops.append(
+                _pdf_color(0.12, 0.14, 0.18)
+                if is_header
+                else _pdf_color(0.2, 0.22, 0.25)
+            )
+            font = "F2" if is_header else "F1"
+            ops.append(f"/{font} {size:.0f} Tf")
+            display = cell
+            while display and _approx_text_width(display, size) > col_w - 12:
+                display = display[:-1]
+            if display != cell and display:
+                display = display[:-1] + "\u2026"
+            ops.append(f"1 0 0 1 {cell_x:.2f} {box_bottom + 5:.2f} Tm")
+            ops.append(f"({_escape_pdf_text(display)}) Tj")
+        ops.append("ET")
+        y = box_bottom
+
+    return y - 4
 
 
 def generate_charter_pdf(document: CharterExportDocument) -> bytes:
-    rendered: list[tuple[int, str, bool]] = [
-        (18, document.title, True),
-        (10, "", False),
-    ]
-    for label, value in document.metadata:
-        rendered.append((10, f"{label}: {value}", False))
-    rendered.append((10, "", False))
+    """Render a clean multi-page PDF with cover chrome, sections, lists, and tables."""
+    page_w, page_h = 612.0, 792.0
+    margin_l, margin_r = 54.0, 54.0
+    content_w = page_w - margin_l - margin_r
+    first_top = 720.0
+    later_top = 734.0
+    bottom = 58.0
 
-    blocks = parse_delivery_markdown(document.markdown)
-    for block in blocks:
-        if block.kind == "table":
-            header, *body = block.rows
-            rendered.append(_pdf_line_for_block(RenderBlock(kind="table", rows=[header])))
-            for row in body:
-                rendered.append((10, " | ".join(_strip_inline_markdown(cell) for cell in row), False))
-            continue
-        rendered.append(_pdf_line_for_block(block))
-
-    output_lines: list[tuple[int, str, bool]] = []
-    for size, text, bold in rendered:
-        if not text:
-            output_lines.append((size, "", bold))
-            continue
-        width = 78 if size <= 10 else 60
-        wrapped = textwrap.wrap(text, width=width, replace_whitespace=False) or [""]
-        for index, line in enumerate(wrapped):
-            output_lines.append((size, line, bold if index == 0 else False))
-
-    pages: list[list[tuple[int, str, bool]]] = []
-    current: list[tuple[int, str, bool]] = []
-    y = 750
-    for size, text, bold in output_lines:
-        line_height = max(13, size + 5)
-        if y - line_height < 50 and current:
-            pages.append(current)
-            current = []
-            y = 750
-        current.append((size, text, bold))
-        y -= line_height
-    pages.append(current or [(10, "", False)])
+    fragments = _build_pdf_fragments(document)
+    pages = _paginate_fragments(
+        fragments,
+        first_page_top=first_top,
+        later_page_top=later_top,
+        bottom=bottom,
+    )
+    page_count = len(pages)
 
     streams: list[bytes] = []
-    for page_lines in pages:
-        content_lines = ["BT", "50 750 Td"]
-        previous_size = 10
-        first = True
-        for size, text, bold in page_lines:
-            if not first:
-                content_lines.append(f"0 -{max(13, previous_size + 5)} Td")
-            font = "F2" if bold or size >= 12 else "F1"
-            content_lines.append(f"/{font} {size} Tf")
-            content_lines.append(f"({_escape_pdf_text(text)}) Tj")
-            previous_size = size
-            first = False
-        content_lines.append("ET")
-        streams.append("\n".join(content_lines).encode("latin-1", errors="replace"))
+    for page_index, page_fragments in enumerate(pages, start=1):
+        ops: list[str] = []
+        # Top accent bar
+        ops.append(_pdf_color(0.12, 0.16, 0.22))
+        ops.append(f"0 {page_h - 18:.2f} {page_w:.2f} 18 re f")
+        # Footer band
+        ops.append(_pdf_color(0.97, 0.97, 0.98))
+        ops.append(f"0 0 {page_w:.2f} 44 re f")
+        ops.append(_pdf_stroke(0.86, 0.88, 0.90))
+        ops.append("0.7 w")
+        ops.append(f"0 44 m {page_w:.2f} 44 l S")
+
+        y = first_top if page_index == 1 else later_top
+        if page_index > 1:
+            ops.append("BT")
+            ops.append(_pdf_color(0.45, 0.48, 0.52))
+            ops.append("/F1 8 Tf")
+            ops.append(f"1 0 0 1 {margin_l:.2f} 748 Tm")
+            continued = (
+                document.title
+                if len(document.title) <= 70
+                else document.title[:67] + "..."
+            )
+            ops.append(f"({_escape_pdf_text(continued)}) Tj")
+            ops.append("ET")
+            ops.append(_pdf_stroke(0.86, 0.88, 0.90))
+            ops.append("0.7 w")
+            ops.append(
+                f"{margin_l:.2f} 740 m {page_w - margin_r:.2f} 740 l S"
+            )
+
+        for fragment in page_fragments:
+            y -= fragment.gap_before
+            if fragment.kind == "cover_rule":
+                continue
+            if fragment.kind == "spacer":
+                y -= fragment.height
+                continue
+            if fragment.kind == "divider":
+                ops.append(_pdf_stroke(0.84, 0.86, 0.88))
+                ops.append("0.8 w")
+                ops.append(
+                    f"{margin_l:.2f} {y - 2:.2f} m {page_w - margin_r:.2f} {y - 2:.2f} l S"
+                )
+                y -= fragment.height
+                continue
+            if fragment.kind == "section_rule":
+                ops.append(_pdf_color(0.18, 0.35, 0.48))
+                ops.append(f"{margin_l:.2f} {y - 1:.2f} 36 1.5 re f")
+                y -= fragment.height
+                continue
+            if fragment.kind == "table":
+                y = _draw_table(
+                    ops,
+                    x=margin_l,
+                    y_top=y,
+                    width=content_w,
+                    rows=fragment.rows,
+                    size=fragment.size,
+                )
+                continue
+
+            x = margin_l + fragment.indent
+            if fragment.kind == "eyebrow":
+                color = _pdf_color(0.40, 0.44, 0.50)
+            elif fragment.kind == "meta":
+                color = _pdf_color(0.38, 0.41, 0.46)
+            elif fragment.kind in {"title", "h1", "h2", "h3"}:
+                color = _pdf_color(0.10, 0.12, 0.16)
+            else:
+                color = _pdf_color(0.18, 0.20, 0.24)
+
+            font = "F2" if fragment.bold else "F1"
+            baseline = y - fragment.size
+            ops.append("BT")
+            ops.append(color)
+            ops.append(f"/{font} {fragment.size:.0f} Tf")
+            ops.append(f"1 0 0 1 {x:.2f} {baseline:.2f} Tm")
+            ops.append(f"({_escape_pdf_text(fragment.text)}) Tj")
+            ops.append("ET")
+            y -= fragment.height
+
+        ops.append("BT")
+        ops.append(_pdf_color(0.42, 0.45, 0.50))
+        ops.append("/F1 8 Tf")
+        ops.append(f"1 0 0 1 {margin_l:.2f} 18 Tm")
+        ops.append(f"(Page {page_index} of {page_count}) Tj")
+        ops.append(f"1 0 0 1 {page_w - margin_r - 24:.2f} 18 Tm")
+        ops.append("(BSG) Tj")
+        ops.append("ET")
+
+        streams.append("\n".join(ops).encode("latin-1", errors="replace"))
 
     buffer = io.BytesIO()
     buffer.write(b"%PDF-1.4\n")
@@ -378,7 +744,6 @@ def generate_charter_pdf(document: CharterExportDocument) -> bytes:
         buffer.write(body_bytes)
         buffer.write(b"\nendobj\n")
 
-    page_count = len(streams)
     page_ids = list(range(3, 3 + page_count))
     content_ids = list(range(3 + page_count, 3 + (page_count * 2)))
     font_regular_id = 3 + (page_count * 2)
@@ -404,8 +769,14 @@ def generate_charter_pdf(document: CharterExportDocument) -> bytes:
             content_id,
             f"<< /Length {len(stream)} >>\nstream\n".encode() + stream + b"\nendstream",
         )
-    write_obj(font_regular_id, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
-    write_obj(font_bold_id, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>")
+    write_obj(
+        font_regular_id,
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    )
+    write_obj(
+        font_bold_id,
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
+    )
 
     xref_pos = buffer.tell()
     buffer.write(f"xref\n0 {len(offsets) + 1}\n".encode())
@@ -418,4 +789,3 @@ def generate_charter_pdf(document: CharterExportDocument) -> bytes:
     )
     buffer.write(trailer.encode())
     return buffer.getvalue()
-

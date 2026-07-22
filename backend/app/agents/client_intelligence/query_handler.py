@@ -199,8 +199,9 @@ def classify_client_intelligence_question(
     for pattern in _SENSITIVE_PATTERNS:
         if re.search(pattern, lower):
             return ClientIntelligenceQuestionCategory.SENSITIVE
-    if any(token in lower for token in ("readiness", "go-live scoring", "go live score")):
-        return ClientIntelligenceQuestionCategory.UNSUPPORTED
+    if any(token in lower for token in ("readiness", "go-live", "go live")):
+        # Handled via GENERAL_STATUS with readiness/go-live enrichment.
+        return ClientIntelligenceQuestionCategory.GENERAL_STATUS
     for category, keywords in _CATEGORY_KEYWORDS:
         if any(keyword in lower for keyword in keywords):
             return category
@@ -756,6 +757,11 @@ def _build_category_answer(
         )
 
     # GENERAL_STATUS
+    from app.agents.client_intelligence.go_live import assess_go_live_readiness
+    from app.agents.client_intelligence.go_live_contracts import go_live_decision_label
+    from app.agents.client_intelligence.readiness import assess_project_readiness
+    from app.agents.client_intelligence.readiness_contracts import readiness_status_label
+
     refs = list(pack.evidence)[:12]
     parts = [
         f"Project {pack.project.project_name} ({pack.project.project_status}) as of {period.as_of.isoformat()}."
@@ -771,6 +777,25 @@ def _build_category_answer(
     else:
         parts.append("Delivery Confidence: unavailable.")
         limitations.append("DELIVERY_CONFIDENCE_UNAVAILABLE")
+    try:
+        readiness = assess_project_readiness(pack)
+        go_live = assess_go_live_readiness(pack)
+        readiness_score = (
+            f"{readiness.overall_score_pct}%"
+            if readiness.overall_score_pct is not None
+            else "n/a"
+        )
+        parts.append(
+            f"Overall Readiness: {readiness_score} "
+            f"({readiness_status_label(readiness.status)})."
+        )
+        parts.append(
+            f"Go-Live: {go_live_decision_label(go_live.decision)} "
+            f"(confidence {go_live.confidence_score})."
+        )
+        limitations.extend(readiness.limitations[:5])
+    except Exception:
+        limitations.append("READINESS_ASSESSMENT_UNAVAILABLE")
     if not refs:
         return (
             ClientIntelligenceAnswerAvailability.INSUFFICIENT_EVIDENCE,
@@ -787,7 +812,7 @@ def _build_category_answer(
         ClientIntelligenceConfidenceLevel.MEDIUM,
         " ".join(parts),
         sorted(set(limitations)),
-        "Open Client Detail for Health, Confidence, risks, and reports.",
+        "Open Client Detail for Health, Confidence, readiness, risks, and reports.",
         False,
         refs,
         False,

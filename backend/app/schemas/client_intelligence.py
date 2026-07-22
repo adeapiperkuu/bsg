@@ -22,10 +22,13 @@ from app.agents.client_intelligence.delivery_confidence_contracts import (
     DeliveryConfidenceAssessment,
 )
 from app.agents.client_intelligence.delivery_trend_contracts import DeliveryTrendAssessment
+from app.agents.client_intelligence.go_live_contracts import GoLiveAssessment
 from app.agents.client_intelligence.health_contracts import (
     ProjectHealthAssessment,
     ProjectHealthStatus,
 )
+from app.agents.client_intelligence.readiness_contracts import ReadinessAssessment
+from app.agents.client_intelligence.recommendations import ReadinessRecommendationSet
 from app.agents.client_intelligence.risk_transparency_contracts import (
     RiskTransparencyAssessment,
 )
@@ -49,6 +52,9 @@ class ClientIntelligenceOverviewRead(ClientIntelligenceModel):
     delivery_confidence: DeliveryConfidenceAssessment
     risk_transparency: RiskTransparencyAssessment
     delivery_trend: DeliveryTrendAssessment
+    readiness: ReadinessAssessment | None = None
+    go_live: GoLiveAssessment | None = None
+    recommendations: ReadinessRecommendationSet | None = None
 
 
 class SummaryMetricAvailability(StrEnum):
@@ -600,6 +606,35 @@ class ClientIntelligenceReportHistoryRead(ClientIntelligenceModel):
         if self.has_more != expected_more:
             raise ValueError("has_more must match offset+len(items) < total")
         return self
+
+
+class ClientDashboardWidgetAvailability(StrEnum):
+    AVAILABLE = "available"
+    PARTIAL = "partial"
+    UNAVAILABLE = "unavailable"
+
+
+class ClientDashboardRead(ClientIntelligenceModel):
+    """Aggregated Client Dashboard widgets (Phase 17.6)."""
+
+    project_id: UUID
+    as_of: date
+    generated_at: datetime
+    readiness: ReadinessAssessment | None = None
+    go_live: GoLiveAssessment | None = None
+    recommendations: ReadinessRecommendationSet | None = None
+    project_health: ProjectHealthAssessment | None = None
+    reports_drafted_count: int = Field(ge=0, default=0)
+    reports_approved_count: int = Field(ge=0, default=0)
+    reports_published_count: int = Field(ge=0, default=0)
+    communications_pending_count: int = Field(ge=0, default=0)
+    open_approvals_count: int = Field(ge=0, default=0)
+    milestone_on_track_count: int = Field(ge=0, default=0)
+    milestone_at_risk_count: int = Field(ge=0, default=0)
+    widget_availability: dict[str, ClientDashboardWidgetAvailability] = Field(
+        default_factory=dict
+    )
+    limitations: list[str] = Field(default_factory=list)
 
 
 # Re-export Q&A contracts for API/schema consumers.
