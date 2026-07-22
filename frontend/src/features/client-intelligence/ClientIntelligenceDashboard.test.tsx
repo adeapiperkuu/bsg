@@ -573,10 +573,22 @@ function queryHistoryPage(
   };
 }
 
+async function openDetailTab(user: ReturnType<typeof userEvent.setup>, name: string | RegExp) {
+  await user.click(await screen.findByRole("tab", { name }));
+}
+
+async function openOverviewAccordion(
+  user: ReturnType<typeof userEvent.setup>,
+  name: string | RegExp,
+) {
+  await user.click(await screen.findByRole("button", { name }));
+}
+
 async function openQueueItem(user: ReturnType<typeof userEvent.setup>, subject: string) {
   const table = await screen.findByRole("table", { name: "Authorized client projects" });
   const atlasRow = within(table).getByText("Atlas Delivery").closest("tr")!;
   await user.click(within(atlasRow).getByRole("button", { name: "View Atlas Delivery" }));
+  await openDetailTab(user, /^Drafts/);
   const queueHeading = await screen.findByText("Draft Reports Queue");
   const queueSection = queueHeading.closest("section");
   expect(queueSection).not.toBeNull();
@@ -681,7 +693,7 @@ afterEach(() => {
 });
 
 describe("ClientIntelligenceDashboard", () => {
-  it("preserves the original four-card layout and three/two-column main split", async () => {
+  it("preserves the original four-card layout and responsive master/detail split", async () => {
     renderDashboard();
 
     const summary = screen.getByTestId("client-intelligence-summary-grid");
@@ -698,9 +710,9 @@ describe("ClientIntelligenceDashboard", () => {
     expect(within(summary).getByText("No data · 0 of 2 projects")).toBeInTheDocument();
 
     const main = screen.getByTestId("client-intelligence-main-grid");
-    expect(main).toHaveClass("grid-cols-1", "gap-5", "lg:grid-cols-5");
-    expect(main.children[0]).toHaveClass("lg:col-span-3");
-    expect(main.children[1]).toHaveClass("lg:col-span-2");
+    expect(main).toHaveClass("grid-cols-1", "gap-5", "xl:grid-cols-12");
+    expect(main.children[0]).toHaveClass("xl:col-span-7");
+    expect(main.children[1]).toHaveClass("xl:col-span-5");
   });
 
   it("restores the historical KPI card presentation without custom card shells", async () => {
@@ -920,9 +932,7 @@ describe("ClientIntelligenceDashboard", () => {
     expect(within(table).getByText("Atlas Delivery")).toBeInTheDocument();
     expect(within(table).getByText("Borealis Review")).toBeInTheDocument();
     expect(mockedFetchOverview).not.toHaveBeenCalled();
-    await waitFor(() =>
-      expect(mockedFetchConfidenceHistory).toHaveBeenCalledWith(projects[0].id),
-    );
+    await waitFor(() => expect(mockedFetchConfidenceHistory).toHaveBeenCalledWith(projects[0].id));
     expect(within(table).getByText("Atlas Delivery").closest("tr")).toHaveAttribute(
       "aria-selected",
       "false",
@@ -1437,9 +1447,11 @@ describe("ClientIntelligenceDashboard", () => {
   });
 
   it("renders the four real assessment summaries and exact partial states", async () => {
+    const user = userEvent.setup();
     renderDashboard();
     await selectProject();
     await screen.findByText("Atlas Delivery · Detail");
+    await openOverviewAccordion(user, /Risk, trend/);
 
     expect(screen.getAllByText("Project Health").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Delivery Confidence").length).toBeGreaterThan(0);
@@ -1452,13 +1464,14 @@ describe("ClientIntelligenceDashboard", () => {
   });
 
   it("shows missing health policy and never turns unavailable risk into no-risk text", async () => {
+    const user = userEvent.setup();
     renderDashboard();
     await selectProject();
     await screen.findByText("Atlas Delivery · Detail");
+    await openOverviewAccordion(user, /Risk, trend/);
+    await openOverviewAccordion(user, /Data quality/);
 
-    expect(
-      screen.getByText("Project health rules are not configured yet"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Project health rules are not configured yet")).toBeInTheDocument();
     expect(
       screen.getByText("No items are published for this assessment state."),
     ).toBeInTheDocument();
@@ -1488,9 +1501,11 @@ describe("ClientIntelligenceDashboard", () => {
   });
 
   it("preserves null trend values and does not invent plan data", async () => {
+    const user = userEvent.setup();
     renderDashboard();
     await selectProject();
     await screen.findByText("Atlas Delivery · Detail");
+    await openOverviewAccordion(user, /Risk, trend/);
 
     expect(screen.getByText(/Latest Jul 14, 2026/)).toHaveTextContent("Actual 42");
     expect(screen.getByText(/Latest Jul 14, 2026/)).toHaveTextContent("Plan Missing Source");
@@ -1499,9 +1514,11 @@ describe("ClientIntelligenceDashboard", () => {
   });
 
   it("keeps structured, source, visibility, and engine limitations separate", async () => {
+    const user = userEvent.setup();
     renderDashboard();
     await selectProject();
     await screen.findByText("Atlas Delivery · Detail");
+    await openOverviewAccordion(user, /Data quality/);
 
     expect(screen.getByText("Data quality")).toBeInTheDocument();
     expect(screen.getByText("Delivery throughput")).toBeInTheDocument();
@@ -1536,9 +1553,11 @@ describe("ClientIntelligenceDashboard", () => {
         ],
       }),
     );
+    const user = userEvent.setup();
     renderDashboard();
     await selectProject();
     await screen.findByText("Atlas Delivery · Detail");
+    await openOverviewAccordion(user, /Data quality/);
 
     const dataQualitySection = screen.getByText("Data quality").closest("section");
     expect(dataQualitySection).not.toBeNull();
@@ -1612,9 +1631,11 @@ describe("ClientIntelligenceDashboard", () => {
         ],
       }),
     );
+    const user = userEvent.setup();
     renderDashboard();
     await selectProject();
     await screen.findByText("Atlas Delivery · Detail");
+    await openOverviewAccordion(user, /Data quality/);
 
     const dataQualitySection = screen.getByText("Data quality").closest("section");
     expect(dataQualitySection).not.toBeNull();
@@ -1968,9 +1989,7 @@ describe("ClientIntelligenceDashboard", () => {
     mockedListProjects.mockResolvedValueOnce([projects[1]]);
     await user.click(screen.getByRole("button", { name: "Refresh projects" }));
 
-    await waitFor(() =>
-      expect(screen.getByRole("img", { name: /2 points/ })).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByRole("img", { name: /2 points/ })).toBeInTheDocument());
     expect(mockedFetchConfidenceHistory).toHaveBeenCalledWith(projects[1].id);
   });
 
@@ -3474,8 +3493,9 @@ describe("ClientIntelligenceDashboard Q&A", () => {
     renderDashboard();
     const table = await screen.findByRole("table", { name: "Authorized client projects" });
     await user.click(within(table).getByRole("button", { name: "View Atlas Delivery" }));
+    await openDetailTab(user, /^Q&A$/);
     const qaSection = await screen.findByLabelText("Client Intelligence Q&A");
-    await screen.findByText("Project Health");
+    expect(screen.getAllByText("Project Health").length).toBeGreaterThan(0);
     const overviewCallsBefore = mockedFetchOverview.mock.calls.length;
     const healthStatusBefore = screen.getAllByText("Insufficient").length;
     const textarea = within(qaSection).getByLabelText("Client Intelligence question");

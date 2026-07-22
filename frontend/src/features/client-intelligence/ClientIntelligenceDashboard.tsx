@@ -1,8 +1,14 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { RefreshCw, Star } from "lucide-react";
+import { MoreHorizontal, RefreshCw, Search, Star } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -12,6 +18,15 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ApiError,
   approveClientIntelligenceCommunication,
@@ -22,6 +37,7 @@ import {
   submitClientIntelligenceDraftForReview,
   type ProjectRead,
 } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import {
   useClientMasterQuery,
   useClientIntelligenceCommunicationsQuery,
@@ -54,6 +70,8 @@ import type {
 import { ClientReportingWorkbench } from "@/features/client-intelligence/ClientReportingWorkbench";
 
 const ACTIVE_QUEUE_STATUSES = new Set(["draft", "in_review", "approved", "rejected"]);
+
+type DetailTab = "overview" | "reporting" | "drafts" | "history" | "qa";
 
 type LifecycleAction = "edit" | "submit_for_review" | "approve" | "reject" | "send";
 
@@ -637,12 +655,22 @@ function ProjectTable({
     <>
       <SectionHeader
         title="Client Master"
+        sub="Select a project to open governed Client Intelligence"
         right={
-          <div className="sr-only">
-            <label>
-              Search project names
-              <input value={query} onChange={(event) => onQueryChange(event.target.value)} />
-            </label>
+          <div className="flex items-center gap-2">
+            <div className="relative min-w-[10rem] max-w-[14rem] flex-1">
+              <Search
+                className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+                aria-hidden
+              />
+              <Input
+                value={query}
+                onChange={(event) => onQueryChange(event.target.value)}
+                placeholder="Search projects…"
+                aria-label="Search project names"
+                className="h-8 pl-8 text-xs"
+              />
+            </div>
             <CompactButton onClick={onRefresh} ariaLabel="Refresh projects">
               <RefreshCw className="h-3 w-3" />
             </CompactButton>
@@ -1036,9 +1064,12 @@ function dataQualityCategory(source: string): DataQualityCategory {
   }
   if (key.startsWith("governance")) return "Governance";
   if (
-    ["workforce", "utilization_snapshots", "project_skill_requirements", "capability_gaps"].includes(
-      key,
-    )
+    [
+      "workforce",
+      "utilization_snapshots",
+      "project_skill_requirements",
+      "capability_gaps",
+    ].includes(key)
   ) {
     return "Team";
   }
@@ -1251,21 +1282,25 @@ function EngineSection({
   status,
   statusLabel,
   children,
+  className,
 }: {
   title: string;
   status: string;
   statusLabel?: string;
   children?: ReactNode;
+  className?: string;
 }) {
   return (
-    <section className="rounded border border-border bg-elevated p-2.5">
+    <section className={cn("rounded border border-border bg-elevated p-2.5", className)}>
       <div className="flex items-center justify-between gap-2">
         <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           {title}
         </h4>
         <Status value={statusLabel ?? status} />
       </div>
-      {children && <div className="mt-1.5 space-y-1 text-xs leading-5 text-foreground">{children}</div>}
+      {children && (
+        <div className="mt-1.5 space-y-1 text-xs leading-5 text-foreground">{children}</div>
+      )}
     </section>
   );
 }
@@ -1294,6 +1329,8 @@ function DetailLine({ label, children }: { label: string; children: ReactNode })
 }
 
 function CompactOverview({ overview }: { overview: ClientIntelligenceOverview }) {
+  const [showAllRisks, setShowAllRisks] = useState(false);
+  const [showAllRecommendations, setShowAllRecommendations] = useState(false);
   const health = overview.project_health;
   const confidence = overview.delivery_confidence;
   const risk = overview.risk_transparency;
@@ -1301,6 +1338,7 @@ function CompactOverview({ overview }: { overview: ClientIntelligenceOverview })
   const readiness = overview.readiness;
   const goLive = overview.go_live;
   const recommendations = overview.recommendations;
+  const recommendationItems = recommendations?.recommendations ?? [];
   const latestPoint = trend.trend_points.at(-1);
   const engineLimitationCodes = exactUnique([
     ...health.limitations,
@@ -1313,8 +1351,7 @@ function CompactOverview({ overview }: { overview: ClientIntelligenceOverview })
     ...risk.source_limitations,
     ...trend.source_limitations,
   ]);
-  const confidenceScore =
-    confidence.score_pct === null ? "No score" : `${confidence.score_pct}%`;
+  const confidenceScore = confidence.score_pct === null ? "No score" : `${confidence.score_pct}%`;
   const previousHealth = health.history.previous_status;
   const engineLimitationItems = userFacingLimitations(engineLimitationCodes);
   const technicalLimitationDump = exactUnique([
@@ -1324,9 +1361,7 @@ function CompactOverview({ overview }: { overview: ClientIntelligenceOverview })
       ...overview.visibility_limitations.map(
         (item) => `${item.source}: ${item.reason}: ${item.detail}`,
       ),
-    ].filter(
-      (item) => isTechnicalLimitationText(item) || /^[A-Z][A-Z0-9_]+$/.test(item.trim()),
-    ),
+    ].filter((item) => isTechnicalLimitationText(item) || /^[A-Z][A-Z0-9_]+$/.test(item.trim())),
     ...overview.data_quality.map((issue) => `${issue.source}: ${issue.state}: ${issue.detail}`),
   ]);
   const readinessLabel = readiness
@@ -1341,29 +1376,14 @@ function CompactOverview({ overview }: { overview: ClientIntelligenceOverview })
         .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
         .join(" ")
     : "Not assessed";
+  const visibleRisks = showAllRisks ? risk.risk_items : risk.risk_items.slice(0, 2);
+  const visibleRecommendations = showAllRecommendations
+    ? recommendationItems
+    : recommendationItems.slice(0, 3);
 
   return (
-    <div className="space-y-3">
-      <div className="rounded-md border border-border bg-elevated p-3 text-xs leading-5">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="font-medium">{overview.project.project_name}</span>
-          <Status value={overview.project.project_status} />
-        </div>
-        <div className="mt-1.5 space-y-0.5 text-[11px] text-muted-foreground">
-          <p>Snapshot as of {formatDate(overview.as_of)}</p>
-          <p>Last refreshed {formatDateTime(overview.generated_at)}</p>
-          <p>
-            Reporting period {formatDate(overview.reporting_period.start_date)} –{" "}
-            {formatDate(overview.reporting_period.end_date)}
-          </p>
-          <p>
-            Audience:{" "}
-            {overview.visibility_mode === "client_safe" ? "Client-safe view" : "Internal team view"}
-          </p>
-        </div>
-      </div>
-
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+    <div className="space-y-4">
+      <div className="grid gap-2 sm:grid-cols-2">
         <EngineSection
           title="Readiness"
           status={readiness?.status ?? "insufficient_evidence"}
@@ -1389,9 +1409,7 @@ function CompactOverview({ overview }: { overview: ClientIntelligenceOverview })
           statusLabel={goLiveLabel}
         >
           <DetailLine label="Decision">{goLiveLabel}</DetailLine>
-          <DetailLine label="Confidence">
-            {goLive?.confidence_score ?? "Not available"}
-          </DetailLine>
+          <DetailLine label="Confidence">{goLive?.confidence_score ?? "Not available"}</DetailLine>
           {goLive?.required_actions?.[0] ? (
             <DetailLine label="Next action">{goLive.required_actions[0]}</DetailLine>
           ) : null}
@@ -1440,129 +1458,177 @@ function CompactOverview({ overview }: { overview: ClientIntelligenceOverview })
             <DetailLine label="Forecast completion">Not available</DetailLine>
           )}
         </EngineSection>
-
-        <EngineSection title="Risk Transparency" status={risk.availability}>
-          <DetailLine label="Open items in this view">{risk.risk_items.length}</DetailLine>
-          {risk.risk_items.slice(0, 2).map((item) => (
-            <p key={`${item.source_type}:${item.source_row_id}`} className="text-muted-foreground">
-              {labelToken(item.category)} · {labelToken(item.status)}
-              {item.risk_tier ? ` · ${labelToken(item.risk_tier)} priority` : ""}
-            </p>
-          ))}
-          {risk.risk_items.length === 0 && risk.availability !== "available" && (
-            <p className="text-[11px] text-muted-foreground">
-              No items are published for this assessment state.
-            </p>
-          )}
-          {risk.risk_items.length === 0 && risk.availability === "available" && (
-            <p className="text-[11px] text-muted-foreground">
-              No open risk items are currently listed for this project.
-            </p>
-          )}
-        </EngineSection>
-
-        <EngineSection title="Delivery Trend" status={trend.availability}>
-          <DetailLine label="Progress snapshots">
-            {trend.trend_points.length} · {labelToken(trend.grain)} view
-          </DetailLine>
-          {latestPoint ? (
-            <p>
-              Latest {formatDate(latestPoint.snapshot_date)} · Actual{" "}
-              {latestPoint.actual_units ?? labelToken(latestPoint.actual_state)} · Plan{" "}
-              {latestPoint.plan_units ?? labelToken(latestPoint.plan_state)} · Forecast{" "}
-              {latestPoint.forecast_units ?? labelToken(latestPoint.forecast_state)}
-            </p>
-          ) : (
-            <p className="text-[11px] text-muted-foreground">
-              No recent progress snapshot is available yet.
-            </p>
-          )}
-        </EngineSection>
-
-        <EngineSection
-          title="Recommendations"
-          status={recommendations?.recommendations?.length ? "available" : "unavailable"}
-          statusLabel={
-            recommendations?.recommendations?.length
-              ? `${recommendations.recommendations.length} action(s)`
-              : "None"
-          }
-        >
-          {(recommendations?.recommendations ?? []).slice(0, 4).map((rec) => (
-            <div key={rec.recommendation_id} className="space-y-0.5 border-b border-border/60 py-1 last:border-0">
-              <DetailLine label={labelToken(rec.priority)}>{rec.title}</DetailLine>
-              <p className="text-[11px] text-muted-foreground">{rec.expected_business_impact}</p>
-              <p className="text-[10px] text-muted-foreground">
-                Why: {rec.explainability.why_generated} · Confidence{" "}
-                {rec.explainability.confidence_score}
-              </p>
-            </div>
-          ))}
-          {!recommendations?.recommendations?.length && (
-            <p className="text-[11px] text-muted-foreground">
-              No readiness recommendations for the current evidence pack.
-            </p>
-          )}
-        </EngineSection>
       </div>
 
-      <DataQualitySummary
-        overall={overview.overall_data_quality}
-        issues={overview.data_quality}
-      />
+      <Accordion type="multiple" className="rounded-md border border-border px-3">
+        <AccordionItem value="risk-trend" className="border-border">
+          <AccordionTrigger className="py-3 text-xs hover:no-underline">
+            Risk, trend &amp; recommendations
+          </AccordionTrigger>
+          <AccordionContent className="space-y-2 pb-3">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <EngineSection title="Risk Transparency" status={risk.availability}>
+                <DetailLine label="Open items in this view">{risk.risk_items.length}</DetailLine>
+                {visibleRisks.map((item) => (
+                  <p
+                    key={`${item.source_type}:${item.source_row_id}`}
+                    className="text-muted-foreground"
+                  >
+                    {labelToken(item.category)} · {labelToken(item.status)}
+                    {item.risk_tier ? ` · ${labelToken(item.risk_tier)} priority` : ""}
+                  </p>
+                ))}
+                {risk.risk_items.length > 2 && (
+                  <button
+                    type="button"
+                    className="text-[11px] font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={() => setShowAllRisks((previous) => !previous)}
+                  >
+                    {showAllRisks
+                      ? "Show fewer risks"
+                      : `View all risks (${risk.risk_items.length})`}
+                  </button>
+                )}
+                {risk.risk_items.length === 0 && risk.availability !== "available" && (
+                  <p className="text-[11px] text-muted-foreground">
+                    No items are published for this assessment state.
+                  </p>
+                )}
+                {risk.risk_items.length === 0 && risk.availability === "available" && (
+                  <p className="text-[11px] text-muted-foreground">
+                    No open risk items are currently listed for this project.
+                  </p>
+                )}
+              </EngineSection>
 
-      <section className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-        <div>
-          <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Source limitations
-          </h4>
-          <FriendlyLimitationList values={overview.source_limitations} />
-          {userFacingLimitations(overview.source_limitations).length === 0 && (
-            <p className="mt-1 text-[11px] text-muted-foreground">No source gaps reported.</p>
-          )}
-        </div>
-        <div>
-          <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Visibility limitations
-          </h4>
-          {overview.visibility_limitations.length > 0 ? (
-            <ul className="mt-1 space-y-1 text-[11px] text-muted-foreground">
-              {overview.visibility_limitations.map((limitation, index) => (
-                <li key={`${limitation.source}:${limitation.reason}:${index}`}>
-                  {friendlyDataQualitySource(limitation.source)} ·{" "}
-                  {labelToken(limitation.reason)} · {friendlyDataQualityDetail(limitation.detail)}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              No visibility limitations returned.
-            </p>
-          )}
-        </div>
-      </section>
+              <EngineSection title="Delivery Trend" status={trend.availability}>
+                <DetailLine label="Progress snapshots">
+                  {trend.trend_points.length} · {labelToken(trend.grain)} view
+                </DetailLine>
+                {latestPoint ? (
+                  <p>
+                    Latest {formatDate(latestPoint.snapshot_date)} · Actual{" "}
+                    {latestPoint.actual_units ?? labelToken(latestPoint.actual_state)} · Plan{" "}
+                    {latestPoint.plan_units ?? labelToken(latestPoint.plan_state)} · Forecast{" "}
+                    {latestPoint.forecast_units ?? labelToken(latestPoint.forecast_state)}
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground">
+                    No recent progress snapshot is available yet.
+                  </p>
+                )}
+              </EngineSection>
 
-      {engineLimitationItems.length > 0 && (
-        <details className="rounded border border-border bg-elevated/40 px-3 py-2 text-[11px] text-muted-foreground">
-          <summary className="cursor-pointer select-none font-medium text-foreground">
-            Engine limitations ({engineLimitationItems.length})
-          </summary>
-          <FriendlyLimitationList values={engineLimitationCodes} />
-        </details>
-      )}
+              <EngineSection
+                title="Recommendations"
+                status={recommendationItems.length ? "available" : "unavailable"}
+                statusLabel={
+                  recommendationItems.length ? `${recommendationItems.length} action(s)` : "None"
+                }
+                className="sm:col-span-2"
+              >
+                {visibleRecommendations.map((rec) => (
+                  <div
+                    key={rec.recommendation_id}
+                    className="space-y-0.5 border-b border-border/60 py-1 last:border-0"
+                  >
+                    <DetailLine label={labelToken(rec.priority)}>{rec.title}</DetailLine>
+                    <p className="text-[11px] text-muted-foreground">
+                      {rec.expected_business_impact}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground">
+                      Why: {rec.explainability.why_generated} · Confidence{" "}
+                      {rec.explainability.confidence_score}
+                    </p>
+                  </div>
+                ))}
+                {recommendationItems.length > 3 && (
+                  <button
+                    type="button"
+                    className="text-[11px] font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={() => setShowAllRecommendations((previous) => !previous)}
+                  >
+                    {showAllRecommendations
+                      ? "Show fewer recommendations"
+                      : `View all recommendations (${recommendationItems.length})`}
+                  </button>
+                )}
+                {!recommendationItems.length && (
+                  <p className="text-[11px] text-muted-foreground">
+                    No readiness recommendations for the current evidence pack.
+                  </p>
+                )}
+              </EngineSection>
+            </div>
+          </AccordionContent>
+        </AccordionItem>
 
-      {technicalLimitationDump.length > 0 && (
-        <details className="rounded border border-border bg-elevated/40 px-3 py-2 text-[11px] text-muted-foreground">
-          <summary className="cursor-pointer select-none font-medium text-foreground">
-            Technical details
-          </summary>
-          <ul className="mt-2 space-y-1 break-words">
-            {technicalLimitationDump.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        </details>
-      )}
+        <AccordionItem value="quality-limits" className="border-border">
+          <AccordionTrigger className="py-3 text-xs hover:no-underline">
+            Data quality &amp; limitations
+          </AccordionTrigger>
+          <AccordionContent className="space-y-3 pb-3">
+            <DataQualitySummary
+              overall={overview.overall_data_quality}
+              issues={overview.data_quality}
+            />
+
+            <section className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Source limitations
+                </h4>
+                <FriendlyLimitationList values={overview.source_limitations} />
+                {userFacingLimitations(overview.source_limitations).length === 0 && (
+                  <p className="mt-1 text-[11px] text-muted-foreground">No source gaps reported.</p>
+                )}
+              </div>
+              <div>
+                <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Visibility limitations
+                </h4>
+                {overview.visibility_limitations.length > 0 ? (
+                  <ul className="mt-1 space-y-1 text-[11px] text-muted-foreground">
+                    {overview.visibility_limitations.map((limitation, index) => (
+                      <li key={`${limitation.source}:${limitation.reason}:${index}`}>
+                        {friendlyDataQualitySource(limitation.source)} ·{" "}
+                        {labelToken(limitation.reason)} ·{" "}
+                        {friendlyDataQualityDetail(limitation.detail)}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    No visibility limitations returned.
+                  </p>
+                )}
+              </div>
+            </section>
+
+            {engineLimitationItems.length > 0 && (
+              <details className="rounded border border-border bg-elevated/40 px-3 py-2 text-[11px] text-muted-foreground">
+                <summary className="cursor-pointer select-none font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  Engine limitations ({engineLimitationItems.length})
+                </summary>
+                <FriendlyLimitationList values={engineLimitationCodes} />
+              </details>
+            )}
+
+            {technicalLimitationDump.length > 0 && (
+              <details className="rounded border border-border bg-elevated/40 px-3 py-2 text-[11px] text-muted-foreground">
+                <summary className="cursor-pointer select-none font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  Technical details
+                </summary>
+                <ul className="mt-2 space-y-1 break-words">
+                  {technicalLimitationDump.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </AccordionContent>
+        </AccordionItem>
+      </Accordion>
     </div>
   );
 }
@@ -1633,15 +1699,29 @@ function DraftReportsQueue({
   onReject: (communication: ClientCommunicationDraft, reason: string) => Promise<void>;
   onSend: (communication: ClientCommunicationDraft) => Promise<void>;
 }) {
-  const drafts = communications.filter(
-    (communication) =>
-      communication.drafted_by_agent === "client_interaction_agent" &&
-      ACTIVE_QUEUE_STATUSES.has(communication.status),
+  const [draftQuery, setDraftQuery] = useState("");
+  const drafts = useMemo(
+    () =>
+      communications.filter(
+        (communication) =>
+          communication.drafted_by_agent === "client_interaction_agent" &&
+          ACTIVE_QUEUE_STATUSES.has(communication.status),
+      ),
+    [communications],
   );
+  const filteredDrafts = useMemo(() => {
+    const normalized = draftQuery.trim().toLowerCase();
+    if (!normalized) return drafts;
+    return drafts.filter(
+      (draft) =>
+        draft.subject.toLowerCase().includes(normalized) ||
+        draft.status.toLowerCase().includes(normalized),
+    );
+  }, [draftQuery, drafts]);
 
   return (
-    <section className="mb-4 rounded-md border border-border bg-elevated/40 p-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
+    <section className="rounded-md border border-border bg-elevated/40 p-3">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div>
           <h4 className="text-xs font-semibold text-foreground">Draft Reports Queue</h4>
           <p className="text-[10px] text-muted-foreground">
@@ -1653,6 +1733,22 @@ function DraftReportsQueue({
         </span>
       </div>
 
+      {drafts.length > 3 && (
+        <div className="relative mb-3">
+          <Search
+            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+            aria-hidden
+          />
+          <Input
+            value={draftQuery}
+            onChange={(event) => setDraftQuery(event.target.value)}
+            placeholder="Search drafts…"
+            aria-label="Search draft reports"
+            className="h-8 pl-8 text-xs"
+          />
+        </div>
+      )}
+
       {loading && (
         <div role="status" className="py-3 text-xs text-muted-foreground">
           Loading draft reports…
@@ -1661,7 +1757,11 @@ function DraftReportsQueue({
       {error && (
         <div role="alert" className="py-2 text-xs text-muted-foreground">
           Draft reports could not be loaded.{" "}
-          <button type="button" className="underline" onClick={onRetry}>
+          <button
+            type="button"
+            className="underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={onRetry}
+          >
             Retry
           </button>
         </div>
@@ -1671,9 +1771,14 @@ function DraftReportsQueue({
           No draft reports for this project.
         </div>
       )}
-      {!loading && !error && drafts.length > 0 && (
+      {!loading && !error && drafts.length > 0 && filteredDrafts.length === 0 && (
+        <div className="rounded border border-dashed border-border p-3 text-center text-xs text-muted-foreground">
+          No drafts match this search.
+        </div>
+      )}
+      {!loading && !error && filteredDrafts.length > 0 && (
         <div className="space-y-2">
-          {drafts.map((draft) => (
+          {filteredDrafts.map((draft) => (
             <DraftQueueItem
               key={draft.id}
               draft={draft}
@@ -2113,10 +2218,12 @@ function dedupeReportHistoryItems(
 
 function ApprovedSentReportsHistory({ projectId }: { projectId: string }) {
   const [statusFilter, setStatusFilter] = useState<ReportHistoryStatusFilter>("all");
+  const [historyQueryText, setHistoryQueryText] = useState("");
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     setStatusFilter("all");
+    setHistoryQueryText("");
     setExpandedIds(new Set());
   }, [projectId]);
 
@@ -2125,6 +2232,16 @@ function ApprovedSentReportsHistory({ projectId }: { projectId: string }) {
     () => dedupeReportHistoryItems(historyQuery.data?.pages.flatMap((page) => page.items) ?? []),
     [historyQuery.data],
   );
+  const filteredItems = useMemo(() => {
+    const normalized = historyQueryText.trim().toLowerCase();
+    if (!normalized) return items;
+    return items.filter(
+      (item) =>
+        item.subject.toLowerCase().includes(normalized) ||
+        item.status.toLowerCase().includes(normalized) ||
+        item.report_type.toLowerCase().includes(normalized),
+    );
+  }, [historyQueryText, items]);
   const total = historyQuery.data?.pages[0]?.total ?? 0;
   const isInitialLoading = historyQuery.isLoading;
   const isError = historyQuery.isError;
@@ -2149,10 +2266,10 @@ function ApprovedSentReportsHistory({ projectId }: { projectId: string }) {
 
   return (
     <section
-      className="mb-4 rounded-md border border-border bg-elevated/40 p-3"
+      className="rounded-md border border-border bg-elevated/40 p-3"
       aria-label="Approved and sent report history"
     >
-      <div className="mb-2 flex items-center justify-between gap-2">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div>
           <h4 className="text-xs font-semibold text-foreground">Approved & Sent Reports</h4>
           <p className="text-[10px] text-muted-foreground">
@@ -2164,23 +2281,40 @@ function ApprovedSentReportsHistory({ projectId }: { projectId: string }) {
         </span>
       </div>
 
-      <div className="mb-2 flex flex-wrap gap-1" role="group" aria-label="Report history filters">
-        {(
-          [
-            ["all", "Show all reports", "All"],
-            ["approved", "Show approved reports", "Approved"],
-            ["sent", "Show sent reports", "Sent"],
-          ] as const
-        ).map(([value, ariaLabel, label]) => (
-          <CompactButton
-            key={value}
-            ariaLabel={ariaLabel}
-            disabled={statusFilter === value}
-            onClick={() => setStatusFilter(value)}
-          >
-            {label}
-          </CompactButton>
-        ))}
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap gap-1" role="group" aria-label="Report history filters">
+          {(
+            [
+              ["all", "Show all reports", "All"],
+              ["approved", "Show approved reports", "Approved"],
+              ["sent", "Show sent reports", "Sent"],
+            ] as const
+          ).map(([value, ariaLabel, label]) => (
+            <CompactButton
+              key={value}
+              ariaLabel={ariaLabel}
+              disabled={statusFilter === value}
+              onClick={() => setStatusFilter(value)}
+            >
+              {label}
+            </CompactButton>
+          ))}
+        </div>
+        {items.length > 3 && (
+          <div className="relative w-full sm:max-w-[14rem]">
+            <Search
+              className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+              aria-hidden
+            />
+            <Input
+              value={historyQueryText}
+              onChange={(event) => setHistoryQueryText(event.target.value)}
+              placeholder="Search reports…"
+              aria-label="Search report history"
+              className="h-8 pl-8 text-xs"
+            />
+          </div>
+        )}
       </div>
 
       {isInitialLoading && (
@@ -2193,7 +2327,7 @@ function ApprovedSentReportsHistory({ projectId }: { projectId: string }) {
           Report history could not be loaded.{" "}
           <button
             type="button"
-            className="underline"
+            className="underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label="Retry report history"
             onClick={() => void historyQuery.refetch()}
           >
@@ -2206,9 +2340,14 @@ function ApprovedSentReportsHistory({ projectId }: { projectId: string }) {
           {emptyLabel}
         </div>
       )}
-      {!isInitialLoading && !isError && items.length > 0 && (
+      {!isInitialLoading && !isError && items.length > 0 && filteredItems.length === 0 && (
+        <div className="rounded border border-dashed border-border p-3 text-center text-xs text-muted-foreground">
+          No reports match this search.
+        </div>
+      )}
+      {!isInitialLoading && !isError && filteredItems.length > 0 && (
         <div className="space-y-2">
-          {items.map((item) => {
+          {filteredItems.map((item) => {
             const expanded = expandedIds.has(item.communication_id);
             const panelId = `report-history-panel-${item.communication_id}`;
             return (
@@ -2402,7 +2541,7 @@ function ClientIntelligenceQA({ projectId }: { projectId: string }) {
 
   return (
     <section
-      className="mb-4 rounded-md border border-border bg-elevated/40 p-3"
+      className="rounded-md border border-border bg-elevated/40 p-3"
       aria-label="Client Intelligence Q&A"
     >
       <div className="mb-2 flex items-center justify-between gap-2">
@@ -2601,6 +2740,65 @@ function ClientIntelligenceQA({ projectId }: { projectId: string }) {
   );
 }
 
+function DetailKpiStrip({ overview }: { overview: ClientIntelligenceOverview }) {
+  const readiness = overview.readiness;
+  const goLive = overview.go_live;
+  const health = overview.project_health;
+  const confidence = overview.delivery_confidence;
+  const readinessLabel = readiness
+    ? readiness.status
+        .split("_")
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ")
+    : "Not assessed";
+  const goLiveLabel = goLive
+    ? goLive.decision
+        .split("_")
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ")
+    : "Not assessed";
+  const confidenceValue = confidence.score_pct === null ? "No score" : `${confidence.score_pct}%`;
+
+  const items = [
+    {
+      label: "Health",
+      value: healthStatusLabel(health.status),
+      detail: dataQualityPlainLabel(health.overall_data_quality),
+    },
+    {
+      label: "Confidence",
+      value: confidenceValue,
+      detail: confidenceBandLabel(confidence.confidence_band),
+    },
+    {
+      label: "Readiness",
+      value:
+        readiness?.overall_score_pct != null ? `${readiness.overall_score_pct}%` : readinessLabel,
+      detail: readinessLabel,
+    },
+    {
+      label: "Go-Live",
+      value: goLiveLabel,
+      detail:
+        goLive?.confidence_score != null ? `Confidence ${goLive.confidence_score}` : "Not assessed",
+    },
+  ] as const;
+
+  return (
+    <div className="mb-4 grid grid-cols-2 gap-2 xl:grid-cols-4" aria-label="Project KPI summary">
+      {items.map((item) => (
+        <div key={item.label} className="rounded-md border border-border bg-elevated px-2.5 py-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {item.label}
+          </p>
+          <p className="mt-1 truncate text-sm font-semibold text-foreground">{item.value}</p>
+          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{item.detail}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ClientDetail({
   selectedProject,
   overview,
@@ -2650,23 +2848,94 @@ function ClientDetail({
   onRejectCommunication: (communication: ClientCommunicationDraft, reason: string) => Promise<void>;
   onSendCommunication: (communication: ClientCommunicationDraft) => Promise<void>;
 }) {
+  const [activeTab, setActiveTab] = useState<DetailTab>("overview");
+  const draftCount = useMemo(
+    () =>
+      communications.filter(
+        (communication) =>
+          communication.drafted_by_agent === "client_interaction_agent" &&
+          ACTIVE_QUEUE_STATUSES.has(communication.status),
+      ).length,
+    [communications],
+  );
+
+  useEffect(() => {
+    setActiveTab("overview");
+  }, [selectedProject?.id]);
+
+  useEffect(() => {
+    if (draftNotice?.tone === "success") {
+      setActiveTab("drafts");
+    }
+  }, [draftNotice]);
+
   return (
-    <>
+    <div className="flex h-full min-h-0 flex-col">
       <SectionHeader
         title={selectedProject ? `${selectedProject.name} · Detail` : "Client Detail"}
-        sub={selectedProject ? "Governed project intelligence" : "Select a project row"}
+        sub={
+          selectedProject ? "Governed project intelligence" : "Select a project row to open details"
+        }
         right={
           selectedProject ? (
-            <CompactButton
-              onClick={onRefreshOverview}
-              disabled={loading || fetching}
-              ariaLabel="Refresh overview"
-            >
-              <RefreshCw className={`h-3 w-3 ${fetching ? "animate-spin" : ""}`} />
-            </CompactButton>
+            <div className="flex items-center gap-1.5">
+              {overview ? <Status value={overview.project.project_status} /> : null}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 px-2.5 text-xs"
+                onClick={onRefreshOverview}
+                disabled={loading || fetching}
+                aria-label="Refresh overview"
+              >
+                <RefreshCw className={cn("h-3.5 w-3.5", fetching && "animate-spin")} />
+                Refresh
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 w-8 px-0"
+                    aria-label="More client detail actions"
+                  >
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-52">
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      setActiveTab("reporting");
+                    }}
+                  >
+                    Open reporting workspace
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      setActiveTab("drafts");
+                    }}
+                  >
+                    Open draft queue
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      setActiveTab("qa");
+                    }}
+                  >
+                    Open Q&amp;A
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={onRefreshProjects}>
+                    Refresh project list
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           ) : null
         }
       />
+
       {draftNotice && (
         <div
           role={draftNotice.tone === "error" ? "alert" : "status"}
@@ -2688,46 +2957,127 @@ function ClientDetail({
           {sendLiveNotice.message}
         </div>
       )}
+
       {!selectedProject && (
-        <div className="rounded-md border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
+        <div className="flex flex-1 items-center justify-center rounded-md border border-dashed border-border p-8 text-center text-xs text-muted-foreground">
           Select a project row to view governed Client Intelligence.
         </div>
       )}
+
       {selectedProject && (
         <>
-          <ClientReportingWorkbench projectId={selectedProject.id} />
-          <DraftReportsQueue
-            communications={communications}
-            loading={communicationsLoading}
-            error={communicationsError}
-            onRetry={onRetryCommunications}
-            pendingLifecycleKeys={pendingLifecycleKeys}
-            lifecycleNotices={lifecycleNotices}
-            selectedProjectId={selectedProject.id}
-            onEdit={onEditCommunication}
-            onSubmitForReview={onSubmitForReview}
-            onApprove={onApproveCommunication}
-            onReject={onRejectCommunication}
-            onSend={onSendCommunication}
-          />
-          <ApprovedSentReportsHistory projectId={selectedProject.id} />
-          <ClientIntelligenceQA key={selectedProject.id} projectId={selectedProject.id} />
+          {overview && !error ? <DetailKpiStrip overview={overview} /> : null}
+          {overview && !error ? (
+            <p className="mb-3 text-[11px] text-muted-foreground">
+              Snapshot {formatDate(overview.as_of)} · Refreshed{" "}
+              {formatDateTime(overview.generated_at)} ·{" "}
+              {overview.visibility_mode === "client_safe"
+                ? "Client-safe view"
+                : "Internal team view"}
+            </p>
+          ) : null}
+
+          <Tabs
+            value={activeTab}
+            onValueChange={(value) => setActiveTab(value as DetailTab)}
+            className="min-h-0 flex-1 space-y-3"
+          >
+            <TabsList
+              className="h-auto w-full flex-wrap justify-start gap-1 rounded-xl border border-border bg-elevated p-1"
+              aria-label="Client detail sections"
+            >
+              <TabsTrigger value="overview" className="rounded-lg px-3 text-xs">
+                Overview
+              </TabsTrigger>
+              <TabsTrigger value="reporting" className="rounded-lg px-3 text-xs">
+                Reporting
+              </TabsTrigger>
+              <TabsTrigger value="drafts" className="gap-1.5 rounded-lg px-3 text-xs">
+                Drafts
+                <span className="rounded bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  {communicationsLoading ? "…" : draftCount}
+                </span>
+              </TabsTrigger>
+              <TabsTrigger value="history" className="rounded-lg px-3 text-xs">
+                History
+              </TabsTrigger>
+              <TabsTrigger value="qa" className="rounded-lg px-3 text-xs">
+                Q&amp;A
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent
+              value="overview"
+              forceMount
+              className="mt-0 focus-visible:outline-none data-[state=inactive]:hidden"
+            >
+              {loading && (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="rounded-md border border-dashed border-border p-6 text-center text-xs text-muted-foreground"
+                >
+                  Loading Client Intelligence overview…
+                </div>
+              )}
+              {error && (
+                <OverviewError
+                  error={error}
+                  onRetry={onRetry}
+                  onRefreshProjects={onRefreshProjects}
+                />
+              )}
+              {overview && !error && <CompactOverview overview={overview} />}
+            </TabsContent>
+
+            <TabsContent
+              value="reporting"
+              forceMount
+              className="mt-0 focus-visible:outline-none data-[state=inactive]:hidden"
+            >
+              <ClientReportingWorkbench projectId={selectedProject.id} />
+            </TabsContent>
+
+            <TabsContent
+              value="drafts"
+              forceMount
+              className="mt-0 focus-visible:outline-none data-[state=inactive]:hidden"
+            >
+              <DraftReportsQueue
+                communications={communications}
+                loading={communicationsLoading}
+                error={communicationsError}
+                onRetry={onRetryCommunications}
+                pendingLifecycleKeys={pendingLifecycleKeys}
+                lifecycleNotices={lifecycleNotices}
+                selectedProjectId={selectedProject.id}
+                onEdit={onEditCommunication}
+                onSubmitForReview={onSubmitForReview}
+                onApprove={onApproveCommunication}
+                onReject={onRejectCommunication}
+                onSend={onSendCommunication}
+              />
+            </TabsContent>
+
+            <TabsContent
+              value="history"
+              forceMount
+              className="mt-0 focus-visible:outline-none data-[state=inactive]:hidden"
+            >
+              <ApprovedSentReportsHistory projectId={selectedProject.id} />
+            </TabsContent>
+
+            <TabsContent
+              value="qa"
+              forceMount
+              className="mt-0 focus-visible:outline-none data-[state=inactive]:hidden"
+            >
+              <ClientIntelligenceQA key={selectedProject.id} projectId={selectedProject.id} />
+            </TabsContent>
+          </Tabs>
         </>
       )}
-      {selectedProject && loading && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="rounded-md border border-dashed border-border p-6 text-center text-xs text-muted-foreground"
-        >
-          Loading Client Intelligence overview…
-        </div>
-      )}
-      {selectedProject && error && (
-        <OverviewError error={error} onRetry={onRetry} onRefreshProjects={onRefreshProjects} />
-      )}
-      {selectedProject && overview && !error && <CompactOverview overview={overview} />}
-    </>
+    </div>
   );
 }
 
@@ -2997,10 +3347,12 @@ export function ClientIntelligenceDashboard() {
       </div>
 
       <div
-        className="grid grid-cols-1 gap-5 lg:grid-cols-5"
+        className="grid grid-cols-1 gap-5 xl:grid-cols-12"
         data-testid="client-intelligence-main-grid"
       >
-        <Card className="min-h-[535px] lg:col-span-3">
+        <Card
+          className={cn("min-h-[28rem]", effectiveProjectId ? "xl:col-span-5" : "xl:col-span-7")}
+        >
           {projectsQuery.isLoading || projectsQuery.isError ? (
             <>
               <SectionHeader title="Client Projects" />
@@ -3035,7 +3387,9 @@ export function ClientIntelligenceDashboard() {
           )}
         </Card>
 
-        <Card className="min-h-[535px] lg:col-span-2">
+        <Card
+          className={cn("min-h-[28rem]", effectiveProjectId ? "xl:col-span-7" : "xl:col-span-5")}
+        >
           <ClientDetail
             selectedProject={selectedProject}
             overview={overviewQuery.data}
