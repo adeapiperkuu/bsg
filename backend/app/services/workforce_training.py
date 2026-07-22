@@ -524,29 +524,40 @@ async def build_project_training_gaps(
     current_user: CurrentUser,
     *,
     today: date | None = None,
+    teams: list[Team] | None = None,
+    annotators: list[Annotator] | None = None,
 ) -> TrainingGapSummaryRead:
     assert_can_read_annotators(current_user)
     reference_date = today or date.today()
 
-    teams = (
-        await session.execute(
-            select(Team).where(Team.project_id == project.id, Team.deleted_at.is_(None)),
+    if teams is None:
+        teams = list(
+            (
+                await session.execute(
+                    select(Team).where(Team.project_id == project.id, Team.deleted_at.is_(None)),
+                )
+            ).scalars().all(),
         )
-    ).scalars().all()
     team_by_id = {team.id: team for team in teams}
     team_ids = list(team_by_id.keys())
 
-    annotators: list[Annotator] = []
-    if team_ids:
-        annotators = (
-            await session.execute(
-                select(Annotator).where(
-                    Annotator.team_id.in_(team_ids),
-                    Annotator.deleted_at.is_(None),
-                    Annotator.is_active.is_(True),
-                ),
+    if annotators is None:
+        annotators = []
+        if team_ids:
+            annotators = list(
+                (
+                    await session.execute(
+                        select(Annotator).where(
+                            Annotator.team_id.in_(team_ids),
+                            Annotator.deleted_at.is_(None),
+                            Annotator.is_active.is_(True),
+                        ),
+                    )
+                ).scalars().all(),
             )
-        ).scalars().all()
+    else:
+        # Shared roster may include inactive people; training gaps are active-only.
+        annotators = [annotator for annotator in annotators if annotator.is_active]
 
     annotator_ids = [annotator.id for annotator in annotators]
 

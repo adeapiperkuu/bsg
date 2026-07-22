@@ -16,14 +16,16 @@ import { WorkforceKpiStrip } from "@/components/bsg/workforce/WorkforceKpiStrip"
 import { WorkforceOptimizationPanel } from "@/components/bsg/workforce/WorkforceOptimizationPanel";
 import { WorkforceRecommendationsPanel } from "@/components/bsg/WorkforceRecommendationsPanel";
 import { useProjectsQuery } from "@/lib/queries/delivery";
+import { loadWorkforceRouteData } from "@/lib/queries/workforce-prefetch";
+import { useProjectRecommendationsQuery } from "@/features/mitigation-recommendations/hooks/useProjectRecommendations";
 import {
   UTILIZATION_CAPACITY_THRESHOLD,
-  buildAnnotatorsByTeamFromList,
   buildLatestTeamUtilization,
-  buildProjectWorkforceSummary,
   EMPTY_UTILIZATION,
-  seedWorkforceSectionCaches,
-  useProjectWorkforceDashboardQuery,
+  useProjectCapabilityGapsQuery,
+  useProjectSkillMatrixQuery,
+  useProjectTrainingGapsQuery,
+  useProjectUtilizationQuery,
   useProjectWorkforceOptimizationQuery,
   useProjectWorkforceSummary,
 } from "@/lib/queries/workforce";
@@ -45,12 +47,16 @@ import type {
   TrainingGapRow,
   TrainingGapSummaryRead,
 } from "@/types/workforce";
-import type { ProjectRecommendationsResponse } from "@/features/mitigation-recommendations/types";
 
 export const Route = createFileRoute("/workforce")({
   validateSearch: (search: Record<string, unknown>) => ({
     projectId: typeof search.projectId === "string" ? search.projectId : undefined,
   }),
+  loaderDeps: ({ search }) => ({ projectId: search.projectId }),
+  // Fire-and-forget (do not await): awaiting freezes navigation on dashboard RTT.
+  loader: ({ context, deps }) => {
+    void loadWorkforceRouteData(context.queryClient, deps.projectId);
+  },
   component: WorkforcePage,
 });
 
@@ -111,6 +117,13 @@ function WorkforcePage() {
   // that used to serialize projects → dashboard behind a full-page spinner.
   const canReadInternalWorkforce = canReadInternalWorkforceRole(user?.role);
 
+  const queryClient = useQueryClient();
+  // Belt-and-suspenders with the route loader (same pattern as /quality): cold
+  // hydration may not re-run the loader against the client QueryClient.
+  useEffect(() => {
+    void loadWorkforceRouteData(queryClient, urlProjectId);
+  }, [queryClient, urlProjectId]);
+
   const projectsQuery = useProjectsQuery();
   const projects = projectsQuery.data ?? EMPTY_LIST;
 
@@ -143,10 +156,29 @@ function WorkforcePage() {
     setDrawerOpen(false);
   }, [resolvedProjectId]);
 
-  // Bundled dashboard (summary/util/matrix/gaps/recs) + deferred optimization request.
-  // Optimization is the heaviest section; loading it separately lets KPIs paint first.
-  const queryClient = useQueryClient();
-  const dashboardQuery = useProjectWorkforceDashboardQuery(
+  // Section queries run in parallel so each panel paints as soon as its data arrives
+  // (KPIs/matrix can appear before training gaps / recommendations / optimization).
+  const summaryQuery = useProjectWorkforceSummary(
+    resolvedProjectId,
+    canReadInternalWorkforce,
+  );
+  const utilizationQuery = useProjectUtilizationQuery(
+    resolvedProjectId,
+    canReadInternalWorkforce,
+  );
+  const skillMatrixQuery = useProjectSkillMatrixQuery(
+    resolvedProjectId,
+    canReadInternalWorkforce,
+  );
+  const trainingGapsQuery = useProjectTrainingGapsQuery(
+    resolvedProjectId,
+    canReadInternalWorkforce,
+  );
+  const capabilityGapsQuery = useProjectCapabilityGapsQuery(
+    resolvedProjectId,
+    canReadInternalWorkforce,
+  );
+  const recommendationsQuery = useProjectRecommendationsQuery(
     resolvedProjectId,
     canReadInternalWorkforce,
   );
@@ -154,80 +186,50 @@ function WorkforcePage() {
     resolvedProjectId,
     canReadInternalWorkforce,
   );
-  const dashboard = dashboardQuery.data;
 
-  useEffect(() => {
-    if (!resolvedProjectId || !dashboard) return;
-    seedWorkforceSectionCaches(queryClient, resolvedProjectId, dashboard);
-  }, [dashboard, queryClient, resolvedProjectId]);
+  const summary = summaryQuery.summary;
+  const workforceLoading = summaryQuery.isLoading;
+  const workforceError = summaryQuery.error;
 
-  // Client / non-internal roles still need teams via the lightweight summary path.
-  const fallbackWorkforceQuery = useProjectWorkforceSummary(
-    canReadInternalWorkforce ? null : resolvedProjectId,
-    false,
-  );
-
-  const summary = useMemo(() => {
-    if (canReadInternalWorkforce && dashboard) {
-      const teams = dashboard.summary.teams;
-      const annotatorsByTeam = buildAnnotatorsByTeamFromList(teams, dashboard.summary.annotators);
-      return buildProjectWorkforceSummary(teams, annotatorsByTeam);
-    }
-    return fallbackWorkforceQuery.summary;
-  }, [canReadInternalWorkforce, dashboard, fallbackWorkforceQuery.summary]);
-
-  const workforceLoading = canReadInternalWorkforce
-    ? dashboardQuery.isLoading
-    : fallbackWorkforceQuery.isLoading;
-  const workforceError = canReadInternalWorkforce
-    ? dashboardQuery.error instanceof Error
-      ? dashboardQuery.error.message
-      : null
-    : fallbackWorkforceQuery.error;
-
-  const utilizationSnapshots = dashboard?.utilization ?? EMPTY_UTILIZATION;
+  const utilizationSnapshots = utilizationQuery.data ?? EMPTY_UTILIZATION;
   const teamUtilization = useMemo(
     () => buildLatestTeamUtilization(utilizationSnapshots, summary.teams),
     [utilizationSnapshots, summary.teams],
   );
-  const skillMatrixRows = dashboard?.skill_matrix.rows ?? EMPTY_LIST;
-  const skillMatrixLoading = canReadInternalWorkforce && dashboardQuery.isLoading;
+  const skillMatrixRows = skillMatrixQuery.data?.rows ?? EMPTY_LIST;
+  const skillMatrixLoading = canReadInternalWorkforce && skillMatrixQuery.isLoading;
   const skillMatrixError =
-    canReadInternalWorkforce && dashboardQuery.error instanceof Error
-      ? dashboardQuery.error.message
+    canReadInternalWorkforce && skillMatrixQuery.error instanceof Error
+      ? skillMatrixQuery.error.message
       : null;
   const skillMatrixConfidencePct = useMemo(
     () => skillMatrixConfidence(skillMatrixRows),
     [skillMatrixRows],
   );
 
-  const trainingGaps = dashboard?.training_gaps;
+  const trainingGaps = trainingGapsQuery.data;
   const trainingGapRows = trainingGaps?.rows ?? EMPTY_LIST;
-  const trainingGapsLoading = canReadInternalWorkforce && dashboardQuery.isLoading;
+  const trainingGapsLoading = canReadInternalWorkforce && trainingGapsQuery.isLoading;
   const trainingGapsError =
-    canReadInternalWorkforce && dashboardQuery.error instanceof Error
-      ? dashboardQuery.error.message
+    canReadInternalWorkforce && trainingGapsQuery.error instanceof Error
+      ? trainingGapsQuery.error.message
       : null;
 
   const canManageWorkforce = canManageWorkforceRole(user?.role);
 
-  const capabilityGaps = dashboard?.capability_gaps ?? EMPTY_LIST;
-  const capabilityGapsLoading = canReadInternalWorkforce && dashboardQuery.isLoading;
+  const capabilityGaps = capabilityGapsQuery.data ?? EMPTY_LIST;
+  const capabilityGapsLoading = canReadInternalWorkforce && capabilityGapsQuery.isLoading;
   const capabilityGapsError =
-    canReadInternalWorkforce && dashboardQuery.error instanceof Error
-      ? dashboardQuery.error.message
+    canReadInternalWorkforce && capabilityGapsQuery.error instanceof Error
+      ? capabilityGapsQuery.error.message
       : null;
 
-  const bundledRecommendations = (
-    canReadInternalWorkforce ? (dashboard?.recommendations ?? null) : undefined
-  ) as ProjectRecommendationsResponse | null | undefined;
-
-  const bundledRecommendationCount = useMemo(() => {
-    if (!bundledRecommendations?.data) return 0;
-    return bundledRecommendations.data.filter((item) =>
+  const recommendationCount = useMemo(() => {
+    if (!recommendationsQuery.data?.data) return 0;
+    return recommendationsQuery.data.data.filter((item) =>
       item.risks.some((risk) => risk.source_risk_type === "workforce_imbalance"),
     ).length;
-  }, [bundledRecommendations]);
+  }, [recommendationsQuery.data]);
 
   const {
     siteFilter,
@@ -302,13 +304,13 @@ function WorkforcePage() {
   );
 
   const projectsLoading = projectsQuery.isLoading;
-  const utilizationLoading = canReadInternalWorkforce && dashboardQuery.isLoading;
+  const utilizationLoading = canReadInternalWorkforce && utilizationQuery.isLoading;
 
   const projectsError = projectsQuery.error instanceof Error ? projectsQuery.error.message : null;
   const workforceLoadWarning = workforceError;
   const utilizationLoadWarning =
-    canReadInternalWorkforce && dashboardQuery.error instanceof Error
-      ? dashboardQuery.error.message
+    canReadInternalWorkforce && utilizationQuery.error instanceof Error
+      ? utilizationQuery.error.message
       : null;
 
   const selectProject = (projectId: string) => {
@@ -598,22 +600,17 @@ function WorkforcePage() {
               title="Workforce recommendations"
               sub="Mitigations generated from capability gaps"
               summary={
-                dashboardQuery.isLoading
+                recommendationsQuery.isLoading
                   ? "Loading…"
-                  : `${bundledRecommendationCount} recommendation${bundledRecommendationCount === 1 ? "" : "s"}`
+                  : `${recommendationCount} recommendation${recommendationCount === 1 ? "" : "s"}`
               }
-              badge={
-                bundledRecommendationCount > 0 ? String(bundledRecommendationCount) : undefined
-              }
+              badge={recommendationCount > 0 ? String(recommendationCount) : undefined}
               defaultOpen={false}
             >
               <WorkforceRecommendationsPanel
                 embedded
                 projectId={resolvedProjectId}
                 canManage={canManageWorkforce}
-                bundledRecommendations={bundledRecommendations ?? null}
-                bundledLoading={dashboardQuery.isLoading}
-                bundledError={dashboardQuery.isError}
               />
             </WorkforceFold>
           ) : null}

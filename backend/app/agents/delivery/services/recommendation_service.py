@@ -216,8 +216,15 @@ async def list_project_recommendations(
     *,
     project_id: UUID,
     org_id: UUID,
+    source_risk_types: set[str] | None = None,
+    include_assignable_owners: bool = True,
 ) -> tuple[list[RecommendationRow], list[OwnerOption]]:
-    """Return all recommendations and assignable owners without per-row queries."""
+    """Return recommendations and optionally assignable owners without per-row queries.
+
+    ``source_risk_types`` filters via the joined RiskAlert (e.g. workforce-only
+    dashboard loads). ``include_assignable_owners=False`` skips the extra owner
+    queries when the caller only needs accept/reject (Workforce panel).
+    """
     # TODO(cleanup): this owner_user/owner_team aliased-join query is duplicated almost
     # verbatim in fetch_recommendation_row below (list vs. single-row variant). Worth
     # extracting into a shared query builder, but left as-is here since both are covered
@@ -225,41 +232,43 @@ async def list_project_recommendations(
     user_owner = User.__table__.alias("owner_user")
     team_owner = Team.__table__.alias("owner_team")
 
-    rows = (
-        await session.execute(
-            select(
-                MitigationRecommendation,
-                user_owner.c.full_name.label("owner_user_name"),
-                team_owner.c.name.label("owner_team_name"),
-                RiskAlert.title.label("source_risk_title"),
-                RiskAlert.alert_type.label("source_risk_type"),
-                RiskAlert.slippage_probability.label("source_risk_slippage_probability"),
-            )
-            .outerjoin(
-                user_owner,
-                and_(
-                    MitigationRecommendation.owner_type == OwnerType.USER,
-                    MitigationRecommendation.owner_id == user_owner.c.id,
-                ),
-            )
-            .outerjoin(
-                team_owner,
-                and_(
-                    MitigationRecommendation.owner_type == OwnerType.TEAM,
-                    MitigationRecommendation.owner_id == team_owner.c.id,
-                ),
-            )
-            .outerjoin(RiskAlert, MitigationRecommendation.source_risk_id == RiskAlert.id)
-            .where(
-                MitigationRecommendation.project_id == project_id,
-                MitigationRecommendation.deleted_at.is_(None),
-            )
-            .order_by(
-                MitigationRecommendation.confidence_score.desc(),
-                MitigationRecommendation.created_at.desc(),
-            )
+    stmt = (
+        select(
+            MitigationRecommendation,
+            user_owner.c.full_name.label("owner_user_name"),
+            team_owner.c.name.label("owner_team_name"),
+            RiskAlert.title.label("source_risk_title"),
+            RiskAlert.alert_type.label("source_risk_type"),
+            RiskAlert.slippage_probability.label("source_risk_slippage_probability"),
         )
-    ).all()
+        .outerjoin(
+            user_owner,
+            and_(
+                MitigationRecommendation.owner_type == OwnerType.USER,
+                MitigationRecommendation.owner_id == user_owner.c.id,
+            ),
+        )
+        .outerjoin(
+            team_owner,
+            and_(
+                MitigationRecommendation.owner_type == OwnerType.TEAM,
+                MitigationRecommendation.owner_id == team_owner.c.id,
+            ),
+        )
+        .outerjoin(RiskAlert, MitigationRecommendation.source_risk_id == RiskAlert.id)
+        .where(
+            MitigationRecommendation.project_id == project_id,
+            MitigationRecommendation.deleted_at.is_(None),
+        )
+        .order_by(
+            MitigationRecommendation.confidence_score.desc(),
+            MitigationRecommendation.created_at.desc(),
+        )
+    )
+    if source_risk_types:
+        stmt = stmt.where(RiskAlert.alert_type.in_(list(source_risk_types)))
+
+    rows = (await session.execute(stmt)).all()
 
     recommendations = [
         RecommendationRow(
@@ -277,6 +286,9 @@ async def list_project_recommendations(
             -float(item.recommendation.confidence_score),
         )
     )
+
+    if not include_assignable_owners:
+        return recommendations, []
 
     assignable_owners = await _load_assignable_owners(session, project_id=project_id, org_id=org_id)
     return recommendations, assignable_owners

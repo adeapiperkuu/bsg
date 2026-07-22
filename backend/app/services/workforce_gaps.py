@@ -660,6 +660,8 @@ async def list_project_capability_gaps(
     session: AsyncSession,
     project: Project,
     current_user: CurrentUser,
+    *,
+    limit: int | None = None,
 ) -> list[CapabilityGap]:
     assert_can_read_annotators(current_user)
     query = (
@@ -672,6 +674,8 @@ async def list_project_capability_gaps(
     )
     if current_user.role == AppRole.DELIVERY_MANAGER:
         query = query.where(CapabilityGap.org_id == current_user.org_id)
+    if limit is not None:
+        query = query.limit(limit)
     return list((await session.execute(query)).scalars().all())
 
 

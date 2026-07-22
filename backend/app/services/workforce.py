@@ -152,6 +152,55 @@ async def get_annotator_or_404(
     return annotator
 
 
+async def load_project_roster(
+    session: AsyncSession,
+    project: Project,
+    *,
+    teams_limit: int = 100,
+) -> tuple[list[Team], list[Annotator]]:
+    """Batch-load project teams and annotators (shared by summary/matrix/training)."""
+    teams = list(
+        (
+            await session.execute(
+                select(Team)
+                .where(Team.project_id == project.id, Team.deleted_at.is_(None))
+                .order_by(Team.name)
+                .limit(teams_limit),
+            )
+        ).scalars().all(),
+    )
+
+    annotators: list[Annotator] = []
+    if teams:
+        annotator_limit = len(teams) * 100
+        annotators = list(
+            (
+                await session.execute(
+                    select(Annotator)
+                    .where(
+                        Annotator.team_id.in_([team.id for team in teams]),
+                        Annotator.deleted_at.is_(None),
+                    )
+                    .order_by(Annotator.full_name)
+                    .limit(annotator_limit),
+                )
+            ).scalars().all(),
+        )
+    return teams, annotators
+
+
+def project_workforce_summary_from_roster(
+    project: Project,
+    teams: list[Team],
+    annotators: list[Annotator],
+) -> ProjectWorkforceSummaryRead:
+    return ProjectWorkforceSummaryRead(
+        project_id=project.id,
+        teams=[TeamRead.model_validate(team) for team in teams],
+        annotators=[AnnotatorRead.model_validate(annotator) for annotator in annotators],
+    )
+
+
 async def get_project_workforce_summary(
     session: AsyncSession,
     project: Project,
@@ -160,37 +209,9 @@ async def get_project_workforce_summary(
     teams_limit: int = 100,
 ) -> ProjectWorkforceSummaryRead:
     """Return project teams and annotators in one query batch (matches per-team list limits)."""
-    team_rows = (
-        await session.execute(
-            select(Team)
-            .where(Team.project_id == project.id, Team.deleted_at.is_(None))
-            .order_by(Team.name)
-            .limit(teams_limit),
-        )
-    ).scalars()
-    teams = list(team_rows)
-
-    annotators: list[Annotator] = []
-    if teams:
-        annotator_limit = len(teams) * 100
-        annotator_rows = (
-            await session.execute(
-                select(Annotator)
-                .where(
-                    Annotator.team_id.in_([team.id for team in teams]),
-                    Annotator.deleted_at.is_(None),
-                )
-                .order_by(Annotator.full_name)
-                .limit(annotator_limit),
-            )
-        ).scalars()
-        annotators = list(annotator_rows)
-
-    return ProjectWorkforceSummaryRead(
-        project_id=project.id,
-        teams=[TeamRead.model_validate(team) for team in teams],
-        annotators=[AnnotatorRead.model_validate(annotator) for annotator in annotators],
-    )
+    del current_user  # auth enforced by callers / routes
+    teams, annotators = await load_project_roster(session, project, teams_limit=teams_limit)
+    return project_workforce_summary_from_roster(project, teams, annotators)
 
 
 async def create_team(session: AsyncSession, project: Project, payload: TeamCreate) -> Team:
