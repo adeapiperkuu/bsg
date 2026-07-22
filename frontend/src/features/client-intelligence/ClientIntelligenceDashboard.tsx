@@ -51,6 +51,7 @@ import type {
   ReportHistoryStatusFilter,
   SummaryMetricAvailability,
 } from "@/types/client-intelligence";
+import { ClientReportingWorkbench } from "@/features/client-intelligence/ClientReportingWorkbench";
 
 const ACTIVE_QUEUE_STATUSES = new Set(["draft", "in_review", "approved", "rejected"]);
 
@@ -1297,12 +1298,17 @@ function CompactOverview({ overview }: { overview: ClientIntelligenceOverview })
   const confidence = overview.delivery_confidence;
   const risk = overview.risk_transparency;
   const trend = overview.delivery_trend;
+  const readiness = overview.readiness;
+  const goLive = overview.go_live;
+  const recommendations = overview.recommendations;
   const latestPoint = trend.trend_points.at(-1);
   const engineLimitationCodes = exactUnique([
     ...health.limitations,
     ...confidence.limitations,
     ...risk.limitations,
     ...trend.limitations,
+    ...(readiness?.limitations ?? []),
+    ...(goLive?.limitations ?? []),
     ...confidence.source_limitations,
     ...risk.source_limitations,
     ...trend.source_limitations,
@@ -1323,6 +1329,18 @@ function CompactOverview({ overview }: { overview: ClientIntelligenceOverview })
     ),
     ...overview.data_quality.map((issue) => `${issue.source}: ${issue.state}: ${issue.detail}`),
   ]);
+  const readinessLabel = readiness
+    ? readiness.status
+        .split("_")
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ")
+    : "Not assessed";
+  const goLiveLabel = goLive
+    ? goLive.decision
+        .split("_")
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ")
+    : "Not assessed";
 
   return (
     <div className="space-y-3">
@@ -1346,6 +1364,42 @@ function CompactOverview({ overview }: { overview: ClientIntelligenceOverview })
       </div>
 
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+        <EngineSection
+          title="Readiness"
+          status={readiness?.status ?? "insufficient_evidence"}
+          statusLabel={readinessLabel}
+        >
+          <DetailLine label="Overall readiness">
+            {readiness?.overall_score_pct != null
+              ? `${readiness.overall_score_pct}%`
+              : "Not available"}
+          </DetailLine>
+          <DetailLine label="Status">{readinessLabel}</DetailLine>
+          <DetailLine label="Confidence">
+            {readiness?.assessment_confidence ?? "Not available"}
+          </DetailLine>
+          {readiness?.major_blockers?.[0] ? (
+            <DetailLine label="Top blocker">{readiness.major_blockers[0]}</DetailLine>
+          ) : null}
+        </EngineSection>
+
+        <EngineSection
+          title="Go-Live"
+          status={goLive?.decision ?? "no_go"}
+          statusLabel={goLiveLabel}
+        >
+          <DetailLine label="Decision">{goLiveLabel}</DetailLine>
+          <DetailLine label="Confidence">
+            {goLive?.confidence_score ?? "Not available"}
+          </DetailLine>
+          {goLive?.required_actions?.[0] ? (
+            <DetailLine label="Next action">{goLive.required_actions[0]}</DetailLine>
+          ) : null}
+          {goLive?.blocking_items?.[0] ? (
+            <DetailLine label="Blocking item">{goLive.blocking_items[0]}</DetailLine>
+          ) : null}
+        </EngineSection>
+
         <EngineSection
           title="Project Health"
           status={health.status}
@@ -1421,6 +1475,32 @@ function CompactOverview({ overview }: { overview: ClientIntelligenceOverview })
           ) : (
             <p className="text-[11px] text-muted-foreground">
               No recent progress snapshot is available yet.
+            </p>
+          )}
+        </EngineSection>
+
+        <EngineSection
+          title="Recommendations"
+          status={recommendations?.recommendations?.length ? "available" : "unavailable"}
+          statusLabel={
+            recommendations?.recommendations?.length
+              ? `${recommendations.recommendations.length} action(s)`
+              : "None"
+          }
+        >
+          {(recommendations?.recommendations ?? []).slice(0, 4).map((rec) => (
+            <div key={rec.recommendation_id} className="space-y-0.5 border-b border-border/60 py-1 last:border-0">
+              <DetailLine label={labelToken(rec.priority)}>{rec.title}</DetailLine>
+              <p className="text-[11px] text-muted-foreground">{rec.expected_business_impact}</p>
+              <p className="text-[10px] text-muted-foreground">
+                Why: {rec.explainability.why_generated} · Confidence{" "}
+                {rec.explainability.confidence_score}
+              </p>
+            </div>
+          ))}
+          {!recommendations?.recommendations?.length && (
+            <p className="text-[11px] text-muted-foreground">
+              No readiness recommendations for the current evidence pack.
             </p>
           )}
         </EngineSection>
@@ -2615,6 +2695,7 @@ function ClientDetail({
       )}
       {selectedProject && (
         <>
+          <ClientReportingWorkbench projectId={selectedProject.id} />
           <DraftReportsQueue
             communications={communications}
             loading={communicationsLoading}

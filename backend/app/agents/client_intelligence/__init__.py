@@ -176,6 +176,41 @@ from app.agents.client_intelligence.project_health import (
     assess_project_health,
 )
 from app.agents.client_intelligence.quality_adapter import load_quality_evidence
+from app.agents.client_intelligence.readiness import (
+    ReadinessIntegrityError,
+    assess_project_readiness,
+)
+from app.agents.client_intelligence.readiness_contracts import (
+    ReadinessAssessment,
+    ReadinessAvailability,
+    ReadinessCategoryKey,
+    ReadinessStatus,
+    readiness_status_label,
+)
+from app.agents.client_intelligence.go_live import (
+    GoLiveIntegrityError,
+    assess_go_live_readiness,
+)
+from app.agents.client_intelligence.go_live_contracts import (
+    GoLiveAssessment,
+    GoLiveDecision,
+    go_live_decision_label,
+)
+from app.agents.client_intelligence.recommendations import (
+    RecommendationIntegrityError,
+    generate_readiness_recommendations,
+)
+from app.agents.client_intelligence.explainability import (
+    AiExplainability,
+    build_explainability,
+)
+from app.agents.client_intelligence.report_builder import (
+    ReportBuilderRequest,
+    ReportExportFormat,
+    ReportSectionKey,
+    build_client_report,
+    export_client_report,
+)
 from app.agents.client_intelligence.reporting_period import resolve_reporting_period
 from app.agents.client_intelligence.risk_transparency import (
     RiskTransparencyIntegrityError,
@@ -370,9 +405,30 @@ __all__ = [
     "assess_change_intelligence",
     "assess_delivery_confidence",
     "assess_delivery_trend",
+    "assess_go_live_readiness",
     "assess_milestone_intelligence",
     "assess_project_health",
+    "assess_project_readiness",
     "assess_risk_transparency",
+    "AiExplainability",
+    "build_explainability",
+    "build_client_report",
+    "export_client_report",
+    "generate_readiness_recommendations",
+    "GoLiveAssessment",
+    "GoLiveDecision",
+    "GoLiveIntegrityError",
+    "go_live_decision_label",
+    "ReadinessAssessment",
+    "ReadinessAvailability",
+    "ReadinessCategoryKey",
+    "ReadinessIntegrityError",
+    "ReadinessStatus",
+    "readiness_status_label",
+    "RecommendationIntegrityError",
+    "ReportBuilderRequest",
+    "ReportExportFormat",
+    "ReportSectionKey",
     "blocked_source_entries",
     "build_change_candidates",
     "build_change_comparison",

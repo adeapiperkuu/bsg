@@ -21,9 +21,21 @@ from app.agents.client_intelligence.delivery_trend import (
 )
 from app.agents.client_intelligence.evidence_pack import build_client_evidence_pack
 from app.agents.client_intelligence.evidence_validation import EvidencePackIntegrityError
+from app.agents.client_intelligence.go_live import (
+    GoLiveIntegrityError,
+    assess_go_live_readiness,
+)
 from app.agents.client_intelligence.project_health import (
     ProjectHealthIntegrityError,
     assess_project_health,
+)
+from app.agents.client_intelligence.readiness import (
+    ReadinessIntegrityError,
+    assess_project_readiness,
+)
+from app.agents.client_intelligence.recommendations import (
+    RecommendationIntegrityError,
+    generate_readiness_recommendations,
 )
 from app.agents.client_intelligence.risk_transparency import (
     RiskTransparencyIntegrityError,
@@ -72,6 +84,9 @@ _INTEGRITY_ERRORS = (
     DeliveryConfidenceIntegrityError,
     RiskTransparencyIntegrityError,
     DeliveryTrendIntegrityError,
+    ReadinessIntegrityError,
+    GoLiveIntegrityError,
+    RecommendationIntegrityError,
 )
 
 CLIENT_INTERACTION_AGENT_NAME = "client_interaction_agent"
@@ -153,6 +168,11 @@ async def build_client_intelligence_overview(
         delivery_confidence = assess_delivery_confidence(pack, explanation_policy=None)
         risk_transparency = assess_risk_transparency(pack, policy=None)
         delivery_trend = assess_delivery_trend(pack, policy=None)
+        readiness = assess_project_readiness(pack)
+        go_live = assess_go_live_readiness(pack)
+        recommendations = generate_readiness_recommendations(
+            pack, readiness=readiness
+        )
     except _INTEGRITY_ERRORS as exc:
         raise ApiError(
             422,
@@ -175,6 +195,9 @@ async def build_client_intelligence_overview(
         delivery_confidence=delivery_confidence,
         risk_transparency=risk_transparency,
         delivery_trend=delivery_trend,
+        readiness=readiness,
+        go_live=go_live,
+        recommendations=recommendations,
     )
 
 
@@ -1205,4 +1228,225 @@ async def build_client_intelligence_query_history(
         offset=offset,
         total=total,
         has_more=offset + len(items) < total,
+    )
+
+
+async def build_project_readiness(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    project_id: UUID,
+    *,
+    as_of: date | None = None,
+):
+    """Assess project readiness from one governed evidence pack."""
+    overview = await build_client_intelligence_overview(
+        session, current_user, project_id, as_of=as_of
+    )
+    if overview.readiness is None:
+        raise ApiError(
+            422,
+            "READINESS_UNAVAILABLE",
+            "Readiness could not be assessed from the available governed evidence.",
+        )
+    return overview.readiness
+
+
+async def build_go_live_assessment(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    project_id: UUID,
+    *,
+    as_of: date | None = None,
+):
+    overview = await build_client_intelligence_overview(
+        session, current_user, project_id, as_of=as_of
+    )
+    if overview.go_live is None:
+        raise ApiError(
+            422,
+            "GO_LIVE_UNAVAILABLE",
+            "Go-live readiness could not be assessed from the available governed evidence.",
+        )
+    return overview.go_live
+
+
+async def build_readiness_recommendations(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    project_id: UUID,
+    *,
+    as_of: date | None = None,
+):
+    overview = await build_client_intelligence_overview(
+        session, current_user, project_id, as_of=as_of
+    )
+    if overview.recommendations is None:
+        raise ApiError(
+            422,
+            "RECOMMENDATIONS_UNAVAILABLE",
+            "Readiness recommendations could not be generated.",
+        )
+    return overview.recommendations
+
+
+async def build_client_dashboard(
+    session: AsyncSession,
+    current_user: CurrentUser,
+    project_id: UUID,
+    *,
+    as_of: date | None = None,
+):
+    """Assemble Client Dashboard widgets for readiness, reports, and health."""
+    from app.agents.client_intelligence.milestone_intelligence import (
+        assess_milestone_intelligence,
+    )
+    from app.db.models import (
+        ClientIntelligenceReportPackage,
+        ClientReportGovernanceStatus,
+    )
+    from app.schemas.client_intelligence import (
+        ClientDashboardRead,
+        ClientDashboardWidgetAvailability,
+    )
+
+    overview = await build_client_intelligence_overview(
+        session, current_user, project_id, as_of=as_of
+    )
+    project = await get_visible_project(session, project_id, current_user)
+
+    draft_statuses = (CommunicationStatus.DRAFT, CommunicationStatus.IN_REVIEW)
+    approved_statuses = (CommunicationStatus.APPROVED, CommunicationStatus.SENT)
+    drafted_count = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(ClientCommunication)
+                .where(
+                    ClientCommunication.project_id == project.id,
+                    ClientCommunication.org_id == project.org_id,
+                    ClientCommunication.drafted_by_agent == CLIENT_INTERACTION_AGENT_NAME,
+                    ClientCommunication.status.in_(draft_statuses),
+                )
+            )
+        ).scalar_one_or_none()
+        or 0
+    )
+    approved_count = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(ClientCommunication)
+                .where(
+                    ClientCommunication.project_id == project.id,
+                    ClientCommunication.org_id == project.org_id,
+                    ClientCommunication.drafted_by_agent == CLIENT_INTERACTION_AGENT_NAME,
+                    ClientCommunication.status.in_(approved_statuses),
+                )
+            )
+        ).scalar_one_or_none()
+        or 0
+    )
+    published_count = 0
+    open_approvals = 0
+    package_tables_available = True
+    try:
+        published_count = int(
+            (
+                await session.execute(
+                    select(func.count())
+                    .select_from(ClientIntelligenceReportPackage)
+                    .where(
+                        ClientIntelligenceReportPackage.project_id == project.id,
+                        ClientIntelligenceReportPackage.org_id == project.org_id,
+                        ClientIntelligenceReportPackage.status
+                        == ClientReportGovernanceStatus.PUBLISHED,
+                    )
+                )
+            ).scalar_one_or_none()
+            or 0
+        )
+        open_approvals = int(
+            (
+                await session.execute(
+                    select(func.count())
+                    .select_from(ClientIntelligenceReportPackage)
+                    .where(
+                        ClientIntelligenceReportPackage.project_id == project.id,
+                        ClientIntelligenceReportPackage.org_id == project.org_id,
+                        ClientIntelligenceReportPackage.status.in_(
+                            (
+                                ClientReportGovernanceStatus.PENDING_MANAGER,
+                                ClientReportGovernanceStatus.PENDING_LEADERSHIP,
+                                ClientReportGovernanceStatus.PENDING_COMPLIANCE,
+                            )
+                        ),
+                    )
+                )
+            ).scalar_one_or_none()
+            or 0
+        )
+    except Exception as exc:
+        # Only degrade when package tables are missing / unusable.
+        detail = str(getattr(exc, "orig", exc)).lower()
+        if "client_intelligence_report_packages" in detail or "does not exist" in detail:
+            package_tables_available = False
+            await session.rollback()
+            project = await get_visible_project(session, project_id, current_user)
+        else:
+            raise
+
+    pack = await build_client_evidence_pack(
+        session,
+        current_user,
+        project.id,
+        as_of=overview.as_of,
+        visibility_mode=EvidenceVisibility.INTERNAL,
+    )
+    milestones = assess_milestone_intelligence(pack)
+
+    def _avail(value: str | None) -> ClientDashboardWidgetAvailability:
+        if value in {"available"}:
+            return ClientDashboardWidgetAvailability.AVAILABLE
+        if value in {"partial", "stale"}:
+            return ClientDashboardWidgetAvailability.PARTIAL
+        return ClientDashboardWidgetAvailability.UNAVAILABLE
+
+    limitations = list(overview.source_limitations)
+    if not package_tables_available:
+        limitations.append("REPORT_PACKAGE_TABLES_UNAVAILABLE")
+
+    return ClientDashboardRead(
+        project_id=project.id,
+        as_of=overview.as_of,
+        generated_at=overview.generated_at,
+        readiness=overview.readiness,
+        go_live=overview.go_live,
+        recommendations=overview.recommendations,
+        project_health=overview.project_health,
+        reports_drafted_count=drafted_count,
+        reports_approved_count=approved_count,
+        reports_published_count=published_count,
+        communications_pending_count=drafted_count,
+        open_approvals_count=open_approvals,
+        milestone_on_track_count=milestones.period_counts.on_track_count,
+        milestone_at_risk_count=milestones.period_counts.at_risk_count,
+        widget_availability={
+            "readiness": _avail(
+                overview.readiness.availability.value if overview.readiness else None
+            ),
+            "reports": ClientDashboardWidgetAvailability.AVAILABLE,
+            "communications": ClientDashboardWidgetAvailability.AVAILABLE,
+            "project_health": (
+                ClientDashboardWidgetAvailability.PARTIAL
+                if overview.project_health.status.value == "insufficient"
+                else ClientDashboardWidgetAvailability.AVAILABLE
+            ),
+            "milestones": _avail(milestones.availability.value),
+            "approvals": (
+                ClientDashboardWidgetAvailability.AVAILABLE
+                if package_tables_available
+                else ClientDashboardWidgetAvailability.UNAVAILABLE
+            ),
+        },
+        limitations=limitations,
     )

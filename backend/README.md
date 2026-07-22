@@ -110,3 +110,9 @@ uvicorn app.main:app --reload
 cd backend
 pytest
 ```
+
+## Client Intelligence readiness reporting
+
+Apply migration `supabase/migrations/20260722120000_client_intelligence_readiness_reporting.sql` before using scheduled report packages, governance approvals, or delivery tracking. Readiness / go-live / recommendations engines work from the existing evidence pack without that migration.
+
+Internal UI: `/client-intelligence` → select a project → **Client Reporting & Governance** workbench (schedules, builder, PDF/DOCX export, Draft → Manager → Leadership → Compliance → Published).

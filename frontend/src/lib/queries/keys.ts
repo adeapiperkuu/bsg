@@ -40,6 +40,16 @@ export const queryKeys = {
     ["client-intelligence", "summary", "project", projectId] as const,
   clientIntelligenceQueryHistory: (projectId: string) =>
     ["client-intelligence", "queries", projectId] as const,
+  clientIntelligenceDashboard: (projectId: string) =>
+    ["client-intelligence", "dashboard", projectId] as const,
+  clientIntelligenceReportSchedules: (projectId: string) =>
+    ["client-intelligence", "report-schedules", projectId] as const,
+  clientIntelligenceReportPackages: (projectId: string) =>
+    ["client-intelligence", "report-packages", projectId] as const,
+  clientIntelligenceReportApprovals: (packageId: string) =>
+    ["client-intelligence", "report-approvals", packageId] as const,
+  clientIntelligenceReportDeliveries: (packageId: string) =>
+    ["client-intelligence", "report-deliveries", packageId] as const,
   projectThroughput: (projectId: string) => ["projects", projectId, "throughput"] as const,
   projectRecommendations: (projectId: string) =>
     ["projects", projectId, "recommendations"] as const,

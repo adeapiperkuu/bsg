@@ -51,13 +51,22 @@ import type {
 import type {
   ClientCommunicationDraft,
   ClientIntelligenceOverview,
+  ClientDashboard,
   ClientIntelligenceQueryHistory,
   ClientIntelligenceQueryRead,
   ClientIntelligenceReportHistory,
   ClientIntelligenceSummary,
   ClientMasterRow,
+  ClientReportApproval,
+  ClientReportCadence,
+  ClientReportDelivery,
+  ClientReportPackage,
+  ClientReportSchedule,
   DeliveryConfidenceHistory,
+  ReportExportFormat,
+  ReportGovernanceAction,
   ReportHistoryStatusFilter,
+  ReportSectionConfig,
 } from "@/types/client-intelligence";
 
 function resolveApiBase(): string {
@@ -214,6 +223,16 @@ export async function apiFetchBlob(
   retried = false,
 ): Promise<Blob> {
   const headers = new Headers(init.headers);
+  const isFormData = typeof FormData !== "undefined" && init.body instanceof FormData;
+  if (init.body && !isFormData && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  const method = (init.method ?? "GET").toUpperCase();
+  if (["POST", "PATCH", "DELETE", "PUT"].includes(method)) {
+    const csrf = getCsrfToken();
+    if (csrf) headers.set("X-CSRF-Token", csrf);
+  }
+
   const generation = currentAuthGeneration();
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -435,6 +454,159 @@ export async function fetchClientIntelligenceOverview(
     `/projects/${projectId}/client-intelligence/overview${query ? `?${query}` : ""}`,
   );
   return body.data;
+}
+
+export async function fetchClientDashboard(
+  projectId: string,
+  asOf?: string,
+): Promise<ClientDashboard> {
+  const params = new URLSearchParams();
+  if (asOf !== undefined) params.set("as_of", asOf);
+  const query = params.toString();
+  const body = await apiFetch<{ data: ClientDashboard }>(
+    `/projects/${projectId}/client-intelligence/dashboard${query ? `?${query}` : ""}`,
+  );
+  return body.data;
+}
+
+export async function listClientReportSchedules(
+  projectId: string,
+): Promise<ClientReportSchedule[]> {
+  const body = await apiFetch<{ data: ClientReportSchedule[] }>(
+    `/projects/${projectId}/client-intelligence/report-schedules`,
+  );
+  return body.data;
+}
+
+export async function upsertClientReportSchedule(
+  projectId: string,
+  payload: {
+    cadence: ClientReportCadence;
+    enabled?: boolean;
+    next_run_at?: string | null;
+    sections?: ReportSectionConfig[];
+  },
+): Promise<ClientReportSchedule> {
+  const body = await apiFetch<{ data: ClientReportSchedule }>(
+    `/projects/${projectId}/client-intelligence/report-schedules`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+  return body.data;
+}
+
+export async function updateClientReportSchedule(
+  scheduleId: string,
+  payload: {
+    enabled?: boolean;
+    next_run_at?: string | null;
+    sections?: ReportSectionConfig[];
+  },
+): Promise<ClientReportSchedule> {
+  const body = await apiFetch<{ data: ClientReportSchedule }>(
+    `/client-intelligence/report-schedules/${scheduleId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+  );
+  return body.data;
+}
+
+export async function runDueClientReportSchedules(
+  projectId: string,
+): Promise<ClientReportPackage[]> {
+  const body = await apiFetch<{ data: ClientReportPackage[] }>(
+    `/projects/${projectId}/client-intelligence/report-schedules/run-due`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+  return body.data;
+}
+
+export async function draftClientReportPackage(
+  projectId: string,
+  payload: {
+    cadence?: ClientReportCadence;
+    title?: string | null;
+    sections?: ReportSectionConfig[];
+    schedule_id?: string | null;
+  },
+): Promise<ClientReportPackage> {
+  const body = await apiFetch<{ data: ClientReportPackage }>(
+    `/projects/${projectId}/client-intelligence/report-packages/draft`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+  return body.data;
+}
+
+export async function listClientReportPackages(
+  projectId: string,
+  limit = 20,
+): Promise<ClientReportPackage[]> {
+  const body = await apiFetch<{ data: ClientReportPackage[] }>(
+    `/projects/${projectId}/client-intelligence/report-packages?limit=${limit}`,
+  );
+  return body.data;
+}
+
+export async function getClientReportPackage(
+  packageId: string,
+): Promise<ClientReportPackage> {
+  const body = await apiFetch<{ data: ClientReportPackage }>(
+    `/client-intelligence/report-packages/${packageId}`,
+  );
+  return body.data;
+}
+
+export async function listClientReportApprovals(
+  packageId: string,
+): Promise<ClientReportApproval[]> {
+  const body = await apiFetch<{ data: ClientReportApproval[] }>(
+    `/client-intelligence/report-packages/${packageId}/approvals`,
+  );
+  return body.data;
+}
+
+export async function listClientReportDeliveries(
+  packageId: string,
+): Promise<ClientReportDelivery[]> {
+  const body = await apiFetch<{ data: ClientReportDelivery[] }>(
+    `/client-intelligence/report-packages/${packageId}/deliveries`,
+  );
+  return body.data;
+}
+
+export async function transitionClientReportGovernance(
+  packageId: string,
+  payload: {
+    action: ReportGovernanceAction;
+    comment?: string | null;
+    rejection_reason?: string | null;
+  },
+): Promise<ClientReportPackage> {
+  const body = await apiFetch<{ data: ClientReportPackage }>(
+    `/client-intelligence/report-packages/${packageId}/governance`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+  return body.data;
+}
+
+export async function exportClientReportPackage(
+  packageId: string,
+  exportFormat: ReportExportFormat = "pdf",
+): Promise<Blob> {
+  return apiFetchBlob(`/client-intelligence/report-packages/${packageId}/export`, {
+    method: "POST",
+    body: JSON.stringify({ export_format: exportFormat }),
+  });
 }
 
 export async function fetchClientIntelligenceSummary(

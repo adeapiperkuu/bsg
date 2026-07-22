@@ -156,6 +156,28 @@ class CommunicationType(StrEnum):
     AD_HOC = "ad_hoc"
 
 
+class ClientReportCadence(StrEnum):
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
+    QUARTERLY = "quarterly"
+    EXECUTIVE = "executive"
+
+
+class ClientReportGovernanceStatus(StrEnum):
+    DRAFT = "draft"
+    PENDING_MANAGER = "pending_manager"
+    PENDING_LEADERSHIP = "pending_leadership"
+    PENDING_COMPLIANCE = "pending_compliance"
+    PUBLISHED = "published"
+    REJECTED = "rejected"
+
+
+class ClientReportDeliveryStatus(StrEnum):
+    PENDING = "pending"
+    DISTRIBUTED = "distributed"
+    FAILED = "failed"
+
+
 class NotificationType(StrEnum):
     RISK_ALERT = "risk_alert"
     COMMUNICATION_PENDING = "communication_pending"
@@ -639,6 +661,21 @@ communication_status = Enum(
 communication_type = Enum(
     CommunicationType,
     name="communication_type",
+    values_callable=lambda x: [e.value for e in x],
+)
+client_report_cadence = Enum(
+    ClientReportCadence,
+    name="client_report_cadence",
+    values_callable=lambda x: [e.value for e in x],
+)
+client_report_governance_status = Enum(
+    ClientReportGovernanceStatus,
+    name="client_report_governance_status",
+    values_callable=lambda x: [e.value for e in x],
+)
+client_report_delivery_status = Enum(
+    ClientReportDeliveryStatus,
+    name="client_report_delivery_status",
     values_callable=lambda x: [e.value for e in x],
 )
 notification_type = Enum(
@@ -2825,6 +2862,146 @@ class ClientIntelligenceEvidenceLink(Base, UuidPrimaryKey, CreatedAt):
     snapshot: Mapped[ClientIntelligenceSnapshot] = relationship(
         back_populates="evidence_links"
     )
+
+
+class ClientReportSchedule(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    """Scheduled client report cadence configuration (Phase 17.4)."""
+
+    __tablename__ = "client_report_schedules"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "project_id",
+            "cadence",
+            name="client_report_schedules_org_project_cadence_key",
+        ),
+        Index(
+            "client_report_schedules_project_idx",
+            "project_id",
+            "enabled",
+            "next_run_at",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    cadence: Mapped[ClientReportCadence] = mapped_column(client_report_cadence)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    section_config: Mapped[list[Any]] = mapped_column(
+        JSONB, default=list, server_default="[]"
+    )
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_package_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    created_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
+class ClientIntelligenceReportPackage(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    """Versioned client report package with multi-stage governance (Phase 17.4 / 19.4)."""
+
+    __tablename__ = "client_intelligence_report_packages"
+    __table_args__ = (
+        Index(
+            "client_intelligence_report_packages_project_status_idx",
+            "project_id",
+            "status",
+            text("created_at DESC"),
+        ),
+        CheckConstraint(
+            "version >= 1",
+            name="client_intelligence_report_packages_version_positive_check",
+        ),
+        CheckConstraint(
+            "source_fingerprint IS NULL OR source_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="client_intelligence_report_packages_source_fingerprint_check",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    schedule_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("client_report_schedules.id", ondelete="SET NULL")
+    )
+    communication_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("client_communications.id", ondelete="SET NULL")
+    )
+    report_type: Mapped[ClientReportCadence] = mapped_column(client_report_cadence)
+    title: Mapped[str] = mapped_column(Text)
+    body_markdown: Mapped[str] = mapped_column(Text)
+    section_config: Mapped[list[Any]] = mapped_column(
+        JSONB, default=list, server_default="[]"
+    )
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    status: Mapped[ClientReportGovernanceStatus] = mapped_column(
+        client_report_governance_status,
+        default=ClientReportGovernanceStatus.DRAFT,
+    )
+    source_fingerprint: Mapped[str | None] = mapped_column(Text)
+    rejection_reason: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    updated_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ClientIntelligenceReportApproval(Base, UuidPrimaryKey, CreatedAt):
+    """Approval / rejection audit trail for report packages (Phase 19.4)."""
+
+    __tablename__ = "client_intelligence_report_approvals"
+    __table_args__ = (
+        Index(
+            "client_intelligence_report_approvals_package_idx",
+            "package_id",
+            "created_at",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    package_id: Mapped[UUID] = mapped_column(
+        ForeignKey("client_intelligence_report_packages.id", ondelete="CASCADE")
+    )
+    from_status: Mapped[ClientReportGovernanceStatus | None] = mapped_column(
+        client_report_governance_status
+    )
+    to_status: Mapped[ClientReportGovernanceStatus] = mapped_column(
+        client_report_governance_status
+    )
+    actor_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    comment: Mapped[str | None] = mapped_column(Text)
+    rejection_reason: Mapped[str | None] = mapped_column(Text)
+
+
+class ClientIntelligenceReportDelivery(Base, UuidPrimaryKey, CreatedAt):
+    """Delivery tracking for published client report packages (Phase 17.4)."""
+
+    __tablename__ = "client_intelligence_report_deliveries"
+    __table_args__ = (
+        Index(
+            "client_intelligence_report_deliveries_package_idx",
+            "package_id",
+            text("created_at DESC"),
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    package_id: Mapped[UUID] = mapped_column(
+        ForeignKey("client_intelligence_report_packages.id", ondelete="CASCADE")
+    )
+    channel: Mapped[str] = mapped_column(Text, default="in_app", server_default="in_app")
+    status: Mapped[ClientReportDeliveryStatus] = mapped_column(
+        client_report_delivery_status,
+        default=ClientReportDeliveryStatus.PENDING,
+    )
+    recipient_summary: Mapped[str | None] = mapped_column(Text)
+    error_detail: Mapped[str | None] = mapped_column(Text)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class GovernanceCharterPublicationEvent(Base, UuidPrimaryKey, CreatedAt):

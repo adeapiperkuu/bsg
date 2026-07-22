@@ -68,7 +68,13 @@ def test_charter_pdf_contains_pdf_header() -> None:
     document = CharterExportDocument(
         title="Northwind Project Charter v1",
         metadata=[("Status", "Draft")],
-        markdown="## Scope\nInformation available in approved governance sources.",
+        markdown=(
+            "# Northwind Project Charter v1\n\n"
+            "## Scope\n"
+            "- First item with **emphasis**\n"
+            "- Second item\n\n"
+            "| Col A | Col B |\n| --- | --- |\n| One | Two |\n"
+        ),
     )
 
     payload = generate_charter_pdf(document)
@@ -77,3 +83,10 @@ def test_charter_pdf_contains_pdf_header() -> None:
     assert b"%%EOF" in payload
     assert b"Scope" in payload
     assert b"## Scope" not in payload
+    assert b"Page 1 of 1" in payload
+    assert b"BSG" in payload
+    assert b"GOVERNED REPORT" in payload
+    assert b"First item with emphasis" in payload
+    assert b"Col A" in payload
+    # Duplicate markdown H1 matching the document title should be omitted.
+    assert payload.count(b"Northwind Project Charter v1") == 1
