@@ -1,16 +1,9 @@
-export const CHART_AXIS_STYLE = {
-  tick: { fill: "#8b92a5", fontSize: 11 },
-  axisLine: { stroke: "#2a2d3a" },
-  tickLine: { stroke: "#2a2d3a" },
-};
+/** Quality formatting helpers + chart tokens (re-exported from shared theme). */
 
-export const CHART_TOOLTIP_STYLE = {
-  backgroundColor: "#20242f",
-  border: "1px solid #2a2d3a",
-  borderRadius: 8,
-  fontSize: 12,
-  color: "#f0f2f7",
-};
+export {
+  CHART_AXIS_STYLE,
+  CHART_TOOLTIP_STYLE,
+} from "@/lib/charts/theme";
 
 export function fmtPct(v: number | null | undefined): string {
   if (v == null) return "—";

@@ -828,6 +828,20 @@ async def record_lifecycle_event(
     )
     session.add(event)
     await session.flush()
+    try:
+        from app.time_series.recommendations import append_from_governance_lifecycle
+
+        await append_from_governance_lifecycle(
+            session,
+            event,
+            source_agent="governance",
+            status_snapshot=event_type.value if hasattr(event_type, "value") else str(event_type),
+        )
+    except Exception:
+        logger.exception(
+            "event=time_series_governance_timeline_hook_failed recommendation_id=%s",
+            recommendation_id,
+        )
     return event
 
 

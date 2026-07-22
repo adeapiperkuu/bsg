@@ -3373,3 +3373,800 @@ class GovernanceRecordEvidenceLink(Base, UuidPrimaryKey, CreatedAt, SoftDelete):
     created_by_user_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 18.1 — KPI Semantic Layer
+# ---------------------------------------------------------------------------
+
+
+class KpiOwnerAgent(StrEnum):
+    DELIVERY = "delivery"
+    GOVERNANCE = "governance"
+    QUALITY = "quality"
+    WORKFORCE = "workforce"
+    CLIENT_INTELLIGENCE = "client_intelligence"
+    TOWER = "tower"
+    SHARED = "shared"
+
+
+class KpiScope(StrEnum):
+    GLOBAL = "global"
+    ORG = "org"
+    PROJECT = "project"
+
+
+class KpiTrendDirection(StrEnum):
+    HIGHER_IS_BETTER = "higher_is_better"
+    LOWER_IS_BETTER = "lower_is_better"
+    NEUTRAL = "neutral"
+    TARGET_RANGE = "target_range"
+
+
+class KpiRefreshFrequency(StrEnum):
+    REALTIME = "realtime"
+    HOURLY = "hourly"
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    ON_DEMAND = "on_demand"
+
+
+class KpiCompatibilityStatus(StrEnum):
+    CURRENT = "current"
+    DEPRECATED = "deprecated"
+    HISTORICAL = "historical"
+
+
+class KpiDependencyType(StrEnum):
+    INPUT = "input"
+    DERIVED = "derived"
+    THRESHOLD = "threshold"
+
+
+class KpiObservationStatus(StrEnum):
+    OK = "ok"
+    NO_DATA = "no_data"
+    ERROR = "error"
+    STALE = "stale"
+
+
+class KpiDefinition(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "kpi_definitions"
+    __table_args__ = (
+        UniqueConstraint("kpi_key", name="kpi_definitions_kpi_key_active_uidx"),
+        Index(
+            "kpi_definitions_owner_agent_idx",
+            "owner_agent",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "kpi_definitions_active_idx",
+            "is_active",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    kpi_key: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_agent: Mapped[str] = mapped_column(Text, nullable=False)
+    scope: Mapped[str] = mapped_column(Text, nullable=False, default=KpiScope.PROJECT.value)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+
+    versions: Mapped[list["KpiDefinitionVersion"]] = relationship(
+        back_populates="definition",
+        cascade="all, delete-orphan",
+    )
+
+
+class KpiDefinitionVersion(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "kpi_definition_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "kpi_definition_id",
+            "version",
+            name="kpi_definition_versions_def_version_key",
+        ),
+        Index("kpi_definition_versions_calculator_idx", "calculator_key"),
+        Index(
+            "kpi_definition_versions_effective_idx",
+            "kpi_definition_id",
+            desc("effective_from"),
+        ),
+    )
+
+    kpi_definition_id: Mapped[UUID] = mapped_column(
+        ForeignKey("kpi_definitions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    unit: Mapped[str] = mapped_column(Text, nullable=False, default="count")
+    trend_direction: Mapped[str] = mapped_column(
+        Text, nullable=False, default=KpiTrendDirection.HIGHER_IS_BETTER.value
+    )
+    refresh_frequency: Mapped[str] = mapped_column(
+        Text, nullable=False, default=KpiRefreshFrequency.ON_DEMAND.value
+    )
+    calculator_key: Mapped[str] = mapped_column(Text, nullable=False)
+    formula_description: Mapped[str | None] = mapped_column(Text)
+    source_fields: Mapped[list[Any]] = mapped_column(JSONB, default=list, server_default="[]")
+    default_thresholds: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}"
+    )
+    explainability: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    allowed_roles: Mapped[list[Any]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default='["super_admin","bsg_leadership","delivery_manager"]',
+    )
+    is_client_visible: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    compatibility_status: Mapped[str] = mapped_column(
+        Text, nullable=False, default=KpiCompatibilityStatus.CURRENT.value
+    )
+    effective_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    definition: Mapped[KpiDefinition] = relationship(back_populates="versions")
+    dependencies: Mapped[list["KpiDependency"]] = relationship(
+        back_populates="version",
+        cascade="all, delete-orphan",
+    )
+
+
+class KpiDependency(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "kpi_dependencies"
+    __table_args__ = (
+        UniqueConstraint(
+            "version_id",
+            "depends_on_kpi_key",
+            "dependency_type",
+            name="kpi_dependencies_version_dep_key",
+        ),
+        Index("kpi_dependencies_depends_on_idx", "depends_on_kpi_key"),
+    )
+
+    version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("kpi_definition_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    depends_on_kpi_key: Mapped[str] = mapped_column(Text, nullable=False)
+    depends_on_version: Mapped[str | None] = mapped_column(Text)
+    dependency_type: Mapped[str] = mapped_column(
+        Text, nullable=False, default=KpiDependencyType.INPUT.value
+    )
+
+    version: Mapped[KpiDefinitionVersion] = relationship(back_populates="dependencies")
+
+
+class KpiObservation(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "kpi_observations"
+    __table_args__ = (
+        Index(
+            "kpi_observations_org_key_observed_idx",
+            "org_id",
+            "kpi_key",
+            desc("observed_at"),
+        ),
+        Index(
+            "kpi_observations_project_key_observed_idx",
+            "project_id",
+            "kpi_key",
+            desc("observed_at"),
+            postgresql_where=text("project_id IS NOT NULL"),
+        ),
+        Index("kpi_observations_key_observed_idx", "kpi_key", desc("observed_at")),
+        Index(
+            "kpi_observations_definition_version_idx",
+            "kpi_key",
+            "definition_version",
+            desc("observed_at"),
+        ),
+        Index(
+            "kpi_observations_latest_lookup_idx",
+            "org_id",
+            "kpi_key",
+            "project_id",
+            desc("observed_at"),
+        ),
+        Index(
+            "kpi_observations_idempotency_uidx",
+            "idempotency_fingerprint",
+            unique=True,
+            postgresql_where=text("idempotency_fingerprint IS NOT NULL"),
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "org_id"],
+            ["projects.id", "projects.org_id"],
+            name="kpi_observations_project_org_fkey",
+            ondelete="CASCADE",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organisations.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    project_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    kpi_key: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[str] = mapped_column(Text, nullable=False)
+    kpi_definition_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("kpi_definitions.id", ondelete="SET NULL")
+    )
+    definition_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("kpi_definition_versions.id", ondelete="SET NULL")
+    )
+    definition_version: Mapped[str | None] = mapped_column(Text)
+    calculator_key: Mapped[str | None] = mapped_column(Text)
+    calculator_version: Mapped[str | None] = mapped_column(Text)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    numeric_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    text_value: Mapped[str | None] = mapped_column(Text)
+    normalized_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    value_type: Mapped[str] = mapped_column(Text, default="numeric", server_default="numeric")
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default=KpiObservationStatus.OK.value
+    )
+    client_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    department_key: Mapped[str | None] = mapped_column(Text)
+    agent_key: Mapped[str | None] = mapped_column(Text)
+    bucket_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    bucket_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    bucket_interval: Mapped[str | None] = mapped_column(Text)
+    source_type: Mapped[str] = mapped_column(Text, default="evaluation", server_default="evaluation")
+    evidence_refs: Mapped[list[Any]] = mapped_column(JSONB, default=list, server_default="[]")
+    lineage_refs: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    reproducibility_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}"
+    )
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    explainability: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    idempotency_fingerprint: Mapped[str | None] = mapped_column(Text)
+    supersedes_observation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("kpi_observations.id", ondelete="SET NULL")
+    )
+    retention_class: Mapped[str] = mapped_column(Text, default="raw", server_default="raw")
+    legal_hold: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    audit_hold: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    report_hold: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    job_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+
+
+class AgentScoreObservation(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "agent_score_observations"
+    __table_args__ = (
+        Index("agent_score_observations_key_observed_idx", "score_key", desc("observed_at")),
+        Index(
+            "agent_score_observations_org_agent_idx",
+            "org_id",
+            "agent_key",
+            desc("observed_at"),
+        ),
+        Index(
+            "agent_score_observations_idempotency_uidx",
+            "idempotency_fingerprint",
+            unique=True,
+            postgresql_where=text("idempotency_fingerprint IS NOT NULL"),
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "org_id"],
+            ["projects.id", "projects.org_id"],
+            name="agent_score_observations_project_org_fkey",
+            ondelete="CASCADE",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    score_key: Mapped[str] = mapped_column(Text, nullable=False)
+    score_version: Mapped[str] = mapped_column(Text, default="1.0.0", server_default="1.0.0")
+    agent_key: Mapped[str] = mapped_column(Text, nullable=False)
+    department_key: Mapped[str | None] = mapped_column(Text)
+    client_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    evaluated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    numeric_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    text_value: Mapped[str | None] = mapped_column(Text)
+    normalized_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    status: Mapped[str] = mapped_column(Text, default="ok", server_default="ok")
+    source_type: Mapped[str] = mapped_column(Text, default="agent_event", server_default="agent_event")
+    evidence_refs: Mapped[list[Any]] = mapped_column(JSONB, default=list, server_default="[]")
+    lineage_refs: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    reproducibility_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}"
+    )
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    explainability: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    idempotency_fingerprint: Mapped[str | None] = mapped_column(Text)
+    supersedes_observation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_score_observations.id", ondelete="SET NULL")
+    )
+    legal_hold: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    audit_hold: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    report_hold: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
+
+class KpiObservationRollup(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "kpi_observation_rollups"
+    __table_args__ = (
+        Index(
+            "kpi_observation_rollups_key_bucket_idx",
+            "kpi_key",
+            "bucket_interval",
+            desc("bucket_start"),
+        ),
+        Index(
+            "kpi_observation_rollups_org_idx",
+            "org_id",
+            "kpi_key",
+            desc("bucket_start"),
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "org_id"],
+            ["projects.id", "projects.org_id"],
+            name="kpi_observation_rollups_project_org_fkey",
+            ondelete="CASCADE",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    department_key: Mapped[str | None] = mapped_column(Text)
+    agent_key: Mapped[str | None] = mapped_column(Text)
+    kpi_key: Mapped[str] = mapped_column(Text, nullable=False)
+    definition_version: Mapped[str | None] = mapped_column(Text)
+    calculator_key: Mapped[str | None] = mapped_column(Text)
+    calculator_version: Mapped[str | None] = mapped_column(Text)
+    bucket_interval: Mapped[str] = mapped_column(Text, nullable=False)
+    bucket_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    bucket_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    observation_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    min_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    max_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    avg_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    median_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    latest_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    latest_text_value: Mapped[str | None] = mapped_column(Text)
+    source_observation_ids: Mapped[list[Any]] = mapped_column(JSONB, default=list, server_default="[]")
+    lineage_refs: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    legal_hold: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    audit_hold: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    report_hold: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class KpiSnapshotSchedule(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "kpi_snapshot_schedules"
+    __table_args__ = (
+        UniqueConstraint("kpi_key", "interval", name="kpi_snapshot_schedules_kpi_interval_key"),
+    )
+
+    kpi_key: Mapped[str] = mapped_column(Text, nullable=False)
+    interval: Mapped[str] = mapped_column(Text, nullable=False)
+    scope: Mapped[str] = mapped_column(Text, default="project", server_default="project")
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    lookback_buckets: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    config: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+
+
+class TimeSeriesSnapshotJob(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "time_series_snapshot_jobs"
+    __table_args__ = (
+        Index(
+            "time_series_snapshot_jobs_active_idempotency_uidx",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('queued', 'running', 'retry_scheduled', 'cancellation_requested')"
+            ),
+        ),
+        Index(
+            "time_series_snapshot_jobs_queue_idx",
+            "status",
+            "next_attempt_at",
+            "requested_at",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "org_id"],
+            ["projects.id", "projects.org_id"],
+            name="time_series_snapshot_jobs_project_org_fkey",
+            ondelete="CASCADE",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    job_type: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, default="queued", server_default="queued")
+    kpi_key: Mapped[str | None] = mapped_column(Text)
+    interval: Mapped[str | None] = mapped_column(Text)
+    bucket_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    bucket_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3, server_default="3")
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+    request_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    result_data: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    worker_id: Mapped[str | None] = mapped_column(Text)
+    queue_wait_ms: Mapped[int | None] = mapped_column(BigInteger)
+    processing_ms: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class TimeSeriesSnapshotJobEvent(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "time_series_snapshot_job_events"
+    __table_args__ = (Index("time_series_snapshot_job_events_job_idx", "job_id", "created_at"),)
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    job_id: Mapped[UUID] = mapped_column(
+        ForeignKey("time_series_snapshot_jobs.id", ondelete="CASCADE")
+    )
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    event_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}"
+    )
+
+
+class RecommendationTimelineEvent(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "recommendation_timeline_events"
+    __table_args__ = (
+        Index(
+            "recommendation_timeline_events_subject_idx",
+            "subject_table",
+            "subject_id",
+            desc("event_timestamp"),
+        ),
+        Index(
+            "recommendation_timeline_events_org_time_idx",
+            "org_id",
+            desc("event_timestamp"),
+        ),
+        Index(
+            "recommendation_timeline_events_idempotency_uidx",
+            "domain",
+            "subject_id",
+            "event_type",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "org_id"],
+            ["projects.id", "projects.org_id"],
+            name="recommendation_timeline_events_project_org_fkey",
+            ondelete="CASCADE",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    domain: Mapped[str] = mapped_column(Text, nullable=False)
+    subject_table: Mapped[str] = mapped_column(Text, nullable=False)
+    subject_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    source_agent: Mapped[str | None] = mapped_column(Text)
+    recommendation_type: Mapped[str | None] = mapped_column(Text)
+    severity: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    affected_kpi_keys: Mapped[list[Any]] = mapped_column(JSONB, default=list, server_default="[]")
+    status_snapshot: Mapped[str | None] = mapped_column(Text)
+    related_table: Mapped[str | None] = mapped_column(Text)
+    related_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    conversion_target: Mapped[str | None] = mapped_column(Text)
+    resolution_outcome: Mapped[str | None] = mapped_column(Text)
+    strategy_version: Mapped[str | None] = mapped_column(Text)
+    evidence_fingerprint: Mapped[str | None] = mapped_column(Text)
+    governance_lifecycle_event_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("governance_recommendation_lifecycle_events.id", ondelete="SET NULL")
+    )
+    audit_log_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    event_timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    idempotency_key: Mapped[str | None] = mapped_column(Text)
+
+
+class ReportTemplate(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "report_templates"
+    __table_args__ = (
+        Index(
+            "report_templates_global_key_version_uidx",
+            "template_key",
+            "version",
+            unique=True,
+            postgresql_where=text("org_id IS NULL"),
+        ),
+        Index(
+            "report_templates_org_key_version_uidx",
+            "org_id",
+            "template_key",
+            "version",
+            unique=True,
+            postgresql_where=text("org_id IS NOT NULL"),
+        ),
+        Index("report_templates_domain_audience_idx", "domain", "audience", "status"),
+    )
+
+    org_id: Mapped[UUID | None] = mapped_column(ForeignKey("organisations.id", ondelete="CASCADE"))
+    template_key: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    audience: Mapped[str] = mapped_column(Text, nullable=False)
+    domain: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, default="draft", server_default="draft")
+    section_config: Mapped[list[Any]] = mapped_column(JSONB, default=list, server_default="[]")
+    export_formats: Mapped[list[Any]] = mapped_column(
+        ARRAY(Text), default=list, server_default="{json,csv,pdf,docx}"
+    )
+    requires_approval: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    allowed_roles: Mapped[list[Any]] = mapped_column(
+        ARRAY(Text),
+        default=list,
+        server_default="{delivery_manager,bsg_leadership,super_admin}",
+    )
+    is_client_visible: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class ReportInstance(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "report_instances"
+    __table_args__ = (
+        Index(
+            "report_instances_active_idempotency_uidx",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text(
+                "idempotency_key IS NOT NULL AND status IN "
+                "('queued', 'generating', 'draft', 'in_review')"
+            ),
+        ),
+        Index("report_instances_org_status_idx", "org_id", "status", desc("created_at")),
+        Index(
+            "report_instances_project_idx",
+            "project_id",
+            desc("created_at"),
+            postgresql_where=text("project_id IS NOT NULL"),
+        ),
+        Index("report_instances_template_idx", "template_key", "template_version", desc("created_at")),
+        Index(
+            "report_instances_source_idx",
+            "source_table",
+            "source_id",
+            postgresql_where=text("source_id IS NOT NULL"),
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "org_id"],
+            ["projects.id", "projects.org_id"],
+            name="report_instances_project_org_fkey",
+            ondelete="CASCADE",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    template_id: Mapped[UUID] = mapped_column(ForeignKey("report_templates.id", ondelete="RESTRICT"))
+    template_key: Mapped[str] = mapped_column(Text, nullable=False)
+    template_version: Mapped[str] = mapped_column(Text, nullable=False)
+    audience: Mapped[str] = mapped_column(Text, nullable=False)
+    domain: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, default="draft", server_default="draft")
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    body_markdown: Mapped[str | None] = mapped_column(Text)
+    content_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    limitations: Mapped[list[Any]] = mapped_column(JSONB, default=list, server_default="[]")
+    evidence_fingerprint: Mapped[str | None] = mapped_column(Text)
+    period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    has_ai_sections: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    generation_mode: Mapped[str] = mapped_column(Text, default="structured", server_default="structured")
+    generated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    generated_by_job_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    reviewed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejected_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejection_reason: Mapped[str | None] = mapped_column(Text)
+    distributed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_table: Mapped[str | None] = mapped_column(Text)
+    source_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    source_communication_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("client_communications.id", ondelete="SET NULL")
+    )
+    source_weekly_summary_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    source_charter_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    source_evaluation_report_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    supersedes_instance_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("report_instances.id", ondelete="SET NULL")
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(Text)
+
+
+class ReportEvidenceRef(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "report_evidence_refs"
+    __table_args__ = (
+        Index("report_evidence_refs_instance_idx", "report_instance_id", "created_at"),
+        Index(
+            "report_evidence_refs_observation_idx",
+            "observation_id",
+            postgresql_where=text("observation_id IS NOT NULL"),
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    report_instance_id: Mapped[UUID] = mapped_column(
+        ForeignKey("report_instances.id", ondelete="CASCADE")
+    )
+    source_table: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    kpi_key: Mapped[str | None] = mapped_column(Text)
+    observation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("kpi_observations.id", ondelete="SET NULL")
+    )
+    label: Mapped[str | None] = mapped_column(Text)
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, default=dict, server_default="{}"
+    )
+
+
+class ReportExport(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "report_exports"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_instance_id",
+            "format",
+            "content_hash",
+            name="report_exports_instance_format_hash_key",
+        ),
+        Index("report_exports_instance_idx", "report_instance_id", "format"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    report_instance_id: Mapped[UUID] = mapped_column(
+        ForeignKey("report_instances.id", ondelete="CASCADE")
+    )
+    format: Mapped[str] = mapped_column(Text, nullable=False)
+    storage_backend: Mapped[str] = mapped_column(Text, default="local", server_default="local")
+    storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+    file_name: Mapped[str] = mapped_column(Text, nullable=False)
+    content_type: Mapped[str] = mapped_column(Text, nullable=False)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    checksum_sha256: Mapped[str | None] = mapped_column(Text)
+    content_hash: Mapped[str | None] = mapped_column(Text)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ReportSchedule(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "report_schedules"
+    __table_args__ = (
+        Index("report_schedules_next_run_idx", "is_enabled", "next_run_at"),
+        ForeignKeyConstraint(
+            ["project_id", "org_id"],
+            ["projects.id", "projects.org_id"],
+            name="report_schedules_project_org_fkey",
+            ondelete="CASCADE",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="CASCADE"))
+    project_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    template_id: Mapped[UUID] = mapped_column(ForeignKey("report_templates.id", ondelete="RESTRICT"))
+    interval: Mapped[str] = mapped_column(Text, nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    create_as_status: Mapped[str] = mapped_column(Text, default="draft", server_default="draft")
+    audience: Mapped[str] = mapped_column(Text, nullable=False)
+    config: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class ReportJob(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
+    __tablename__ = "report_jobs"
+    __table_args__ = (
+        Index(
+            "report_jobs_active_idempotency_uidx",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('queued', 'running', 'retry_scheduled', 'cancellation_requested')"
+            ),
+        ),
+        Index("report_jobs_queue_idx", "status", "next_attempt_at", "requested_at"),
+        Index("report_jobs_org_idx", "org_id", desc("requested_at")),
+        ForeignKeyConstraint(
+            ["project_id", "org_id"],
+            ["projects.id", "projects.org_id"],
+            name="report_jobs_project_org_fkey",
+            ondelete="CASCADE",
+        ),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    project_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    job_type: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, default="queued", server_default="queued")
+    report_instance_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("report_instances.id", ondelete="SET NULL")
+    )
+    template_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("report_templates.id", ondelete="SET NULL")
+    )
+    export_format: Mapped[str | None] = mapped_column(Text)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3, server_default="3")
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+    request_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    result_data: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    worker_id: Mapped[str | None] = mapped_column(Text)
+    queue_wait_ms: Mapped[int | None] = mapped_column(BigInteger)
+    processing_ms: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class ReportJobEvent(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "report_job_events"
+    __table_args__ = (Index("report_job_events_job_idx", "job_id", "created_at"),)
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    job_id: Mapped[UUID] = mapped_column(ForeignKey("report_jobs.id", ondelete="CASCADE"))
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    event_metadata: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+
+
+class ReportApprovalEvent(Base, UuidPrimaryKey, CreatedAt):
+    __tablename__ = "report_approval_events"
+    __table_args__ = (
+        Index("report_approval_events_instance_idx", "report_instance_id", "created_at"),
+    )
+
+    org_id: Mapped[UUID] = mapped_column(ForeignKey("organisations.id", ondelete="RESTRICT"))
+    report_instance_id: Mapped[UUID] = mapped_column(
+        ForeignKey("report_instances.id", ondelete="CASCADE")
+    )
+    actor_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    from_status: Mapped[str | None] = mapped_column(Text)
+    to_status: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    event_metadata: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")

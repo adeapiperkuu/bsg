@@ -76,7 +76,7 @@ export function OperationalBriefingPanel({ projectId, projectName }: Props) {
   const canView = role !== "client";
   const canOperate = role === "delivery_manager" || role === "super_admin";
   const query = useProjectOperationalBriefingQuery(projectId, canView);
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
 
   const refreshMutation = useMutation({
     mutationFn: () => generateProjectOperationalBriefing(projectId!, { with_ai: true }),

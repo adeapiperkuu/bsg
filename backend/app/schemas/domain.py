@@ -954,6 +954,8 @@ class CommunicationRead(ORMModel):
     evidence_source_fingerprint: str | None = None
     evidence_provenance_state: str | None = None
     evidence_provenance_complete: bool | None = None
+    # Linked Phase 18.3 shadow report instance (optional; domain row remains canonical).
+    platform_report_id: UUID | None = None
 
 
 class MetricConfigurationRead(ORMModel):
@@ -2102,6 +2104,7 @@ class UtilizationEntry(BaseModel):
 
 
 class CriticalAlertRead(BaseModel):
+    id: UUID
     sev: str
     project: str
     desc: str
@@ -2109,6 +2112,7 @@ class CriticalAlertRead(BaseModel):
 
 
 class RecommendationRead(BaseModel):
+    id: UUID
     title: str
     confidence: int
     evidence: int
@@ -2116,6 +2120,7 @@ class RecommendationRead(BaseModel):
 
 
 class UpcomingMilestoneRead(BaseModel):
+    id: UUID
     project: str
     name: str
     due: str

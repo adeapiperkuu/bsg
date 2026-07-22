@@ -1288,6 +1288,17 @@ async def approve_project_charter(
     charter.status = GovernanceCharterStatus.APPROVED
     charter.approved_by = current_user.id
     charter.approved_at = datetime.now(timezone.utc)
+    try:
+        from app.reports.adapters import ensure_shadow_instance_for_charter
+
+        await ensure_shadow_instance_for_charter(session, charter)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "event=report_shadow_charter_failed charter_id=%s",
+            charter.id,
+        )
     await session.commit()
     invalidate_project_charter_list_cache(org_id=charter.org_id, project_id=charter.project_id)
     await session.refresh(charter)

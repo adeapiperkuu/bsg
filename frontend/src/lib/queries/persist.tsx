@@ -24,7 +24,7 @@ import { useAuthStore } from "@/stores/useAuthStore";
  */
 
 /** Bump when a persisted payload's shape changes, so stale entries are discarded. */
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v2";
 
 /**
  * How long a persisted entry may still be restored. This is a risk dashboard: an entry older

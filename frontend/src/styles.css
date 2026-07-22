@@ -132,6 +132,22 @@
   }
 }
 
+/* Chrome/Edge autofill paints a light-blue fill — force a white inset cover. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active,
+textarea:-webkit-autofill,
+select:-webkit-autofill {
+  -webkit-text-fill-color: var(--foreground) !important;
+  caret-color: var(--foreground) !important;
+  -webkit-box-shadow: 0 0 0 1000px #ffffff inset !important;
+  box-shadow: 0 0 0 1000px #ffffff inset !important;
+  background-color: #ffffff !important;
+  background-image: none !important;
+  transition: background-color 99999s ease-in-out 0s;
+}
+
 @keyframes page-fade-up {
   from {
     opacity: 0;

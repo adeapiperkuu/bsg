@@ -69,9 +69,11 @@ python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 python-jose==3.5.0
 python-multipart==0.0.29
+python-docx
 PyMuPDF==1.26.7
 PyYAML==6.0.3
 realtime==2.5.3
+reportlab
 requests==2.34.2
 rsa==4.9.1
 six==1.17.0

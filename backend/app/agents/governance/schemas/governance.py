@@ -639,6 +639,7 @@ class GovernanceWeeklySummaryRead(ORMModel):
     evidence_links: list[GovernanceEvidenceLinkRead] = Field(default_factory=list)
     evidence_link_count: int = 0
     approved_by_name: str | None = None
+    platform_report_id: UUID | None = None
 
 
 class GovernanceWeeklySummaryListRead(ORMModel):

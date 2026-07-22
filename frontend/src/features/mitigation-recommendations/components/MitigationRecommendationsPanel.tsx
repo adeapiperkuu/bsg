@@ -1,3 +1,4 @@
+import { ChevronDown } from "lucide-react";
 import { Card, EvidenceBadge, SectionHeader } from "@/components/bsg/widgets";
 import { RecommendationCard } from "@/features/mitigation-recommendations/components/RecommendationCard";
 import {
@@ -11,7 +12,8 @@ import type {
   RecommendationSeverity,
 } from "@/features/mitigation-recommendations/types";
 import { SEVERITY_LABELS } from "@/features/mitigation-recommendations/types";
-import { useMemo } from "react";
+import { cn } from "@/lib/utils";
+import { useMemo, useState } from "react";
 
 type MitigationRecommendationsPanelProps = {
   projectId: string | null;
@@ -56,6 +58,7 @@ function splitGroupsByDecision(recommendations: GroupedMitigationRecommendation[
 
 export function MitigationRecommendationsPanel({ projectId }: MitigationRecommendationsPanelProps) {
   const { data, isLoading, isError } = useProjectRecommendationsQuery(projectId);
+  const [selectedTitle, setSelectedTitle] = useState<string | null>(null);
   const acceptMutation = useAcceptRecommendationMutation(projectId);
   const rejectMutation = useRejectRecommendationMutation(projectId);
   const assignMutation = useAssignRecommendationOwnerMutation(projectId);
@@ -64,26 +67,84 @@ export function MitigationRecommendationsPanel({ projectId }: MitigationRecommen
     () => splitGroupsByDecision(data?.data ?? []),
     [data?.data],
   );
-  const activeGrouped = useMemo(() => groupBySeverity(active), [active]);
-  const historicalGrouped = useMemo(() => groupBySeverity(historical), [historical]);
+  // Active recommendations first (ordered by severity, then confidence), historical after.
+  const tabs = useMemo(() => {
+    const flatten = (
+      groups: Array<{ severity: RecommendationSeverity; items: GroupedMitigationRecommendation[] }>,
+    ) => groups.flatMap((group) => group.items);
+    return [
+      ...flatten(groupBySeverity(active)).map((recommendation) => ({
+        recommendation,
+        historical: false,
+      })),
+      ...flatten(groupBySeverity(historical)).map((recommendation) => ({
+        recommendation,
+        historical: true,
+      })),
+    ];
+  }, [active, historical]);
 
   const assignableOwners = data?.assignable_owners ?? [];
-  const hasAny = activeGrouped.length > 0 || historicalGrouped.length > 0;
+  const selected = tabs.find((tab) => tab.recommendation.title === selectedTitle) ?? null;
 
-  const renderGroups = (
-    groups: Array<{ severity: RecommendationSeverity; items: GroupedMitigationRecommendation[] }>,
-  ) => (
-    <div className="space-y-4">
-      {groups.map((group) => (
-        <div key={group.severity}>
-          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            {SEVERITY_LABELS[group.severity]} severity
+  return (
+    <Card>
+      <SectionHeader title="Mitigation Recommendations" right={<EvidenceBadge />} />
+
+      {isLoading ? (
+        <div className="space-y-2">
+          <div className="h-20 animate-pulse rounded-md bg-elevated" />
+          <div className="h-20 animate-pulse rounded-md bg-elevated" />
+        </div>
+      ) : isError ? (
+        <p className="text-sm text-[color:var(--danger)]">
+          Unable to load mitigation recommendations.
+        </p>
+      ) : tabs.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No mitigation recommendations available.</p>
+      ) : (
+        <>
+          <div className="mb-3 flex flex-wrap border-b border-border">
+            {tabs.map(({ recommendation, historical: isHistorical }) => {
+              const isSelected = selectedTitle === recommendation.title;
+              return (
+                <button
+                  key={recommendation.title}
+                  type="button"
+                  aria-expanded={isSelected}
+                  onClick={() => setSelectedTitle(isSelected ? null : recommendation.title)}
+                  className={cn(
+                    "flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-xs font-medium transition-colors",
+                    isSelected
+                      ? "border-[color:var(--brand)] text-foreground"
+                      : "border-transparent text-muted-foreground hover:text-foreground",
+                    isHistorical && !isSelected && "opacity-60",
+                  )}
+                >
+                  <span className="rounded-full border border-border bg-secondary px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide">
+                    {SEVERITY_LABELS[recommendation.severity]}
+                  </span>
+                  {recommendation.title}
+                  <ChevronDown
+                    className={cn(
+                      "h-3.5 w-3.5 transition-transform",
+                      isSelected ? "" : "-rotate-90",
+                    )}
+                  />
+                </button>
+              );
+            })}
           </div>
-          <div className="space-y-2">
-            {group.items.map((recommendation) => (
+
+          {selected ? (
+            <div className="space-y-2">
+              {selected.historical ? (
+                <p className="text-[11px] text-muted-foreground">
+                  Historical decision — every linked risk was rejected, kept for the record only.
+                </p>
+              ) : null}
               <RecommendationCard
-                key={recommendation.title}
-                recommendation={recommendation}
+                recommendation={selected.recommendation}
                 assignableOwners={assignableOwners}
                 onAccept={(id) => acceptMutation.mutate(id)}
                 onReject={(id) => rejectMutation.mutate(id)}
@@ -102,54 +163,9 @@ export function MitigationRecommendationsPanel({ projectId }: MitigationRecommen
                   assignMutation.isPending && assignMutation.variables?.recommendationId === id
                 }
               />
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-
-  return (
-    <Card>
-      <SectionHeader title="Mitigation Recommendations" right={<EvidenceBadge />} />
-      {isLoading ? (
-        <div className="space-y-2">
-          <div className="h-20 animate-pulse rounded-md bg-elevated" />
-          <div className="h-20 animate-pulse rounded-md bg-elevated" />
-        </div>
-      ) : isError ? (
-        <p className="text-sm text-[color:var(--danger)]">
-          Unable to load mitigation recommendations.
-        </p>
-      ) : hasAny ? (
-        <div className="space-y-6">
-          <div>
-            <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-foreground">
-              Active recommendations
             </div>
-            <p className="mb-2 text-[11px] text-muted-foreground">
-              Awaiting a decision, or accepted with an owner still expected to act.
-            </p>
-            {activeGrouped.length > 0 ? (
-              renderGroups(activeGrouped)
-            ) : (
-              <p className="text-sm text-muted-foreground">No active recommendations.</p>
-            )}
-          </div>
-          {historicalGrouped.length > 0 && (
-            <div>
-              <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Historical decisions
-              </div>
-              <p className="mb-2 text-[11px] text-muted-foreground">
-                Every linked risk was rejected — kept here for the record only.
-              </p>
-              {renderGroups(historicalGrouped)}
-            </div>
-          )}
-        </div>
-      ) : (
-        <p className="text-sm text-muted-foreground">No mitigation recommendations available.</p>
+          ) : null}
+        </>
       )}
     </Card>
   );

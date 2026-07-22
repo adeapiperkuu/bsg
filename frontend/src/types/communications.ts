@@ -76,6 +76,8 @@ export interface CommunicationDetail {
   generation_mode?: "ai" | "fallback" | string | null;
   /** User-facing notice when generation used fallback (or other soft warnings). */
   generation_warning?: string | null;
+  /** Linked Phase 18.3 platform report instance (shadow adapter). */
+  platform_report_id?: string | null;
 }
 
 /** `POST /projects/{project_id}/communications/draft` body. */

@@ -13,6 +13,7 @@ import { WorkforceUtilizationSection } from "@/components/bsg/workforce/Workforc
 import { WorkforceAgentSection } from "@/components/bsg/workforce/agent/WorkforceAgentSection";
 import { WorkforceKpiStrip } from "@/components/bsg/workforce/WorkforceKpiStrip";
 import { WorkforceRecommendationsPanel } from "@/components/bsg/WorkforceRecommendationsPanel";
+import { PlatformReportsPanel } from "@/features/reports/PlatformReportsPanel";
 import { useProjectsQuery } from "@/lib/queries/delivery";
 import {
   UTILIZATION_CAPACITY_THRESHOLD,
@@ -580,6 +581,16 @@ function WorkforcePage() {
           />
         </div>
       </div>
+
+      {canReadInternalWorkforce ? (
+        <div className="mt-5">
+          <PlatformReportsPanel
+            domain="workforce"
+            projectId={resolvedProjectId}
+            compact
+          />
+        </div>
+      ) : null}
 
       {canReadInternalWorkforce ? (
         <EmployeeProfileDrawer

@@ -105,6 +105,24 @@ async def handle_delivery_scored(
             "event=pm_daily_actions_hook_failed project_id=%s",
             event.project_id,
         )
+    try:
+        from datetime import datetime, timezone
+
+        from app.time_series.publishers import publish_delivery_scoring_snapshot
+
+        as_of = datetime.combine(event.as_of_date, datetime.min.time(), tzinfo=timezone.utc)
+        await publish_delivery_scoring_snapshot(
+            session,
+            org_id=event.org_id,
+            project_id=event.project_id,
+            confidence=event.scores.confidence,
+            as_of=as_of,
+        )
+    except Exception:
+        logger.exception(
+            "event=time_series_delivery_hook_failed project_id=%s",
+            event.project_id,
+        )
     notifications_sent = await NotificationHandler(session).handle(
         event,
         confidence_score_id=confidence_score_id,

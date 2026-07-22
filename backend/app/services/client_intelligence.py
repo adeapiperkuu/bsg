@@ -366,10 +366,14 @@ async def _aggregate_delivery_confidence(
     average_score_pct = _quantize_confidence(
         Decimal(str(row.average_score_pct))
     )
-    availability = (
-        SummaryMetricAvailability.PARTIAL
-        if limitations
-        else SummaryMetricAvailability.AVAILABLE
+    from app.kpis.adapters import client_metric_availability
+
+    availability = SummaryMetricAvailability(
+        client_metric_availability(
+            has_evidence=True,
+            has_score=average_score_pct is not None,
+            is_partial=bool(limitations),
+        )
     )
     return DeliveryConfidenceSummaryMetric(
         availability=availability,

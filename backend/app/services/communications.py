@@ -904,6 +904,17 @@ async def create_draft(
                 pack_source_fingerprint=item.pack_source_fingerprint,
             )
         )
+    try:
+        from app.reports.adapters import ensure_shadow_instance_for_communication
+
+        await ensure_shadow_instance_for_communication(session, communication)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "event=report_shadow_communication_failed communication_id=%s",
+            communication.id,
+        )
     return communication
 
 
@@ -1231,6 +1242,17 @@ async def approve(
             else None
         ),
     )
+    try:
+        from app.reports.adapters import ensure_shadow_instance_for_communication
+
+        await ensure_shadow_instance_for_communication(session, communication)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "event=report_shadow_communication_sync_failed communication_id=%s action=approve",
+            communication.id,
+        )
     await session.flush()
     return communication
 
@@ -1259,6 +1281,17 @@ async def reject(
         new_status=CommunicationStatus.REJECTED,
         rejection_reason_recorded=True,
     )
+    try:
+        from app.reports.adapters import ensure_shadow_instance_for_communication
+
+        await ensure_shadow_instance_for_communication(session, communication)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "event=report_shadow_communication_sync_failed communication_id=%s action=reject",
+            communication.id,
+        )
     await session.flush()
     return communication
 
@@ -1305,6 +1338,17 @@ async def send(
             else None
         ),
     )
+    try:
+        from app.reports.adapters import ensure_shadow_instance_for_communication
+
+        await ensure_shadow_instance_for_communication(session, communication)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "event=report_shadow_communication_sync_failed communication_id=%s action=send",
+            communication.id,
+        )
     await session.flush()
     return communication
 

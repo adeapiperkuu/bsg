@@ -19,6 +19,7 @@ import { QualityTrendChart } from "./QualityTrendChart";
 import { ReviewerScorecardsCard } from "./ReviewerScorecardsCard";
 import { SopAmbiguityCard } from "./SopAmbiguityCard";
 import { TeamScorecardCard } from "./TeamScorecardCard";
+import { PlatformReportsPanel } from "@/features/reports/PlatformReportsPanel";
 
 type Props = {
   projects: ProjectRead[];
@@ -152,7 +153,7 @@ export function QualityDashboard({
           <div className="space-y-5">
             <SectionGroupHeading title="Trends & Analysis" />
             <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-              <QualityTrendChart trend={dashboard.trend} />
+              <QualityTrendChart trend={dashboard.trend} projectId={activeProjectId} />
               <ErrorBreakdownChart breakdown={dashboard.error_breakdown} />
             </div>
           </div>
@@ -164,6 +165,11 @@ export function QualityDashboard({
           </div>
 
           <AskQualityAgentPanel projectId={activeProjectId} />
+          <PlatformReportsPanel
+            domain="quality"
+            projectId={activeProjectId}
+            compact
+          />
         </div>
       )}
     </div>

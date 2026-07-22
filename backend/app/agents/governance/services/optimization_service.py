@@ -1091,6 +1091,17 @@ async def generate_evaluation_report(
         source_id=report.id,
         metadata={"period": period.value},
     )
+    try:
+        from app.reports.adapters import ensure_shadow_instance_for_evaluation_report
+
+        await ensure_shadow_instance_for_evaluation_report(session, report)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "event=report_shadow_evaluation_failed evaluation_id=%s",
+            report.id,
+        )
     await session.commit()
     await session.refresh(report)
     return GovernanceOptimizationReportRead(

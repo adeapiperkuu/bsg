@@ -1,6 +1,7 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID
+import logging
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
@@ -633,6 +634,33 @@ async def accept_recommendation(
 
     recommendation.status = RecommendationStatus.ACCEPTED
     await session.flush()
+    try:
+        from app.time_series.recommendations import append_recommendation_timeline
+
+        await append_recommendation_timeline(
+            session,
+            org_id=recommendation.org_id,
+            project_id=recommendation.project_id,
+            domain="delivery",
+            subject_table="mitigation_recommendations",
+            subject_id=recommendation.id,
+            event_type="accepted",
+            actor_user_id=current_user.id,
+            source_agent="delivery",
+            recommendation_type=recommendation.title,
+            severity=recommendation.severity.value
+            if hasattr(recommendation.severity, "value")
+            else str(recommendation.severity),
+            status_snapshot=recommendation.status.value
+            if hasattr(recommendation.status, "value")
+            else str(recommendation.status),
+            idempotency_key=f"mitigation-accept:{recommendation.id}",
+        )
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "event=time_series_mitigation_accept_hook_failed recommendation_id=%s",
+            recommendation_id,
+        )
     audit = AuditLogger(session)
     await audit.log(
         event_type="recommendation_accepted",
@@ -666,6 +694,33 @@ async def reject_recommendation(
 
     recommendation.status = RecommendationStatus.REJECTED
     await session.flush()
+    try:
+        from app.time_series.recommendations import append_recommendation_timeline
+
+        await append_recommendation_timeline(
+            session,
+            org_id=recommendation.org_id,
+            project_id=recommendation.project_id,
+            domain="delivery",
+            subject_table="mitigation_recommendations",
+            subject_id=recommendation.id,
+            event_type="rejected",
+            actor_user_id=current_user.id,
+            source_agent="delivery",
+            recommendation_type=recommendation.title,
+            severity=recommendation.severity.value
+            if hasattr(recommendation.severity, "value")
+            else str(recommendation.severity),
+            status_snapshot=recommendation.status.value
+            if hasattr(recommendation.status, "value")
+            else str(recommendation.status),
+            idempotency_key=f"mitigation-reject:{recommendation.id}",
+        )
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "event=time_series_mitigation_reject_hook_failed recommendation_id=%s",
+            recommendation_id,
+        )
     audit = AuditLogger(session)
     await audit.log(
         event_type="recommendation_rejected",

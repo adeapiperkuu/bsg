@@ -26,13 +26,16 @@ from app.api.routes import (
     dashboard,
     delivery,
     knowledge,
+    kpis,
     me,
     metrics,
     organisations,
     programs,
     projects,
     quality,
+    reports,
     system,
+    time_series,
     users,
     workforce,
 )
@@ -43,10 +46,16 @@ from app.core.security_headers import SecurityHeadersMiddleware
 from app.db.models import ScanTrigger
 from app.db.rls import set_service_role_context
 from app.db.session import dispose_engine, session_scope
+from app.reports.scheduler import run_report_planner, run_report_queue_poll
 from app.services.knowledge_ingestion_jobs import process_ingestion_job_queue
 from app.services.quality import scan_all_projects
 from app.services.quality_thresholds import warm_thresholds_cache
 from app.services.signal_dispatcher import dispatch_pending_signals
+from app.time_series.scheduler import (
+    run_time_series_planner,
+    run_time_series_queue_poll,
+    run_time_series_retention,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +115,26 @@ async def _scheduled_governance_queue_poll() -> None:
         logger.exception("Governance background job queue poll failed")
 
 
+async def _scheduled_report_planner() -> None:
+    async with session_scope() as session:
+        try:
+            await run_report_planner(session)
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            logger.exception("Report planner failed")
+
+
+async def _scheduled_report_queue_poll() -> None:
+    async with session_scope() as session:
+        try:
+            await run_report_queue_poll(session)
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            logger.exception("Report queue poll failed")
+
+
 async def _scheduled_governance_register_summary_refresh() -> None:
     """Refresh UTC-day register counts outside GET; retry hourly after failures/missed startup."""
     settings = get_settings()
@@ -155,6 +184,49 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         seconds=get_settings().governance_job_poll_interval_seconds,
         coalesce=True,
         max_instances=1,
+    )
+    settings = get_settings()
+    scheduler.add_job(
+        run_time_series_planner,
+        "interval",
+        seconds=settings.time_series_plan_interval_seconds,
+        coalesce=True,
+        max_instances=1,
+        id="time_series_planner",
+    )
+    scheduler.add_job(
+        run_time_series_queue_poll,
+        "interval",
+        seconds=settings.time_series_job_poll_interval_seconds,
+        coalesce=True,
+        max_instances=1,
+        id="time_series_queue_poll",
+    )
+    scheduler.add_job(
+        run_time_series_retention,
+        "cron",
+        hour=settings.time_series_retention_cron_hour_utc,
+        minute=15,
+        timezone=UTC,
+        coalesce=True,
+        max_instances=1,
+        id="time_series_retention",
+    )
+    scheduler.add_job(
+        _scheduled_report_planner,
+        "interval",
+        seconds=settings.report_plan_interval_seconds,
+        coalesce=True,
+        max_instances=1,
+        id="report_planner",
+    )
+    scheduler.add_job(
+        _scheduled_report_queue_poll,
+        "interval",
+        seconds=settings.report_job_poll_interval_seconds,
+        coalesce=True,
+        max_instances=1,
+        id="report_queue_poll",
     )
     scheduler.start()
     try:
@@ -208,6 +280,9 @@ def create_app() -> FastAPI:
     app.include_router(agents.router, prefix=api_prefix)
     app.include_router(communications.router, prefix=api_prefix)
     app.include_router(metrics.router, prefix=api_prefix)
+    app.include_router(kpis.router, prefix=api_prefix)
+    app.include_router(time_series.router, prefix=api_prefix)
+    app.include_router(reports.router, prefix=api_prefix)
     app.include_router(csat.router, prefix=api_prefix)
     app.include_router(knowledge.router, prefix=api_prefix)
     app.include_router(governance_routes.router, prefix=api_prefix)

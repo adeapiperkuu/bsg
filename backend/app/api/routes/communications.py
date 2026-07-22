@@ -631,8 +631,20 @@ async def _communication_read(
         [communication.id],
         include_provenance=include_provenance,
     )
-    return _communication_read_with_links(
+    data = _communication_read_with_links(
         communication,
         grouped.get(communication.id, []),
         include_provenance=include_provenance,
     )
+    if include_provenance:
+        try:
+            from app.reports.adapters import lookup_platform_report_id_for_communication
+
+            data.platform_report_id = await lookup_platform_report_id_for_communication(
+                session, communication.id
+            )
+        except Exception:
+            data.platform_report_id = None
+    else:
+        data.platform_report_id = None
+    return data

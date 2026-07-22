@@ -48,6 +48,7 @@ export type GovernanceWeeklySummary = {
   evidence_links: GovernanceEvidenceLink[];
   evidence_link_count?: number;
   approved_by_name?: string | null;
+  platform_report_id?: string | null;
 };
 
 export type GovernanceWeeklySummaryListItem = Omit<

@@ -391,9 +391,9 @@ function Dashboard() {
             </p>
           ) : (
             <ul className="space-y-2">
-              {filteredAlerts.map((a) => (
+              {filteredAlerts.map((a, i) => (
                 <li
-                  key={`${a.project}-${a.desc}`}
+                  key={a.id || `${a.project}-${a.desc}-${i}`}
                   className="flex items-start justify-between gap-3 rounded-md border border-border bg-elevated p-3"
                 >
                   <div className="min-w-0">
@@ -445,11 +445,8 @@ function Dashboard() {
           ) : (
             <>
               <ul className="space-y-2">
-                {visibleRecs.map((r) => (
-                  <li
-                    key={r.title}
-                    className="rounded-md border border-border bg-elevated p-3"
-                  >
+                {visibleRecs.map((r, i) => (
+                  <li key={r.id || `${r.priority}-${r.title}-${i}`} className="rounded-md border border-border bg-elevated p-3">
                     <div className="flex items-center gap-2">
                       <StatusPill status={r.priority} />
                       <AiBadge confidence={r.confidence} label="AI" />
@@ -516,8 +513,8 @@ function Dashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleMilestones.map((m) => (
-                    <tr key={`${m.project}-${m.name}`} className="border-b border-border/50">
+                  {visibleMilestones.map((m, i) => (
+                    <tr key={m.id || `${m.project}-${m.name}-${m.due}-${i}`} className="border-b border-border/50">
                       <td className="py-2.5 pr-3 font-medium">{m.project}</td>
                       <td className="py-2.5 pr-3 text-muted-foreground">{m.name}</td>
                       <td className="py-2.5 pr-3">{formatDueDate(m.due)}</td>

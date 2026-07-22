@@ -14,6 +14,7 @@ from app.api.deps import SessionDep, UserDep
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser, require_role
 from app.db.models import AppRole, MetricConfiguration
+from app.kpis.thresholds import invalidate_kpi_threshold_cache
 from app.schemas.common import DataResponse, ListResponse, Pagination
 from app.schemas.domain import (
     MetricConfigurationCreate,
@@ -65,6 +66,7 @@ async def create_metric(
     session.add(metric)
     await session.commit()
     invalidate_delivery_scoring_thresholds_cache(metric.org_id)
+    invalidate_kpi_threshold_cache(metric.metric_key, metric.org_id)
     clear_delivery_portfolio_cache(org_id=metric.org_id)
     await session.refresh(metric)
     return DataResponse(data=MetricConfigurationRead.model_validate(metric))
@@ -99,6 +101,7 @@ async def update_metric(
         setattr(metric, key, value)
     await session.commit()
     invalidate_delivery_scoring_thresholds_cache(metric.org_id)
+    invalidate_kpi_threshold_cache(metric.metric_key, metric.org_id)
     clear_delivery_portfolio_cache(org_id=metric.org_id)
     await session.refresh(metric)
     return DataResponse(data=MetricConfigurationRead.model_validate(metric))
@@ -120,5 +123,6 @@ async def delete_metric(
     metric.deleted_at = datetime.now(UTC)
     await session.commit()
     invalidate_delivery_scoring_thresholds_cache(metric.org_id)
+    invalidate_kpi_threshold_cache(metric.metric_key, metric.org_id)
     clear_delivery_portfolio_cache(org_id=metric.org_id)
     return Response(status_code=204)

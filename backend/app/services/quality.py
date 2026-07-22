@@ -416,6 +416,25 @@ async def evaluate_snapshot(session: AsyncSession, snapshot: QualitySnapshot) ->
         await process_sop_ambiguity_for_snapshot(session, project, snapshot)
 
     await session.flush()
+    try:
+        from app.time_series.publishers import publish_quality_snapshot_observations
+
+        await publish_quality_snapshot_observations(
+            session,
+            org_id=snapshot.org_id,
+            project_id=snapshot.project_id,
+            quality_score=snapshot.gold_set_accuracy_pct,
+            extra={
+                "snapshot_id": str(snapshot.id),
+                "iso_year": snapshot.iso_year,
+                "iso_week": snapshot.iso_week,
+            },
+        )
+    except Exception:
+        logger.exception(
+            "event=time_series_quality_hook_failed snapshot_id=%s",
+            snapshot.id,
+        )
     return drift
 
 
@@ -739,7 +758,6 @@ def _assemble_quality_dashboard(
             latest_by_team[snap.team_id] = snap
 
     latest_week_snaps = list(latest_by_team.values())
-    active_drift = sum(1 for s in latest_week_snaps if s.has_drift_alert)
 
     data_gap_teams = [
         teams[snap.team_id].name if snap.team_id in teams else str(snap.team_id)
@@ -747,17 +765,21 @@ def _assemble_quality_dashboard(
         if snap.evaluated_item_count is not None and snap.evaluated_item_count < MIN_EVALUATED_ITEMS
     ]
 
-    def avg_metric(getter):
-        values = [getter(s) for s in latest_week_snaps if getter(s) is not None]
-        if not values:
-            return None
-        return sum(values) / len(values)
+    from app.kpis.adapters import quality_dashboard_kpi_values
+
+    kpi_values = quality_dashboard_kpi_values(
+        latest_week_snaps,
+        gold_getter=lambda s: s.gold_set_accuracy_pct,
+        iaa_getter=lambda s: s.iaa_krippendorff_alpha,
+        rework_getter=lambda s: s.rework_rate_pct,
+        drift_getter=lambda s: s.has_drift_alert,
+    )
 
     kpis = QualityDashboardKpis(
-        gold_set_accuracy_pct=avg_metric(lambda s: s.gold_set_accuracy_pct),
-        iaa_krippendorff_alpha=avg_metric(lambda s: s.iaa_krippendorff_alpha),
-        rework_rate_pct=avg_metric(lambda s: s.rework_rate_pct),
-        active_drift_alerts=active_drift,
+        gold_set_accuracy_pct=kpi_values["gold_set_accuracy_pct"],
+        iaa_krippendorff_alpha=kpi_values["iaa_krippendorff_alpha"],
+        rework_rate_pct=kpi_values["rework_rate_pct"],
+        active_drift_alerts=int(kpi_values["active_drift_alerts"] or 0),
     )
     rework_cfg = thresholds.get("rework_rate")
     if rework_cfg and rework_cfg.green_max is not None:
