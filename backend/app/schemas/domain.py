@@ -955,7 +955,11 @@ class WorkforceOptimizationRead(BaseModel):
 
 
 class ProjectWorkforceDashboardRead(BaseModel):
-    """Bundled Workforce page payload (one round-trip for initial load)."""
+    """Bundled Workforce page payload (one round-trip for initial load).
+
+    ``optimization`` is optional and normally omitted — loaded via the dedicated
+    workforce-optimization endpoint so first paint is not blocked by that engine.
+    """
 
     project_id: UUID
     summary: ProjectWorkforceSummaryRead

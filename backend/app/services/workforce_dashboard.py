@@ -37,7 +37,6 @@ from app.services.workforce_gaps import (
     project_can_rebalance_from_utilization,
     workforce_mitigation_copy_for_gap,
 )
-from app.services.workforce_optimization import build_workforce_optimization
 from app.services.workforce_skills import build_project_skill_matrix
 from app.services.workforce_training import build_project_training_gaps
 
@@ -125,12 +124,16 @@ async def get_project_workforce_dashboard(
 ) -> ProjectWorkforceDashboardRead:
     """Assemble the Workforce page sections in one service call.
 
-    Reuses existing batched service functions. The six sections are independent, so
+    Reuses existing batched service functions. The core sections are independent, so
     they run concurrently — each on its own pooled connection via ``_run_section`` —
     instead of serializing on the request session. Against the remote Supabase pooler
     (where every query is a network round trip) this collapses the wall time from the
     sum of the sections toward the slowest single section. The client pool is sized for
     exactly this fan-out (see ``app/db/session.py``).
+
+    Optimization is intentionally omitted: it is the heaviest section and is loaded
+    via ``GET .../workforce-optimization`` after first paint so KPIs/matrix are not
+    blocked by match/rebalance/SME engines.
     """
     assert_can_read_annotators(current_user)
 
@@ -141,7 +144,6 @@ async def get_project_workforce_dashboard(
         training_gaps,
         capability_gap_rows,
         recommendations_result,
-        optimization,
     ) = await asyncio.gather(
         _run_section(current_user, lambda s: get_project_workforce_summary(s, project, current_user)),
         _run_section(
@@ -154,10 +156,6 @@ async def get_project_workforce_dashboard(
         _run_section(
             current_user,
             lambda s: list_project_recommendations(s, project_id=project.id, org_id=project.org_id),
-        ),
-        _run_section(
-            current_user,
-            lambda s: build_workforce_optimization(s, project, current_user),
         ),
     )
 
@@ -199,7 +197,7 @@ async def get_project_workforce_dashboard(
         training_gaps=training_gaps,
         capability_gaps=capability_gaps,
         recommendations=recommendations,
-        optimization=optimization,
+        optimization=None,
     )
     # Phase 19.1 — never send unauthorized top-level fields to the client.
     filtered = authorize_fields(dashboard, current_user.role, domain="workforce")

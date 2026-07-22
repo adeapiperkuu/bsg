@@ -48,6 +48,8 @@ export const queryKeys = {
     ["projects", projectId, "workforce-summary"] as const,
   projectWorkforceDashboard: (projectId: string) =>
     ["projects", projectId, "workforce-dashboard"] as const,
+  projectWorkforceOptimization: (projectId: string) =>
+    ["projects", projectId, "workforce-optimization"] as const,
   teamAnnotators: (teamId: string) => ["teams", teamId, "annotators"] as const,
   projectUtilization: (
     projectId: string,

@@ -67,6 +67,8 @@ from app.services.workforce_skills import PROFICIENCY_RANK, meets_proficiency
 MODEL_VERSION = "workforce_optimization_v1"
 TARGET_UTILIZATION = Decimal("75")
 FORECAST_WEEKS = 4
+# Latest-per-entity only; unbounded history dominated cold optimization latency.
+OPTIMIZATION_UTILIZATION_LIMIT = 200
 OPEN_MILESTONE_STATUSES = {
     MilestoneStatus.PENDING,
     MilestoneStatus.ON_TRACK,
@@ -245,7 +247,8 @@ async def _load_optimization_context(
                     UtilizationSnapshot.project_id == project.id,
                     UtilizationSnapshot.deleted_at.is_(None),
                 )
-                .order_by(UtilizationSnapshot.snapshot_date.desc()),
+                .order_by(UtilizationSnapshot.snapshot_date.desc())
+                .limit(OPTIMIZATION_UTILIZATION_LIMIT),
             )
         )
         .scalars()

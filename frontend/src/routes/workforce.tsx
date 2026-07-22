@@ -24,6 +24,7 @@ import {
   EMPTY_UTILIZATION,
   seedWorkforceSectionCaches,
   useProjectWorkforceDashboardQuery,
+  useProjectWorkforceOptimizationQuery,
   useProjectWorkforceSummary,
 } from "@/lib/queries/workforce";
 import {
@@ -106,13 +107,18 @@ function WorkforcePage() {
 
   const user = useAuthStore((state) => state.user);
   const authLoading = useAuthStore((state) => state.isLoading);
-  const canReadInternalWorkforce = !authLoading && canReadInternalWorkforceRole(user?.role);
+  // Don't wait for authLoading to finish if the user is already hydrated —
+  // that used to serialize projects → dashboard behind a full-page spinner.
+  const canReadInternalWorkforce = canReadInternalWorkforceRole(user?.role);
 
   const projectsQuery = useProjectsQuery();
   const projects = projectsQuery.data ?? EMPTY_LIST;
 
   const resolvedProjectId = useMemo(() => {
-    if (projects.length === 0) return null;
+    if (projects.length === 0) {
+      // Start dashboard as soon as the URL has a projectId (skip projects waterfall).
+      return urlProjectId ?? null;
+    }
     if (urlProjectId && projects.some((project) => project.id === urlProjectId)) {
       return urlProjectId;
     }
@@ -121,10 +127,12 @@ function WorkforcePage() {
 
   useEffect(() => {
     if (!resolvedProjectId || resolvedProjectId === urlProjectId) return;
+    // Only sync URL after projects list is available (avoid writing an unverified id).
+    if (projects.length === 0) return;
     if (syncedProjectIdRef.current === resolvedProjectId) return;
     syncedProjectIdRef.current = resolvedProjectId;
     navigate({ search: { projectId: resolvedProjectId }, replace: true });
-  }, [resolvedProjectId, urlProjectId, navigate]);
+  }, [resolvedProjectId, urlProjectId, navigate, projects.length]);
 
   useEffect(() => {
     setShowSkillRequirementsManager(false);
@@ -135,11 +143,14 @@ function WorkforcePage() {
     setDrawerOpen(false);
   }, [resolvedProjectId]);
 
-  // One bundled request that the backend fans out across the connection pool
-  // (app/services/workforce_dashboard.py runs the six sections concurrently), so the
-  // whole page loads on a single authenticated round trip instead of six.
+  // Bundled dashboard (summary/util/matrix/gaps/recs) + deferred optimization request.
+  // Optimization is the heaviest section; loading it separately lets KPIs paint first.
   const queryClient = useQueryClient();
   const dashboardQuery = useProjectWorkforceDashboardQuery(
+    resolvedProjectId,
+    canReadInternalWorkforce,
+  );
+  const optimizationQuery = useProjectWorkforceOptimizationQuery(
     resolvedProjectId,
     canReadInternalWorkforce,
   );
@@ -313,11 +324,13 @@ function WorkforcePage() {
     );
   }
 
-  if (authLoading || projectsLoading || (Boolean(resolvedProjectId) && workforceLoading)) {
+  // Progressive paint: only block on auth/projects when we have nothing to show yet.
+  // Dashboard loads in the background with section-level skeletons.
+  if ((authLoading && !user) || (projectsQuery.isLoading && projects.length === 0 && !urlProjectId)) {
     return <PageLoadingScreen />;
   }
 
-  if (projects.length === 0) {
+  if (!projectsQuery.isLoading && projects.length === 0) {
     return (
       <Card>
         <SectionHeader title="Workforce & Capability" sub="No projects available" />
@@ -326,6 +339,10 @@ function WorkforcePage() {
         </p>
       </Card>
     );
+  }
+
+  if (!resolvedProjectId) {
+    return <PageLoadingScreen />;
   }
 
   const hasTeams = summary.teams.length > 0;
@@ -478,9 +495,9 @@ function WorkforcePage() {
 
           {canReadInternalWorkforce ? (
             <WorkforceOptimizationPanel
-              optimization={dashboard?.optimization}
-              loading={dashboardQuery.isLoading}
-              error={dashboardQuery.isError}
+              optimization={optimizationQuery.data}
+              loading={optimizationQuery.isLoading}
+              error={optimizationQuery.isError}
             />
           ) : null}
 
