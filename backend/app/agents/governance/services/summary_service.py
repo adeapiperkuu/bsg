@@ -748,6 +748,16 @@ async def build_weekly_summary_read(
         names = await load_user_names(session, {summary.approved_by})
         approved_by_name = names.get(summary.approved_by)
 
+    platform_report_id = None
+    try:
+        from app.reports.adapters import lookup_platform_report_id_for_weekly_summary
+
+        platform_report_id = await lookup_platform_report_id_for_weekly_summary(
+            session, summary.id
+        )
+    except Exception:
+        platform_report_id = None
+
     return GovernanceWeeklySummaryRead.model_validate(
         summary, from_attributes=True
     ).model_copy(
@@ -757,6 +767,7 @@ async def build_weekly_summary_read(
             ],
             "evidence_link_count": len(enriched),
             "approved_by_name": approved_by_name,
+            "platform_report_id": platform_report_id,
         }
     )
 

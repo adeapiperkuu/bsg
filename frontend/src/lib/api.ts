@@ -239,15 +239,29 @@ export async function apiFetchBlob(
   return response.blob();
 }
 
+const SESSION_REQUEST_TIMEOUT_MS = 15_000;
+
 export async function login(email: string, password: string): Promise<LoginResult> {
-  const body = await apiFetch<{ data: AuthSession | MfaRequired }>("/auth/login", {
-    method: "POST",
-    body: JSON.stringify({ email, password }),
-  });
-  if ("mfa_required" in body.data && body.data.mfa_required) {
-    return { status: "mfa_required", ...body.data };
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), SESSION_REQUEST_TIMEOUT_MS);
+  try {
+    const body = await apiFetch<{ data: AuthSession | MfaRequired }>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+      signal: controller.signal,
+    });
+    if ("mfa_required" in body.data && body.data.mfa_required) {
+      return { status: "mfa_required", ...body.data };
+    }
+    return { status: "success", session: body.data as AuthSession };
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new ApiError(408, "LOGIN_TIMEOUT", "Sign-in timed out. Is the API server running?");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return { status: "success", session: body.data as AuthSession };
 }
 
 /** DEVELOPMENT_PLAN.md Workstream E. `pendingToken` authenticates these calls
@@ -287,8 +301,6 @@ export async function mfaVerify(
 export async function logout(): Promise<void> {
   await apiFetch<void>("/auth/logout", { method: "POST" });
 }
-
-const SESSION_REQUEST_TIMEOUT_MS = 15_000;
 
 export async function fetchMe(timeoutMs = SESSION_REQUEST_TIMEOUT_MS): Promise<MeUser> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -1486,7 +1498,7 @@ export type TowerPulse = {
     series: Array<{ name: string; color: string }>;
     data: Array<Record<string, string | number>>;
   };
-  alerts: Array<{ sev: string; project: string; desc: string; ts: string }>;
+  alerts: Array<{ id: string; sev: string; project: string; desc: string; ts: string }>;
 };
 
 export type TowerEscalations = {
@@ -1501,12 +1513,14 @@ export type TowerHealth = {
 
 export type TowerWork = {
   recommendations: Array<{
+    id: string;
     title: string;
     confidence: number;
     evidence: number;
     priority: string;
   }>;
   milestones: Array<{
+    id: string;
     project: string;
     name: string;
     due: string;

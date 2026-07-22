@@ -210,6 +210,49 @@ async def sync_recommendations_for_project(
 
     await session.flush()
 
+    try:
+        from app.time_series.recommendations import append_recommendation_timeline
+
+        refreshed = list(
+            (
+                await session.execute(
+                    select(MitigationRecommendation).where(
+                        MitigationRecommendation.project_id == project_id,
+                        MitigationRecommendation.org_id == org_id,
+                        MitigationRecommendation.deleted_at.is_(None),
+                        MitigationRecommendation.status == RecommendationStatus.PENDING,
+                    )
+                )
+            ).scalars()
+        )
+        for row in refreshed:
+            if row.source_risk_id is None or row.source_risk_id in existing_by_risk_id:
+                continue
+            await append_recommendation_timeline(
+                session,
+                org_id=org_id,
+                project_id=project_id,
+                domain="delivery",
+                subject_table="mitigation_recommendations",
+                subject_id=row.id,
+                event_type="created",
+                source_agent="delivery",
+                recommendation_type=row.title,
+                severity=row.severity.value if hasattr(row.severity, "value") else str(row.severity),
+                confidence=row.confidence_score,
+                status_snapshot=row.status.value if hasattr(row.status, "value") else str(row.status),
+                related_table="risk_alerts",
+                related_id=row.source_risk_id,
+                idempotency_key=f"mitigation-created:{row.id}",
+            )
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "event=time_series_mitigation_create_hook_failed project_id=%s",
+            project_id,
+        )
+
 
 async def list_project_recommendations(
     session: AsyncSession,

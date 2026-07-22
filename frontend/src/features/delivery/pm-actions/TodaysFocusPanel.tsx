@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { ChevronDown } from "lucide-react";
 import { AiBadge, Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
 import {
   completeProjectDailyAction,
@@ -34,6 +35,7 @@ export function TodaysFocusPanel({ projectId, projectName }: Props) {
   // the pending state instead of freezing every row's buttons at once.
   const [pendingActionId, setPendingActionId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
 
   const generateMutation = useMutation({
     mutationFn: () => generateProjectDailyActions(projectId!, { with_ai_rationale: false }),
@@ -96,6 +98,27 @@ export function TodaysFocusPanel({ projectId, projectName }: Props) {
         }
       />
 
+      <div className="mb-3 flex border-b border-border">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((v) => !v)}
+          className={cn(
+            "flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-xs font-medium transition-colors",
+            expanded
+              ? "border-[color:var(--brand)] text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground",
+          )}
+        >
+          Focus
+          <ChevronDown
+            className={cn("h-3.5 w-3.5 transition-transform", expanded ? "" : "-rotate-90")}
+          />
+        </button>
+      </div>
+
+      {!expanded ? null : (
+        <>
       {actionError ? (
         <p className="mb-3 rounded border border-[color:var(--danger)]/30 bg-[color:var(--danger)]/10 px-3 py-2 text-xs text-[color:var(--danger)]">
           {actionError}
@@ -186,8 +209,8 @@ export function TodaysFocusPanel({ projectId, projectName }: Props) {
         </ol>
       )}
 
-      {history.length > 0 ? (
-        <div className="mt-4 border-t border-border pt-3">
+          {history.length > 0 ? (
+            <div className="mt-4 border-t border-border pt-3">
           <p className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">
             Recent completions
           </p>
@@ -203,6 +226,8 @@ export function TodaysFocusPanel({ projectId, projectName }: Props) {
           </ul>
         </div>
       ) : null}
+        </>
+      )}
     </Card>
   );
 }

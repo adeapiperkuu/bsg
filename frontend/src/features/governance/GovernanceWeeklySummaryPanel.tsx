@@ -13,6 +13,7 @@ import {
 import { toast } from "sonner";
 
 import { AiBadge, Card, SectionHeader, StatusPill } from "@/components/bsg/widgets";
+import { ReportExportButtons } from "@/components/bsg/reports";
 import { DeliveryMarkdown } from "@/components/delivery/delivery-markdown";
 import { Button } from "@/components/ui/button";
 import { GovernanceJobProgress } from "@/features/governance/GovernanceJobProgress";
@@ -373,6 +374,11 @@ export function GovernanceWeeklySummaryPanel({ canManage }: { canManage: boolean
                     : "Human approval required before this summary becomes official"}
                 </span>
               </div>
+              {selected?.platform_report_id ? (
+                <div className="mt-2">
+                  <ReportExportButtons reportId={selected.platform_report_id} />
+                </div>
+              ) : null}
             </div>
           ) : (
             <div className="flex flex-1 flex-col items-center justify-center text-center">

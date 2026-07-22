@@ -28,6 +28,8 @@ used for `audit_logs`.
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 from sqlalchemy import text
 from sqlalchemy.engine import Result
 from sqlalchemy.exc import DBAPIError
@@ -395,6 +397,51 @@ async def test_comm_evidence_links_insert_denied_for_other_org(
                     "VALUES (:communication_id, 'throughput_snapshots', :source_row_id, 'x')"
                 ),
                 {"communication_id": data.comm_b1_sent, "source_row_id": data.throughput_b1},
+            )
+
+
+async def test_delivery_manager_can_enqueue_report_job_for_own_org(
+    seeded: tuple[AsyncSession, Seed],
+) -> None:
+    """A delivery manager authorized by the API must also pass report queue RLS."""
+    conn, data = seeded
+    await as_user(conn, data.delivery_manager_a)
+    job_id = uuid4()
+    event_id = uuid4()
+    async with conn.begin_nested():
+        await conn.execute(
+            text(
+                "INSERT INTO report_jobs "
+                "(id, org_id, job_type, idempotency_key, request_payload) "
+                "VALUES (:id, :org_id, 'on_demand_generate', :key, '{}'::jsonb)"
+            ),
+            {"id": job_id, "org_id": data.org_a, "key": f"rls-briefing-{job_id}"},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO report_job_events "
+                "(id, org_id, job_id, event_type, event_metadata) "
+                "VALUES (:id, :org_id, :job_id, 'enqueued', '{}'::jsonb)"
+            ),
+            {"id": event_id, "org_id": data.org_a, "job_id": job_id},
+        )
+
+
+async def test_delivery_manager_cannot_enqueue_report_job_for_other_org(
+    seeded: tuple[AsyncSession, Seed],
+) -> None:
+    conn, data = seeded
+    await as_user(conn, data.delivery_manager_a)
+    job_id = uuid4()
+    with pytest.raises(DBAPIError, match="row-level security"):
+        async with conn.begin_nested():
+            await conn.execute(
+                text(
+                    "INSERT INTO report_jobs "
+                    "(id, org_id, job_type, idempotency_key, request_payload) "
+                    "VALUES (:id, :org_id, 'on_demand_generate', :key, '{}'::jsonb)"
+                ),
+                {"id": job_id, "org_id": data.org_b, "key": f"rls-briefing-{job_id}"},
             )
 
 

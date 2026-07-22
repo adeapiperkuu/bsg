@@ -164,7 +164,12 @@ class _ScoringComputeResult:
 
 
 def compute_delivery_scores(context: ScoringContext) -> DeliveryScores:
-    """Calculate confidence, risk, traffic light, and contributing causes once."""
+    """Calculate confidence, risk, traffic light, and contributing causes once.
+
+    Formulas are owned by Delivery analytics modules and registered in the KPI
+    semantic layer (`delivery.confidence.v1`, `delivery.risk.v1`,
+    `delivery.traffic_light.v1`) so API evaluation and agent scoring stay aligned.
+    """
     confidence = calculate_confidence(
         context.latest_rolling_units,
         context.project.get("daily_target_units"),

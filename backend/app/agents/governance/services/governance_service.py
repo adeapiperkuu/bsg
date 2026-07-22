@@ -2090,6 +2090,17 @@ async def approve_weekly_summary(
         previous_values=previous,
         new_values=governance_snapshot(summary, SUMMARY_AUDIT_FIELDS),
     )
+    try:
+        from app.reports.adapters import ensure_shadow_instance_for_weekly_summary
+
+        await ensure_shadow_instance_for_weekly_summary(session, summary)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "event=report_shadow_weekly_summary_failed summary_id=%s",
+            summary.id,
+        )
     await session.commit()
     await session.refresh(summary)
     invalidate_latest_weekly_summary_read_cache(org_id=summary.org_id)

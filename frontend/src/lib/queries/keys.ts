@@ -179,6 +179,33 @@ export const queryKeys = {
       filters.limit ?? 30,
       filters.offset ?? 0,
     ] as const,
+  kpiHistory: (kpiKey: string, params: Record<string, unknown> = {}) =>
+    ["time-series", "kpi", kpiKey, "history", params] as const,
+  kpiLatest: (kpiKey: string, params: Record<string, unknown> = {}) =>
+    ["time-series", "kpi", kpiKey, "latest", params] as const,
+  kpiTrend: (kpiKey: string, params: Record<string, unknown> = {}) =>
+    ["time-series", "kpi", kpiKey, "trend", params] as const,
+  kpiSeries: (kpiKey: string, params: Record<string, unknown> = {}) =>
+    ["time-series", "kpi", kpiKey, "series", params] as const,
+  kpiCompare: (kpiKey: string, params: Record<string, unknown> = {}) =>
+    ["time-series", "kpi", kpiKey, "compare", params] as const,
+  kpiForecast: (kpiKey: string, params: Record<string, unknown> = {}) =>
+    ["time-series", "kpi", kpiKey, "forecast", params] as const,
+  timeSeriesDimensions: (orgId?: string) =>
+    ["time-series", "dimensions", orgId ?? "__current__"] as const,
+  recommendationSubjects: (params: Record<string, unknown> = {}) =>
+    ["time-series", "recommendations", params] as const,
+  recommendationTimeline: (subjectId: string, params: Record<string, unknown> = {}) =>
+    ["time-series", "recommendations", subjectId, "timeline", params] as const,
+  reportTemplates: (params: Record<string, unknown> = {}) =>
+    ["reports", "templates", params] as const,
+  reportList: (params: Record<string, unknown> = {}) => ["reports", "list", params] as const,
+  reportDetail: (reportId: string) => ["reports", "detail", reportId] as const,
+  reportPreview: (reportId: string) => ["reports", "preview", reportId] as const,
+  reportExports: (reportId: string) => ["reports", reportId, "exports"] as const,
+  reportSchedules: ["reports", "schedules"] as const,
+  reportApprovals: (reportId: string) => ["reports", reportId, "approvals"] as const,
+  reportJob: (jobId: string) => ["reports", "jobs", jobId] as const,
 };
 
 export const STALE_TIME_MS = 5 * 60 * 1000;

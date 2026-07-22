@@ -11,6 +11,7 @@ import { getRouteApi, useNavigate } from "@tanstack/react-router";
 
 import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import { GenerateReportDialog } from "@/features/reports/GenerateReportDialog";
+import { PlatformReportsPanel } from "@/features/reports/PlatformReportsPanel";
 import { ReportsInboxPanel } from "@/features/reports/ReportsInboxPanel";
 import { ReportWorkspacePanel } from "@/features/reports/ReportWorkspacePanel";
 import { deriveCommunicationCapabilities } from "@/features/reports/reportPermissions";
@@ -219,7 +220,11 @@ export function ReportsPage() {
               throw error;
             }
           }}
+          platformReportId={detail?.platform_report_id ?? null}
         />
+      </div>
+      <div className="lg:col-span-3">
+        <PlatformReportsPanel projectId={detail?.project_id ?? null} />
       </div>
       <GenerateReportDialog
         open={dialogOpen}

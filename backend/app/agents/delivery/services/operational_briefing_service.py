@@ -151,6 +151,21 @@ async def build_project_operational_briefing(
             briefing["narrative"] = narrative
             briefing["ai_generated"] = True
 
+    try:
+        from app.reports.adapters import ensure_shadow_instance_for_delivery_briefing
+
+        await ensure_shadow_instance_for_delivery_briefing(
+            session,
+            org_id=current_user.org_id,
+            project_id=project_id,
+            briefing=briefing,
+        )
+    except Exception:
+        logger.exception(
+            "event=report_shadow_delivery_briefing_failed project_id=%s",
+            project_id,
+        )
+
     return briefing
 
 

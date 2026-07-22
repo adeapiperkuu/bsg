@@ -13,6 +13,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ReportExportButtons } from "@/components/bsg/reports";
 import { ApiError } from "@/lib/api";
 import { ReportEvidencePanel } from "@/features/reports/ReportEvidencePanel";
 import {
@@ -52,6 +53,8 @@ export interface ReportWorkspacePanelProps {
   /** Banner after approve succeeded but send failed. */
   sendPartialFailure?: string | null;
   onDismissSendPartialFailure?: () => void;
+  /** Optional linked Phase 18.3 platform report for shared exports. */
+  platformReportId?: string | null;
 }
 
 type ConfirmKind = "approve" | "reject" | "send" | null;
@@ -115,6 +118,7 @@ export function ReportWorkspacePanel({
   actionPending = false,
   sendPartialFailure = null,
   onDismissSendPartialFailure,
+  platformReportId = null,
 }: ReportWorkspacePanelProps) {
   const [editing, setEditing] = useState(false);
   const [draftSubject, setDraftSubject] = useState("");
@@ -429,6 +433,7 @@ export function ReportWorkspacePanel({
       )}
 
       <ReportEvidencePanel links={report.evidence_links ?? []} />
+      {platformReportId ? <ReportExportButtons reportId={platformReportId} /> : null}
 
       <AlertDialog open={confirm === "approve"} onOpenChange={(open) => !open && setConfirm(null)}>
         <AlertDialogContent>

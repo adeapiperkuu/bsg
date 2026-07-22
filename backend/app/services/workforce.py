@@ -439,6 +439,23 @@ async def create_utilization_snapshot(
     )
     session.add(snapshot)
     await session.flush()
+    try:
+        from app.time_series.publishers import publish_workforce_utilization_observation
+
+        await publish_workforce_utilization_observation(
+            session,
+            org_id=project.org_id,
+            project_id=project.id,
+            team_id=payload.team_id,
+            utilization_pct=utilization_pct,
+        )
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "event=time_series_workforce_create_hook_failed project_id=%s",
+            project.id,
+        )
     return snapshot
 
 
@@ -494,6 +511,24 @@ async def update_utilization_snapshot(
             None,
         )
 
+    await session.flush()
+    try:
+        from app.time_series.publishers import publish_workforce_utilization_observation
+
+        await publish_workforce_utilization_observation(
+            session,
+            org_id=snapshot.org_id,
+            project_id=snapshot.project_id,
+            team_id=snapshot.team_id,
+            utilization_pct=snapshot.utilization_pct,
+        )
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "event=time_series_workforce_update_hook_failed snapshot_id=%s",
+            snapshot.id,
+        )
     return snapshot
 
 
@@ -577,9 +612,9 @@ async def get_workforce_dashboard(
 
     avg_util = None
     if util_snaps:
-        avg_util = str(
-            round(sum(float(s.utilization_pct or 0) for s in util_snaps) / len(util_snaps), 1)
-        )
+        from app.kpis.adapters import format_avg_utilization_pct
+
+        avg_util = format_avg_utilization_pct([s.utilization_pct for s in util_snaps])
 
     return WorkforceDashboardRead(
         kpis=WorkforceDashboardKpis(

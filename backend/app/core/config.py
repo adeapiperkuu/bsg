@@ -121,6 +121,28 @@ class Settings(BaseSettings):
     # Phase 15.5 — Delivery retrieves Knowledge evidence via existing RAG (fail-open).
     delivery_knowledge_evidence_enabled: bool = True
     delivery_knowledge_evidence_max_sources: int = 5
+    # Phase 18.2 — Platform Time-Series Engine (durable snapshots, rollups, retention).
+    time_series_jobs_enabled: bool = True
+    time_series_publish_enabled: bool = True
+    time_series_retention_enabled: bool = True
+    time_series_job_poll_interval_seconds: int = 30
+    time_series_job_poll_batch_size: int = 5
+    time_series_job_stale_seconds: int = 180
+    time_series_job_worker_id: str = ""
+    time_series_plan_interval_seconds: int = 3600
+    time_series_plan_batch_size: int = 50
+    time_series_retention_cron_hour_utc: int = 3
+    # Phase 18.3 — Cross-Agent Reporting Framework.
+    report_jobs_enabled: bool = True
+    report_publish_enabled: bool = True
+    report_job_poll_interval_seconds: int = 30
+    report_job_poll_batch_size: int = 5
+    report_job_stale_seconds: int = 180
+    report_job_worker_id: str = ""
+    report_plan_interval_seconds: int = 3600
+    report_export_dir: str = str(BACKEND_ROOT / "data" / "report-exports")
+    report_storage_bucket: str = "report-exports"
+    report_storage_backend: Literal["local", "supabase"] = "local"
 
     model_config = SettingsConfigDict(
         env_file=(

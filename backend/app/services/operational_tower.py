@@ -226,7 +226,12 @@ def _summarize_health(portfolio: dict[str, Any]) -> dict[str, Any]:
         counts[_traffic_light(dashboard)] += 1
         confidences.append(float(dashboard.get("confidence", 0)))
 
-    schedule_confidence = round(sum(confidences) / len(confidences)) if confidences else None
+    schedule_confidence = None
+    if confidences:
+        from app.kpis.formulas import average_numeric
+
+        avg = average_numeric(confidences)
+        schedule_confidence = round(float(avg)) if avg is not None else None
 
     health = [
         {"name": _HEALTH_META[key][0], "value": counts[key], "color": _HEALTH_META[key][1]}
@@ -445,6 +450,7 @@ async def _critical_alerts(
 
     return [
         {
+            "id": str(alert.id),
             "sev": _TIER_LABEL.get(alert.risk_tier, "Warning"),
             "project": project_names.get(alert.project_id, "Project"),
             "desc": alert.detail or alert.title,
@@ -485,6 +491,7 @@ async def _recommendations(
         evidence = len(causes) if isinstance(causes, dict) else (1 if rec.source_risk_id else 0)
         result.append(
             {
+                "id": str(rec.id),
                 "title": rec.title,
                 "confidence": round(float(rec.confidence_score) * 100),
                 "evidence": evidence,
@@ -553,6 +560,7 @@ async def _upcoming_milestones(
         status = conf.status if conf is not None else m.status
         result.append(
             {
+                "id": str(m.id),
                 "project": project_names.get(m.project_id, "Project"),
                 "name": m.name,
                 "due": m.planned_date.isoformat(),

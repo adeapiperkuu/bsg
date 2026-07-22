@@ -101,9 +101,9 @@ def _on_time_completed_filter(window_start: date):
 
 
 def _sla_adherence_from_counts(on_time: int, total: int) -> float:
-    if total == 0:
-        return 100.0
-    return round((on_time / total) * 100.0, 1)
+    from app.kpis.adapters import governance_sla_from_counts
+
+    return governance_sla_from_counts(on_time, total)
 
 
 def _action_kpi_subquery(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
@@ -54,6 +55,8 @@ from app.services.knowledge_intelligence import (
 
 # Optional AI hook — tests inject a mock; production may leave None (heuristics only).
 AiSummaryFn = Callable[[str, dict[str, Any]], dict[str, Any]]
+
+logger = logging.getLogger(__name__)
 
 APPLYABLE_FIELDS = frozenset(
     {
@@ -795,6 +798,23 @@ async def dismiss_knowledge_suggestion(
     row.reviewed_by = current_user.id
     row.reviewed_at = datetime.now(timezone.utc)
     await session.flush()
+    try:
+        from app.time_series.recommendations import append_recommendation_timeline
+
+        await append_recommendation_timeline(
+            session,
+            org_id=row.org_id,
+            domain="knowledge",
+            subject_table="knowledge_suggestions",
+            subject_id=row.id,
+            event_type="dismissed",
+            actor_user_id=current_user.id,
+            source_agent="knowledge",
+            status_snapshot=row.status,
+            idempotency_key=f"knowledge-dismiss:{row.id}:{row.reviewed_at.isoformat()}",
+        )
+    except Exception:
+        logger.exception("event=time_series_knowledge_dismiss_hook_failed suggestion_id=%s", suggestion_id)
     return suggestion_to_read(row)
 
 
@@ -851,6 +871,26 @@ async def apply_knowledge_suggestion(
     row.reviewed_by = current_user.id
     row.reviewed_at = datetime.now(timezone.utc)
     await session.flush()
+    try:
+        from app.time_series.recommendations import append_recommendation_timeline
+
+        await append_recommendation_timeline(
+            session,
+            org_id=row.org_id,
+            domain="knowledge",
+            subject_table="knowledge_suggestions",
+            subject_id=row.id,
+            event_type="converted",
+            actor_user_id=current_user.id,
+            source_agent="knowledge",
+            status_snapshot=row.status,
+            conversion_target="knowledge_document",
+            related_table="knowledge_documents",
+            related_id=row.document_id,
+            idempotency_key=f"knowledge-apply:{row.id}:{row.reviewed_at.isoformat()}",
+        )
+    except Exception:
+        logger.exception("event=time_series_knowledge_apply_hook_failed suggestion_id=%s", suggestion_id)
     return suggestion_to_read(row)
 
 

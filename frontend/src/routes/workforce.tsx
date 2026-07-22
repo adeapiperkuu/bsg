@@ -15,6 +15,7 @@ import { WorkforceAgentSection } from "@/components/bsg/workforce/agent/Workforc
 import { WorkforceKpiStrip } from "@/components/bsg/workforce/WorkforceKpiStrip";
 import { WorkforceOptimizationPanel } from "@/components/bsg/workforce/WorkforceOptimizationPanel";
 import { WorkforceRecommendationsPanel } from "@/components/bsg/WorkforceRecommendationsPanel";
+import { PlatformReportsPanel } from "@/features/reports/PlatformReportsPanel";
 import { useProjectsQuery } from "@/lib/queries/delivery";
 import { loadWorkforceRouteData } from "@/lib/queries/workforce-prefetch";
 import { useProjectRecommendationsQuery } from "@/features/mitigation-recommendations/hooks/useProjectRecommendations";
@@ -706,6 +707,16 @@ function WorkforcePage() {
           </WorkforceFold>
         </div>
       </div>
+
+      {canReadInternalWorkforce ? (
+        <div className="mt-5">
+          <PlatformReportsPanel
+            domain="workforce"
+            projectId={resolvedProjectId}
+            compact
+          />
+        </div>
+      ) : null}
 
       {canReadInternalWorkforce ? (
         <EmployeeProfileDrawer
