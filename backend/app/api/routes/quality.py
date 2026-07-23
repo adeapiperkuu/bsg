@@ -46,6 +46,7 @@ from app.schemas.domain import (
     SopVersionRead,
 )
 from app.services.quality import (
+    QualityScanExecutionError,
     build_quality_dashboard,
     build_quality_page,
     create_gold_set_evaluation_log,
@@ -83,11 +84,15 @@ async def trigger_quality_scan(
     session: SessionDep,
     current_user=Depends(require_role(AppRole.SUPER_ADMIN)),
 ) -> DataResponse[QualityScanRunRead]:
-    run = await scan_all_projects(
-        session,
-        trigger=ScanTrigger.MANUAL,
-        triggered_by=current_user.id,
-    )
+    try:
+        run = await scan_all_projects(
+            session,
+            trigger=ScanTrigger.MANUAL,
+            triggered_by=current_user.id,
+        )
+    except QualityScanExecutionError as exc:
+        logger.warning("Manual quality scan finished with failure run_id=%s", exc.run.id)
+        run = exc.run
     return DataResponse(data=QualityScanRunRead.model_validate(run))
 
 

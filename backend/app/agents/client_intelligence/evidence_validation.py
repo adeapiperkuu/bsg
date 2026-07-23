@@ -51,6 +51,7 @@ _ALLOWED_SOURCE_TABLES: dict[SourceAgent, frozenset[str]] = {
     SourceAgent.QUALITY_INTELLIGENCE: frozenset({"quality_snapshots"}),
     SourceAgent.WORKFORCE_CAPABILITY: frozenset(
         {
+            "teams",
             "utilization_snapshots",
             "project_skill_requirements",
             "training_programs",
@@ -77,6 +78,11 @@ _ALLOWED_SOURCE_TABLES: dict[SourceAgent, frozenset[str]] = {
 
 # Allowed claim keys per source table. internal_only keys are forbidden in CLIENT_SAFE.
 _CLAIM_KEY_REGISTRY: dict[str, dict[str, frozenset[str]]] = {
+    "teams": {
+        "allowed": frozenset({"active_team_count"}),
+        "required": frozenset({"active_team_count"}),
+        "internal_only": frozenset(),
+    },
     "projects": {
         "allowed": frozenset({"project_id", "project_name", "project_status"}),
         "required": frozenset({"project_id", "project_name", "project_status"}),

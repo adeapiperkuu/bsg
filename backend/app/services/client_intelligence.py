@@ -36,6 +36,7 @@ from app.db.session import _uses_session_pooler
 from app.db.models import (
     AgentQuery,
     AgentQueryEvidenceLink,
+    AppRole,
     ClientCommunication,
     ClientCsatScore,
     CommunicationEvidenceLink,
@@ -1155,11 +1156,14 @@ async def build_client_intelligence_query_history(
         )
 
     project = await get_visible_project(session, project_id, current_user)
-    filters = (
+    filters: tuple[object, ...] = (
         AgentQuery.project_id == project_id,
         AgentQuery.org_id == project.org_id,
         AgentQuery.agent_name == CLIENT_INTERACTION_AGENT_NAME,
     )
+    # Client portal history is private to the asking user (never internal staff Q&A).
+    if current_user.role == AppRole.CLIENT:
+        filters = (*filters, AgentQuery.user_id == current_user.id)
     total = int(
         (
             await session.execute(

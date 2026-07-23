@@ -5,7 +5,14 @@ import { ChevronDown, ChevronRight, Clock, Play, RefreshCw, User } from "lucide-
 import { Card } from "@/components/bsg/widgets";
 import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import { Button } from "@/components/ui/button";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { listQualityScanRuns, triggerQualityScan, type QualityScanRun } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -71,7 +78,12 @@ function AdminAgentRunsPage() {
           History of automated and manual Quality Intelligence scan runs.
         </p>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading || scanning}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void load()}
+            disabled={loading || scanning}
+          >
             <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
             Refresh
           </Button>
@@ -126,7 +138,11 @@ function AdminAgentRunsPage() {
                           onClick={() => setExpandedId(expanded ? null : run.id)}
                           aria-label={expanded ? "Collapse" : "Expand"}
                         >
-                          {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                          {expanded ? (
+                            <ChevronDown className="h-4 w-4" />
+                          ) : (
+                            <ChevronRight className="h-4 w-4" />
+                          )}
                         </button>
                       ) : null}
                     </TableCell>
@@ -144,14 +160,21 @@ function AdminAgentRunsPage() {
                       W{run.iso_week}/{run.iso_year}
                     </TableCell>
                     <TableCell>
-                      <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium capitalize", statusClass(run.status))}>
+                      <span
+                        className={cn(
+                          "rounded-full px-2 py-0.5 text-xs font-medium capitalize",
+                          statusClass(run.status),
+                        )}
+                      >
                         {run.status}
                       </span>
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {new Date(run.started_at).toLocaleString()}
                     </TableCell>
-                    <TableCell className="text-xs">{formatDuration(run.started_at, run.finished_at)}</TableCell>
+                    <TableCell className="text-xs">
+                      {formatDuration(run.started_at, run.finished_at)}
+                    </TableCell>
                     <TableCell>{run.projects_scanned}</TableCell>
                     <TableCell>{run.snapshots_evaluated}</TableCell>
                     <TableCell>{run.alerts_created}</TableCell>
@@ -161,7 +184,9 @@ function AdminAgentRunsPage() {
                     <TableRow key={`${run.id}-detail`}>
                       <TableCell colSpan={10} className="bg-elevated/50 p-4">
                         {run.error_message && (
-                          <p className="mb-3 text-sm text-destructive">Error: {run.error_message}</p>
+                          <p className="mb-3 text-sm text-destructive">
+                            Error: {run.error_message}
+                          </p>
                         )}
                         {run.per_project_results && run.per_project_results.length > 0 ? (
                           <div className="overflow-x-auto">
@@ -172,6 +197,7 @@ function AdminAgentRunsPage() {
                                   <th className="py-1.5 pr-3">Snapshots</th>
                                   <th className="py-1.5 pr-3">Alerts</th>
                                   <th className="py-1.5 pr-3">Data gaps</th>
+                                  <th className="py-1.5 pr-3">Errors</th>
                                   <th className="py-1.5">Teams evaluated</th>
                                 </tr>
                               </thead>
@@ -182,16 +208,26 @@ function AdminAgentRunsPage() {
                                     <td className="py-2 pr-3">{row.snapshots}</td>
                                     <td className="py-2 pr-3">{row.alerts}</td>
                                     <td className="py-2 pr-3">{row.data_gaps}</td>
+                                    <td className="py-2 pr-3">{row.errors ?? 0}</td>
                                     <td className="py-2">
                                       {row.teams.length === 0 ? (
-                                        <span className="text-muted-foreground">No snapshots this week</span>
+                                        <span className="text-muted-foreground">
+                                          No snapshots this week
+                                        </span>
                                       ) : (
                                         <ul className="space-y-0.5">
                                           {row.teams.map((t) => (
                                             <li key={t.team_id} className="text-muted-foreground">
+                                              {t.error && "⚠ "}
                                               {t.data_gap && "⚠ "}
                                               {t.has_drift && "🔴 "}
-                                              {t.detail ?? (t.data_gap ? "Data gap" : t.has_drift ? "Drift" : "OK")}
+                                              {t.error ??
+                                                t.detail ??
+                                                (t.data_gap
+                                                  ? "Data gap"
+                                                  : t.has_drift
+                                                    ? "Drift"
+                                                    : "OK")}
                                             </li>
                                           ))}
                                         </ul>
@@ -203,7 +239,9 @@ function AdminAgentRunsPage() {
                             </table>
                           </div>
                         ) : (
-                          <p className="text-xs text-muted-foreground">No per-project detail recorded.</p>
+                          <p className="text-xs text-muted-foreground">
+                            No per-project detail recorded.
+                          </p>
                         )}
                       </TableCell>
                     </TableRow>

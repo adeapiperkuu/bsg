@@ -26,6 +26,7 @@ from app.agents.client_intelligence.contracts import (
     QualityEvidenceFacts,
     ReportingPeriod,
     SourceAgent,
+    WorkforceCapacityFacts,
     WorkforceEvidenceFacts,
 )
 from app.agents.client_intelligence.query_contracts import (
@@ -196,6 +197,240 @@ def test_question_create_trims_and_rejects_blank() -> None:
         ClientIntelligenceQuestionCreate(question="   ")
     with pytest.raises(ValidationError):
         ClientIntelligenceQuestionCreate(question="x" * 2001)
+
+
+def test_classify_conversational_project_questions() -> None:
+    assert (
+        classify_client_intelligence_question("How is my project doing?")
+        == ClientIntelligenceQuestionCategory.PROJECT_HEALTH
+    )
+    assert (
+        classify_client_intelligence_question("Give me a status update")
+        == ClientIntelligenceQuestionCategory.GENERAL_STATUS
+    )
+    assert (
+        classify_client_intelligence_question("Tell me about this sprint")
+        == ClientIntelligenceQuestionCategory.GENERAL_STATUS
+    )
+    assert (
+        classify_client_intelligence_question("What will happen in M2 - Mid-sprint delivery?")
+        == ClientIntelligenceQuestionCategory.MILESTONES
+    )
+
+
+def test_client_facing_limitations_drop_internal_codes() -> None:
+    from app.agents.client_intelligence.query_handler import _client_facing_limitations
+
+    cleaned = _client_facing_limitations(
+        [
+            "DQ_CI_D14_UNAVAILABLE",
+            "FRESHNESS_SLA_UNRESOLVED",
+            "PROJECT_HEALTH_UNAVAILABLE",
+            "QUESTION_UNSUPPORTED",
+            "CLIENT_COMMUNICATION_NOTES_UNAVAILABLE: CI-D14 detail",
+        ]
+    )
+    assert cleaned == ["PROJECT_HEALTH_UNAVAILABLE", "QUESTION_UNSUPPORTED"]
+
+
+def test_classify_team_question_as_workforce() -> None:
+    assert (
+        classify_client_intelligence_question("How many teams are working on this project?")
+        == ClientIntelligenceQuestionCategory.WORKFORCE
+    )
+
+
+def test_workforce_answer_reports_client_safe_team_aggregate() -> None:
+    from app.agents.client_intelligence.query_handler import _build_category_answer
+
+    team_id = uuid4()
+    pack = _empty_pack(
+        evidence=[
+            ClientEvidenceReference(
+                source_agent=SourceAgent.WORKFORCE_CAPABILITY,
+                source_table="teams",
+                source_row_id=team_id,
+                description="Aggregate project workforce evidence.",
+                visibility=EvidenceVisibility.CLIENT_SAFE,
+                observed_at=None,
+                claim_keys=["active_team_count"],
+            )
+        ]
+    ).model_copy(
+        update={
+            "workforce": WorkforceEvidenceFacts(
+                as_of=date(2026, 7, 16),
+                capacity=WorkforceCapacityFacts(
+                    active_team_count=3,
+                    utilization_pct=Decimal("82.5"),
+                    latest_snapshot_date=date(2026, 7, 15),
+                    teams_with_utilization=2,
+                    teams_without_utilization=1,
+                ),
+            )
+        }
+    )
+
+    availability, _conf, answer, _limits, _next, _esc, refs, insufficient = (
+        _build_category_answer(
+            ClientIntelligenceQuestionCategory.WORKFORCE,
+            pack,
+            question="How many teams are working on this project?",
+            client_safe=True,
+        )
+    )
+
+    assert availability == ClientIntelligenceAnswerAvailability.ANSWERED
+    assert insufficient is False
+    assert "3 active team(s)" in answer
+    assert "82.5%" in answer
+    assert "Individual team names" in answer
+    assert [ref.source_row_id for ref in refs] == [team_id]
+
+
+def test_partial_status_answer_uses_available_facts() -> None:
+    from app.agents.client_intelligence.contracts import (
+        DeliveryConfidenceFacts,
+        DeliveryEvidenceFacts,
+        MilestoneFacts,
+    )
+    from app.agents.client_intelligence.query_handler import _partial_status_answer
+    from decimal import Decimal
+
+    score_id = uuid4()
+    milestone_id = uuid4()
+    pack = _empty_pack(
+        evidence=[
+            ClientEvidenceReference(
+                source_agent=SourceAgent.DELIVERY_PERFORMANCE,
+                source_table="delivery_confidence_scores",
+                source_row_id=score_id,
+                description="Latest confidence",
+                observed_at=datetime(2026, 7, 16, tzinfo=UTC),
+                visibility=EvidenceVisibility.CLIENT_SAFE,
+                claim_keys=["score_pct", "confidence_status"],
+            ),
+            ClientEvidenceReference(
+                source_agent=SourceAgent.DELIVERY_PERFORMANCE,
+                source_table="milestones",
+                source_row_id=milestone_id,
+                description="Milestone",
+                observed_at=datetime(2026, 7, 16, tzinfo=UTC),
+                visibility=EvidenceVisibility.CLIENT_SAFE,
+                claim_keys=["milestone_id", "milestone_name", "milestone_status", "planned_date"],
+            ),
+        ]
+    )
+    pack = pack.model_copy(
+        update={
+            "delivery": DeliveryEvidenceFacts(
+                latest_delivery_confidence=DeliveryConfidenceFacts(
+                    id=score_id,
+                    milestone_id=milestone_id,
+                    score_pct=Decimal("88.0"),
+                    status="on_track",
+                    observed_at=datetime(2026, 7, 16, tzinfo=UTC),
+                ),
+                milestones=[
+                    MilestoneFacts(
+                        id=milestone_id,
+                        name="M1 — Kickoff",
+                        planned_date=date(2026, 6, 1),
+                        actual_date=date(2026, 6, 2),
+                        status="completed",
+                    )
+                ],
+            )
+        }
+    )
+    answer, refs, _limits, has_facts = _partial_status_answer(
+        pack,
+        health_status=None,
+        period_as_of=date(2026, 7, 16),
+    )
+    assert has_facts is True
+    assert "Delivery Confidence: 88.0%" in answer
+    assert "M1 — Kickoff" in answer
+    assert refs
+
+
+def test_health_question_returns_partial_summary_when_milestones_exist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Health must remain useful when its full scoring inputs are incomplete."""
+    from app.agents.client_intelligence.contracts import MilestoneFacts
+    from app.agents.client_intelligence.query_handler import _build_category_answer
+
+    milestone_id = uuid4()
+    pack = _empty_pack(
+        evidence=[
+            ClientEvidenceReference(
+                source_agent=SourceAgent.DELIVERY_PERFORMANCE,
+                source_table="milestones",
+                source_row_id=milestone_id,
+                description="Milestone plan",
+                observed_at=datetime(2026, 7, 16, tzinfo=UTC),
+                visibility=EvidenceVisibility.CLIENT_SAFE,
+                claim_keys=[
+                    "milestone_id",
+                    "milestone_name",
+                    "milestone_status",
+                    "planned_date",
+                ],
+            )
+        ]
+    ).model_copy(
+        update={
+            "delivery": DeliveryEvidenceFacts(
+                milestones=[
+                    MilestoneFacts(
+                        id=milestone_id,
+                        name="M2 — Mid-sprint delivery",
+                        planned_date=date(2026, 8, 3),
+                        actual_date=None,
+                        status="on_track",
+                    )
+                ]
+            )
+        }
+    )
+
+    monkeypatch.setattr(
+        "app.agents.client_intelligence.query_handler.assess_project_health",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            overall_data_quality=DataQualityState.UNAVAILABLE,
+            status=None,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.agents.client_intelligence.query_handler.assess_delivery_confidence",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        "app.agents.client_intelligence.query_handler.assess_risk_transparency",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        "app.agents.client_intelligence.query_handler.assess_delivery_trend",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+
+    availability, _confidence, answer, limitations, _next, _escalation, refs, insufficient = (
+        _build_category_answer(
+            ClientIntelligenceQuestionCategory.PROJECT_HEALTH,
+            pack,
+            question="What is the project health?",
+            client_safe=True,
+        )
+    )
+
+    assert availability == ClientIntelligenceAnswerAvailability.ANSWERED
+    assert insufficient is False
+    assert "full Project Health status is not available yet" in answer
+    assert "M2 — Mid-sprint delivery" in answer
+    assert "on_track" in answer
+    assert "PROJECT_HEALTH_UNAVAILABLE" not in limitations
+    assert [ref.source_row_id for ref in refs] == [milestone_id]
 
 
 def test_classify_supported_and_blocked_categories() -> None:
@@ -505,7 +740,7 @@ async def test_qa_health_unavailable_is_not_on_track(
     async def _pack(*_args: Any, **_kwargs: Any) -> Any:
         return _empty_pack()
 
-    def _answer(category: Any, pack: Any) -> Any:
+    def _answer(category: Any, pack: Any, **_kwargs: Any) -> Any:
         assert category == ClientIntelligenceQuestionCategory.PROJECT_HEALTH
         return (
             ClientIntelligenceAnswerAvailability.INSUFFICIENT_EVIDENCE,
@@ -557,7 +792,7 @@ async def test_qa_confidence_independent_of_health_wording(
     async def _pack(*_args: Any, **_kwargs: Any) -> Any:
         return pack
 
-    def _answer(category: Any, _pack: Any) -> Any:
+    def _answer(category: Any, _pack: Any, **_kwargs: Any) -> Any:
         assert category == ClientIntelligenceQuestionCategory.DELIVERY_CONFIDENCE
         return (
             ClientIntelligenceAnswerAvailability.ANSWERED,
@@ -617,7 +852,7 @@ async def test_qa_zero_evidence_cannot_be_answered(
     async def _pack(*_args: Any, **_kwargs: Any) -> Any:
         return _empty_pack(evidence=[])
 
-    def _answer(_category: Any, _pack: Any) -> Any:
+    def _answer(_category: Any, _pack: Any, **_kwargs: Any) -> Any:
         return (
             ClientIntelligenceAnswerAvailability.ANSWERED,
             ClientIntelligenceConfidenceLevel.HIGH,
@@ -699,7 +934,7 @@ async def test_qa_latency_uses_monotonic_pipeline(
     async def _pack(*_args: Any, **_kwargs: Any) -> Any:
         return _empty_pack()
 
-    def _answer(_category: Any, _pack: Any) -> Any:
+    def _answer(_category: Any, _pack: Any, **_kwargs: Any) -> Any:
         return (
             ClientIntelligenceAnswerAvailability.INSUFFICIENT_EVIDENCE,
             ClientIntelligenceConfidenceLevel.INSUFFICIENT,
@@ -753,7 +988,7 @@ async def test_qa_evidence_flush_failure_rolls_back(
     async def _pack(*_args: Any, **_kwargs: Any) -> Any:
         return pack
 
-    def _answer(_category: Any, _pack: Any) -> Any:
+    def _answer(_category: Any, _pack: Any, **_kwargs: Any) -> Any:
         return (
             ClientIntelligenceAnswerAvailability.ANSWERED,
             ClientIntelligenceConfidenceLevel.HIGH,
@@ -1321,6 +1556,138 @@ def test_next_milestone_none_upcoming() -> None:
     assert "Already Done" not in answer or "upcoming" in answer.lower()
 
 
+def test_completed_milestone_intent_answers_reached() -> None:
+    from app.agents.client_intelligence.contracts import MilestoneFacts
+    from app.agents.client_intelligence.query_handler import _build_category_answer
+
+    done_id = uuid4()
+    pack = _empty_pack()
+    pack = pack.model_copy(
+        update={
+            "delivery": DeliveryEvidenceFacts(
+                milestones=[
+                    MilestoneFacts(
+                        id=done_id,
+                        name="M1 — Kickoff",
+                        planned_date=date(2026, 6, 1),
+                        actual_date=date(2026, 6, 2),
+                        status="completed",
+                    ),
+                    MilestoneFacts(
+                        id=uuid4(),
+                        name="M2 — Mid-sprint delivery",
+                        planned_date=date(2026, 8, 3),
+                        actual_date=None,
+                        status="on_track",
+                    ),
+                ]
+            )
+        }
+    )
+    availability, _conf, answer, _lim, _next, _esc, _refs, insufficient = _build_category_answer(
+        ClientIntelligenceQuestionCategory.MILESTONES,
+        pack,
+        question="Tell me about a reached milestone in this sprint",
+    )
+    assert availability == ClientIntelligenceAnswerAvailability.ANSWERED
+    assert insufficient is False
+    assert "M1 — Kickoff" in answer
+    assert "reached" in answer.lower() or "completed" in answer.lower()
+    assert "M2 — Mid-sprint delivery" not in answer
+
+
+def test_at_risk_milestone_intent_names_items() -> None:
+    from app.agents.client_intelligence.contracts import MilestoneFacts
+    from app.agents.client_intelligence.query_handler import _build_category_answer
+
+    pack = _empty_pack()
+    pack = pack.model_copy(
+        update={
+            "delivery": DeliveryEvidenceFacts(
+                milestones=[
+                    MilestoneFacts(
+                        id=uuid4(),
+                        name="Risky Cutover",
+                        planned_date=date(2026, 8, 10),
+                        actual_date=None,
+                        status="at_risk",
+                    ),
+                    MilestoneFacts(
+                        id=uuid4(),
+                        name="Healthy Milestone",
+                        planned_date=date(2026, 8, 20),
+                        actual_date=None,
+                        status="on_track",
+                    ),
+                ]
+            )
+        }
+    )
+    availability, _conf, answer, *_rest = _build_category_answer(
+        ClientIntelligenceQuestionCategory.MILESTONES,
+        pack,
+        question="Which milestones are at risk?",
+    )
+    assert availability == ClientIntelligenceAnswerAvailability.ANSWERED
+    assert "Risky Cutover" in answer
+    assert "at risk" in answer.lower() or "delayed" in answer.lower()
+
+
+def test_milestone_shorthand_answers_the_named_milestone() -> None:
+    from app.agents.client_intelligence.contracts import MilestoneFacts
+    from app.agents.client_intelligence.query_handler import _build_category_answer
+
+    m2_id = uuid4()
+    pack = _empty_pack(
+        evidence=[
+            ClientEvidenceReference(
+                source_agent=SourceAgent.DELIVERY_PERFORMANCE,
+                source_table="milestones",
+                source_row_id=m2_id,
+                description="M2 milestone plan",
+                observed_at=datetime(2026, 7, 16, tzinfo=UTC),
+                visibility=EvidenceVisibility.CLIENT_SAFE,
+                claim_keys=[
+                    "milestone_id",
+                    "milestone_name",
+                    "milestone_status",
+                    "planned_date",
+                ],
+            )
+        ]
+    ).model_copy(
+        update={
+            "delivery": DeliveryEvidenceFacts(
+                milestones=[
+                    MilestoneFacts(
+                        id=m2_id,
+                        name="M2 - Mid-sprint delivery",
+                        planned_date=date(2026, 8, 3),
+                        actual_date=None,
+                        status="on_track",
+                    )
+                ]
+            )
+        }
+    )
+
+    availability, _conf, answer, _limits, _next, _esc, refs, insufficient = (
+        _build_category_answer(
+            ClientIntelligenceQuestionCategory.MILESTONES,
+            pack,
+            question="What will happen in M2 - Mid-sprint delivery?",
+            client_safe=True,
+        )
+    )
+
+    assert availability == ClientIntelligenceAnswerAvailability.ANSWERED
+    assert insufficient is False
+    assert "M2 - Mid-sprint delivery" in answer
+    assert "2026-08-03" in answer
+    assert "on_track" in answer
+    assert [ref.source_row_id for ref in refs] == [m2_id]
+
+
 @pytest.mark.asyncio
 async def test_report_lookup_does_not_claim_page_size_as_total(
     monkeypatch: pytest.MonkeyPatch,
@@ -1369,7 +1736,7 @@ async def test_super_admin_persists_project_org_not_home_org(
     async def _visible(*_args: Any, **_kwargs: Any) -> Any:
         return SimpleNamespace(id=PROJECT_ID, org_id=project_org)
 
-    def _answer(_category: Any, _pack: Any) -> Any:
+    def _answer(_category: Any, _pack: Any, **_kwargs: Any) -> Any:
         return (
             ClientIntelligenceAnswerAvailability.INSUFFICIENT_EVIDENCE,
             ClientIntelligenceConfidenceLevel.INSUFFICIENT,

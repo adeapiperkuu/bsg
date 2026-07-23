@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -194,3 +195,72 @@ async def test_scan_all_projects_empty_db() -> None:
     assert run.alerts_created == 0
     assert run.data_gaps == 0
     assert run.status == ScanStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_scan_all_projects_keeps_a_failed_run_when_one_snapshot_errors() -> None:
+    """One bad snapshot must not turn the admin scan request into a 500."""
+    from app.db.models import QualityScanRun, ScanStatus
+    from app.services.quality import scan_all_projects
+
+    snapshot = _make_snapshot()
+
+    class _Project:
+        id = snapshot.project_id
+        name = "Project Alpha"
+
+    class _Result:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def scalars(self):
+            return iter(self.rows)
+
+    class _FakeSession:
+        def __init__(self):
+            self.calls = 0
+
+        async def execute(self, _statement):
+            self.calls += 1
+            return _Result([_Project()] if self.calls == 1 else [snapshot])
+
+        def add(self, obj):
+            if isinstance(obj, QualityScanRun):
+                obj.id = uuid4()
+
+        flush = AsyncMock()
+        commit = AsyncMock()
+        refresh = AsyncMock()
+
+        @asynccontextmanager
+        async def begin_nested(self):
+            yield
+
+    session = _FakeSession()
+    with patch(
+        "app.services.quality.evaluate_snapshot",
+        AsyncMock(side_effect=RuntimeError("malformed snapshot")),
+    ):
+        run = await scan_all_projects(session)
+
+    assert run.status == ScanStatus.FAILED
+    assert run.error_message == (
+        "1 snapshot evaluation(s) failed. Review the per-project results for affected teams."
+    )
+    assert run.per_project_results == [
+        {
+            "project_id": str(snapshot.project_id),
+            "name": "Project Alpha",
+            "snapshots": 1,
+            "alerts": 0,
+            "data_gaps": 0,
+            "errors": 1,
+            "teams": [
+                {
+                    "team_id": str(snapshot.team_id),
+                    "error": "Snapshot evaluation failed.",
+                }
+            ],
+        }
+    ]
+    session.commit.assert_awaited_once()

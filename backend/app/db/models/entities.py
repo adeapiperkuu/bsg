@@ -156,6 +156,26 @@ class CommunicationType(StrEnum):
     AD_HOC = "ad_hoc"
 
 
+class ClientChangeRequestStatus(StrEnum):
+    SUBMITTED = "submitted"
+    UNDER_REVIEW = "under_review"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    IMPLEMENTED = "implemented"
+
+
+class ClientDeliverableStatus(StrEnum):
+    PLANNED = "planned"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+
+
+class ClientMeetingStatus(StrEnum):
+    SCHEDULED = "scheduled"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
 class NotificationType(StrEnum):
     RISK_ALERT = "risk_alert"
     COMMUNICATION_PENDING = "communication_pending"
@@ -1477,6 +1497,104 @@ class ClientCommunication(Base, UuidPrimaryKey, CreatedAt, UpdatedAt):
     evidence_source_fingerprint: Mapped[str | None] = mapped_column(Text)
     generation_mode: Mapped[str | None] = mapped_column(Text)
     generation_warning: Mapped[str | None] = mapped_column(Text)
+
+
+class ClientChangeRequest(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "client_change_requests"
+    __table_args__ = (
+        Index("client_change_requests_project_created_idx", "project_id", desc("created_at")),
+        Index("client_change_requests_org_status_idx", "org_id", "status"),
+    )
+
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    org_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organisations.id", ondelete="RESTRICT"), index=True
+    )
+    submitted_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    title: Mapped[str] = mapped_column(Text)
+    description: Mapped[str] = mapped_column(Text)
+    business_justification: Mapped[str | None] = mapped_column(Text)
+    priority: Mapped[str] = mapped_column(Text, default="medium", server_default="medium")
+    status: Mapped[ClientChangeRequestStatus] = mapped_column(
+        Enum(
+            ClientChangeRequestStatus,
+            name="client_change_request_status",
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        default=ClientChangeRequestStatus.SUBMITTED,
+        server_default=ClientChangeRequestStatus.SUBMITTED.value,
+    )
+    decision_notes: Mapped[str | None] = mapped_column(Text)
+    implemented_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ClientDeliverable(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "client_deliverables"
+    __table_args__ = (
+        Index("client_deliverables_project_status_idx", "project_id", "status"),
+        Index("client_deliverables_project_due_idx", "project_id", "due_date"),
+    )
+
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    org_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organisations.id", ondelete="RESTRICT"), index=True
+    )
+    title: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[ClientDeliverableStatus] = mapped_column(
+        Enum(
+            ClientDeliverableStatus,
+            name="client_deliverable_status",
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        default=ClientDeliverableStatus.PLANNED,
+        server_default=ClientDeliverableStatus.PLANNED.value,
+    )
+    due_date: Mapped[date | None] = mapped_column(Date)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    file_name: Mapped[str | None] = mapped_column(Text)
+    file_url: Mapped[str | None] = mapped_column(Text)
+    client_visible: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+
+
+class ClientMeeting(Base, UuidPrimaryKey, CreatedAt, UpdatedAt, SoftDelete):
+    __tablename__ = "client_meetings"
+    __table_args__ = (
+        Index("client_meetings_project_starts_idx", "project_id", "starts_at"),
+        Index("client_meetings_org_status_idx", "org_id", "status"),
+    )
+
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    org_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organisations.id", ondelete="RESTRICT"), index=True
+    )
+    title: Mapped[str] = mapped_column(Text)
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    duration_minutes: Mapped[int] = mapped_column(Integer, default=30, server_default="30")
+    meeting_url: Mapped[str | None] = mapped_column(Text)
+    agenda: Mapped[str | None] = mapped_column(Text)
+    minutes: Mapped[str | None] = mapped_column(Text)
+    action_items: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default="[]"
+    )
+    status: Mapped[ClientMeetingStatus] = mapped_column(
+        Enum(
+            ClientMeetingStatus,
+            name="client_meeting_status",
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        default=ClientMeetingStatus.SCHEDULED,
+        server_default=ClientMeetingStatus.SCHEDULED.value,
+    )
+    client_visible: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
 
 
 class CommunicationEvidenceLink(Base, UuidPrimaryKey, CreatedAt):

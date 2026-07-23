@@ -4,12 +4,14 @@
  */
 
 import { useEffect, useState } from "react";
+import { Download } from "lucide-react";
 
 import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import { ReportsInboxPanel } from "@/features/reports/ReportsInboxPanel";
 import { ReportWorkspacePanel } from "@/features/reports/ReportWorkspacePanel";
 import { useClientReportsQueries } from "@/features/client-reports/useClientReportsQueries";
 import { userFacingReportsError } from "@/features/reports/report-utils";
+import { clientReportDownloadUrl } from "@/lib/api";
 import type { CommunicationCapabilities, CommunicationListItem } from "@/types/communications";
 
 const EMPTY: CommunicationListItem[] = [];
@@ -91,6 +93,32 @@ export function ClientReportsPage() {
           >
             Back to inbox
           </button>
+        ) : null}
+        {detail?.status === "sent" ? (
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card px-4 py-3">
+            <div>
+              <p className="text-xs font-semibold">Download report</p>
+              <p className="mt-0.5 text-[10px] text-muted-foreground">
+                Export this published report for offline use.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <a
+                href={clientReportDownloadUrl(detail.id, "pdf")}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-[11px] font-semibold hover:bg-elevated"
+              >
+                <Download className="h-3.5 w-3.5" />
+                PDF
+              </a>
+              <a
+                href={clientReportDownloadUrl(detail.id, "csv")}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-[11px] font-semibold hover:bg-elevated"
+              >
+                <Download className="h-3.5 w-3.5" />
+                CSV
+              </a>
+            </div>
+          </div>
         ) : null}
         <ReportWorkspacePanel
           report={detail}

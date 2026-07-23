@@ -100,6 +100,14 @@ logger = logging.getLogger(__name__)
 MIN_EVALUATED_ITEMS = 30
 
 
+class QualityScanExecutionError(Exception):
+    """A scan failed after its audit row was safely persisted."""
+
+    def __init__(self, run: QualityScanRun) -> None:
+        self.run = run
+        super().__init__(run.error_message or "Quality scan failed.")
+
+
 def _quality_page_step_start(project_id: UUID, step: str) -> float:
     wall = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     logger.info("quality_page START project_id=%s step=%s at=%s", project_id, step, wall)
@@ -469,7 +477,7 @@ async def scan_all_projects(
     await session.flush()
 
     per_project_results: list[dict] = []
-    totals = {"snapshots": 0, "alerts": 0, "data_gaps": 0}
+    totals = {"snapshots": 0, "alerts": 0, "data_gaps": 0, "errors": 0}
 
     try:
         projects = list(
@@ -490,6 +498,7 @@ async def scan_all_projects(
                 "snapshots": 0,
                 "alerts": 0,
                 "data_gaps": 0,
+                "errors": 0,
                 "teams": [],
             }
 
@@ -508,9 +517,33 @@ async def scan_all_projects(
             )
 
             for snapshot in latest_snaps:
+                snapshot_id = snapshot.id
+                team_id = snapshot.team_id
                 totals["snapshots"] += 1
                 project_result["snapshots"] += 1
-                drift_result = await evaluate_snapshot(session, snapshot)
+                try:
+                    # A concurrent snapshot update can make SQLAlchemy raise while
+                    # flushing this evaluation. Keep that rollback inside a savepoint
+                    # so the scan run can record the failed team and continue with the
+                    # remaining snapshots instead of leaving the outer session unusable.
+                    async with session.begin_nested():
+                        drift_result = await evaluate_snapshot(session, snapshot)
+                except Exception:
+                    totals["errors"] += 1
+                    project_result["errors"] += 1
+                    project_result["teams"].append(
+                        {
+                            "team_id": str(team_id),
+                            "error": "Snapshot evaluation failed.",
+                        }
+                    )
+                    logger.exception(
+                        "Quality scan snapshot evaluation failed run_id=%s project_id=%s snapshot_id=%s",
+                        run.id,
+                        project.id,
+                        snapshot_id,
+                    )
+                    continue
                 team_entry = {
                     "team_id": str(snapshot.team_id),
                     "has_drift": drift_result.has_drift,
@@ -541,17 +574,24 @@ async def scan_all_projects(
         run.alerts_created = totals["alerts"]
         run.data_gaps = totals["data_gaps"]
         run.per_project_results = per_project_results
-        run.status = ScanStatus.COMPLETED
+        run.status = ScanStatus.FAILED if totals["errors"] else ScanStatus.COMPLETED
+        if totals["errors"]:
+            run.error_message = (
+                f"{totals['errors']} snapshot evaluation(s) failed. "
+                "Review the per-project results for affected teams."
+            )
         run.finished_at = datetime.now(timezone.utc)
         await session.commit()
         await session.refresh(run)
         logger.info(
-            "Quality scan complete run_id=%s projects=%s snapshots=%s alerts=%s data_gaps=%s",
+            "Quality scan complete run_id=%s status=%s projects=%s snapshots=%s alerts=%s data_gaps=%s errors=%s",
             run.id,
+            run.status,
             run.projects_scanned,
             run.snapshots_evaluated,
             run.alerts_created,
             run.data_gaps,
+            totals["errors"],
         )
         return run
     except Exception as exc:
@@ -562,7 +602,7 @@ async def scan_all_projects(
         await session.commit()
         await session.refresh(run)
         logger.exception("Quality scan failed run_id=%s", run.id)
-        raise
+        raise QualityScanExecutionError(run) from exc
 
 
 async def list_quality_scan_runs(session: AsyncSession, *, limit: int = 50) -> list[QualityScanRun]:

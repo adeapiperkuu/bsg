@@ -20,7 +20,9 @@ from app.api.routes import (
     admin_audit,
     agents,
     auth,
+    client_ask,
     client_intelligence,
+    client_portal,
     communications,
     csat,
     dashboard,
@@ -279,6 +281,8 @@ def create_app() -> FastAPI:
     app.include_router(workforce.router, prefix=api_prefix)
     app.include_router(agents.router, prefix=api_prefix)
     app.include_router(communications.router, prefix=api_prefix)
+    app.include_router(client_ask.router, prefix=api_prefix)
+    app.include_router(client_portal.router, prefix=api_prefix)
     app.include_router(metrics.router, prefix=api_prefix)
     app.include_router(kpis.router, prefix=api_prefix)
     app.include_router(time_series.router, prefix=api_prefix)

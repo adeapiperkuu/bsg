@@ -19,7 +19,7 @@ import {
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { PageTransition } from "@/components/PageTransition";
 import { flushNavPrefetch, scheduleNavPrefetch } from "@/lib/queries/nav-prefetch";
-import { allNavigationSections, navForUser } from "./navigation";
+import { allNavigationSections, navForUser, type NavItem } from "./navigation";
 
 function initials(name: string | null, email: string): string {
   if (name) {
@@ -46,6 +46,7 @@ export function Shell({ children }: { children: ReactNode }) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const locationSearch = useRouterState({ select: (s) => s.location.search as { view?: string } });
 
   const nav = navForUser(user);
 
@@ -57,8 +58,17 @@ export function Shell({ children }: { children: ReactNode }) {
     scheduleNavPrefetch(queryClient, to);
   }
 
+  function isActiveNavItem(item: NavItem) {
+    if (item.view) {
+      return pathname === item.to && (locationSearch.view ?? "overview") === item.view;
+    }
+    return item.to === "/admin"
+      ? pathname === "/admin" || pathname === "/admin/"
+      : pathname === item.to;
+  }
+
   const currentTitle =
-    allNavigationSections.flatMap((s) => s.items).find((i) => i.to === pathname)?.label ??
+    allNavigationSections.flatMap((s) => s.items).find(isActiveNavItem)?.label ??
     (pathname === "/leadership"
       ? "Leadership Cockpit"
       : pathname === "/client"
@@ -66,8 +76,16 @@ export function Shell({ children }: { children: ReactNode }) {
         : "BSG Insights Hub");
 
   async function handleLogout() {
-    await logout();
-    await navigate({ to: "/login" });
+    try {
+      await logout();
+    } finally {
+      // Query keys are intentionally shared across screens, but their data is scoped to
+      // the authenticated user. Dropping the in-memory cache prevents a user who signs
+      // in next from briefly reusing the previous user's project list (and requesting
+      // projects that they are not allowed to access).
+      queryClient.clear();
+      await navigate({ to: "/login" });
+    }
   }
 
   const navContent = (mobile = false) => (
@@ -95,15 +113,13 @@ export function Shell({ children }: { children: ReactNode }) {
             )}
             <ul className="flex flex-col gap-0.5">
               {sec.items.map((item) => {
-                const active =
-                  item.to === "/admin"
-                    ? pathname === "/admin" || pathname === "/admin/"
-                    : pathname === item.to;
+                const active = isActiveNavItem(item);
                 const Icon = item.icon;
                 return (
-                  <li key={item.to} className="w-full">
+                  <li key={`${item.to}:${item.view ?? "root"}`} className="w-full">
                     <Link
                       to={item.to}
+                      search={item.view ? { view: item.view } : undefined}
                       title={!mobile && collapsed ? item.label : undefined}
                       preload="viewport"
                       onMouseEnter={() => prefetchForNav(item.to)}

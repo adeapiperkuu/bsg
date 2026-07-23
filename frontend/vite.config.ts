@@ -48,7 +48,7 @@ export default defineConfig(({ command, mode }) => {
       host: "::",
       port: 3000,
       strictPort: true,
-      // Proxy to 127.0.0.1 — Docker/WSL often bind localhost:8000 on Windows.
+      // Keep local API routing aligned with backend/run_dev_server.ps1.
       proxy: {
         "/api": {
           target: "http://127.0.0.1:8000",
@@ -56,7 +56,7 @@ export default defineConfig(({ command, mode }) => {
         },
       },
     },
-    // Same API proxy for `vite preview` so production builds can hit the local backend.
+    // Same API proxy for `vite preview` so production builds use this workspace API.
     preview: {
       host: "127.0.0.1",
       port: 4173,

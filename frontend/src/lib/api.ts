@@ -59,6 +59,11 @@ import type {
   DeliveryConfidenceHistory,
   ReportHistoryStatusFilter,
 } from "@/types/client-intelligence";
+import type {
+  ClientChangeRequest,
+  ClientChangeRequestCreate,
+  ClientProjectDashboard,
+} from "@/types/client-portal";
 
 function resolveApiBase(): string {
   const configured = import.meta.env.VITE_API_BASE_URL?.trim();
@@ -275,7 +280,10 @@ export async function mfaEnroll(pendingToken: string): Promise<MfaEnrollResult> 
   return body.data;
 }
 
-export async function mfaChallenge(pendingToken: string, factorId: string): Promise<MfaChallengeResult> {
+export async function mfaChallenge(
+  pendingToken: string,
+  factorId: string,
+): Promise<MfaChallengeResult> {
   const body = await apiFetch<{ data: MfaChallengeResult }>("/auth/mfa/challenge", {
     method: "POST",
     headers: { Authorization: `Bearer ${pendingToken}` },
@@ -447,6 +455,33 @@ export async function fetchClientIntelligenceOverview(
     `/projects/${projectId}/client-intelligence/overview${query ? `?${query}` : ""}`,
   );
   return body.data;
+}
+
+export async function fetchClientProjectDashboard(
+  projectId: string,
+): Promise<ClientProjectDashboard> {
+  const body = await apiFetch<{ data: ClientProjectDashboard }>(
+    `/client/projects/${projectId}/dashboard`,
+  );
+  return body.data;
+}
+
+export async function submitClientChangeRequest(
+  projectId: string,
+  payload: ClientChangeRequestCreate,
+): Promise<ClientChangeRequest> {
+  const body = await apiFetch<{ data: ClientChangeRequest }>(
+    `/client/projects/${projectId}/change-requests`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+  return body.data;
+}
+
+export function clientReportDownloadUrl(communicationId: string, format: "pdf" | "csv"): string {
+  return `${API_BASE}/client/reports/${communicationId}/download/${format}`;
 }
 
 export async function fetchClientIntelligenceSummary(
@@ -712,9 +747,7 @@ export async function listClientCommunications(
 }
 
 export async function getCommunication(communicationId: string): Promise<CommunicationDetail> {
-  const body = await apiFetch<{ data: CommunicationDetail }>(
-    `/communications/${communicationId}`,
-  );
+  const body = await apiFetch<{ data: CommunicationDetail }>(`/communications/${communicationId}`);
   return body.data;
 }
 
@@ -723,10 +756,10 @@ export async function updateCommunication(
   communicationId: string,
   payload: { subject?: string; body?: string },
 ): Promise<CommunicationDetail> {
-  const body = await apiFetch<{ data: CommunicationDetail }>(
-    `/communications/${communicationId}`,
-    { method: "PATCH", body: JSON.stringify(payload) },
-  );
+  const body = await apiFetch<{ data: CommunicationDetail }>(`/communications/${communicationId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
   return body.data;
 }
 
@@ -1286,11 +1319,13 @@ export type QualityScanRunProjectResult = {
   snapshots: number;
   alerts: number;
   data_gaps: number;
+  errors?: number;
   teams: Array<{
     team_id: string;
-    has_drift: boolean;
-    data_gap: boolean;
-    detail: string | null;
+    has_drift?: boolean;
+    data_gap?: boolean;
+    detail?: string | null;
+    error?: string;
   }>;
 };
 

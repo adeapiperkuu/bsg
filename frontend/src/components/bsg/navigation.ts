@@ -1,29 +1,51 @@
 import {
   Activity,
+  Bell,
   BookOpen,
   Bot,
   Briefcase,
   Building2,
+  CalendarDays,
+  ClipboardCheck,
   Crown,
+  FileCheck2,
   FileText,
+  FolderOpen,
   FolderKanban,
   GitBranch,
+  GitPullRequest,
   LayoutDashboard,
   Settings2,
+  ShieldAlert,
   ShieldCheck,
+  Sparkles,
+  Target,
   Users,
 } from "lucide-react";
 import type { ComponentType } from "react";
 
 import type { AppRole, MeUser } from "@/types/auth";
 
-type NavItem = {
+export type ClientWorkspaceView =
+  | "overview"
+  | "progress"
+  | "risks"
+  | "actions"
+  | "summary"
+  | "documents"
+  | "deliverables"
+  | "changes"
+  | "meetings"
+  | "notifications";
+
+export type NavItem = {
   to: string;
   label: string;
   icon: ComponentType<{ className?: string }>;
+  view?: ClientWorkspaceView;
 };
 
-type NavSection = { section: string; items: NavItem[] };
+export type NavSection = { section: string; items: NavItem[] };
 
 const internalNav: NavSection[] = [
   {
@@ -54,10 +76,18 @@ const clientNav: NavSection[] = [
   {
     section: "Client Portal",
     items: [
-      { to: "/client", label: "My Projects", icon: LayoutDashboard },
-      { to: "/client/status", label: "Delivery Status", icon: Activity },
+      { to: "/client/status", label: "Overview", icon: LayoutDashboard, view: "overview" },
+      { to: "/client/status", label: "Progress", icon: Target, view: "progress" },
+      { to: "/client/status", label: "Risks & issues", icon: ShieldAlert, view: "risks" },
+      { to: "/client/status", label: "Your actions", icon: ClipboardCheck, view: "actions" },
+      { to: "/client/status", label: "AI summary", icon: Sparkles, view: "summary" },
+      { to: "/client/status", label: "Documents", icon: FolderOpen, view: "documents" },
+      { to: "/client/status", label: "Deliverables", icon: FileCheck2, view: "deliverables" },
+      { to: "/client/status", label: "Change requests", icon: GitPullRequest, view: "changes" },
+      { to: "/client/status", label: "Meetings", icon: CalendarDays, view: "meetings" },
+      { to: "/client/status", label: "Notifications", icon: Bell, view: "notifications" },
       { to: "/client/reports", label: "Reports", icon: FileText },
-      { to: "/client/ask", label: "Ask Agent", icon: BookOpen },
+      { to: "/client/ask", label: "Ask AI", icon: Bot },
     ],
   },
 ];

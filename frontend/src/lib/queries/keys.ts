@@ -20,8 +20,7 @@ export const queryKeys = {
     ["delivery", "root-causes", "project", projectId] as const,
   rootCauseTrends: (projectId: string | null) =>
     ["delivery", "root-causes", "trends", projectId ?? "__org__"] as const,
-  projectDailyActions: (projectId: string) =>
-    ["delivery", "daily-actions", projectId] as const,
+  projectDailyActions: (projectId: string) => ["delivery", "daily-actions", projectId] as const,
   projectOperationalBriefing: (projectId: string) =>
     ["delivery", "operational-briefing", projectId] as const,
   clientIntelligenceOverview: (projectId: string, asOf?: string) =>
@@ -40,6 +39,8 @@ export const queryKeys = {
     ["client-intelligence", "summary", "project", projectId] as const,
   clientIntelligenceQueryHistory: (projectId: string) =>
     ["client-intelligence", "queries", projectId] as const,
+  clientAskQueryHistory: (projectId: string) => ["client-ask", "queries", projectId] as const,
+  clientProjectDashboard: (projectId: string) => ["client-portal", "dashboard", projectId] as const,
   projectThroughput: (projectId: string) => ["projects", projectId, "throughput"] as const,
   projectRecommendations: (projectId: string) =>
     ["projects", projectId, "recommendations"] as const,
@@ -173,12 +174,7 @@ export const queryKeys = {
   communicationDetail: (communicationId: string) =>
     ["communications", "detail", communicationId] as const,
   clientCommunicationsList: (filters: { limit?: number; offset?: number }) =>
-    [
-      "client-communications",
-      "list",
-      filters.limit ?? 30,
-      filters.offset ?? 0,
-    ] as const,
+    ["client-communications", "list", filters.limit ?? 30, filters.offset ?? 0] as const,
   kpiHistory: (kpiKey: string, params: Record<string, unknown> = {}) =>
     ["time-series", "kpi", kpiKey, "history", params] as const,
   kpiLatest: (kpiKey: string, params: Record<string, unknown> = {}) =>

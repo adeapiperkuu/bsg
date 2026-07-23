@@ -93,6 +93,8 @@ _UTILIZATION_CLAIM_KEYS = [
     "teams_without_utilization",
 ]
 
+_TEAM_ROSTER_CLAIM_KEYS = ["active_team_count"]
+
 _SKILL_SUMMARY_CLAIM_KEYS = [
     "requirement_count",
     "covered_requirement_count",
@@ -288,6 +290,18 @@ async def load_workforce_evidence(
         )
 
     team_ids = [team.id for team in teams]
+    for team in teams:
+        evidence.append(
+            ClientEvidenceReference(
+                source_agent=SourceAgent.WORKFORCE_CAPABILITY,
+                source_table="teams",
+                source_row_id=team.id,
+                description=_GENERIC_DESCRIPTION,
+                visibility=_evidence_visibility(client_safe),
+                observed_at=None,
+                claim_keys=list(_TEAM_ROSTER_CLAIM_KEYS),
+            )
+        )
     annotators, annotators_truncated = await _load_active_annotators(
         session,
         team_ids=team_ids,

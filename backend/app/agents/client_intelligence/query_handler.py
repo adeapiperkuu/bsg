@@ -9,6 +9,7 @@ project-scoped, evidence-pack-backed answers and audited latency.
 from __future__ import annotations
 
 import re
+from datetime import date
 from time import perf_counter
 from typing import Any
 from uuid import UUID
@@ -20,6 +21,7 @@ from app.agents.client_intelligence.contracts import (
     ClientEvidencePack,
     ClientEvidenceReference,
     EvidenceVisibility,
+    MilestoneFacts,
     SourceAgent,
 )
 from app.agents.client_intelligence.delivery_confidence_intelligence import (
@@ -64,8 +66,16 @@ _ALLOWED_QA_ROLES = frozenset(
         AppRole.DELIVERY_MANAGER,
         AppRole.BSG_LEADERSHIP,
         AppRole.SUPER_ADMIN,
+        AppRole.CLIENT,
     }
 )
+
+
+def _visibility_for_qa_user(current_user: CurrentUser) -> EvidenceVisibility:
+    """Clients always get CLIENT_SAFE packs; internal roles get INTERNAL."""
+    if current_user.role == AppRole.CLIENT:
+        return EvidenceVisibility.CLIENT_SAFE
+    return EvidenceVisibility.INTERNAL
 
 _MILESTONE_EXCLUDED_STATUSES = frozenset({"completed", "cancelled"})
 
@@ -91,6 +101,7 @@ _CLAIM_VOCABULARY = (
 _PROPER_NAME_RE = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b")
 _ISO_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 _NUMBER_TOKEN_RE = re.compile(r"\d+(?:\.\d+)?%?")
+_MILESTONE_REFERENCE_RE = re.compile(r"\b(?:m|milestone)\s*[-#:]?\s*(\d+)\b", re.IGNORECASE)
 
 _INJECTION_PATTERNS = (
     r"ignore (all |previous |the )?instructions",
@@ -122,7 +133,19 @@ _SENSITIVE_PATTERNS = (
 _CATEGORY_KEYWORDS: list[tuple[ClientIntelligenceQuestionCategory, tuple[str, ...]]] = [
     (
         ClientIntelligenceQuestionCategory.PROJECT_HEALTH,
-        ("project health", "health status", "health score"),
+        (
+            "project health",
+            "health status",
+            "health score",
+            "how healthy",
+            "project status",
+            "how is the project",
+            "how's the project",
+            "how is my project",
+            "how's my project",
+            "how are we doing",
+            "are we on track",
+        ),
     ),
     (
         ClientIntelligenceQuestionCategory.CONFIDENCE_HISTORY,
@@ -142,27 +165,43 @@ _CATEGORY_KEYWORDS: list[tuple[ClientIntelligenceQuestionCategory, tuple[str, ..
             "confidence score",
             "confidence status",
             "forecast completion",
+            "delivery outlook",
+            "chance of delivery",
         ),
     ),
     (
         ClientIntelligenceQuestionCategory.MILESTONES,
-        ("milestone", "next milestone", "milestone risk", "go-live date"),
+        (
+            "milestone",
+            "next milestone",
+            "milestone risk",
+            "go-live date",
+            "deadline",
+            "sprint goal",
+        ),
     ),
     (
         ClientIntelligenceQuestionCategory.RISKS,
-        ("risk", "mitigation", "risk alert"),
+        ("risk", "mitigation", "risk alert", "blocker", "issue", "concern"),
     ),
     (
         ClientIntelligenceQuestionCategory.DELIVERY_TREND,
-        ("delivery trend", "throughput trend", "units trend"),
+        ("delivery trend", "throughput trend", "units trend", "progress trend"),
     ),
     (
         ClientIntelligenceQuestionCategory.CHANGE,
-        ("change since", "what changed", "previous cycle", "week over week"),
+        ("change since", "what changed", "previous cycle", "week over week", "since last week"),
     ),
     (
         ClientIntelligenceQuestionCategory.REPORTS,
-        ("approved report", "sent report", "client report", "weekly summary"),
+        (
+            "approved report",
+            "sent report",
+            "client report",
+            "weekly summary",
+            "status report",
+            "latest report",
+        ),
     ),
     (
         ClientIntelligenceQuestionCategory.QUALITY,
@@ -170,7 +209,7 @@ _CATEGORY_KEYWORDS: list[tuple[ClientIntelligenceQuestionCategory, tuple[str, ..
     ),
     (
         ClientIntelligenceQuestionCategory.WORKFORCE,
-        ("workforce", "capacity", "skill coverage", "training"),
+        ("workforce", "capacity", "skill coverage", "training", "team", "teams"),
     ),
     (
         ClientIntelligenceQuestionCategory.GOVERNANCE,
@@ -204,10 +243,150 @@ def classify_client_intelligence_question(
     for category, keywords in _CATEGORY_KEYWORDS:
         if any(keyword in lower for keyword in keywords):
             return category
-    if any(token in lower for token in ("status", "how is", "overview", "summary")):
+    # Project teams naturally refer to milestones by shorthand (for example,
+    # "What will happen in M2?"). Treat that as a milestone question rather
+    # than rejecting it just because the word "milestone" is absent.
+    if _MILESTONE_REFERENCE_RE.search(lower):
+        return ClientIntelligenceQuestionCategory.MILESTONES
+    if any(
+        token in lower
+        for token in (
+            "status",
+            "how is",
+            "how's",
+            "overview",
+            "summary",
+            "update",
+            "progress",
+            "what's going",
+            "what is going",
+            "tell me about the project",
+            "tell me about this project",
+            "tell me about my project",
+        )
+    ):
+        return ClientIntelligenceQuestionCategory.GENERAL_STATUS
+    # Conversational defaults for client portal — prefer a status summary over hard reject.
+    if any(
+        token in lower
+        for token in ("project", "delivery", "sprint", "timeline", "schedule")
+    ):
         return ClientIntelligenceQuestionCategory.GENERAL_STATUS
     return ClientIntelligenceQuestionCategory.UNSUPPORTED
 
+
+def _client_facing_limitations(codes: list[str]) -> list[str]:
+    """Drop internal DQ/source codes that are not meaningful to client users."""
+    kept: list[str] = []
+    for code in codes:
+        upper = code.upper()
+        if upper.startswith(
+            (
+                "DQ_",
+                "CI-D",
+                "FRESHNESS_",
+                "VISIBILITY_",
+                "WORKFLOW_",
+                "PLAN_SERIES",
+                "BACKLOG_",
+                "CLIENT_COMMUNICATION_NOTES",
+                "KNOWLEDGE ",
+                "TEAM-LEVEL",
+                "POLICY_UNAVAILABLE",
+            )
+        ):
+            continue
+        if "UNAVAILABLE BECAUSE" in upper or "PHASE 1" in upper:
+            continue
+        if upper.startswith("SOURCE_QUALITY_"):
+            continue
+        kept.append(code)
+    return kept
+
+
+def _partial_status_answer(
+    pack: ClientEvidencePack,
+    *,
+    health_status: str | None,
+    period_as_of: date,
+) -> tuple[str, list[ClientEvidenceReference], list[str], bool]:
+    """Build a useful client status summary from whatever governed facts exist."""
+    limitations: list[str] = []
+    parts = [
+        f"Here is what governed evidence shows for {pack.project.project_name} "
+        f"as of {period_as_of.isoformat()}."
+    ]
+    if health_status is not None:
+        parts.append(f"Project Health: {health_status}.")
+    else:
+        parts.append("A full Project Health status is not available yet.")
+        limitations.append("PROJECT_HEALTH_PARTIAL")
+
+    score = pack.delivery.latest_delivery_confidence
+    if score is not None:
+        observed = score.observed_at.date().isoformat() if score.observed_at else period_as_of.isoformat()
+        parts.append(
+            f"Delivery Confidence: {score.score_pct}% ({score.status}) as of {observed}."
+        )
+        if score.forecast_completion_date is not None:
+            parts.append(
+                f"Forecast completion date: {score.forecast_completion_date.isoformat()}."
+            )
+    else:
+        parts.append("Delivery Confidence: not available yet.")
+        limitations.append("DELIVERY_CONFIDENCE_PARTIAL")
+
+    milestones = list(pack.delivery.milestones)
+    completed = [
+        m for m in milestones if m.status == "completed" or m.actual_date is not None
+    ]
+    at_risk = [m for m in milestones if m.status in {"at_risk", "delayed", "missed"}]
+    upcoming = sorted(
+        [
+            m
+            for m in milestones
+            if m.status not in _MILESTONE_EXCLUDED_STATUSES and m.planned_date >= period_as_of
+        ],
+        key=lambda item: (item.planned_date, str(item.id)),
+    )
+    if completed:
+        latest = sorted(
+            completed,
+            key=lambda item: (item.actual_date or item.planned_date, str(item.id)),
+            reverse=True,
+        )[0]
+        parts.append(f"Most recently reached milestone: {_format_milestone_fact(latest)}.")
+    if upcoming:
+        parts.append(f"Next milestone: {_format_milestone_fact(upcoming[0])}.")
+    if at_risk:
+        parts.append(
+            f"{len(at_risk)} milestone(s) currently at risk or delayed: "
+            + "; ".join(_format_milestone_fact(m) for m in at_risk[:3])
+            + "."
+        )
+    if not milestones:
+        limitations.append("MILESTONES_PARTIAL")
+
+    open_risks = list(pack.delivery.open_risks)
+    if open_risks:
+        titles = ", ".join(alert.title for alert in open_risks[:3])
+        parts.append(f"{len(open_risks)} open risk alert(s): {titles}.")
+    else:
+        parts.append("No open risk alerts are present in the current evidence pack.")
+
+    refs = _refs_for_tables(
+        pack,
+        {
+            "delivery_confidence_scores",
+            "milestones",
+            "risk_alerts",
+            "throughput_snapshots",
+        },
+    )
+    has_useful_fact = (
+        score is not None or bool(milestones) or bool(open_risks) or health_status is not None
+    )
+    return " ".join(parts), refs[:12], limitations, has_useful_fact
 
 def _dedupe_evidence(
     refs: list[ClientEvidenceReference],
@@ -283,9 +462,69 @@ def _rewrite_is_grounded(*, rewrite: str, allowed_text: str) -> bool:
     return all(name in allowed_text for name in _PROPER_NAME_RE.findall(rewrite))
 
 
+def _milestone_question_intent(question: str | None) -> str:
+    """Classify milestone Q&A intent from the user question.
+
+    Returns one of: ``completed``, ``at_risk``, ``next``.
+    """
+    if not question:
+        return "next"
+    lower = question.lower()
+    if any(
+        token in lower
+        for token in (
+            "reached",
+            "completed",
+            "finished",
+            "already done",
+            "done so far",
+            "what was delivered",
+            "what have we delivered",
+        )
+    ):
+        return "completed"
+    if any(
+        token in lower
+        for token in ("at risk", "delayed", "slipping", "behind schedule", "missed")
+    ):
+        return "at_risk"
+    return "next"
+
+
+def _format_milestone_fact(item: MilestoneFacts) -> str:
+    date_part = item.planned_date.isoformat()
+    if getattr(item, "actual_date", None) is not None:
+        date_part = (
+            f"planned {item.planned_date.isoformat()}, "
+            f"reached {item.actual_date.isoformat()}"
+        )
+    return f"'{item.name}' ({date_part}; status: {item.status})"
+
+
+def _referenced_milestone(
+    question: str | None,
+    milestones: list[MilestoneFacts],
+) -> MilestoneFacts | None:
+    """Resolve a user-supplied milestone shorthand such as ``M2``."""
+    if not question:
+        return None
+    match = _MILESTONE_REFERENCE_RE.search(question)
+    if match is None:
+        return None
+    milestone_number = match.group(1)
+    for milestone in milestones:
+        name_match = _MILESTONE_REFERENCE_RE.search(milestone.name)
+        if name_match is not None and name_match.group(1) == milestone_number:
+            return milestone
+    return None
+
+
 def _build_category_answer(
     category: ClientIntelligenceQuestionCategory,
     pack: ClientEvidencePack,
+    *,
+    question: str | None = None,
+    client_safe: bool = False,
 ) -> tuple[
     ClientIntelligenceAnswerAvailability,
     ClientIntelligenceConfidenceLevel,
@@ -297,7 +536,8 @@ def _build_category_answer(
     bool,
 ]:
     """Return availability, confidence, answer, limitations, next_step, escalation, refs, insufficient."""
-    limitations = list(pack.limitations)
+    # Client portal answers must not dump internal pack DQ / source-gap codes.
+    limitations = [] if client_safe else list(pack.limitations)
     period = pack.reporting_period
 
     if category == ClientIntelligenceQuestionCategory.INJECTION:
@@ -365,11 +605,11 @@ def _build_category_answer(
             ClientIntelligenceAnswerAvailability.UNSUPPORTED,
             ClientIntelligenceConfidenceLevel.INSUFFICIENT,
             (
-                "That question is outside the supported Client Intelligence evidence scope "
-                "(for example readiness scoring, invented dates, or unresolved commercial policy)."
+                "I can help with project health, delivery confidence, milestones, "
+                "risks, trends, and approved reports for this project."
             ),
             ["QUESTION_UNSUPPORTED"],
-            "Ask about Project Health, Delivery Confidence, milestones, risks, trends, changes, or approved reports.",
+            "Try asking about project health, delivery confidence, milestones, or open risks.",
             False,
             [],
             True,
@@ -419,6 +659,110 @@ def _build_category_answer(
                 [],
                 True,
             )
+
+        intent = _milestone_question_intent(question)
+        at_risk = [m for m in milestones if m.status in {"at_risk", "delayed", "missed"}]
+        referenced = _referenced_milestone(question, milestones)
+
+        if referenced is not None:
+            referenced_refs = [
+                ref for ref in refs if ref.source_row_id == referenced.id
+            ]
+            return (
+                ClientIntelligenceAnswerAvailability.ANSWERED,
+                ClientIntelligenceConfidenceLevel.MEDIUM
+                if limitations
+                else ClientIntelligenceConfidenceLevel.HIGH,
+                f"Milestone {_format_milestone_fact(referenced)}.",
+                sorted(set(limitations)),
+                "Ask about milestone risks or the next planned milestone for more detail.",
+                False,
+                referenced_refs[:1] or refs[:8],
+                False,
+            )
+
+        if intent == "completed":
+            completed = [
+                item
+                for item in milestones
+                if item.status == "completed" or item.actual_date is not None
+            ]
+            completed = sorted(
+                completed,
+                key=lambda item: (
+                    item.actual_date or item.planned_date,
+                    str(item.id),
+                ),
+                reverse=True,
+            )
+            if not completed:
+                return (
+                    ClientIntelligenceAnswerAvailability.INSUFFICIENT_EVIDENCE,
+                    ClientIntelligenceConfidenceLevel.INSUFFICIENT,
+                    (
+                        f"No reached/completed governed milestones are recorded "
+                        f"as of {period.as_of.isoformat()}."
+                    ),
+                    sorted(set(limitations + ["NO_COMPLETED_MILESTONE"])),
+                    "Ask about the next upcoming milestone, or check with your BSG PM.",
+                    False,
+                    refs[:8],
+                    True,
+                )
+            latest = completed[0]
+            answer = (
+                f"Most recently reached milestone is {_format_milestone_fact(latest)}."
+            )
+            if len(completed) > 1:
+                others = "; ".join(_format_milestone_fact(item) for item in completed[1:3])
+                answer += f" Other reached milestones: {others}."
+                if len(completed) > 3:
+                    answer += f" ({len(completed)} reached in total.)"
+            return (
+                ClientIntelligenceAnswerAvailability.ANSWERED,
+                ClientIntelligenceConfidenceLevel.MEDIUM
+                if limitations
+                else ClientIntelligenceConfidenceLevel.HIGH,
+                answer,
+                sorted(set(limitations)),
+                "Ask about the next upcoming milestone if you need the forward plan.",
+                False,
+                refs[:12],
+                False,
+            )
+
+        if intent == "at_risk":
+            if not at_risk:
+                return (
+                    ClientIntelligenceAnswerAvailability.INSUFFICIENT_EVIDENCE,
+                    ClientIntelligenceConfidenceLevel.INSUFFICIENT,
+                    (
+                        f"No governed milestones are currently marked at risk or delayed "
+                        f"as of {period.as_of.isoformat()}."
+                    ),
+                    sorted(set(limitations + ["NO_AT_RISK_MILESTONE"])),
+                    "Ask about the next upcoming milestone for the forward plan.",
+                    False,
+                    refs[:8],
+                    True,
+                )
+            named = "; ".join(_format_milestone_fact(item) for item in at_risk[:5])
+            answer = (
+                f"{len(at_risk)} milestone(s) are currently at risk or delayed: {named}."
+            )
+            return (
+                ClientIntelligenceAnswerAvailability.ANSWERED,
+                ClientIntelligenceConfidenceLevel.MEDIUM
+                if limitations
+                else ClientIntelligenceConfidenceLevel.HIGH,
+                answer,
+                sorted(set(limitations)),
+                "Review milestone risk details with your BSG PM.",
+                False,
+                refs[:12],
+                False,
+            )
+
         eligible = [
             item
             for item in milestones
@@ -426,13 +770,16 @@ def _build_category_answer(
             and item.planned_date >= period.as_of
         ]
         eligible = sorted(eligible, key=lambda item: (item.planned_date, str(item.id)))
-        at_risk = [m for m in milestones if m.status in {"at_risk", "delayed"}]
         if not eligible:
             answer = (
                 f"No upcoming governed milestone is available as of {period.as_of.isoformat()}."
             )
             if at_risk:
-                answer += f" {len(at_risk)} milestone(s) are currently at risk or delayed."
+                answer += (
+                    f" {len(at_risk)} milestone(s) are currently at risk or delayed: "
+                    + "; ".join(_format_milestone_fact(item) for item in at_risk[:3])
+                    + "."
+                )
             return (
                 ClientIntelligenceAnswerAvailability.INSUFFICIENT_EVIDENCE,
                 ClientIntelligenceConfidenceLevel.INSUFFICIENT,
@@ -445,11 +792,14 @@ def _build_category_answer(
             )
         nxt = eligible[0]
         answer = (
-            f"Next milestone by planned date is '{nxt.name}' planned for "
-            f"{nxt.planned_date.isoformat()} (status: {nxt.status})."
+            f"Next milestone by planned date is {_format_milestone_fact(nxt)}."
         )
         if at_risk:
-            answer += f" {len(at_risk)} milestone(s) are currently at risk or delayed."
+            answer += (
+                f" {len(at_risk)} milestone(s) are currently at risk or delayed: "
+                + "; ".join(_format_milestone_fact(item) for item in at_risk[:3])
+                + "."
+            )
         return (
             ClientIntelligenceAnswerAvailability.ANSWERED,
             ClientIntelligenceConfidenceLevel.MEDIUM
@@ -457,18 +807,14 @@ def _build_category_answer(
             else ClientIntelligenceConfidenceLevel.HIGH,
             answer,
             sorted(set(limitations)),
-            "Review milestone risk details with the Delivery Manager if status is at_risk or delayed.",
+            "Review milestone risk details with your BSG PM if status is at_risk or delayed.",
             False,
             refs[:12],
             False,
         )
 
-    health = assess_project_health(pack, policy=None)
-    confidence = assess_delivery_confidence(pack, explanation_policy=None)
-    risks = assess_risk_transparency(pack, policy=None)
-    trend = assess_delivery_trend(pack, policy=None)
-
     if category == ClientIntelligenceQuestionCategory.PROJECT_HEALTH:
+        health = assess_project_health(pack, policy=None)
         refs = _refs_for_tables(
             pack,
             {
@@ -480,15 +826,45 @@ def _build_category_answer(
             },
         )
         if health.overall_data_quality.value == "unavailable" or health.status is None:
+            answer, partial_refs, partial_limits, has_facts = _partial_status_answer(
+                pack,
+                health_status=None,
+                period_as_of=period.as_of,
+            )
+            if has_facts:
+                return (
+                    (
+                        ClientIntelligenceAnswerAvailability.ANSWERED
+                        if partial_refs
+                        else ClientIntelligenceAnswerAvailability.INSUFFICIENT_EVIDENCE
+                    ),
+                    (
+                        ClientIntelligenceConfidenceLevel.MEDIUM
+                        if partial_refs
+                        else ClientIntelligenceConfidenceLevel.INSUFFICIENT
+                    ),
+                    answer,
+                    sorted(set(partial_limits + (["PROJECT_HEALTH_UNAVAILABLE"] if not client_safe else []))),
+                    "Ask about delivery confidence, milestones, or risks for more detail.",
+                    False,
+                    partial_refs[:12] if partial_refs else refs[:8],
+                    not bool(partial_refs),
+                )
             return (
                 ClientIntelligenceAnswerAvailability.INSUFFICIENT_EVIDENCE,
                 ClientIntelligenceConfidenceLevel.INSUFFICIENT,
                 (
-                    "Project Health cannot be determined from the current governed evidence pack. "
-                    "Missing or unavailable inputs prevent a safe health status."
+                    "Project Health cannot be determined yet because governed delivery "
+                    "evidence is still incomplete for this project."
                 ),
-                sorted(set(limitations + list(health.limitations) + ["PROJECT_HEALTH_UNAVAILABLE"])),
-                "Refresh Delivery / Quality / Workforce sources, then ask again.",
+                sorted(
+                    set(
+                        ["PROJECT_HEALTH_UNAVAILABLE"]
+                        if client_safe
+                        else limitations + list(health.limitations) + ["PROJECT_HEALTH_UNAVAILABLE"]
+                    )
+                ),
+                "Please check with your BSG PM, or ask again after delivery data is refreshed.",
                 False,
                 refs[:8],
                 True,
@@ -509,13 +885,14 @@ def _build_category_answer(
             conf,
             answer,
             sorted(set(limitations + list(health.limitations))),
-            "Review Project Health drivers in Client Detail if status is amber or red.",
+            "Ask about delivery confidence, milestones, or risks if you need more detail.",
             False,
             refs[:12],
             False,
         )
 
     if category == ClientIntelligenceQuestionCategory.DELIVERY_CONFIDENCE:
+        confidence = assess_delivery_confidence(pack, explanation_policy=None)
         refs = _refs_for_tables(pack, {"delivery_confidence_scores", "milestones", "throughput_snapshots"})
         score = pack.delivery.latest_delivery_confidence
         if score is None or confidence.availability.value in {"unavailable", "no_score"}:
@@ -553,6 +930,7 @@ def _build_category_answer(
         )
 
     if category == ClientIntelligenceQuestionCategory.RISKS:
+        risks = assess_risk_transparency(pack, policy=None)
         refs = _refs_for_tables(pack, {"risk_alerts", "bottlenecks"})
         open_risks = list(pack.delivery.open_risks)
         if risks.availability.value in {"unavailable", "no_data"} and not open_risks:
@@ -583,6 +961,7 @@ def _build_category_answer(
         )
 
     if category == ClientIntelligenceQuestionCategory.DELIVERY_TREND:
+        trend = assess_delivery_trend(pack, policy=None)
         refs = _refs_for_tables(pack, {"throughput_snapshots"})
         if trend.availability.value in {"unavailable", "no_data"}:
             return (
@@ -642,7 +1021,12 @@ def _build_category_answer(
             for ref in pack.evidence
             if ref.source_agent == SourceAgent.WORKFORCE_CAPABILITY
         ]
-        if not refs and not pack.workforce.team_capacity:
+        capacity = pack.workforce.capacity
+        if (
+            not refs
+            and not pack.workforce.team_capacity
+            and capacity.active_team_count is None
+        ):
             return (
                 ClientIntelligenceAnswerAvailability.INSUFFICIENT_EVIDENCE,
                 ClientIntelligenceConfidenceLevel.INSUFFICIENT,
@@ -653,10 +1037,33 @@ def _build_category_answer(
                 [],
                 True,
             )
-        answer = (
-            f"Workforce evidence includes {len(pack.workforce.team_capacity)} team capacity "
-            f"record(s) in the governed pack. Employee-level detail is not exposed here."
-        )
+        if capacity.active_team_count is None:
+            answer = (
+                "Team-level capacity is not available in the current governed evidence pack."
+            )
+        elif capacity.active_team_count == 0:
+            answer = "No active teams are currently recorded for this project."
+        else:
+            answer = (
+                f"This project has {capacity.active_team_count} active team(s)."
+            )
+            if capacity.utilization_pct is not None:
+                observed = (
+                    f" as of {capacity.latest_snapshot_date.isoformat()}"
+                    if capacity.latest_snapshot_date is not None
+                    else ""
+                )
+                covered = capacity.teams_with_utilization
+                if covered is not None:
+                    answer += (
+                        f" Combined utilization is {capacity.utilization_pct}%{observed} "
+                        f"across {covered} team(s) with utilization data."
+                    )
+                else:
+                    answer += f" Combined utilization is {capacity.utilization_pct}%{observed}."
+            elif capacity.teams_without_utilization:
+                answer += " Team utilization snapshots are not available yet."
+        answer += " Individual team names and employee details are not exposed here."
         return (
             ClientIntelligenceAnswerAvailability.ANSWERED,
             ClientIntelligenceConfidenceLevel.MEDIUM,
@@ -755,39 +1162,35 @@ def _build_category_answer(
             True,
         )
 
-    # GENERAL_STATUS
-    refs = list(pack.evidence)[:12]
-    parts = [
-        f"Project {pack.project.project_name} ({pack.project.project_status}) as of {period.as_of.isoformat()}."
-    ]
-    if health.status is not None:
-        parts.append(f"Project Health: {health.status.value}.")
-    else:
-        parts.append("Project Health: unavailable.")
-        limitations.append("PROJECT_HEALTH_UNAVAILABLE")
-    score = pack.delivery.latest_delivery_confidence
-    if score is not None:
-        parts.append(f"Delivery Confidence: {score.score_pct}% ({score.status}).")
-    else:
-        parts.append("Delivery Confidence: unavailable.")
-        limitations.append("DELIVERY_CONFIDENCE_UNAVAILABLE")
-    if not refs:
+    # GENERAL_STATUS — compose whatever governed facts are available.
+    health = assess_project_health(pack, policy=None)
+    answer, refs, partial_limits, has_facts = _partial_status_answer(
+        pack,
+        health_status=health.status.value if health.status is not None else None,
+        period_as_of=period.as_of,
+    )
+    limitations.extend(partial_limits)
+    if not has_facts or not refs:
         return (
             ClientIntelligenceAnswerAvailability.INSUFFICIENT_EVIDENCE,
             ClientIntelligenceConfidenceLevel.INSUFFICIENT,
-            " ".join(parts) + " No evidence links are available to ground a fuller answer.",
+            answer
+            if has_facts
+            else (
+                f"Governed status facts are not available yet for {pack.project.project_name}."
+            ),
             sorted(set(limitations)),
-            "Refresh governed sources for this project.",
+            "Ask your BSG PM, or try again after delivery data is refreshed.",
             False,
-            [],
+            refs[:8],
             True,
         )
     return (
         ClientIntelligenceAnswerAvailability.ANSWERED,
         ClientIntelligenceConfidenceLevel.MEDIUM,
-        " ".join(parts),
+        answer,
         sorted(set(limitations)),
-        "Open Client Detail for Health, Confidence, risks, and reports.",
+        "Ask about delivery confidence, milestones, or risks for more detail.",
         False,
         refs,
         False,
@@ -799,6 +1202,7 @@ async def _load_report_evidence(
     project_id: UUID,
     *,
     pack_source_fingerprint: str,
+    visibility: EvidenceVisibility = EvidenceVisibility.INTERNAL,
 ) -> tuple[str, list[EvidenceInput], list[str]]:
     from app.db.models import ClientCommunication
 
@@ -838,7 +1242,7 @@ async def _load_report_evidence(
             source_table="client_communications",
             source_row_id=row.id,
             description=f"{row.status.value}: {row.subject}",
-            visibility=EvidenceVisibility.INTERNAL.value,
+            visibility=visibility.value,
             observed_at=getattr(row, "updated_at", None)
             or getattr(row, "created_at", None),
             claim_keys=("communication_id", "status", "subject"),
@@ -1145,13 +1549,14 @@ async def answer_client_intelligence_question(
         raise ApiError(
             403,
             "FORBIDDEN",
-            "Client Intelligence Q&A is internal-only for Delivery Manager, "
-            "BSG Leadership, and Super Admin.",
+            "Client Intelligence Q&A requires Delivery Manager, BSG Leadership, "
+            "Super Admin, or Client role.",
         )
 
     question = payload.question
     project = await get_visible_project(session, project_id, current_user)
     assert project.id == project_id
+    visibility_mode = _visibility_for_qa_user(current_user)
 
     started = perf_counter()
     category = classify_client_intelligence_question(question)
@@ -1178,7 +1583,7 @@ async def answer_client_intelligence_question(
                 session,
                 current_user,
                 project_id,
-                visibility_mode=EvidenceVisibility.INTERNAL,
+                visibility_mode=visibility_mode,
             )
             source_fingerprint = pack.source_fingerprint
             as_of = pack.reporting_period.as_of
@@ -1188,6 +1593,7 @@ async def answer_client_intelligence_question(
                 session,
                 project_id,
                 pack_source_fingerprint=source_fingerprint,
+                visibility=visibility_mode,
             )
             if evidence_inputs:
                 availability = ClientIntelligenceAnswerAvailability.ANSWERED
@@ -1204,7 +1610,7 @@ async def answer_client_intelligence_question(
                 session,
                 current_user,
                 project_id,
-                visibility_mode=EvidenceVisibility.INTERNAL,
+                visibility_mode=visibility_mode,
             )
             source_fingerprint = pack.source_fingerprint
             as_of = pack.reporting_period.as_of
@@ -1334,7 +1740,7 @@ async def answer_client_intelligence_question(
                 session,
                 current_user,
                 project_id,
-                visibility_mode=EvidenceVisibility.INTERNAL,
+                visibility_mode=visibility_mode,
             )
             as_of = pack.reporting_period.as_of
             period_start = pack.reporting_period.start_date
@@ -1349,7 +1755,14 @@ async def answer_client_intelligence_question(
                 escalation,
                 refs,
                 insufficient,
-            ) = _build_category_answer(category, pack)
+            ) = _build_category_answer(
+                category,
+                pack,
+                question=question,
+                client_safe=visibility_mode == EvidenceVisibility.CLIENT_SAFE,
+            )
+            if visibility_mode == EvidenceVisibility.CLIENT_SAFE:
+                limitations = _client_facing_limitations(limitations)
             evidence_inputs = _dedupe_evidence(
                 refs,
                 pack_source_fingerprint=source_fingerprint,
@@ -1375,6 +1788,9 @@ async def answer_client_intelligence_question(
             insufficient = True
             limitations = sorted(set(limitations + ["ZERO_EVIDENCE_BLOCKED"]))
             next_step = next_step or "Retry after governed evidence is available."
+
+        if current_user.role == AppRole.CLIENT:
+            limitations = _client_facing_limitations(limitations)
 
         if availability == ClientIntelligenceAnswerAvailability.ANSWERED:
             from app.services.evidence import require_complete_evidence_provenance
