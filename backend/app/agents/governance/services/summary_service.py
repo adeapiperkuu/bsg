@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -94,7 +94,7 @@ class SummaryEvidenceItem:
 
 
 def monday_of_week(ref: date | None = None) -> date:
-    today = ref or datetime.now(timezone.utc).date()
+    today = ref or datetime.now(UTC).date()
     return today - timedelta(days=today.weekday())
 
 
@@ -798,7 +798,7 @@ async def get_latest_weekly_summary_read_cached(
     from app.agents.governance.services.governance_service import get_latest_weekly_summary
 
     key = _latest_weekly_summary_cache_key(current_user)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cached = _latest_weekly_summary_read_cache.get(key)
     if cached and now - cached[0] < LATEST_WEEKLY_SUMMARY_READ_CACHE_TTL:
         read = cached[1]
@@ -810,9 +810,9 @@ async def get_latest_weekly_summary_read_cached(
     if cached:
         _latest_weekly_summary_read_cache.pop(key, None)
 
-    detail_started = datetime.now(timezone.utc)
+    detail_started = datetime.now(UTC)
     summary = await get_latest_weekly_summary(session, current_user)
-    detail_fetch_ms = (datetime.now(timezone.utc) - detail_started).total_seconds() * 1000
+    detail_fetch_ms = (datetime.now(UTC) - detail_started).total_seconds() * 1000
     if summary is None:
         _latest_weekly_summary_read_cache[key] = (now, None)
         return WeeklySummaryReadCacheResult(
@@ -822,14 +822,16 @@ async def get_latest_weekly_summary_read_cached(
             detail_fetch_ms=round(detail_fetch_ms, 1),
         )
 
-    enrichment_started = datetime.now(timezone.utc)
+    enrichment_started = datetime.now(UTC)
     read = await build_weekly_summary_read(session, summary)
-    enrichment_ms = (datetime.now(timezone.utc) - enrichment_started).total_seconds() * 1000
+    enrichment_ms = (datetime.now(UTC) - enrichment_started).total_seconds() * 1000
     _latest_weekly_summary_read_cache[key] = (now, read.model_copy(deep=True))
     return WeeklySummaryReadCacheResult(
         read=read,
         cache_hit=False,
-        execute_count=2 + len(read.evidence_links) + (1 if read.approved_by else 0),
+        # Latest summary + evidence + linked platform report, with one
+        # enrichment lookup per evidence row and an optional approver lookup.
+        execute_count=3 + len(read.evidence_links) + (1 if read.approved_by else 0),
         detail_fetch_ms=round(detail_fetch_ms, 1),
         enrichment_ms=round(enrichment_ms, 1),
     )

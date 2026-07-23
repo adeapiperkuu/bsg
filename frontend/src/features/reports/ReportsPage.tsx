@@ -9,7 +9,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
 
-import { PageLoadingScreen } from "@/components/bsg/PageLoadingScreen";
 import { GenerateReportDialog } from "@/features/reports/GenerateReportDialog";
 import { PlatformReportsPanel } from "@/features/reports/PlatformReportsPanel";
 import { ReportsInboxPanel } from "@/features/reports/ReportsInboxPanel";
@@ -111,10 +110,6 @@ export function ReportsPage() {
     mutations.approve.isPending ||
     mutations.reject.isPending ||
     mutations.send.isPending;
-
-  if (listQuery.isLoading && reports.length === 0 && !listQuery.isError) {
-    return <PageLoadingScreen />;
-  }
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">

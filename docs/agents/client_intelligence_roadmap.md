@@ -4,8 +4,8 @@
 **Canonical product name:** Client Intelligence Agent  
 **Source section label:** Client Interaction Agent / Client Transparency Intelligence  
 **Document version:** 1.0  
-**Last updated:** 2026-07-13  
-**Status:** Implementation planning; foundation partially scaffolded  
+**Last updated:** 2026-07-23
+**Status:** Active implementation; core evidence, internal dashboard, client portal, reports, and grounded Q&A are implemented
 
 **Authoritative source:** `BSG_Ops_Intelligence_Agent_Optimized v1.0 (1).docx`, SHA-256 `52DF83E2BA8CBCB8E9481B6EF7E4D7C1CB404373050E456F8A6C0AA8E1A9F6C6`.
 
@@ -180,7 +180,7 @@ The current `/client-intelligence` client list may be retained as an authorized 
 | Agent module | `backend/app/agents/client_interaction.py` contains only a placeholder | Replace with a package and explicit engines |
 | Communications | Draft/review/approve/reject/send lifecycle exists | Harden state transitions, evidence, roles, scheduling |
 | Draft generation | Latest throughput plus weekly quality context | Expand to milestones, confidence, risks, readiness, changes, mitigations |
-| Agent Q&A | Internal grounded Q&A via `POST/GET /projects/{id}/client-intelligence/queries`; `client_interaction_agent` no longer returns placeholder text | Client-facing `/client/ask` remains deferred |
+| Agent Q&A | Internal and client-facing grounded Q&A use governed Client Intelligence evidence packs | Continue narrative claim validation and end-to-end authorization coverage |
 | Evidence | Query and communication evidence-link tables exist | Reuse and extend evidence to insights/readiness/recommendations |
 | Delivery confidence | Stored time-series and Delivery Agent scoring exist | Consume as source of truth; do not recalculate independently |
 | CSAT | Client-only monthly submission endpoint exists | Add read aggregation, trend, permissions, and UI |
@@ -192,10 +192,10 @@ The current `/client-intelligence` client list may be retained as an authorized 
 | Surface | Current state | Gap |
 |---|---|---|
 | `/client-intelligence` | Internal project-level dashboard using governed `/projects` and Client Intelligence overview APIs | Reports, narrative, Q&A, readiness, alerts, client-safe delivery, and portfolio aggregation remain unavailable |
-| `/client` | Client home using static values | No project selection or governed data |
-| `/client/status` | Static confidence trend and milestones | No evidence, readiness, risks, or API data |
-| `/client/reports` | Static report list with download action | Must use sent reports; download requires separate scope decision |
-| `/client/ask` | Hardcoded answer | Must use evidence-grounded Q&A and safe insufficiency behavior |
+| `/client` | API-backed client home and assigned-project workspace | Readiness and richer change/milestone intelligence remain |
+| `/client/status` | API-backed client-safe confidence, milestones, and project status | Readiness and richer source coverage remain |
+| `/client/reports` | Sent-only scoped reports with PDF/CSV download | Continue lifecycle, accessibility, and UX hardening |
+| `/client/ask` | Evidence-grounded client-only Q&A with safe insufficiency behavior | Continue claim-validation and end-to-end authorization coverage |
 
 ### 3.3 Existing tests
 
@@ -414,7 +414,7 @@ The evidence pack must be assembled once per request and passed to deterministic
 - **Source coverage registry (CI-D01–CI-D15):** `source_coverage.py` declares owner, tables, visibility, sensitivity, implementation state, and stable unavailable reasons. Pack assembly always emits `PLAN_SERIES_UNAVAILABLE`, `WORKFLOW_STATUS_UNAVAILABLE`, `BACKLOG_QUEUE_UNAVAILABLE`, `CLIENT_COMMUNICATION_NOTES_UNAVAILABLE`, and `FRESHNESS_SLA_UNRESOLVED` where applicable. No invented plan/backlog/communication-note sources.
 - **Communication/query provenance:** `EvidenceInput` may carry server-authored visibility, observed_at, claim_keys, and pack fingerprint. Migration `20260717140000_client_intelligence_evidence_provenance.sql` adds nullable provenance columns on communication/query evidence links plus `client_communications.evidence_source_fingerprint`. Legacy null provenance is disclosed, never fabricated.
 - **Stale approval:** Approve and Send compare stored `evidence_source_fingerprint` to the current pack fingerprint. Changed evidence returns `COMMUNICATION_EVIDENCE_CHANGED` (409). Ordering-only changes do not block. Missing legacy fingerprint is disclosed and allowed without inventing a value. No automatic reapproval/send.
-- **Not** implemented: readiness assessments/dimensions, insights, recommendations, narratives, Milestone/Change UI, client portal, auto persist-on-build, or full Super Admin / Leadership approved-scope RBAC exit gate. **CI-DQ07 / CI-DQ08 / CI-DQ09 remain unresolved.** Live Postgres RLS execution of persistence/provenance migrations is still required for the Phase 1 integration gate.
+- **Not** implemented: readiness assessments/dimensions, insights, recommendations, full narratives, Milestone/Change UI, auto persist-on-build, or the full Super Admin / Leadership approved-scope RBAC exit gate. The client portal, sent-report downloads, and client-grounded Q&A are implemented. **CI-DQ07 / CI-DQ08 / CI-DQ09 remain unresolved.** Live Postgres RLS execution of persistence/provenance migrations is still required for the Phase 1 integration gate.
 
 ### 7.4 RBAC retrieval matrix
 
@@ -909,7 +909,8 @@ Rules:
   fabricated as 0; legacy placeholder answers redacted on read).
   Generic `/agent-queries` rejects Client role for `client_interaction_agent`
   and excludes CI rows from generic list/get. Client role denied on dedicated
-  endpoints. Client-facing `/client/ask` remains mock/deferred.
+  endpoints. Client-facing `/client/ask` now delegates to the governed query
+  service through client-only, assigned-project-scoped endpoints.
 - **Next task (not implemented here):** Milestone Intelligence UI / Change Intelligence UI.
 - Evidence/source-gap closure for CI-D01–CI-D15 is implemented via `source_coverage.py`, pack unavailable signals, provenance migration, and stale-approval fingerprint checks.
 ### 10.5 Audit and versioning
@@ -1025,7 +1026,7 @@ No zero-evidence answer may be stored as a normal evidence-backed answer.
 
 ### Phase 5 exit criteria
 
-- [ ] `/client-intelligence`, `/client`, `/client/status`, `/client/reports`, and `/client/ask` use APIs, not mock data.
+- [x] `/client-intelligence`, `/client`, `/client/status`, `/client/reports`, and `/client/ask` use APIs, not mock data.
 - [ ] Every source-defined dashboard component is present or explicitly unavailable with a reason.
 - [ ] CI-F16–CI-F19 and CI-F22 implemented.
 - [ ] Q&A is project-scoped, cited, confidence-aware, and injection-resistant.

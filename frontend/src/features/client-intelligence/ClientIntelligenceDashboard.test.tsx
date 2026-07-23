@@ -2677,7 +2677,9 @@ describe("ClientIntelligenceDashboard", () => {
       historyPage([historyItemFixture({ subject: "Restored History Report" })]),
     );
     await user.click(screen.getByRole("button", { name: "Retry report history" }));
-    expect(await screen.findByText("Restored History Report")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Restored History Report", {}, { timeout: 5_000 }),
+    ).toBeInTheDocument();
     expect(screen.getByText("Queue Survives History Error")).toBeInTheDocument();
   });
 

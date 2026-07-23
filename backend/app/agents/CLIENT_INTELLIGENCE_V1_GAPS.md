@@ -36,7 +36,7 @@ Platform capabilities that **do** work today and are relevant as dependencies (b
 
 - **Communications lifecycle (CI-F09 / CI-F20 / CI-O02 / CI-O07):** Governed transition matrix in `app.services.communications` with `PATCH /communications/{id}/draft`, review/approve/reject/send. Allowed: create→draft; edit draft|rejected→draft; draft→in_review; in_review→approved|rejected; approved→sent. Reject requires `rejection_reason` (+ `rejected_by`/`rejected_at` migration). Audit events: `client_communication.edited|submitted_for_review|approved|rejected|sent`. Evidence links immutable on edit. Send is approval-gated in-app visibility (no auto-send; no external email claim).
 - **Approved & Sent report history:** `GET /api/v1/projects/{project_id}/client-intelligence/reports` reads only `client_communications` where `drafted_by_agent = client_interaction_agent` and status ∈ `{approved, sent}`. Body is `body_approved` only; provenance `complete`/`partial`/`unavailable` with stable limitation codes; order by lifecycle timestamp DESC + id DESC; limit 1–50 (default 20); evidence bulk-loaded per page (≤3 queries after auth). Internal roles only (DM / Leadership / Super Admin); Client denied. Unfiltered `total` reconciles with Reports summary `approved_count`. Approved may appear in both active queue and history; Sent leaves the queue and remains client-visible via existing sent-only communications read. No export/download; no external email; no mutations/LLM.
-- **Grounded Client Intelligence Q&A (implemented + acceptance corrections):** `POST/GET /api/v1/projects/{project_id}/client-intelligence/queries`. Forces `agent_name=client_interaction_agent`, builds `ClientEvidencePack`, classifies question, returns structured availability (`answered`/`insufficient_evidence`/`unsupported`/`provider_unavailable`), persists under the authorized project’s `org_id` with real `latency_ms` (null latency never fabricated as 0; legacy placeholders redacted). Generic `/agent-queries` denies Client role for CI, excludes CI rows from list/get. Generative LLM refinement remains **disabled** until complete structured claim validation exists (`model_used=null`). Change/Confidence History/next-milestone answers are truthful. Internal roles only; Client denied. Client-facing `/client/ask` remains mock/deferred. **Evidence/source registry + pack/provenance hardening for CI-D01–CI-D15 is in place (partial sources + explicit unavailable); full evidence/source closure is not claimed while CI-DQ07/08/09, readiness, client portal, and Milestone/Change UI remain open.** Remaining lifecycle gaps: narrative claim validation, readiness/go-live report types. **Next roadmap item: Milestone/Change Intelligence UI.**
+- **Grounded Client Intelligence Q&A (implemented + acceptance corrections):** Internal `POST/GET /api/v1/projects/{project_id}/client-intelligence/queries` and client-only `POST/GET /api/v1/client/ask/queries` build the same governed `ClientEvidencePack`, return structured availability (`answered`/`insufficient_evidence`/`unsupported`/`provider_unavailable`), and persist under the authorized project’s `org_id` with real `latency_ms`. The client endpoint enforces assigned-project access and client-safe evidence projection. Generative LLM refinement remains **disabled** until complete structured claim validation exists (`model_used=null`). **Evidence/source registry + pack/provenance hardening for CI-D01–CI-D15 is in place (partial sources + explicit unavailable); full evidence/source closure is not claimed while CI-DQ07/08/09, readiness, and Milestone/Change UI remain open.** Remaining lifecycle gaps: narrative claim validation and readiness/go-live report types. **Next roadmap item: Milestone/Change Intelligence UI.**
 - **Agent query infrastructure (CI-F16 / CI-O10):** `client_interaction_agent` is routed through the grounded CI Q&A handler (no placeholder answer). Generic `/agent-queries` for other agents is unchanged; CI rows are excluded from generic reads.
 - **CSAT (CI-F19):** Submit-only; no read aggregation, trend, sample disclosure, or UI.
 - **Upstream data sources (CI-D01–CI-D15):** Canonical registry in `source_coverage.py` with contributing owners and adapter-table agreement. Delivery/Quality/Workforce/Governance/Knowledge adapters assemble `ClientEvidencePack`. Explicitly unavailable: CI-D07 workflow status, CI-D09 backlog queue, CI-D14 client communication notes. CI-D03 throughput logs remain **partial**; governed plan series absence is a sibling limitation (`PLAN_SERIES_UNAVAILABLE`), not a claim that throughput itself is unavailable. Freshness SLA unresolved (`FRESHNESS_SLA_UNRESOLVED` — no age-only stale). CLIENT_SAFE redacts identities and internal-only risks/knowledge text.
@@ -60,7 +60,7 @@ Platform capabilities that **do** work today and are relevant as dependencies (b
 - Production policy thresholds (CI-DQ07), readiness schema (CI-DQ08), quantified impact/mitigation (CI-DQ09).
 - Final integration acceptance across all CI phases.
 
-**Conclusion:** Core Client Intelligence engines, evidence pack, grounded Q&A, communications provenance/stale-approval, and internal dashboard exist as partial/implemented foundations. Do **not** treat evidence/source closure as complete while unavailable sources, unresolved freshness, deferred UI/portal/readiness items, and **live Postgres migration execution** (fresh/upgrade/duplicate/RLS) remain open in this test environment.
+**Conclusion:** Core Client Intelligence engines, evidence pack, grounded Q&A, communications provenance/stale-approval, internal dashboard, and client portal exist as partial/implemented foundations. Do **not** treat evidence/source closure as complete while unavailable sources, unresolved freshness, readiness and Milestone/Change UI work, and **live Postgres migration execution** (fresh/upgrade/duplicate/RLS) remain open in this test environment.
 
 ---
 
@@ -282,10 +282,10 @@ Registered: auth, me, orgs, users, projects, delivery (+ dashboard/chat), qualit
 | File | Path | Data source | Live API? |
 |---|---|---|---|
 | `frontend/src/routes/client-intelligence.tsx` | `/client-intelligence` | Authorized Projects API + selected project Client Intelligence overview API | **Yes** — internal roles, read-only, project-level |
-| `frontend/src/routes/client.index.tsx` | `/client/` | Inline “Aurora Health”, 92%, static milestones/updates | **No** |
-| `frontend/src/routes/client.status.tsx` | `/client/status` | Inline KPIs; `trend` via `Math.sin` | **No** |
-| `frontend/src/routes/client.reports.tsx` | `/client/reports` | Inline “Approved” list; Download/View inert | **No** |
-| `frontend/src/routes/client.ask.tsx` | `/client/ask` | Local state; fixed reply about batch 14 / 94% confidence | **No** |
+| `frontend/src/routes/client.index.tsx` | `/client/` | Client dashboard API | **Yes** — assigned projects and client-safe summary |
+| `frontend/src/routes/client.status.tsx` | `/client/status` | Client dashboard API through `ClientProjectWorkspace` | **Yes** — governed confidence, milestones, and status |
+| `frontend/src/routes/client.reports.tsx` | `/client/reports` | Client portal reports API | **Yes** — sent-only reports with scoped PDF/CSV download |
+| `frontend/src/routes/client.ask.tsx` | `/client/ask` | Client Q&A API | **Yes** — evidence-grounded answers and safe insufficiency states |
 
 Shared widgets used: `Card`, `SectionHeader`, `KpiCard`, `AiBadge`, `StatusPill` from `@/components/bsg/widgets`. `EvidenceBadge` is **not** used on CI routes.
 
@@ -344,7 +344,7 @@ Status legend: **Implemented** / **Partial** / **Missing** / **Mock only** / **B
 | CI-F13 | Missing | — | Gaps, confidence level, mitigation recommendations | 3 |
 | CI-F14 | Missing | — | Go-live readiness report + human sign-off state | 4 |
 | CI-F15 | Missing | Delivery `MitigationRecommendation` is different concept | Pre-go-live, training, resource, mitigation, pilot-validation recommendation types | 3 |
-| CI-F16 | Implemented (internal) | `POST/GET /projects/{id}/client-intelligence/queries` + Client Detail Q&A | Client `/client/ask` deferred | 5 |
+| CI-F16 | Implemented | Internal project Q&A plus client-only `POST/GET /client/ask/queries`; both use governed Client Intelligence evidence | Continue negative authorization and end-to-end UX coverage | 5 |
 | CI-F17 | Missing | Evidence links persist but answer ignores content | Answer only from authorized structured + approved unstructured evidence | 5 |
 | CI-F18 | Mock only | Hardcoded “Delivery narrative” / “Today” style copy in UI | Deterministic recent changes + Today’s Insight fact set | 5 |
 | CI-F19 | Partial | POST `/projects/{id}/csat` | Read aggregation, trend, sample disclosure, UI | 5 |
@@ -546,24 +546,24 @@ Listed in §2.16. Coverage is upstream (delivery scoring, quality summary/comms,
 
 | Required suite | Status |
 |---|---|
-| `test_client_intelligence_evidence.py` | Missing |
+| `test_client_intelligence_evidence.py` | Present, with persistence, validation, provenance, and source-coverage companion suites |
 | `test_client_intelligence_project_health.py` | Present — foundation only; fixture policies are not production thresholds |
-| `test_client_intelligence_confidence.py` | Missing |
-| `test_client_intelligence_risk.py` | Missing |
-| `test_client_intelligence_changes.py` | Missing |
+| `test_client_intelligence_confidence.py` | Covered by delivery-confidence and confidence-history suites |
+| `test_client_intelligence_risk.py` | Present |
+| `test_client_intelligence_changes.py` | Present |
 | `test_client_intelligence_readiness.py` | Missing |
 | `test_client_intelligence_recommendations.py` | Missing |
 | `test_client_intelligence_narratives.py` | Missing |
-| `test_client_intelligence_query.py` | Missing |
-| `test_client_intelligence_communications.py` | Missing (lifecycle partially covered only via quality_comms) |
-| `test_client_intelligence_rbac.py` | Missing |
-| `test_client_intelligence_acceptance.py` | Missing |
+| `test_client_intelligence_query.py` | Covered by `test_client_intelligence_qa.py` and API tests |
+| `test_client_intelligence_communications.py` | Covered across communications lifecycle/RBAC and Client Intelligence provenance/stale-evidence suites |
+| `test_client_intelligence_rbac.py` | Covered across visibility, governance, API, and provenance acceptance suites |
+| `test_client_intelligence_acceptance.py` | Partial — focused API/provenance acceptance exists; full cross-phase acceptance remains open |
 | Phase 0 contract fixtures | Missing |
-| Scheduler/idempotency/stale-draft tests | Missing |
-| Internal overview API/UI integration / a11y / no-mock route gates | Partial — internal project-level overview connected; later client-safe and roadmap surfaces remain missing |
+| Scheduler/idempotency/stale-draft tests | Partial — evidence idempotency and stale-evidence integration exist; scheduled weekly draft coverage remains open |
+| Internal overview and client portal API/UI integration / a11y / no-mock route gates | Partial — API-backed routes and focused UI tests exist; full accessibility and cross-persona acceptance remain open |
 | AI evaluation set (§12.3 / §18.5) | Missing |
 
-Dedicated communications route tests and CSAT read tests are also absent.
+Dedicated communications route tests are present. CSAT read/aggregation coverage remains incomplete.
 
 ---
 

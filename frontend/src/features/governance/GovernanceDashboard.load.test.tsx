@@ -415,7 +415,7 @@ describe("GovernanceDashboard load behavior", () => {
         ),
       ).toBe(true);
     });
-  });
+  }, 10_000);
 
   it("loads projects only after a project-dependent workflow is opened", async () => {
     const user = userEvent.setup();

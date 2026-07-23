@@ -4,6 +4,9 @@ from uuid import uuid4
 
 import pytest
 
+from app.agents.governance.routes.governance import router as governance_router
+from app.agents.governance.routes.weekly_summaries import router as weekly_summaries_router
+from app.agents.governance.services.governance_service import assert_can_manage_weekly_summary
 from app.agents.governance.services.summary_service import (
     SummaryEvidenceItem,
     build_template_summary,
@@ -12,9 +15,6 @@ from app.agents.governance.services.summary_service import (
     invalidate_latest_weekly_summary_read_cache,
     monday_of_week,
 )
-from app.agents.governance.services.governance_service import assert_can_manage_weekly_summary
-from app.agents.governance.routes.governance import router as governance_router
-from app.agents.governance.routes.weekly_summaries import router as weekly_summaries_router
 from app.core.exceptions import ApiError
 from app.core.security import CurrentUser
 from app.db.models import AppRole, GovernanceEvidenceSourceType
@@ -124,7 +124,9 @@ def test_build_template_summary_includes_sections() -> None:
         "scope_states": [],
         "delivery_signals": [],
         "knowledge_documents": [],
-        "projects_attention": [{"project": "Phoenix", "score": 5, "reasons": ["blocking dependency"]}],
+        "projects_attention": [
+            {"project": "Phoenix", "score": 5, "reasons": ["blocking dependency"]}
+        ],
     }
     text = build_template_summary(context, [item])
     assert "## 1. Executive Overview" in text
@@ -170,14 +172,15 @@ async def test_latest_weekly_summary_read_cache_returns_defensive_hit() -> None:
     invalidate_latest_weekly_summary_read_cache()
     user = _user(AppRole.DELIVERY_MANAGER)
     summary = _summary(user.org_id)
-    first_session = QueueSession([[summary], []])
+    first_session = QueueSession([[summary], [], []])
 
     first = await get_latest_weekly_summary_read_cached(first_session, user)
     second = await get_latest_weekly_summary_read_cached(QueueSession([]), user)
 
     assert first.cache_hit is False
     assert first.read.summary_text.endswith("Stable governance posture.")
-    assert first_session.execute_count == 2
+    assert first_session.execute_count == 3
+    assert first.execute_count == 3
     assert second.cache_hit is True
     assert second.execute_count == 0
     assert second.read.summary_text == first.read.summary_text

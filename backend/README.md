@@ -23,7 +23,7 @@ Bearer tokens in the `Authorization` header are still supported for scripts and 
 
 ## Environment variables
 
-Copy `../.env.example` to `../.env` and set:
+Copy `.env.example` to `.env` and set:
 
 | Variable | Purpose |
 |---|---|

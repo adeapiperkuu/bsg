@@ -1,6 +1,6 @@
 # Quality Intelligence Agent — Remaining v1.0 Gaps
 
-**Last updated:** 2026-07-06  
+**Last updated:** 2026-07-23
 **Spec:** [`docs/AI Agents/quality_intelligence_agent_v1_0.md`](../../docs/AI%20Agents/quality_intelligence_agent_v1_0.md)  
 **Roadmap:** [`docs/agents/quality_intelligence_roadmap.md`](../../docs/agents/quality_intelligence_roadmap.md)  
 **LLM reasoning upgrade:** [`docs/agents/quality_reasoning_upgrade_plan.md`](../../docs/agents/quality_reasoning_upgrade_plan.md)
@@ -19,7 +19,7 @@ This document tracks **remaining** gaps after Phase 1.5 (Connected Agent), Phase
 | **1.5 Connected** | **Complete** | Scheduler, signal consumption, client §8.4 summary in comms, hard taxonomy, frontend polish |
 | **2.0 Full Reasoning (deterministic engine)** | **Complete** | Item-level logs, enriched signals, UC-02/03/04/05, NL maturity, acceptance tests |
 | **2.0-R LLM reasoning over evidence** | **Complete, dark-launched** | `quality_llm_reasoning` flag defaults `False`; deterministic engine is the fallback |
-| **2.5 Portfolio & Governance** | **Deferred** | Auto-escalation, leadership heatmap, per-org thresholds |
+| **2.5 Portfolio & Governance** | **Partial** | Five-business-day auto-escalation is implemented; leadership heatmap and per-org thresholds remain |
 
 ---
 
@@ -82,7 +82,7 @@ rejects the output. See [`quality_reasoning_upgrade_plan.md`](../../docs/agents/
 | BR-03 No reviewer IDs to clients | **Met** — `quality_scoping.py` + sanitized §8.4 summary |
 | BR-04 Confidence on diagnostics | **Met** |
 | BR-05 Sample size gate (≥30) | **Met** — dashboard data-gap badge |
-| BR-06 5-day auto-escalation | **Deferred** (Phase 2.5) |
+| BR-06 5-day auto-escalation | **Met** — `check_quality_escalations` is scheduled and feature-gated |
 | BR-07 DM approval for client narratives | **Met** |
 | BR-08 Lesson log on resolution | **Met** |
 | BR-09 No direct SOP modification | **Met** — human confirms SOP version link |
@@ -105,7 +105,6 @@ rejects the output. See [`quality_reasoning_upgrade_plan.md`](../../docs/agents/
 ### Governance & portfolio
 | Gap | Spec | Phase |
 |-----|------|-------|
-| Auto-escalation after 5 business days | §9.5, BR-06 | 2.5 |
 | Leadership vertical/task-type risk heatmap | UC-07 extension | 2.5 |
 | Per-org / per-project / per-task-type threshold overrides + admin UI | §12, §16.3 | 2.5 |
 
@@ -129,7 +128,6 @@ rejects the output. See [`quality_reasoning_upgrade_plan.md`](../../docs/agents/
 ## Recommended next build order
 
 1. **Phase 2.0-R rollout:** Run `QUALITY_LLM_REASONING_SHADOW=true` in staging/pilot, review divergence logs against the §16.4 golden set (10+ historical events with known root cause), then flip `QUALITY_LLM_REASONING=true` per pilot org
-2. **Phase 2.5:** Wire `check_quality_escalations` to scheduler; emit `quality_escalation` signal to Governance
-3. **Phase 2.5:** Leadership heatmap (vertical × task-type risk matrix)
-4. **Phase 2.5:** Per-org threshold overrides + audit log
-5. **Ongoing:** Pilot data onboarding and DM/QA sign-off
+2. **Phase 2.5:** Leadership heatmap (vertical × task-type risk matrix)
+3. **Phase 2.5:** Per-org threshold overrides + audit log
+4. **Ongoing:** Pilot data onboarding and DM/QA sign-off

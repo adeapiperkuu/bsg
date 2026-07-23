@@ -18,7 +18,7 @@ from app.services.workforce import (
     soft_delete_utilization_snapshot,
     update_utilization_snapshot,
 )
-from tests.conftest import ORG_A, client_a, override_user
+from tests.conftest import ORG_A, override_user
 
 
 def _user(role: AppRole, org_id=None) -> CurrentUser:
@@ -152,13 +152,22 @@ async def test_resolve_utilization_team_rejects_cross_project_team() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_utilization_snapshot_sets_org_and_computes_pct() -> None:
+async def test_create_utilization_snapshot_sets_org_and_computes_pct(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     org_a = uuid4()
     project = _project(org_a)
     team = _team(org_a, project.id)
     session = FakeSession(team=team, project=project)
     user = _user(AppRole.DELIVERY_MANAGER, org_a)
 
+    async def _skip_time_series_publish(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "app.time_series.publishers.publish_workforce_utilization_observation",
+        _skip_time_series_publish,
+    )
     snapshot = await create_utilization_snapshot(
         session,
         project,

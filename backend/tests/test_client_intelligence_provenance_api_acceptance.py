@@ -57,8 +57,13 @@ class ProvenanceSession(FakeSession):
 
     async def execute(self, stmt) -> Any:  # type: ignore[override]
         compiled = str(stmt)
-        if "CommunicationEvidenceLink" in compiled or "communication_evidence_links" in compiled.lower():
+        if (
+            "CommunicationEvidenceLink" in compiled
+            or "communication_evidence_links" in compiled.lower()
+        ):
             return FakeResult(None, self.links)
+        if "report_instances" in compiled.lower():
+            return FakeResult()
         return FakeResult(self.communication)
 
 
@@ -119,7 +124,10 @@ async def test_route_client_get_and_list_redact_provenance(
     class ListSession(FakeSession):
         async def execute(self, stmt) -> Any:  # type: ignore[override]
             compiled = str(stmt)
-            if "CommunicationEvidenceLink" in compiled or "communication_evidence_links" in compiled.lower():
+            if (
+                "CommunicationEvidenceLink" in compiled
+                or "communication_evidence_links" in compiled.lower()
+            ):
                 return FakeResult(None, links)
             return FakeResult(None, [communication])
 

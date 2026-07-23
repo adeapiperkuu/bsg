@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from datetime import date
+from datetime import UTC, date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -17,7 +17,6 @@ from app.services.communications import (
     GENERATION_FALLBACK_WARNING,
     DraftEvidenceBundle,
     DraftGenerationResult,
-    DraftGenerationTimings,
     build_comms_prompt_parts,
     create_communication_draft,
     create_draft,
@@ -229,7 +228,10 @@ async def test_llm_success_returns_generation_mode_ai() -> None:
 @pytest.mark.asyncio
 async def test_llm_failure_fallback_is_evidence_backed() -> None:
     with (
-        patch("app.services.communications.get_settings", return_value=_settings(openai_api_key="k")),
+        patch(
+            "app.services.communications.get_settings",
+            return_value=_settings(openai_api_key="k"),
+        ),
         patch("app.services.communications.LLMClient") as mock_llm_cls,
     ):
         mock_llm = AsyncMock()
@@ -272,6 +274,10 @@ async def test_create_communication_draft_orchestrates_and_stays_draft() -> None
         patch(
             "app.services.communications.generate_comms_draft_body",
             AsyncMock(return_value=("AI body", "ai", None, 12.0)),
+        ),
+        patch(
+            "app.reports.adapters.ensure_shadow_instance_for_communication",
+            AsyncMock(return_value=None),
         ),
         patch("app.services.communications.get_settings", return_value=_settings()),
     ):
@@ -320,6 +326,10 @@ async def test_create_communication_draft_persist_failure_returns_503() -> None:
             "app.services.communications.generate_comms_draft_body",
             AsyncMock(return_value=("body", "fallback", GENERATION_FALLBACK_WARNING, 3.0)),
         ),
+        patch(
+            "app.reports.adapters.ensure_shadow_instance_for_communication",
+            AsyncMock(return_value=None),
+        ),
         patch("app.services.communications.get_settings", return_value=_settings()),
         pytest.raises(ApiError) as exc,
     ):
@@ -361,6 +371,10 @@ async def test_fallback_success_does_not_raise_503() -> None:
             "app.services.communications.generate_comms_draft_body",
             AsyncMock(return_value=("fallback body", "fallback", GENERATION_FALLBACK_WARNING, 4.0)),
         ),
+        patch(
+            "app.reports.adapters.ensure_shadow_instance_for_communication",
+            AsyncMock(return_value=None),
+        ),
         patch("app.services.communications.get_settings", return_value=_settings()),
     ):
         result = await create_communication_draft(
@@ -385,7 +399,7 @@ def test_gather_draft_evidence_is_sequential_not_concurrent() -> None:
 @pytest.mark.asyncio
 async def test_draft_route_fallback_returns_200_with_warning(api_client, delivery_manager) -> None:
     from collections.abc import AsyncIterator
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from app.db.session import get_db_session
     from app.main import app
@@ -393,7 +407,7 @@ async def test_draft_route_fallback_returns_200_with_warning(api_client, deliver
     from tests.conftest import FakeResult, override_user
 
     project = _project()
-    now = datetime(2026, 7, 16, 10, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 16, 10, 0, tzinfo=UTC)
     throughput = _throughput()
 
     class _DraftSession:

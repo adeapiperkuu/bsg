@@ -6,7 +6,7 @@ from httpx import AsyncClient
 from app.core.security import CurrentUser
 from app.db.models import Annotator, AppRole, DeliverySite, Project, Team
 from app.services.workforce import get_project_workforce_summary
-from tests.conftest import client_a, delivery_manager, override_user
+from tests.conftest import override_user
 
 _NOW = "2026-01-01T00:00:00Z"
 
@@ -68,6 +68,9 @@ class FakeScalars:
     def __iter__(self):
         return iter(self._items)
 
+    def all(self):
+        return self._items
+
 
 class FakeResult:
     def __init__(self, items):
@@ -78,7 +81,12 @@ class FakeResult:
 
 
 class FakeSession:
-    def __init__(self, *, teams: list[Team] | None = None, annotators: list[Annotator] | None = None):
+    def __init__(
+        self,
+        *,
+        teams: list[Team] | None = None,
+        annotators: list[Annotator] | None = None,
+    ):
         self.teams = teams or []
         self.annotators = annotators or []
         self.calls = 0
